@@ -24,7 +24,7 @@ export function adoptSessionKey() {
 	const match = location.hash.match(/^#k=([\w-]+)$/);
 	if (!match?.[1]) return;
 	setSessionKey(match[1]);
-	history.replaceState(null, "", `${location.pathname}#/repos`);
+	history.replaceState(null, "", `${location.pathname}#/overview`);
 }
 
 /** @param {string} key */
@@ -44,6 +44,36 @@ function sessionKey() {
 	} catch {
 		return memoryKey;
 	}
+}
+
+/**
+ * Fetches a file from the API and hands it to the browser to save. A plain
+ * link cannot do this, because the request has to carry the session key.
+ *
+ * @param {string} path
+ * @returns {Promise<string>} the name the file was saved under
+ */
+export async function download(path) {
+	let response;
+	try {
+		response = await fetch(`/api${path}`, { headers: { "x-securityx-session": sessionKey() } });
+	} catch {
+		throw new ApiError(0, "SecurityX is not running. Start it again with: securityx ui", {});
+	}
+	if (!response.ok) {
+		const data = await response.json().catch(() => ({}));
+		throw new ApiError(response.status, data.error ?? `Export failed (${response.status})`, data);
+	}
+	const filename = /filename="([^"]+)"/.exec(response.headers.get("content-disposition") ?? "")?.[1] ?? "securityx-export";
+	const url = URL.createObjectURL(await response.blob());
+	const link = document.createElement("a");
+	link.href = url;
+	link.download = filename;
+	document.body.append(link);
+	link.click();
+	link.remove();
+	setTimeout(() => URL.revokeObjectURL(url), 10_000);
+	return filename;
 }
 
 /**

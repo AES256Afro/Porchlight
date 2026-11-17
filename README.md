@@ -33,12 +33,16 @@ securityx ui
 
 It prints a link. Open it to get both tools in the browser:
 
-- **Repositories**: scan a folder and watch its progress, then read the results worst first. Filter by severity, type or text, and open a repository to see each finding.
-- **Domains**: register a domain, copy its verification record, check it, scan, and read what changed. This page needs `SECURITYX_MONITOR_URL` and `SECURITYX_ADMIN_TOKEN` set when you start the interface (see [Monitor domains](#monitor-domains)).
+- **Overview**: start a scan and watch its progress, see where things stand, and go to what needs doing first.
+- **Findings**: every finding in one list, most severe first, each with the repair that clears it. Switch to **By repository** to see them grouped. Filter by severity, type, repository or text; the filters are kept in the address, so a reload or a shared link shows the same view.
+- **Roadmap**: what to repair, in order. One action, such as upgrading a package, can clear many findings.
+- **Domains**: register a domain, copy its verification record, check it, scan, and read what changed, with a suggested fix for each finding. This page needs `SECURITYX_MONITOR_URL` and `SECURITYX_ADMIN_TOKEN` set when you start the interface (see [Monitor domains](#monitor-domains)).
+
+Every page with findings has an **Export** button; see [Export a repair roadmap](#export-a-repair-roadmap).
 
 | Option | Effect |
 | --- | --- |
-| `--port <n>` | Port to listen on (default 4747) |
+| `--port <n>` | Port to listen on (default 4747; on this machine, the next free port if another copy already has it) |
 | `--host <address>` | Address to listen on (default 127.0.0.1). Any other address needs `SECURITYX_UI_KEY`; see [Run on BoxPilot](#run-on-boxpilot) |
 | `--report <file>` | Scan report to show and update (default `~/.securityx/repo-scan.json`) |
 | `--root <dir>` | Folder offered in the scan form (default: the current folder) |
@@ -93,8 +97,17 @@ securityx repos scan ~/Projects --out reports/repos.md
 
 What it checks:
 
-- **Secrets** in the full commit history, with gitleaks. A secret deleted in a later commit is still reported, because it is still in history and must be rotated. Every secret is rated high.
+- **Secrets** in the full commit history, with gitleaks. A secret deleted in a later commit is still reported, because it is still in history and must be rotated. Each match is ranked by how likely it is to be a live credential.
 - **Dependencies** named in lockfiles, with osv-scanner, rated by CVSS score.
+
+How secrets are ranked:
+
+| The match is | In ordinary source | In tests, docs, examples, generated files, benchmark output or data files |
+| --- | --- | --- |
+| A known key format, such as an AWS key, a private key or a JWT | high | medium |
+| A generic pattern that only looks like a key | medium | low |
+
+A finding ranked below high says why. Ranking never removes a finding: a real key can sit in a test file, so the lower ranks still deserve a look.
 
 What to know:
 
@@ -103,6 +116,45 @@ What to know:
 - Dependency scanning needs network access: osv-scanner sends package names and versions to the OSV database (api.osv.dev). Offline, it is reported as not covered.
 - Uncommitted and git-ignored files are not scanned.
 - `reports/` is git-ignored: a report names the files and commits where secrets were found.
+
+## Export a repair roadmap
+
+A scan can be exported as something to work from, from the Export button in the interface or from the command line:
+
+```bash
+securityx repos scan ~/Projects --json --out reports/projects.json
+securityx repos export reports/projects.json --out reports/roadmap.md
+securityx domains export example.com --format html --out reports/example.html
+```
+
+What to export (`--content`):
+
+- **`roadmap`** (default): the repairs, in order. Findings are grouped into actions: one per package to upgrade, credential to rotate, or batch of doubtful secrets to check. Each action says where the work is, what it clears and how to do it.
+- **`findings`**: every finding, most severe first, each with the repair that clears it.
+
+The roadmap has four phases:
+
+| Phase | What is in it |
+| --- | --- |
+| 1. Fix now | Credentials that look live, and critical vulnerabilities |
+| 2. Fix next | High-severity vulnerabilities |
+| 3. Schedule | Medium-severity vulnerabilities, and possible secrets that need a look |
+| 4. When convenient | Low-severity vulnerabilities, and matches unlikely to be real secrets |
+
+An action sits in the phase of the worst finding it clears. An upgrade names the lowest version that clears every advisory against the package, taken from the advisories themselves, and warns when that is a major version change. Where no fixed release exists, the action says so instead of naming a version.
+
+Formats (`--format`):
+
+| Format | For |
+| --- | --- |
+| `md` (default) | A checklist to paste into an issue or keep in a repository |
+| `html` | A self-contained page with no script that opens in any browser; print it, or save it as a PDF from the print dialog |
+| `csv` | One row per action or finding, for a tracker or a spreadsheet |
+| `json` | Scripts and other tools |
+
+`--severity`, `--kind`, `--match` and `--repo` narrow a repository export to part of the scan. A narrowed export says at the top that it is partial, and one made from an incomplete scan says what the scan did not cover.
+
+Text from repositories and DNS records is escaped for each format, so a hostile file name or package name cannot become markup in the page, a link in the Markdown or a formula in the spreadsheet.
 
 ## Monitor domains
 
@@ -221,6 +273,7 @@ npm test        # both packages
 
 - `monitor/src/scan.ts` is the scan pipeline; `snapshot.ts` observes, `findings.ts` and `diff.ts` interpret, `api.ts` is the HTTP API.
 - `cli/src/repos/` is the scanner; `cli/src/monitor/client.ts` is the API client. The CLI has no runtime dependencies and runs its TypeScript directly.
-- `cli/src/ui/server.ts` serves the web interface in `cli/ui/`, which is plain JavaScript modules and CSS, type-checked through JSDoc.
+- `cli/src/roadmap/` turns findings into repairs and renders the exports.
+- `cli/src/ui/server.ts` serves the web interface in `cli/ui/`, which is plain JavaScript modules and CSS, type-checked through JSDoc. `store.js` holds what the pages share; `filter.js` and `list.js` are pure logic shared with the server and covered by tests.
 - `.claude/launch.json` starts the interface and a local monitor for previewing in Claude Code.
 - Tests do not touch the network: the monitor's use a scripted internet (`monitor/test/fake-net.ts`), the CLI's a scripted process runner. One CLI test runs the real gitleaks on a throwaway repository.

@@ -15,6 +15,10 @@ export interface Finding {
 	location: string;
 	/** Commit for a secret; package and version for a vulnerability. */
 	detail: string;
+	/** Why the severity is lower than the finding type's default, when triage lowered it. */
+	note?: string;
+	/** For a vulnerability: the lowest release that fixes it, when the advisory names one. */
+	fixedIn?: string;
 }
 
 export interface ToolStatus {

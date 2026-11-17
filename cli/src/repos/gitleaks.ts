@@ -1,4 +1,5 @@
 import { firstLine, type Runner } from "./exec.ts";
+import { triageSecret } from "./triage.ts";
 import type { Finding } from "./types.ts";
 
 /**
@@ -44,12 +45,13 @@ export function parseGitleaks(output: string): Finding[] {
 		byLocation.set(key, {
 			tool: "gitleaks",
 			kind: "secret",
-			// Any committed credential has to be treated as exposed and rotated.
-			severity: "high",
 			ruleId: RuleID,
 			title: typeof Description === "string" ? firstSentence(Description) : RuleID,
 			location,
 			detail: `${commit}${day}`,
+			// A committed credential is exposed and must be rotated: high, unless
+			// triage finds reasons to doubt that this match is a live one.
+			...triageSecret(RuleID, File),
 		});
 	}
 	return [...byLocation.values()];

@@ -21,11 +21,17 @@ Do not weaken these without the owner asking for it.
 7. **The web interface answers only its own page.** `cli/src/ui/server.ts` binds 127.0.0.1 by default, rejects any other Host or a cross-site Origin, and requires the session key on every `/api` call. The monitor's admin token is added server-side and never sent to the browser. Listening on any other address (the BoxPilot container) needs a fixed `SECURITYX_UI_KEY` of at least 32 characters or the server refuses to start; it then accepts any well-formed Host, still compares the Origin's host, and never prints the key.
 8. **No HTML is built from data.** Finding titles, file paths and DNS values are attacker-controllable, so `cli/ui` builds every element with `h()` in `dom.js` and never uses `innerHTML`. The Content-Security-Policy forbids inline script and style; keep both in files.
 9. **The BoxPilot manifest matches the image.** `boxpilot/securityx.yaml` keeps `defaultExposure: tailnet`, a read-only repos mount and a generated key; `npm run check:boxpilot` checks it against the Dockerfile and BoxPilot's schema. The image is published only from a `v*` tag by CI, after `scripts/container-smoke.sh` passes.
+10. **Triage re-ranks; it never drops.** `cli/src/repos/triage.ts` lowers a secret's severity one step per reason (a generic rule, an unlikely path) and records the reason in the finding's `note`. Do not turn it into a filter: a real key can live in a test file. Path rules match whole segments and file-name conventions, never substrings.
+11. **Exports are escaped for their format.** Everything a roadmap or findings export prints from a scan goes through `cli/src/roadmap/escape.ts`: entities in HTML, an apostrophe before formula characters in CSV, escaped text or fenced code in Markdown. The HTML export has no script and loads nothing. Download names are built from a fixed stem and a date, never from request input.
+12. **A suggested fix is the complete repair.** The fix shown for a finding is planned from its whole repository, not from whatever a filter left on show, so following it clears every advisory against the package. An export of part of a scan says it is partial; one from an incomplete scan says what was not covered.
 
 ## Interface conventions
 
 - A severity is always shape, colour and word together (`severityBadge`), never colour alone. Status colours mark state only; text stays in the ink colours.
 - An incomplete scan is shown as incomplete (the "Not covered" banner), never as clean.
+- `cli/ui/filter.js` decides what a filter matches, for the page and for the server alike, so "export what the filters show" exports exactly that. Do not filter anywhere else.
+- A page's filters, order and page number live in the address (`cli/ui/list.js`), written with `history.replaceState`, so reload, back and shared links restore the view.
+- Pages read shared data from `cli/ui/store.js` and subscribe to it; they do not fetch the report themselves. Long lists are paged, not rendered whole.
 - Browser code is typed with JSDoc and checked by `npm run typecheck`. It imports its data types from the TypeScript sources.
 
 ## Testing

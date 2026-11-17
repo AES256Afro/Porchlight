@@ -3,6 +3,7 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
+import { listenOnFirstFree } from "../src/main.ts";
 import { monitorConfig } from "../src/monitor/client.ts";
 import type { ScanOptions } from "../src/repos/scan.ts";
 import type { ScanReport } from "../src/repos/types.ts";
@@ -104,7 +105,8 @@ test("serves the page with headers that confine it to this server", async (t) =>
 	assert.equal(page.headers["x-content-type-options"], "nosniff");
 	assert.equal(page.headers["cache-control"], "no-store");
 	assert.ok(!page.text.includes(server.sessionKey), "the page itself must not contain the session key");
-	for (const asset of ["/app.js", "/styles.css", "/repos.js", "/domains.js", "/api.js", "/dom.js", "/favicon.svg"]) {
+	const scripts = ["app", "api", "dom", "filter", "list", "store", "export", "overview", "findings", "roadmap", "repos", "domains"];
+	for (const asset of ["/styles.css", "/favicon.svg", ...scripts.map((name) => `/${name}.js`)]) {
 		assert.equal((await send(server, "GET", asset, { key: null })).status, 200, asset);
 	}
 });
@@ -300,6 +302,115 @@ test("shows an existing report file and says so when it is not one", async (t) =
 	assert.match((await send(server, "GET", "/api/repos/report")).json.error, /not a SecurityX scan report/);
 });
 
+test("gives every finding in the report its suggested fix", async (t) => {
+	const server = await start(t);
+	await makeTree(server.dir, { "state/": "" });
+	await writeFile(join(server.dir, "state", "repo-scan.json"), JSON.stringify(sampleReport("/work")));
+
+	const { report } = (await send(server, "GET", "/api/repos/report")).json;
+
+	const worst = report.repos[0];
+	assert.equal(worst.name, "group/worst");
+	assert.deepEqual(
+		worst.findings.map((entry: { severity: string; suggestion: { title: string; phase: string } }) => [entry.severity, entry.suggestion.title, entry.suggestion.phase]),
+		[
+			["critical", "Replace or mitigate pkg 1.0.0: no fixed release is published", "now"],
+			["high", "Rotate the credential in package-lock.json", "now"],
+		],
+	);
+});
+
+test("exports the scan as a roadmap or a findings list, in each format, as a file to save", async (t) => {
+	const server = await start(t);
+	assert.equal((await send(server, "GET", "/api/repos/export")).status, 404, "nothing to export before a scan");
+	await makeTree(server.dir, { "state/": "" });
+	await writeFile(join(server.dir, "state", "repo-scan.json"), JSON.stringify(sampleReport("/work")));
+
+	const expected: [string, string, RegExp][] = [
+		["", "securityx-roadmap-2026-11-17.md", /^# Repair roadmap/],
+		["?format=html", "securityx-roadmap-2026-11-17.html", /^<!doctype html>/],
+		["?format=csv", "securityx-roadmap-2026-11-17.csv", /^Phase,Priority,Place,Action/],
+		["?format=json", "securityx-roadmap-2026-11-17.json", /^\{\n\t"title": "Repair roadmap"/],
+		["?content=findings", "securityx-findings-2026-11-17.md", /^# Findings and suggested fixes/],
+		["?content=findings&format=csv", "securityx-findings-2026-11-17.csv", /^Severity,Type,Place,ID,Finding/],
+	];
+	for (const [query, filename, start] of expected) {
+		const reply = await send(server, "GET", `/api/repos/export${query}`);
+		assert.equal(reply.status, 200, query);
+		assert.equal(reply.headers["content-disposition"], `attachment; filename="${filename}"`);
+		assert.equal(reply.headers["x-content-type-options"], "nosniff");
+		assert.match(reply.text, start);
+	}
+
+	const partial = await send(server, "GET", "/api/repos/export?severity=critical&kind=vulnerability&repo=group%2Fworst&q=pkg");
+	assert.equal(partial.headers["content-disposition"], 'attachment; filename="securityx-roadmap-partial-2026-11-17.md"');
+	assert.match(partial.text, /\*\*Partial roadmap\.\*\* It covers only: critical severity only; vulnerabilities only; in group\/worst; matching "pkg"\./);
+	assert.match(partial.text, /1 action clears 1 finding across 1 place/);
+
+	const roadmap = (await send(server, "GET", "/api/repos/roadmap?severity=critical")).json.roadmap;
+	assert.deepEqual([roadmap.totals.actions, roadmap.scope], [1, "critical severity only"]);
+});
+
+test("refuses an export it cannot make, and says what to change", async (t) => {
+	const server = await start(t);
+	await makeTree(server.dir, { "state/": "" });
+	await writeFile(join(server.dir, "state", "repo-scan.json"), JSON.stringify(sampleReport("/work")));
+
+	const cases: [string, RegExp][] = [
+		["?format=pdf", /Unknown format "pdf"\. Choose one of: md, html, csv, json/],
+		["?content=everything", /Unknown content "everything"/],
+		["?severity=urgent", /Unknown severity "urgent"/],
+		["?kind=bug", /Unknown type "bug"/],
+	];
+	for (const [query, message] of cases) {
+		const reply = await send(server, "GET", `/api/repos/export${query}`);
+		assert.equal(reply.status, 400, query);
+		assert.match(reply.json.error, message);
+		assert.equal(reply.headers["content-disposition"], undefined);
+	}
+	assert.equal((await send(server, "GET", "/api/repos/export", { key: null })).status, 401);
+	assert.equal((await send(server, "POST", "/api/repos/export")).status, 404);
+});
+
+test("exports a domain's roadmap, and shows each of its findings with a fix", async (t) => {
+	const report = {
+		domain: "example.com",
+		takenAt: "2026-11-17T09:00:00.000Z",
+		notes: [],
+		findings: [
+			{ id: "dangling-cname:shop.example.com", severity: "high", host: "shop.example.com", title: "CNAME target old.vendor.example does not resolve; check for subdomain takeover" },
+			{ id: "missing-header:www.example.com:referrer-policy", severity: "low", host: "www.example.com", title: "Missing referrer-policy header" },
+		],
+	};
+	const fetchFn = (async (url: URL) => {
+		if (url.pathname === "/domains/unscanned.example") return Response.json({ domain: { name: "unscanned.example" }, report: null });
+		if (url.pathname === "/domains/missing.example") return Response.json({ error: "Domain is not registered" }, { status: 404 });
+		return Response.json({ domain: { name: "example.com" }, report });
+	}) as unknown as typeof fetch;
+	const monitor = monitorConfig({ SECURITYX_MONITOR_URL: "https://monitor.example", SECURITYX_ADMIN_TOKEN: ADMIN_TOKEN });
+	const server = await start(t, { monitor, fetchFn });
+
+	const shown = (await send(server, "GET", "/api/domains/example.com")).json;
+	assert.deepEqual(shown.suggestions["dangling-cname:shop.example.com"].title, "Remove or repoint the DNS record for shop.example.com");
+	assert.deepEqual(shown.suggestions["missing-header:www.example.com:referrer-policy"], {
+		title: "Add 1 security header to responses from www.example.com",
+		how: ["`Referrer-Policy: strict-origin-when-cross-origin`."],
+	});
+	assert.equal((await send(server, "GET", "/api/domains/unscanned.example")).json.suggestions, undefined);
+
+	const file = await send(server, "GET", "/api/domains/example.com/export?format=csv");
+	assert.equal(file.headers["content-disposition"], 'attachment; filename="securityx-roadmap-example.com-2026-11-17.csv"');
+	assert.match(file.text, /1\. Fix now,high,shop\.example\.com,Remove or repoint the DNS record for shop\.example\.com/);
+	assert.match((await send(server, "GET", "/api/domains/example.com/export?content=findings")).text, /^# Findings and suggested fixes for example\.com/);
+
+	assert.deepEqual(
+		[(await send(server, "GET", "/api/domains/unscanned.example/export")).status, (await send(server, "GET", "/api/domains/missing.example/export")).status],
+		[404, 404],
+	);
+	assert.equal((await send(server, "POST", "/api/domains/example.com/export")).status, 405);
+	assert.equal((await send(server, "GET", "/api/domains/..%2f..%2fadmin/export")).status, 400);
+});
+
 test("says the monitor is not connected instead of failing obscurely", async (t) => {
 	const server = await start(t);
 
@@ -389,6 +500,27 @@ test("turns an unreachable monitor into a clear error", async (t) => {
 	const reply = await send(server, "GET", "/api/domains");
 
 	assert.deepEqual([reply.status, reply.json], [502, { error: "Could not reach the monitor: connect ECONNREFUSED" }]);
+});
+
+test("takes the next free port when the default is taken, but not when a port was asked for", async (t) => {
+	const first = await start(t);
+	const options = { reportPath: join(first.dir, "r.json"), defaultRoot: first.dir, monitor: null };
+	const startOn = (port: number) => startUiServer({ ...options, port });
+
+	// The second candidate is 0, which the system resolves to any free port.
+	const second = await listenOnFirstFree([first.port, 0], startOn);
+	t.after(() => second.close());
+	assert.notEqual(second.port, first.port);
+	assert.equal((await send(second, "GET", "/api/state")).status, 200);
+
+	await assert.rejects(listenOnFirstFree([first.port], startOn), new RegExp(`Port ${first.port} is in use. Choose another with --port`));
+	await assert.rejects(listenOnFirstFree([first.port, second.port], startOn), /Ports \d+ to \d+ are in use/);
+	await assert.rejects(
+		listenOnFirstFree([first.port, 0], async () => {
+			throw new Error("permission denied");
+		}),
+		/permission denied/,
+	);
 });
 
 function pick(value: Record<string, unknown>, keys: string[]): Record<string, unknown> {

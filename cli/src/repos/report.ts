@@ -3,6 +3,20 @@ import { SEVERITIES, severityRank, type Finding, type RepoResult, type ScanRepor
 
 export type Counts = Record<Severity, number>;
 
+/** Reads a report written by `repos scan --json` or by the web interface. Throws if the text is something else. */
+export function parseScanReport(text: string, path: string): ScanReport {
+	let report: ScanReport;
+	try {
+		report = JSON.parse(text) as ScanReport;
+	} catch {
+		throw new Error(`Not valid JSON: ${path}`);
+	}
+	if (!Array.isArray(report?.repos) || !Array.isArray(report?.tools) || typeof report.root !== "string") {
+		throw new Error(`Not a SecurityX scan report: ${path}`);
+	}
+	return report;
+}
+
 export function countBySeverity(findings: Finding[]): Counts {
 	const counts: Counts = { critical: 0, high: 0, medium: 0, low: 0 };
 	for (const finding of findings) counts[finding.severity]++;
@@ -97,7 +111,7 @@ export function renderMarkdown(report: ScanReport): string {
 		for (const finding of rank(repo.findings)) {
 			lines.push(
 				`- **${finding.severity}** ${finding.kind} \`${finding.ruleId}\` in \`${finding.location}\` ` +
-					`(${finding.detail}): ${finding.title}`,
+					`(${finding.detail}): ${finding.title}${finding.note ? `. ${finding.note}` : ""}`,
 			);
 		}
 		lines.push("");

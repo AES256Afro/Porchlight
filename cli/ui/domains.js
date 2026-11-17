@@ -1,7 +1,7 @@
 // @ts-check
 import { api, ApiError } from "./api.js";
-import { formatWhen, h, icon, plural, replace, severityBadge, statTile, toast } from "./dom.js";
-import { banner } from "./repos.js";
+import { banner, formatWhen, h, icon, plural, replace, severityBadge, statTile, stepNodes, toast } from "./dom.js";
+import { exportButton, openExportDialog } from "./export.js";
 
 /**
  * @typedef {object} Domain
@@ -140,7 +140,7 @@ export async function renderDomains(view, selected) {
 
 	async function showDetail() {
 		if (!selected) return;
-		/** @type {{ domain: Domain, report: MonitorReport | null }} */
+		/** @type {{ domain: Domain, report: MonitorReport | null, suggestions?: Record<string, { title: string, how: string[] }> }} */
 		let data;
 		try {
 			data = /** @type {any} */ (await api("GET", `/domains/${encodeURIComponent(selected)}`));
@@ -150,6 +150,7 @@ export async function renderDomains(view, selected) {
 			return;
 		}
 		const { domain, report } = data;
+		const suggestions = data.suggestions ?? {};
 		const everVerified = domain.verifiedAt !== null;
 
 		const scanButton = /** @type {HTMLButtonElement} */ (
@@ -165,10 +166,16 @@ export async function renderDomains(view, selected) {
 				"div",
 				{ class: "detail-head" },
 				h("div", null, h("h2", null, domain.name), statusPill(domain)),
-				h("div", { class: "actions" }, scanButton, h("button", { type: "button", class: "button danger", onclick: () => confirmRemove(domain.name) }, "Remove")),
+				h(
+					"div",
+					{ class: "actions" },
+					scanButton,
+					report && report.findings.length > 0 ? exportButton(() => openExportDialog({ domain: domain.name })) : null,
+					h("button", { type: "button", class: "button danger", onclick: () => confirmRemove(domain.name) }, "Remove"),
+				),
 			),
 			domain.verified ? null : challengeCard(domain, verifyButton),
-			report ? reportView(report) : h("div", { class: "empty" }, h("h2", null, "No scan yet"), h("p", null, everVerified ? "Scan now to record a baseline. Later scans report what changed." : "Verify the domain first.")),
+			report ? reportView(report, suggestions) : h("div", { class: "empty" }, h("h2", null, "No scan yet"), h("p", null, everVerified ? "Scan now to record a baseline. Later scans report what changed." : "Verify the domain first.")),
 		);
 
 		/**
@@ -293,8 +300,11 @@ function copyButton(text, what) {
 	);
 }
 
-/** @param {MonitorReport} report */
-function reportView(report) {
+/**
+ * @param {MonitorReport} report
+ * @param {Record<string, { title: string, how: string[] }>} suggestions the repair for each open finding, by finding ID
+ */
+function reportView(report, suggestions) {
 	const count = (/** @type {MonitorFinding["severity"]} */ severity) => report.findings.filter((finding) => finding.severity === severity).length;
 	const summary = report.baseline
 		? "First scan: this is the baseline that later scans are compared with."
@@ -316,10 +326,10 @@ function reportView(report) {
 		report.changes.length > 0
 			? h("div", null, h("h3", null, "Changes since the previous scan"), h("ul", { class: "changes" }, ...report.changes.map(changeItem)))
 			: null,
-		!report.baseline && report.newFindings.length > 0 ? findingsTable("New findings", report.newFindings) : null,
-		report.resolvedFindings.length > 0 ? findingsTable("Resolved", report.resolvedFindings) : null,
+		!report.baseline && report.newFindings.length > 0 ? findingsTable("New findings", report.newFindings, suggestions) : null,
+		report.resolvedFindings.length > 0 ? findingsTable("Resolved", report.resolvedFindings, null) : null,
 		report.findings.length > 0
-			? findingsTable("Open findings", report.findings)
+			? findingsTable("Open findings", report.findings, suggestions)
 			: h("div", { class: "empty" }, h("h2", null, "No open findings"), h("p", null, "Nothing this scan checks for is wrong right now.")),
 	);
 }
@@ -344,8 +354,12 @@ function changeItem(change) {
 	}
 }
 
-/** @param {string} title @param {MonitorFinding[]} findings */
-function findingsTable(title, findings) {
+/**
+ * @param {string} title
+ * @param {MonitorFinding[]} findings
+ * @param {Record<string, { title: string, how: string[] }> | null} suggestions null for findings that need no fix
+ */
+function findingsTable(title, findings, suggestions) {
 	return h(
 		"div",
 		null,
@@ -356,11 +370,31 @@ function findingsTable(title, findings) {
 			h(
 				"table",
 				{ class: "data" },
-				h("thead", null, h("tr", null, h("th", { scope: "col" }, "Severity"), h("th", { scope: "col" }, "Host"), h("th", { scope: "col" }, "Finding"))),
+				h(
+					"thead",
+					null,
+					h("tr", null, h("th", { scope: "col" }, "Severity"), h("th", { scope: "col" }, "Host"), h("th", { scope: "col" }, "Finding"), suggestions ? h("th", { scope: "col" }, "Suggested fix") : null),
+				),
 				h(
 					"tbody",
 					null,
-					...findings.map((finding) => h("tr", null, h("td", null, severityBadge(finding.severity)), h("td", { class: "mono wrap col-where" }, finding.host), h("td", { class: "wrap col-what" }, finding.title))),
+					...findings.map((finding) => {
+						const fix = suggestions?.[finding.id];
+						return h(
+							"tr",
+							null,
+							h("td", null, severityBadge(finding.severity)),
+							h("td", { class: "mono wrap col-where" }, finding.host),
+							h("td", { class: "wrap col-what" }, finding.title),
+							suggestions
+								? h(
+										"td",
+										{ class: "wrap col-what" },
+										fix ? h("details", { class: "fix-details" }, h("summary", null, fix.title), h("ol", null, ...fix.how.map((step) => h("li", null, ...stepNodes(step))))) : null,
+									)
+								: null,
+						);
+					}),
 				),
 			),
 		),

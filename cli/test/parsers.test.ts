@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parseGitleaks } from "../src/repos/gitleaks.ts";
-import { parseOsv, severityFromCvss } from "../src/repos/osv.ts";
+import { fixedVersion, parseOsv, severityFromCvss } from "../src/repos/osv.ts";
 
 const leak = (overrides: object) => ({
 	RuleID: "aws-access-token",
@@ -38,6 +38,28 @@ test("gitleaks: normalises a finding and drops personal and secret fields", () =
 	for (const dropped of ["Jo Dev", "jo@example.invalid", "REDACTED", "add config"]) {
 		assert.ok(!serialised.includes(dropped), `${dropped} must not be carried into the report`);
 	}
+});
+
+test("gitleaks: ranks a match by how likely it is to be live, and says why when it ranks lower", () => {
+	const findings = parseGitleaks(
+		JSON.stringify([
+			leak({ File: "tests/terminal/test_launch.py", RuleID: "generic-api-key" }),
+			leak({ File: "server/redaction.test.mjs", RuleID: "private-key" }),
+			leak({ File: "src/worker.js", RuleID: "generic-api-key" }),
+			leak({ File: "src/lib/cesium-config.ts", RuleID: "jwt" }),
+		]),
+	);
+
+	assert.deepEqual(
+		findings.map((finding) => [finding.severity, finding.location, finding.note]),
+		[
+			["low", "tests/terminal/test_launch.py:1", "Ranked lower: generic pattern, not a known key format; in a test path"],
+			["medium", "server/redaction.test.mjs:1", "Ranked lower: in a test path"],
+			["medium", "src/worker.js:1", "Ranked lower: generic pattern, not a known key format"],
+			["high", "src/lib/cesium-config.ts:1", undefined],
+		],
+	);
+	assert.equal(findings.length, 4, "triage re-ranks; it never drops a finding");
 });
 
 test("gitleaks: reports a line once however many commits touched it", () => {
@@ -131,6 +153,18 @@ test("osv-scanner: parses real output from version 2.7.1", async () => {
 
 	const findings = parseOsv(output, "/work/shop");
 
+	// Each advisory's own fix for this release line: lodash needs 4.18.0 to clear all four.
+	assert.deepEqual(
+		findings.map((finding) => `${finding.ruleId} ${finding.fixedIn}`),
+		[
+			"GHSA-29mw-wpgm-hmr9 4.17.21",
+			"GHSA-35jh-r3h4-6jhm 4.17.21",
+			"GHSA-r5fr-rjxr-66jc 4.18.0",
+			"GHSA-xxjr-mmjv-4gpg 4.17.23",
+			// minimist lists fixes for two release lines; 0.2.4 is below the installed 1.2.5.
+			"GHSA-xvch-5gv4-984h 1.2.6",
+		],
+	);
 	assert.deepEqual(
 		findings.map((finding) => `${finding.severity} ${finding.ruleId} ${finding.detail} ${finding.location}: ${finding.title}`),
 		[
@@ -148,6 +182,24 @@ function titleOf(output: string, id: string): string {
 	const all = report.results.flatMap((result) => result.packages.flatMap((entry) => entry.vulnerabilities));
 	return all.find((vuln) => vuln.id === id)!.summary;
 }
+
+test("osv-scanner: finds the fix for the right package and release line, or none", () => {
+	const vuln = {
+		id: "X",
+		affected: [
+			{ package: { name: "other-pkg", ecosystem: "npm" }, ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { fixed: "9.9.9" }] }] },
+			{ package: { name: "Some_Pkg", ecosystem: "PyPI" }, ranges: [{ type: "GIT", events: [{ fixed: "0a1b2c3d" }] }, { type: "ECOSYSTEM", events: [{ introduced: "0" }, { fixed: "1.4.2" }, { introduced: "2.0" }, { fixed: "2.3.1" }] }] },
+			{ package: { name: "some-pkg", ecosystem: "npm" }, ranges: [{ type: "SEMVER", events: [{ fixed: "7.0.0" }] }] },
+		],
+	};
+
+	assert.equal(fixedVersion(vuln, "some-pkg", "PyPI", "1.3.0"), "1.4.2");
+	assert.equal(fixedVersion(vuln, "some.pkg", "PyPI", "2.1.0"), "2.3.1");
+	assert.equal(fixedVersion(vuln, "some-pkg", "PyPI", "2.3.1"), undefined, "already at the fix");
+	assert.equal(fixedVersion(vuln, "some-pkg", "npm", "1.0.0"), "7.0.0");
+	assert.equal(fixedVersion(vuln, "unlisted", "npm", "1.0.0"), undefined);
+	assert.equal(fixedVersion({ id: "Y", affected: [{ package: { name: "p", ecosystem: "npm" }, ranges: [{ type: "SEMVER", events: [{ introduced: "0" }, { last_affected: "3.0.0" }] }] }] } as never, "p", "npm", "2.0.0"), undefined, "no fixed release published");
+});
 
 test("osv-scanner: a package listed twice for one lockfile yields each advisory once", () => {
 	const [result] = osvReport.results;

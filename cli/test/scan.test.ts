@@ -58,10 +58,11 @@ test("runs every installed scanner on every repository and ranks the worst first
 	assert.equal(exceeds(report, "critical"), true);
 
 	const markdown = renderMarkdown(report);
-	assert.match(markdown, /Scanned 2 repositories .* on 2026-11-17: 2 findings \(1 critical, 1 high, 0 medium, 0 low\)\./);
-	assert.ok(markdown.indexOf("| leaky | 1 | 1 | 0 | 0 |") < markdown.indexOf("| clean | 0 | 0 | 0 | 0 |"));
+	// The secret is a generic pattern match in ordinary source, so triage ranks it medium.
+	assert.match(markdown, /Scanned 2 repositories .* on 2026-11-17: 2 findings \(1 critical, 0 high, 1 medium, 0 low\)\./);
+	assert.ok(markdown.indexOf("| leaky | 1 | 0 | 1 | 0 |") < markdown.indexOf("| clean | 0 | 0 | 0 | 0 |"));
 	assert.ok(
-		markdown.indexOf("**critical** vulnerability `GHSA-x`") < markdown.indexOf("**high** secret `generic-api-key`"),
+		markdown.indexOf("**critical** vulnerability `GHSA-x`") < markdown.indexOf("**medium** secret `generic-api-key`"),
 		"findings are listed most severe first",
 	);
 	assert.ok(!markdown.includes("## clean"), "clean repositories get no findings section");
@@ -130,6 +131,27 @@ test("an unreachable vulnerability database is a failure, not a clean result", a
 	assert.ok(renderMarkdown(report).includes("## Not covered"));
 	assert.equal(exitCode(report, "critical"), 1, "a gate cannot pass on a scan that did not run");
 	assert.equal(exitCode(report, undefined), 0);
+});
+
+test("the report states why a secret was ranked lower", async () => {
+	const root = await twoRepos();
+	const run = fakeRunner({
+		gitleaks: (args) =>
+			args[0] === "version"
+				? { stdout: "8.30.1" }
+				: { stdout: args.at(-1)!.endsWith("leaky") ? JSON.stringify([gitleaksRow("tests/test_settings.py"), gitleaksRow("app/settings.py")]) : "[]" },
+		"osv-scanner": (args) => (args[0] === "--version" ? { stdout: "2.7.1" } : { code: 128 }),
+	});
+
+	const markdown = renderMarkdown(await scanRepos({ root, depth: 2, run, now: NOW }));
+
+	assert.match(markdown, /\| leaky \| 0 \| 0 \| 1 \| 1 \|/);
+	assert.ok(
+		markdown.includes("- **medium** secret `generic-api-key` in `app/settings.py:3` (commit abcdef12): Generic API key. Ranked lower: generic pattern, not a known key format"),
+	);
+	assert.ok(
+		markdown.includes("- **low** secret `generic-api-key` in `tests/test_settings.py:3` (commit abcdef12): Generic API key. Ranked lower: generic pattern, not a known key format; in a test path"),
+	);
 });
 
 test("--fail-on thresholds", () => {

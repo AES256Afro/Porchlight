@@ -7,6 +7,9 @@ import { callMonitor, type MonitorConfig } from "../monitor/client.ts";
 import { coverageNotes, rank, rankRepos } from "../repos/report.ts";
 import { scanRepos } from "../repos/scan.ts";
 import type { ScanReport } from "../repos/types.ts";
+import { domainSuggestions, type MonitorReport } from "../roadmap/domains.ts";
+import { exportDomain, exportRepos, ExportError, parseFilter, type ExportFile } from "../roadmap/export.ts";
+import { buildRepoRoadmap, suggestionsFor } from "../roadmap/repos.ts";
 
 export interface UiOptions {
 	/** 0 picks a free port. */
@@ -44,15 +47,13 @@ export type ScanStatus =
 	| { state: "failed"; root: string; finishedAt: string; error: string };
 
 const UI_DIR = join(import.meta.dirname, "../../ui");
+/** The page's own modules. Nothing else in the folder is served. */
+const SCRIPTS = ["app", "api", "dom", "filter", "list", "store", "export", "overview", "findings", "roadmap", "repos", "domains"];
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
 	"/": { file: "index.html", type: "text/html; charset=utf-8" },
 	"/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
-	"/app.js": { file: "app.js", type: "text/javascript; charset=utf-8" },
-	"/api.js": { file: "api.js", type: "text/javascript; charset=utf-8" },
-	"/dom.js": { file: "dom.js", type: "text/javascript; charset=utf-8" },
-	"/repos.js": { file: "repos.js", type: "text/javascript; charset=utf-8" },
-	"/domains.js": { file: "domains.js", type: "text/javascript; charset=utf-8" },
 	"/favicon.svg": { file: "favicon.svg", type: "image/svg+xml" },
+	...Object.fromEntries(SCRIPTS.map((name) => [`/${name}.js`, { file: `${name}.js`, type: "text/javascript; charset=utf-8" }])),
 };
 
 /** Sent on every response. The page loads nothing from anywhere but this server. */
@@ -112,9 +113,10 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 
 	const server = createServer((req, res) => {
 		handle(req, res).catch((err) => {
-			const known = err instanceof HttpError;
+			// An export that cannot be made is the caller's mistake, and the message says what to change.
+			const known = err instanceof HttpError || err instanceof ExportError;
 			if (!known) console.error(`securityx ui: ${err instanceof Error ? err.message : String(err)}`);
-			sendJson(res, known ? err.status : 500, { error: known ? err.message : "Internal error" });
+			sendJson(res, err instanceof HttpError ? err.status : known ? 400 : 500, { error: known ? err.message : "Internal error" });
 		});
 	});
 
@@ -157,6 +159,14 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			});
 		}
 		if (route === "GET /api/repos/report") return sendJson(res, 200, await loadReport(options.reportPath));
+		if (route === "GET /api/repos/roadmap" || route === "GET /api/repos/export") {
+			const report = await readReport(options.reportPath);
+			if (!report) throw new HttpError(404, "There is no scan yet. Scan a folder first.");
+			const query = url.searchParams;
+			const filter = parseFilter({ severity: query.get("severity"), kind: query.get("kind"), match: query.get("q"), repo: query.get("repo") });
+			if (route === "GET /api/repos/roadmap") return sendJson(res, 200, { roadmap: buildRepoRoadmap(report, filter) });
+			return sendDownload(res, exportRepos(report, exportChoice(query), filter));
+		}
 		if (route === "GET /api/repos/scan") return sendJson(res, 200, { scan: status });
 		if (route === "POST /api/repos/scan") {
 			if (status.state === "running") throw new HttpError(409, "A scan is already running");
@@ -182,8 +192,18 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			return sendJson(res, 202, { scan: status });
 		}
 
+		const domainExport = /^\/api\/domains\/([^/]+)\/export$/.exec(url.pathname);
+		if (domainExport) {
+			if (req.method !== "GET") throw new HttpError(405, "Method not allowed");
+			const [code, answer] = await proxyToMonitor("GET", `/api/domains/${domainExport[1]}`, undefined);
+			const report = (answer as { report?: MonitorReport | null }).report;
+			if (code !== 200) throw new HttpError(code, (answer as { error?: string }).error ?? "The monitor refused the request");
+			if (!report) throw new HttpError(404, "This domain has not been scanned yet, so there is nothing to export.");
+			return sendDownload(res, exportDomain(report, exportChoice(url.searchParams)));
+		}
 		if (url.pathname === "/api/domains" || url.pathname.startsWith("/api/domains/")) {
-			return sendJson(res, ...(await proxyToMonitor(req.method ?? "GET", url.pathname, body)));
+			const [code, answer] = await proxyToMonitor(req.method ?? "GET", url.pathname, body);
+			return sendJson(res, code, withSuggestions(answer));
 		}
 		throw new HttpError(404, "Not found");
 	}
@@ -286,6 +306,27 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 	res.end(JSON.stringify(body));
 }
 
+/** Sends a file to save. Its name is built from a fixed stem and a date, never from request input. */
+function sendDownload(res: ServerResponse, file: ExportFile): void {
+	res.writeHead(200, {
+		...SECURITY_HEADERS,
+		"content-type": file.contentType,
+		"content-disposition": `attachment; filename="${file.filename}"`,
+	});
+	res.end(file.body);
+}
+
+function exportChoice(query: URLSearchParams): { content?: string; format?: string } {
+	return { content: query.get("content") ?? undefined, format: query.get("format") ?? undefined };
+}
+
+/** Adds the repair for each open finding to a monitor answer that carries a scan report. */
+function withSuggestions(answer: unknown): unknown {
+	const report = (answer as { report?: MonitorReport | null } | null)?.report;
+	if (!report || !Array.isArray(report.findings)) return answer;
+	return { ...(answer as object), suggestions: domainSuggestions(report) };
+}
+
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 	const chunks: Buffer[] = [];
 	let size = 0;
@@ -319,13 +360,31 @@ async function scanRequest(body: unknown): Promise<{ root: string; depth: number
 	return { root: absolute, depth };
 }
 
-/** The stored report, ordered worst first, with the statements about what it did not cover. */
+/** The stored report, ordered worst first, each finding with its suggested fix, and what the scan did not cover. */
 async function loadReport(path: string): Promise<{ report: unknown; notes: string[] }> {
+	const report = await readReport(path);
+	if (!report) return { report: null, notes: [] };
+	const suggestions = suggestionsFor(report);
+	return {
+		notes: coverageNotes(report),
+		report: {
+			...report,
+			repos: rankRepos(report.repos).map((repo) => ({
+				...repo,
+				name: relative(report.root, repo.path) || ".",
+				findings: rank(repo.findings).map((finding) => ({ ...finding, suggestion: suggestions.get(finding) })),
+			})),
+		},
+	};
+}
+
+/** The stored report as it was written, or null when there is none yet. */
+async function readReport(path: string): Promise<ScanReport | null> {
 	let text: string;
 	try {
 		text = await readFile(path, "utf8");
 	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code === "ENOENT") return { report: null, notes: [] };
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
 		throw err;
 	}
 	let report: ScanReport;
@@ -337,17 +396,7 @@ async function loadReport(path: string): Promise<{ report: unknown; notes: strin
 	if (!Array.isArray(report?.repos) || !Array.isArray(report?.tools) || typeof report.root !== "string") {
 		throw new HttpError(500, `The report file is not a SecurityX scan report: ${path}`);
 	}
-	return {
-		notes: coverageNotes(report),
-		report: {
-			...report,
-			repos: rankRepos(report.repos).map((repo) => ({
-				...repo,
-				name: relative(report.root, repo.path) || ".",
-				findings: rank(repo.findings),
-			})),
-		},
-	};
+	return report;
 }
 
 /** Reports say where secrets were found, so a new one is readable only by its owner. */

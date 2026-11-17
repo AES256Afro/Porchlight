@@ -1,11 +1,14 @@
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { callMonitor, monitorConfig } from "./monitor/client.ts";
-import { exitCode, renderMarkdown, renderSummary } from "./repos/report.ts";
+import { exitCode, parseScanReport, renderMarkdown, renderSummary } from "./repos/report.ts";
 import { scanRepos } from "./repos/scan.ts";
 import { SEVERITIES, type Severity } from "./repos/types.ts";
+import type { MonitorReport } from "./roadmap/domains.ts";
+import { CONTENTS, exportDomain, exportRepos, parseFilter, type ExportFile } from "./roadmap/export.ts";
+import { FORMATS } from "./roadmap/render.ts";
 import { startUiServer } from "./ui/server.ts";
 
 const USAGE = `SecurityX
@@ -18,15 +21,25 @@ Usage:
       --fail-on <severity>         Exit 2 if any finding is at or above: ${SEVERITIES.join(", ")}
                                    Exit 1 if a scanner was missing or failed
 
+  securityx repos export <report>  Turn a report written with --json into a repair roadmap
+      --content <what>             roadmap: repairs in order (default); findings: every finding with its fix
+      --format <format>            ${FORMATS.join(", ")} (default: md)
+      --out <file>                 Write to a file instead of stdout
+      --severity <list>            Only these severities, comma-separated
+      --kind <type>                Only secret or vulnerability findings
+      --match <text>               Only findings mentioning this text
+      --repo <name>                Only this repository
+
   securityx domains list           Domains registered with the monitor
   securityx domains add <domain>   Register a domain and show its verification record
   securityx domains verify <domain>
   securityx domains scan <domain>  Scan now and print what changed
   securityx domains show <domain>  Latest report
   securityx domains remove <domain>
+  securityx domains export <domain>  Repair roadmap for a domain; takes --content, --format and --out
 
   securityx ui                     Open the local web interface for both tools
-      --port <n>                   Port to listen on (default: 4747)
+      --port <n>                   Port to listen on (default: 4747, or the next free port)
       --host <address>             Address to listen on (default: 127.0.0.1). Any other
                                    address needs SECURITYX_UI_KEY, a key of 32+ characters
       --report <file>              Scan report to show and update (default: ~/.securityx/repo-scan.json)
@@ -41,6 +54,8 @@ export async function main(argv: string[]): Promise<number> {
 	const [group, command, ...rest] = argv;
 	try {
 		if (group === "repos" && command === "scan") return await reposScan(rest);
+		if (group === "repos" && command === "export") return await reposExport(rest);
+		if (group === "domains" && command === "export") return await domainsExport(rest);
 		if (group === "domains" && command) return await domains(command, rest);
 		if (group === "ui") return await ui(argv.slice(1));
 	} catch (err) {
@@ -94,19 +109,69 @@ async function reposScan(args: string[]): Promise<number> {
 	return code;
 }
 
+const EXPORT_OPTIONS = {
+	content: { type: "string", default: "roadmap" },
+	format: { type: "string", default: "md" },
+	out: { type: "string" },
+} as const;
+
+async function reposExport(args: string[]): Promise<number> {
+	const { values, positionals } = parseArgs({
+		args,
+		allowPositionals: true,
+		options: { ...EXPORT_OPTIONS, severity: { type: "string" }, kind: { type: "string" }, match: { type: "string" }, repo: { type: "string" } },
+	});
+	const [path, ...extra] = positionals;
+	if (!path || extra.length > 0) throw new Error("Usage: securityx repos export <report.json> [--content roadmap|findings] [--format md|html|csv|json]");
+	let text: string;
+	try {
+		text = await readFile(path, "utf8");
+	} catch {
+		throw new Error(`Cannot read ${path}. Make a report with: securityx repos scan <folder> --json --out ${path}`);
+	}
+	const filter = parseFilter({ severity: values.severity, kind: values.kind, match: values.match, repo: values.repo });
+	return deliver(exportRepos(parseScanReport(text, path), values, filter), values.out);
+}
+
+async function domainsExport(args: string[]): Promise<number> {
+	const { values, positionals } = parseArgs({ args, allowPositionals: true, options: EXPORT_OPTIONS });
+	const [domain, ...extra] = positionals;
+	if (!domain || extra.length > 0) throw new Error(`Usage: securityx domains export <domain> [--content ${CONTENTS.join("|")}] [--format ${FORMATS.join("|")}]`);
+	const { status, body } = await callMonitor(monitorConfig(process.env), "GET", `/domains/${encodeURIComponent(domain)}`);
+	if (status >= 400) throw new Error(body.error ?? `HTTP ${status}`);
+	if (!body.report) throw new Error(`${domain} has not been scanned yet, so there is nothing to export`);
+	return deliver(exportDomain(body.report as MonitorReport, values), values.out);
+}
+
+async function deliver(file: ExportFile, out: string | undefined): Promise<number> {
+	if (!out) {
+		process.stdout.write(file.body);
+		return 0;
+	}
+	await writeFile(out, file.body);
+	console.log(`Written to ${out}`);
+	return 0;
+}
+
 /** Starts the web interface. The process then stays up, serving it, until interrupted. */
 async function ui(args: string[]): Promise<number> {
 	const { values } = parseArgs({
 		args,
 		options: {
 			host: { type: "string", default: "127.0.0.1" },
-			port: { type: "string", default: "4747" },
+			port: { type: "string" },
 			report: { type: "string" },
 			root: { type: "string", default: "." },
 		},
 	});
-	const port = Number.parseInt(values.port, 10);
+	const port = Number.parseInt(values.port ?? String(DEFAULT_UI_PORT), 10);
 	if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("--port must be a port number");
+	// A port the user asked for is used or refused. The default on this
+	// machine is only a starting point: if another copy already has it, take
+	// the next free one. Elsewhere (a container) the port is part of the
+	// deployment, so it is never moved.
+	const mayMove = values.port === undefined && values.host === "127.0.0.1";
+	const candidates = mayMove ? Array.from({ length: PORT_ATTEMPTS }, (_, i) => port + i) : [port];
 	// A key from the environment is the owner's, so it is never printed.
 	const fixedKey = process.env.SECURITYX_UI_KEY || undefined;
 
@@ -118,23 +183,18 @@ async function ui(args: string[]): Promise<number> {
 		monitorError = err instanceof Error ? err.message : String(err);
 	}
 
-	let server;
-	try {
-		server = await startUiServer({
-			port,
+	const server = await listenOnFirstFree(candidates, (candidate) =>
+		startUiServer({
+			port: candidate,
 			host: values.host,
 			sessionKey: fixedKey,
 			reportPath: resolve(values.report ?? join(homedir(), ".securityx", "repo-scan.json")),
 			defaultRoot: resolve(values.root),
 			monitor,
 			monitorError,
-		});
-	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code === "EADDRINUSE") {
-			throw new Error(`Port ${port} is in use. Choose another with --port`);
-		}
-		throw err;
-	}
+		}),
+	);
+	if (server.port !== port && port !== 0) console.log(`Port ${port} is in use, so this copy is on ${server.port}.`);
 	if (fixedKey) {
 		console.log(`SecurityX is listening on ${values.host} port ${server.port}. Sign in with the key in SECURITYX_UI_KEY.`);
 	} else {
@@ -143,6 +203,22 @@ async function ui(args: string[]): Promise<number> {
 	console.log(monitor ? `Monitor: ${monitor.url.host}` : `Monitor: not connected (${monitorError})`);
 	console.log("Press Ctrl+C to stop.");
 	return 0;
+}
+
+const DEFAULT_UI_PORT = 4747;
+const PORT_ATTEMPTS = 10;
+
+/** Starts a server on the first of `ports` that is free. Any failure other than "in use" is raised at once. */
+export async function listenOnFirstFree<T>(ports: number[], start: (port: number) => Promise<T>): Promise<T> {
+	for (const port of ports) {
+		try {
+			return await start(port);
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "EADDRINUSE") throw err;
+		}
+	}
+	const range = ports.length > 1 ? `Ports ${ports[0]} to ${ports.at(-1)} are` : `Port ${ports[0]} is`;
+	throw new Error(`${range} in use. Choose another with --port`);
 }
 
 async function domains(command: string, args: string[]): Promise<number> {

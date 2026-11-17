@@ -74,6 +74,22 @@ const ICONS = {
 	plus: [["path", { d: "M8 3v10M3 8h10", fill: "none", stroke: "currentColor", "stroke-width": 2, "stroke-linecap": "round" }]],
 	minus: [["path", { d: "M3 8h10", fill: "none", stroke: "currentColor", "stroke-width": 2, "stroke-linecap": "round" }]],
 	change: [["path", { d: "M2.5 5.5h9l-2.5-2.5M13.5 10.5h-9l2.5 2.5", fill: "none", stroke: "currentColor", "stroke-width": 1.6, "stroke-linecap": "round", "stroke-linejoin": "round" }]],
+	download: [["path", { d: "M8 2.5v7.5M4.8 7 8 10.2 11.2 7M3 13h10", fill: "none", stroke: "currentColor", "stroke-width": 1.6, "stroke-linecap": "round", "stroke-linejoin": "round" }]],
+	overview: [
+		["rect", { x: 2, y: 2, width: 5, height: 5, rx: 1, fill: "none", stroke: "currentColor", "stroke-width": 1.5 }],
+		["rect", { x: 9, y: 2, width: 5, height: 5, rx: 1, fill: "none", stroke: "currentColor", "stroke-width": 1.5 }],
+		["rect", { x: 2, y: 9, width: 5, height: 5, rx: 1, fill: "none", stroke: "currentColor", "stroke-width": 1.5 }],
+		["rect", { x: 9, y: 9, width: 5, height: 5, rx: 1, fill: "none", stroke: "currentColor", "stroke-width": 1.5 }],
+	],
+	findings: [["path", { d: "M5.5 4h8M5.5 8h8M5.5 12h8M2.5 4h.01M2.5 8h.01M2.5 12h.01", fill: "none", stroke: "currentColor", "stroke-width": 1.7, "stroke-linecap": "round" }]],
+	roadmap: [
+		["path", { d: "m2.5 4 1.2 1.2L5.8 3M2.5 11.2l1.2 1.2 2.1-2.2", fill: "none", stroke: "currentColor", "stroke-width": 1.5, "stroke-linecap": "round", "stroke-linejoin": "round" }],
+		["path", { d: "M8.5 4.2h5M8.5 11.6h5", fill: "none", stroke: "currentColor", "stroke-width": 1.6, "stroke-linecap": "round" }],
+	],
+	domains: [
+		["circle", { cx: 8, cy: 8, r: 6, fill: "none", stroke: "currentColor", "stroke-width": 1.5 }],
+		["path", { d: "M2 8h12M8 2c2 2 2.6 3.8 2.6 6S10 12 8 14c-2-2-2.6-3.8-2.6-6S6 4 8 2Z", fill: "none", stroke: "currentColor", "stroke-width": 1.3 }],
+	],
 };
 
 /**
@@ -133,6 +149,97 @@ export function toast(message, kind = "info") {
 	const item = h("div", { class: `toast toast-${kind}` }, message);
 	region.append(item);
 	setTimeout(() => item.remove(), kind === "error" ? 8000 : 4000);
+}
+
+/**
+ * A step of a suggested fix. The server marks commands with backticks; they
+ * become code, and everything else stays plain text.
+ *
+ * @param {string} step
+ * @returns {(Node | string)[]}
+ */
+export function stepNodes(step) {
+	return step.split("`").map((part, index) => (index % 2 === 1 ? h("code", null, part) : part));
+}
+
+/**
+ * A labelled drop-down.
+ *
+ * @param {string} label read by screen readers; the visible text is the selected option
+ * @param {[value: string, text: string][]} options
+ * @param {string} value
+ * @param {(value: string) => void} onChange
+ * @returns {HTMLSelectElement}
+ */
+export function select(label, options, value, onChange) {
+	const element = /** @type {HTMLSelectElement} */ (
+		h("select", { "aria-label": label, onchange: () => onChange(element.value) }, ...options.map(([optionValue, text]) => h("option", { value: optionValue }, text)))
+	);
+	element.value = options.some(([optionValue]) => optionValue === value) ? value : (options[0]?.[0] ?? "");
+	return element;
+}
+
+/**
+ * "Showing 51 to 100 of 1,860" with Previous and Next.
+ *
+ * @param {{ page: number, pages: number, from: number, to: number, total: number }} view
+ * @param {string} noun plural, for example "findings"
+ * @param {(page: number) => void} go
+ */
+export function pager(view, noun, go) {
+	if (view.total === 0) return null;
+	return h(
+		"nav",
+		{ class: "pager", "aria-label": "Pages" },
+		h("span", null, `Showing ${view.from.toLocaleString()} to ${view.to.toLocaleString()} of ${view.total.toLocaleString()} ${noun}`),
+		view.pages > 1
+			? h(
+					"span",
+					{ class: "pager-buttons" },
+					h("button", { type: "button", class: "button", disabled: view.page <= 1, onclick: () => go(view.page - 1) }, "Previous"),
+					h("span", { class: "pager-page" }, `Page ${view.page} of ${view.pages}`),
+					h("button", { type: "button", class: "button", disabled: view.page >= view.pages, onclick: () => go(view.page + 1) }, "Next"),
+				)
+			: null,
+	);
+}
+
+/**
+ * A notice above content: the first few lines, the rest folded away.
+ *
+ * @param {"warning" | "error"} kind
+ * @param {string} title
+ * @param {string[]} lines
+ */
+export function banner(kind, title, lines) {
+	const first = lines.slice(0, 3);
+	const rest = lines.slice(3);
+	return h(
+		"div",
+		{ class: `banner banner-${kind}`, role: kind === "error" ? "alert" : "note" },
+		icon("warning"),
+		h(
+			"div",
+			null,
+			h("strong", null, title),
+			first.length > 0 ? h("ul", null, ...first.map((line) => h("li", null, line))) : null,
+			rest.length > 0 ? h("details", null, h("summary", null, `${rest.length} more`), h("ul", null, ...rest.map((line) => h("li", null, line)))) : null,
+		),
+	);
+}
+
+/** What each phase of the roadmap is called. */
+export const PHASE_TITLES = { now: "Fix now", next: "Fix next", schedule: "Schedule", later: "When convenient" };
+
+/**
+ * A message in place of content: nothing yet, nothing matching, or something went wrong.
+ *
+ * @param {string} title
+ * @param {string} text
+ * @param {Node | null} [action]
+ */
+export function emptyState(title, text, action = null) {
+	return h("div", { class: "empty" }, h("h2", null, title), h("p", null, text), action);
 }
 
 /**

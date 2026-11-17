@@ -1,4 +1,5 @@
 import { relative } from "node:path";
+import { compareVersions, highestVersion } from "../roadmap/versions.ts";
 import { lastLine, type Runner } from "./exec.ts";
 import type { Finding, Severity } from "./types.ts";
 
@@ -21,10 +22,21 @@ export async function runOsvScanner(repo: string, run: Runner): Promise<Finding[
 	return parseOsv(stdout, repo);
 }
 
+interface OsvAffected {
+	package?: { name?: string; ecosystem?: string };
+	ranges?: { type?: string; events?: { fixed?: string }[] }[];
+}
+
+interface OsvVulnerability {
+	id?: string;
+	summary?: string;
+	affected?: OsvAffected[];
+}
+
 interface OsvPackage {
 	package?: { name?: string; version?: string; ecosystem?: string };
-	vulnerabilities?: { id?: string; summary?: string }[];
-	groups?: { ids?: string[]; max_severity?: string }[];
+	vulnerabilities?: OsvVulnerability[];
+	groups?: { ids?: string[]; aliases?: string[]; max_severity?: string }[];
 }
 
 export function parseOsv(output: string, repo: string): Finding[] {
@@ -40,6 +52,7 @@ export function parseOsv(output: string, repo: string): Finding[] {
 		for (const entry of result.packages ?? []) {
 			const name = entry.package?.name ?? "unknown package";
 			const version = entry.package?.version ?? "?";
+			const ecosystem = entry.package?.ecosystem ?? "";
 			const summaries = new Map((entry.vulnerabilities ?? []).map((vuln) => [vuln.id, vuln.summary]));
 			// A group is one underlying flaw, which may be listed under several IDs.
 			for (const group of entry.groups ?? []) {
@@ -49,6 +62,10 @@ export function parseOsv(output: string, repo: string): Finding[] {
 				const detail = `${name}@${version}`;
 				const key = `${id}\n${lockfile}\n${detail}`;
 				if (findings.has(key)) continue;
+				// The records in a group describe one flaw; where they disagree
+				// on the fix, the higher version is the one that satisfies all.
+				const records = (entry.vulnerabilities ?? []).filter((vuln) => vuln.id && [...group.ids!, ...(group.aliases ?? [])].includes(vuln.id));
+				const fixedIn = highestVersion(records.map((vuln) => fixedVersion(vuln, name, ecosystem, version)).filter((fix) => fix !== undefined));
 				findings.set(key, {
 					tool: "osv-scanner",
 					kind: "vulnerability",
@@ -57,11 +74,34 @@ export function parseOsv(output: string, repo: string): Finding[] {
 					title: summary ?? `Known vulnerability in ${name}`,
 					location: lockfile,
 					detail,
+					...(fixedIn ? { fixedIn } : {}),
 				});
 			}
 		}
 	}
 	return [...findings.values()];
+}
+
+/**
+ * The lowest release above `current` that an advisory lists as fixed for this
+ * package. An advisory covers several packages and several release lines, so
+ * both the package and "above the installed version" have to match.
+ */
+export function fixedVersion(vuln: OsvVulnerability, name: string, ecosystem: string, current: string): string | undefined {
+	const fixes = (vuln.affected ?? [])
+		.filter((affected) => samePackage(affected.package, name, ecosystem))
+		.flatMap((affected) => affected.ranges ?? [])
+		.filter((range) => range.type !== "GIT") // commit hashes, not versions
+		.flatMap((range) => (range.events ?? []).map((event) => event.fixed))
+		.filter((fix): fix is string => typeof fix === "string" && compareVersions(fix, current) > 0);
+	return fixes.sort(compareVersions)[0];
+}
+
+function samePackage(candidate: OsvAffected["package"], name: string, ecosystem: string): boolean {
+	// PyPI treats case and the separators - _ . as equivalent; nothing else relies on them differing.
+	const normal = (value: string | undefined) => (value ?? "").toLowerCase().replace(/[-_.]+/g, "-");
+	const family = (value: string | undefined) => (value ?? "").toLowerCase().split(":")[0];
+	return normal(candidate?.name) === normal(name) && family(candidate?.ecosystem) === family(ecosystem);
 }
 
 /** CVSS base score to the usual bands. An advisory with no score is treated as medium, not ignored. */
