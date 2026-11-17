@@ -45,10 +45,11 @@ jobs:
       - run: docker build -t securityx:ci .
       - run: sh scripts/container-smoke.sh securityx:ci
 
-  # A version tag publishes ghcr.io/aes256afro/securityx:<version>, the image BoxPilot pins by
-  # digest. The package stays private, like this repository. Its SBOM and build provenance are
-  # attached by buildx and stored beside it in the registry. Nothing is signed with Sigstore's
-  # keyless flow: that writes the repository's name and the digest to a public transparency log.
+  # A version tag publishes ghcr.io/aes256afro/securityx:<version>, the image BoxPilot's catalog
+  # pins by digest. The package is public, so any BoxPilot can pull it; this repository stays
+  # private. Its SBOM and build provenance are attached by buildx and stored beside it in the
+  # registry. Nothing is signed with Sigstore's keyless flow, which would also put this private
+  # repository's workflow in a public transparency log.
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [check, container]

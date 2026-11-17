@@ -59,7 +59,7 @@ How the interface is protected:
 
 ## Run on BoxPilot
 
-SecurityX runs on [BoxPilot](https://github.com/AES256Afro/BoxPilot) as a private app, from the image `ghcr.io/aes256afro/securityx`: the web interface with gitleaks and osv-scanner built in. It is not in BoxPilot's catalog, and the image is private. On the BoxPilot server, open Apps → Private apps, sign in to ghcr.io with a token that can read packages, then add `boxpilot/securityx.yaml`. The monitor still runs on Cloudflare; the image is only its client.
+SecurityX is in the [BoxPilot](https://github.com/AES256Afro/BoxPilot) catalog: install it from Apps → Browse like any other app. BoxPilot runs the public image `ghcr.io/aes256afro/securityx`, the web interface with gitleaks and osv-scanner built in; this repository stays private. The monitor still runs on Cloudflare; the image is only its client.
 
 - **Repositories to scan**: the folder of checkouts on the server (default `/srv/projects`), mounted read-only at `/repos`.
 - **Access key**: BoxPilot generates `SECURITYX_UI_KEY`. The page asks for it once per browser tab.
@@ -83,10 +83,11 @@ In the container, `securityx ui --host 0.0.0.0` changes what protects it:
 Releasing:
 
 1. Set the new version in `cli/package.json` and its lockfile (`npm version <version> --no-git-tag-version` in `cli/`) and in `boxpilot/securityx.yaml`: `image.version`, and `image.reference` as `ghcr.io/aes256afro/securityx:<version>` with no digest yet. `npm run check` fails if they disagree.
-2. Commit, then push a tag `v<version>`. CI stops if the tag does not match `cli/package.json`. Otherwise it runs the checks, smoke-tests the image (`scripts/container-smoke.sh`) and publishes it for amd64 and arm64, with an SBOM and build provenance. The package is private, like this repository.
+2. Commit, then push a tag `v<version>`. CI stops if the tag does not match `cli/package.json`. Otherwise it runs the checks, smoke-tests the image (`scripts/container-smoke.sh`) and publishes it for amd64 and arm64, with an SBOM and build provenance. The package is public; this repository is not.
 3. Add the digest the publish job prints in its run summary to `image.reference` in `boxpilot/securityx.yaml`, and commit that.
+4. Copy the manifest to BoxPilot's `catalog/securityx.yaml` in a BoxPilot pull request. Servers offer the update once a BoxPilot release includes it.
 
-SecurityX is a BoxPilot private app, so a release changes nothing in BoxPilot's catalog: `boxpilot/securityx.yaml` is the file you add on the BoxPilot server under Apps → Private apps. `npm run check` validates it with BoxPilot's own schema when a BoxPilot checkout is at `../BoxPilot` or `BOXPILOT_DIR`.
+`boxpilot/securityx.yaml` is the source of truth for BoxPilot's `catalog/securityx.yaml`. `npm run check` validates it with BoxPilot's own schema when a BoxPilot checkout is at `../BoxPilot` or `BOXPILOT_DIR`.
 
 ## Scan repositories
 

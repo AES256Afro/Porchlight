@@ -32,8 +32,8 @@ if (volume("repos")?.readOnly !== true) local.push("volume repos must be read-on
 if (!flag("--report")?.startsWith(`${volume("data")?.container}/`)) local.push(`the report ${flag("--report")} is not inside volume data (${volume("data")?.container})`);
 if (key?.type !== "password" || key?.generate !== true) local.push("SECURITYX_UI_KEY must be a generated password");
 if (raw.defaultExposure !== "tailnet") local.push("defaultExposure must stay tailnet: a report names where secrets were found");
-// A private app, never in BoxPilot's public catalog: BoxPilot only accepts it with this prefix.
-if (!String(raw.id).startsWith("private-")) local.push(`id ${raw.id} must start with "private-": SecurityX is a BoxPilot private app`);
+// BoxPilot's catalog file is catalog/securityx.yaml, and a manifest's id must match its file name.
+if (raw.id !== "securityx") local.push(`id is ${raw.id}: BoxPilot's catalog lists SecurityX as securityx`);
 
 if (local.length) {
 	console.error(`boxpilot/securityx.yaml:\n- ${local.join("\n- ")}`);

@@ -1,11 +1,10 @@
-# BoxPilot private-app manifest for SecurityX (schemaVersion 2). It never goes into BoxPilot's
-# public catalog: add it on the BoxPilot server under Apps → Private apps, after signing in to
-# ghcr.io there with a token that can read packages. `npm run check` validates it with BoxPilot's
-# own validateManifest (BOXPILOT_DIR, default ../BoxPilot). Private ids start with "private-",
-# and each release pins image.reference to the digest CI publishes.
+# BoxPilot catalog manifest for SecurityX (schemaVersion 2). Source of truth for BoxPilot's
+# catalog/securityx.yaml; `npm run check` validates it with BoxPilot's own validateManifest
+# (BOXPILOT_DIR, default ../BoxPilot). The image is public; this repository is not. Each release
+# pins image.reference to the digest CI publishes, here and in BoxPilot's copy.
 # Port 4747 is free in the catalog (BoxPilot itself 8787, BaselineWatch 8790, TheySpy 8797).
 schemaVersion: 2
-id: private-securityx
+id: securityx
 name: SecurityX
 category: Security
 icon: "🔐"
