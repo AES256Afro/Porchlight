@@ -1,6 +1,6 @@
 {
 	"name": "securityx",
-	"version": "0.2.1",
+	"version": "0.2.2",
 	"private": true,
 	"description": "SecurityX command line: scan local repositories and drive the attack-surface monitor",
 	"type": "module",
