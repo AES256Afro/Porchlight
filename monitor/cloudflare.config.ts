@@ -7,7 +7,7 @@ const LOCAL_D1_ID = "00000000-0000-4000-8000-000000000000";
 
 // The ID printed by `cf d1 create --name securityx-monitor`. Set it before
 // the first deploy; remote migrations address the database by this ID.
-const D1_DATABASE_ID = "";
+const D1_DATABASE_ID = "dea67a7e-c591-440b-a178-b6e1bb468736";
 
 export default defineConfig(({ mode }) => ({
 	worker: {
