@@ -1,7 +1,7 @@
 # BoxPilot catalog manifest for SecurityX (schemaVersion 2). Source of truth for BoxPilot's
 # catalog/securityx.yaml; `npm run check` validates it with BoxPilot's own validateManifest
-# (BOXPILOT_DIR, default ../BoxPilot). The image is public; this repository is not. Each release
-# pins image.reference to the digest CI publishes, here and in BoxPilot's copy.
+# (BOXPILOT_DIR, default ../BoxPilot). Each release pins image.reference to the digest CI
+# publishes, here and in BoxPilot's copy.
 # Port 4747 is free in the catalog (BoxPilot itself 8787, BaselineWatch 8790, TheySpy 8797).
 schemaVersion: 2
 id: securityx
@@ -9,6 +9,7 @@ name: SecurityX
 category: Security
 icon: "🔐"
 description: "Scans the git repositories on this server for committed secrets (gitleaks, whole history, values redacted) and vulnerable dependencies (osv-scanner), ranked in one report. Also drives the SecurityX attack-surface monitor for domains you own: new hostnames, DNS changes, expiring certificates and missing security headers."
+website: https://github.com/AES256Afro/SecurityX
 risk: low
 # A scan report names the files and commits where secrets were found, so it starts on the tailnet only.
 defaultExposure: tailnet
