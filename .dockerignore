@@ -1,0 +1,16 @@
+# The image is built from cli/ only. Keep everything else, above all local secrets and scan
+# reports, out of the build context.
+**/node_modules
+.git
+.github
+**/.claude
+.githooks
+monitor
+reports
+boxpilot
+scripts
+cli/test
+**/.dev.vars
+**/.secrets.*
+**/.env
+*.local.md

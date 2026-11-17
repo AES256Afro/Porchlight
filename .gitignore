@@ -1,0 +1,17 @@
+node_modules/
+.DS_Store
+*.log
+
+# Scan reports name the files and commits where secrets were found.
+reports/
+
+# Local secrets and credentials.
+.env*
+!.env.example
+.dev.vars*
+!.dev.vars.example
+.secrets*
+
+# Claude Code session state.
+.claude/.cc-writes
+.claude/settings.local.json

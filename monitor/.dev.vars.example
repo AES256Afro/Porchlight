@@ -1,0 +1,5 @@
+# Copy to .dev.vars for local development. Never commit .dev.vars.
+# Generate a token with: openssl rand -hex 32
+ADMIN_TOKEN=
+# Optional. HTTPS endpoint that receives alerts as JSON with a "text" field.
+ALERT_WEBHOOK_URL=

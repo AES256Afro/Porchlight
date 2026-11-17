@@ -1,0 +1,21 @@
+{
+	"name": "securityx",
+	"version": "0.1.0",
+	"private": true,
+	"description": "SecurityX command line: scan local repositories and drive the attack-surface monitor",
+	"type": "module",
+	"bin": {
+		"securityx": "./bin/securityx.js"
+	},
+	"scripts": {
+		"test": "node --test \"test/**/*.test.ts\"",
+		"typecheck": "tsc --noEmit && tsc --noEmit -p ui"
+	},
+	"devDependencies": {
+		"@types/node": "^24.0.0",
+		"typescript": "^7.0.2"
+	},
+	"engines": {
+		"node": ">=22.18"
+	}
+}

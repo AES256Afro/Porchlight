@@ -1,0 +1,15 @@
+{
+	"name": "securityx-workspace",
+	"private": true,
+	"description": "SecurityX: attack-surface monitor and repository scanner",
+	"scripts": {
+		"setup": "npm install && npm --prefix monitor install && npm --prefix cli install && git config core.hooksPath .githooks",
+		"test": "npm --prefix monitor test && npm --prefix cli test",
+		"check": "npm --prefix monitor run check && npm --prefix cli run typecheck && npm run check:boxpilot",
+		"check:boxpilot": "node scripts/check-boxpilot-manifest.mjs",
+		"securityx": "node cli/bin/securityx.js"
+	},
+	"devDependencies": {
+		"yaml": "2.9.1"
+	}
+}
