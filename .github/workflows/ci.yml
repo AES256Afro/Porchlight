@@ -86,9 +86,9 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           provenance: mode=max
           sbom: true
-      - name: Digest for BoxPilot's catalog
+      - name: Digest for the BoxPilot manifest
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          echo "Pin this in boxpilot/securityx.yaml and BoxPilot's catalog/securityx.yaml:" >> "$GITHUB_STEP_SUMMARY"
+          echo "Pin this as image.reference in boxpilot/securityx.yaml:" >> "$GITHUB_STEP_SUMMARY"
           echo "\`${IMAGE}:${GITHUB_REF_NAME#v}@${DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
