@@ -76,7 +76,7 @@ In the container, `securityx ui --host 0.0.0.0` changes what protects it:
 - It answers to any host name (a Tailscale name, a LAN address), so the key on every request is what guards the data. A cross-site Origin is still refused; only its host part is compared, because Tailscale Serve puts HTTPS in front.
 - `GET /healthz` answers without the key, for the container's health check.
 
-Releasing: a tag `v<version>` matching `cli/package.json` runs the checks, smoke-tests the image (`scripts/container-smoke.sh`) and publishes it for amd64 and arm64, signed with Sigstore and with an SBOM. Pin the digest it prints in `boxpilot/securityx.yaml` and in BoxPilot's `catalog/securityx.yaml`. `npm run check` validates the manifest with BoxPilot's own schema when a BoxPilot checkout is at `../BoxPilot` or `BOXPILOT_DIR`.
+Releasing: a tag `v<version>` matching `cli/package.json` runs the checks, smoke-tests the image (`scripts/container-smoke.sh`) and publishes it for amd64 and arm64, with an SBOM and build provenance. The package is private, like this repository. Pin the digest it prints in `boxpilot/securityx.yaml` and in BoxPilot's `catalog/securityx.yaml`. `npm run check` validates the manifest with BoxPilot's own schema when a BoxPilot checkout is at `../BoxPilot` or `BOXPILOT_DIR`.
 
 ## Scan repositories
 
