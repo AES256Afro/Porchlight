@@ -16,7 +16,12 @@ import { api, ApiError } from "./api.js";
 const POLL_MS = 800;
 
 export const store = {
-	/** @type {{ defaultRoot: string, reportPath: string, monitor: { configured: boolean, host?: string, error?: string } } | null} */
+	/**
+	 * `service`: SecurityX runs as a service (a container, under BoxPilot), configured where it is
+	 * managed rather than from a terminal. `monitor.unset`: neither monitor setting was given.
+	 *
+	 * @type {{ defaultRoot: string, reportPath: string, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean } } | null}
+	 */
 	settings: null,
 	/** @type {ScanReport | null} */
 	report: null,
@@ -54,7 +59,7 @@ function emit(change) {
 export function load() {
 	loading ??= (async () => {
 		const state = await api("GET", "/state");
-		store.settings = { defaultRoot: state.defaultRoot, reportPath: state.reportPath, monitor: state.monitor };
+		store.settings = { defaultRoot: state.defaultRoot, reportPath: state.reportPath, service: state.service === true, monitor: state.monitor };
 		store.scan = state.scan;
 		await loadReport();
 		if (store.scan.state === "running") poll();

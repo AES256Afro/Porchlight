@@ -53,7 +53,7 @@ import { exportButton, openExportDialog } from "./export.js";
 export async function renderDomains(view, selected) {
 	const state = await api("GET", "/state");
 	if (!state.monitor.configured) {
-		replace(view, notConnected(state.monitor.error));
+		replace(view, notConnected(state.monitor, state.service === true));
 		return () => {};
 	}
 
@@ -401,8 +401,39 @@ function findingsTable(title, findings, suggestions) {
 	);
 }
 
-/** @param {string} reason */
-function notConnected(reason) {
+/**
+ * How to connect the monitor. From a terminal, the settings are environment variables given at start;
+ * as a service (a container, under BoxPilot) they are the app's settings where it is managed.
+ *
+ * @param {{ error?: string, unset?: boolean }} monitor
+ * @param {boolean} service
+ */
+function notConnected(monitor, service) {
+	const reason = h("p", null, monitor.error ?? "The monitor is not configured", ".");
+	const steps = service
+		? [
+				// Nothing given yet is the usual state after installing, not a mistake to quote back.
+				monitor.unset ? null : reason,
+				h(
+					"p",
+					null,
+					"In BoxPilot, open Apps → SecurityX → Settings. Fill in ",
+					h("strong", null, "Monitor address"),
+					" (the monitor's https address) and ",
+					h("strong", null, "Monitor admin token"),
+					", then confirm. SecurityX restarts with them.",
+				),
+				h("p", { class: "hint" }, "Running the image some other way? Set SECURITYX_MONITOR_URL and SECURITYX_ADMIN_TOKEN in the container's environment and restart it."),
+			]
+		: [
+				reason,
+				h("p", null, "Stop SecurityX, set where the monitor is and its admin token, then start it again:"),
+				h(
+					"pre",
+					null,
+					h("code", null, "export SECURITYX_MONITOR_URL=http://localhost:5173\nexport SECURITYX_ADMIN_TOKEN=<the monitor's ADMIN_TOKEN>\nsecurityx ui"),
+				),
+			];
 	return h(
 		"section",
 		{ class: "page" },
@@ -411,13 +442,7 @@ function notConnected(reason) {
 			"div",
 			{ class: "card" },
 			h("h3", null, "Connect the monitor"),
-			h("p", null, reason, "."),
-			h("p", null, "Stop SecurityX, set where the monitor is and its admin token, then start it again:"),
-			h(
-				"pre",
-				null,
-				h("code", null, "export SECURITYX_MONITOR_URL=http://localhost:5173\nexport SECURITYX_ADMIN_TOKEN=<the monitor's ADMIN_TOKEN>\nsecurityx ui"),
-			),
+			...steps,
 			h("p", { class: "hint" }, "The token stays in the SecurityX process. It is never sent to this page."),
 		),
 	);

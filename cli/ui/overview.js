@@ -204,13 +204,15 @@ export async function renderOverview(view) {
 
 function monitorCard() {
 	const monitor = store.settings?.monitor;
+	// A service with nothing set yet: the Domains page says where to set it, in the service's own terms.
+	const why = store.settings?.service && monitor?.unset ? "" : (monitor?.error ?? "");
 	return h(
 		"div",
 		{ class: "card full" },
 		h("h2", null, "Domains"),
 		monitor?.configured
 			? h("p", null, h("span", { class: "severity status-good" }, icon("good"), `Connected to the monitor at ${monitor.host}`))
-			: h("p", null, h("span", { class: "severity status-pending" }, icon("pending"), "The attack-surface monitor is not connected"), h("span", { class: "hint block" }, monitor?.error ?? "")),
+			: h("p", null, h("span", { class: "severity status-pending" }, icon("pending"), "The attack-surface monitor is not connected"), h("span", { class: "hint block" }, why)),
 		h("p", { class: "card-foot" }, h("a", { href: "#/domains" }, monitor?.configured ? "Open domains" : "How to connect it")),
 	);
 }

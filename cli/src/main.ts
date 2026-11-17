@@ -192,6 +192,8 @@ async function ui(args: string[]): Promise<number> {
 			defaultRoot: resolve(values.root),
 			monitor,
 			monitorError,
+			// BoxPilot passes an optional setting left empty as an empty variable, so empty counts as not given.
+			monitorUnset: !process.env.SECURITYX_MONITOR_URL && !process.env.SECURITYX_ADMIN_TOKEN,
 		}),
 	);
 	if (server.port !== port && port !== 0) console.log(`Port ${port} is in use, so this copy is on ${server.port}.`);

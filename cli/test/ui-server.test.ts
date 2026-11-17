@@ -143,7 +143,9 @@ test("requires the session key on every API call and refuses cross-site origins"
 	assert.equal(crossSite.status, 403);
 	const sameSite = await send(server, "GET", "/api/state", { headers: { origin: `http://127.0.0.1:${server.port}` } });
 	assert.equal(sameSite.status, 200);
-	assert.deepEqual(sameSite.json.monitor, { configured: false, error: "Set SECURITYX_MONITOR_URL" });
+	assert.deepEqual(sameSite.json.monitor, { configured: false, error: "Set SECURITYX_MONITOR_URL", unset: false });
+	// On loopback it was started from a terminal, so the page explains setup in shell terms.
+	assert.equal(sameSite.json.service, false);
 	assert.deepEqual(sameSite.json.scan, { state: "idle" });
 });
 
@@ -418,6 +420,14 @@ test("says the monitor is not connected instead of failing obscurely", async (t)
 
 	assert.equal(reply.status, 503);
 	assert.equal(reply.json.error, "Set SECURITYX_MONITOR_URL");
+});
+
+test("says when the monitor was never set up, so the page can explain setup instead of quoting an error", async (t) => {
+	const server = await start(t, { monitorUnset: true });
+
+	const state = await send(server, "GET", "/api/state");
+
+	assert.deepEqual(state.json.monitor, { configured: false, error: "Set SECURITYX_MONITOR_URL", unset: true });
 });
 
 test("relays domain calls to the monitor without ever exposing the admin token", async (t) => {

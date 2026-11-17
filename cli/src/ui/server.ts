@@ -26,6 +26,8 @@ export interface UiOptions {
 	monitor: MonitorConfig | null;
 	/** Why `monitor` is null, shown in the UI. */
 	monitorError?: string;
+	/** `monitor` is null because neither its address nor its token was given at all. */
+	monitorUnset?: boolean;
 	/** A fixed key (SECURITYX_UI_KEY). Without one, each start makes its own. */
 	sessionKey?: string;
 	scan?: typeof scanRepos;
@@ -153,9 +155,17 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				defaultRoot: options.defaultRoot,
 				reportPath: options.reportPath,
 				scan: status,
+				// A service (a container, under BoxPilot) is configured where it is managed, not from a shell,
+				// so the page explains connecting the monitor in those terms.
+				service: !loopbackOnly,
 				monitor: options.monitor
 					? { configured: true, host: options.monitor.url.host }
-					: { configured: false, error: options.monitorError ?? "The monitor is not configured" },
+					: {
+							configured: false,
+							error: options.monitorError ?? "The monitor is not configured",
+							// Neither setting given: the usual state of a fresh install, as opposed to a value to correct.
+							unset: options.monitorUnset ?? false,
+						},
 			});
 		}
 		if (route === "GET /api/repos/report") return sendJson(res, 200, await loadReport(options.reportPath));
