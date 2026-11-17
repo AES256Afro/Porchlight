@@ -105,7 +105,7 @@ test("serves the page with headers that confine it to this server", async (t) =>
 	assert.equal(page.headers["x-content-type-options"], "nosniff");
 	assert.equal(page.headers["cache-control"], "no-store");
 	assert.ok(!page.text.includes(server.sessionKey), "the page itself must not contain the session key");
-	const scripts = ["app", "api", "dom", "filter", "list", "store", "export", "overview", "findings", "roadmap", "repos", "domains"];
+	const scripts = ["app", "api", "dom", "filter", "list", "hints", "store", "export", "overview", "findings", "roadmap", "repos", "domains"];
 	for (const asset of ["/styles.css", "/favicon.svg", ...scripts.map((name) => `/${name}.js`)]) {
 		assert.equal((await send(server, "GET", asset, { key: null })).status, 200, asset);
 	}
@@ -283,10 +283,16 @@ test("reports a failed scan, and a scan that found no repositories, as failures"
 	const server = await start(t, { scan: () => outcomes.shift()!() });
 
 	await send(server, "POST", "/api/repos/scan", { body: { root: server.dir } });
-	assert.equal((await untilScan(server, "failed")).error, "gitleaks crashed");
+	const crashed = await untilScan(server, "failed");
+	assert.equal(crashed.error, "gitleaks crashed");
+	assert.equal(crashed.noRepositories, undefined, "a scanner failing is not an empty folder");
 
-	await send(server, "POST", "/api/repos/scan", { body: { root: server.dir } });
-	assert.match((await untilScan(server, "failed")).error, /No git repositories found/);
+	await send(server, "POST", "/api/repos/scan", { body: { root: server.dir, depth: 2 } });
+	const empty = await untilScan(server, "failed");
+	assert.match(empty.error, /No git repositories found/);
+	// Said in data, so the page can point at the folder and the depth without parsing the message.
+	assert.equal(empty.noRepositories, true);
+	assert.equal(empty.depth, 2);
 	assert.deepEqual((await send(server, "GET", "/api/repos/report")).json.report, null);
 });
 

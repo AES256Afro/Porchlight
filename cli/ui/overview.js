@@ -2,6 +2,7 @@
 import { api } from "./api.js";
 import { banner, formatWhen, h, icon, PHASE_TITLES, plural, replace, severityBadge, statTile, toast } from "./dom.js";
 import { coverageBanner } from "./findings.js";
+import { emptyScanHints } from "./hints.js";
 import { buildHash } from "./list.js";
 import { findingRows, load, startScan, store, subscribe } from "./store.js";
 
@@ -96,7 +97,7 @@ export async function renderOverview(view) {
 				),
 			);
 		} else if (scan.state === "failed") {
-			replace(scanSlot, banner("error", "The scan did not finish", [scan.error]));
+			replace(scanSlot, banner("error", "The scan did not finish", [scan.error, ...emptyScanHints(scan, store.settings)]));
 		} else {
 			replace(scanSlot);
 		}

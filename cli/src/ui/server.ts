@@ -46,11 +46,20 @@ export type ScanStatus =
 	| { state: "idle" }
 	| { state: "running"; root: string; startedAt: string; done: number; total: number; current: string | null }
 	| { state: "done"; root: string; finishedAt: string }
-	| { state: "failed"; root: string; finishedAt: string; error: string };
+	| {
+			state: "failed";
+			root: string;
+			finishedAt: string;
+			error: string;
+			/** The scan ran and found no repository: the folder or the depth is wrong, not the scanners. */
+			noRepositories?: boolean;
+			/** How many folder levels it looked down. */
+			depth?: number;
+	  };
 
 const UI_DIR = join(import.meta.dirname, "../../ui");
 /** The page's own modules. Nothing else in the folder is served. */
-const SCRIPTS = ["app", "api", "dom", "filter", "list", "store", "export", "overview", "findings", "roadmap", "repos", "domains"];
+const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "store", "export", "overview", "findings", "roadmap", "repos", "domains"];
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
 	"/": { file: "index.html", type: "text/html; charset=utf-8" },
 	"/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
@@ -191,7 +200,11 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				},
 			})
 				.then(async (report) => {
-					if (report.repos.length === 0) throw new Error(`No git repositories found under ${root}`);
+					if (report.repos.length === 0) {
+						const error = `No git repositories found under ${root}`;
+						status = { state: "failed", root, finishedAt: new Date().toISOString(), error, noRepositories: true, depth };
+						return;
+					}
 					await saveReport(options.reportPath, report);
 					status = { state: "done", root, finishedAt: new Date().toISOString() };
 				})

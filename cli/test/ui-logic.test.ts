@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { describeFilter, isFiltering, matchesFilter, noFilter } from "../ui/filter.js";
+import { emptyScanHints } from "../ui/hints.js";
 import { buildHash, filterFromParams, paginate, paramsFromFilter, parseHash, sortFindings } from "../ui/list.js";
 
 const finding = { severity: "high", kind: "vulnerability", ruleId: "GHSA-x", location: "web/package-lock.json", detail: "pillow@12.3.0", title: "Heap overflow" };
@@ -73,4 +74,23 @@ test("sorts findings with a stable fallback", () => {
 	assert.deepEqual(order("repo"), ["cam", "haa", "cba", "lbz"]);
 	assert.deepEqual(order("title"), ["cba", "haa", "cam", "lbz"]);
 	assert.equal(rows[0]!.severity, "low", "the input is not reordered");
+});
+
+test("an empty scan says where to look next, and names BoxPilot's setting only for its own folder", () => {
+	const empty = { state: "failed" as const, root: "/repos", finishedAt: "2026-11-17T22:00:00Z", error: "No git repositories found under /repos", noRepositories: true, depth: 3 };
+	const service = { service: true, defaultRoot: "/repos" };
+
+	const [folder = "", depth = ""] = emptyScanHints(empty, service);
+	assert.match(folder, /"Repositories to scan".*Apps → SecurityX → Settings/);
+	assert.match(depth, /3 folder levels down: raise Depth/);
+
+	// From a terminal, or a folder typed by hand, BoxPilot's setting is not what chose it.
+	assert.equal(emptyScanHints(empty, { service: false, defaultRoot: "/repos" }).length, 1);
+	assert.equal(emptyScanHints({ ...empty, root: "/srv/elsewhere" }, service).length, 1);
+	assert.match(emptyScanHints({ ...empty, depth: 1 }, null)[0] ?? "", /1 folder level down/);
+	assert.match(emptyScanHints({ ...empty, depth: 0 }, null)[0] ?? "", /Depth 0 looks only at the folder itself/);
+
+	// A scanner failing is not an empty folder, and anything but a failure needs no help.
+	assert.deepEqual(emptyScanHints({ ...empty, noRepositories: undefined, error: "gitleaks crashed" }, service), []);
+	assert.deepEqual(emptyScanHints({ state: "idle" }, service), []);
 });
