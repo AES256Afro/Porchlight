@@ -41,7 +41,7 @@ function send(
 	server: UiServer,
 	method: string,
 	path: string,
-	options: { key?: string | null; headers?: Record<string, string>; body?: unknown; rawBody?: string } = {},
+	options: { key?: string | null; headers?: Record<string, string>; body?: unknown; rawBody?: string; host?: string } = {},
 ): Promise<Reply> {
 	const key = options.key === undefined ? server.sessionKey : options.key;
 	const payload = options.rawBody ?? (options.body === undefined ? undefined : JSON.stringify(options.body));
@@ -51,7 +51,7 @@ function send(
 		...options.headers,
 	};
 	return new Promise((resolve, reject) => {
-		const req = request({ host: "127.0.0.1", port: server.port, method, path, headers }, (res) => {
+		const req = request({ host: options.host ?? "127.0.0.1", port: server.port, method, path, headers }, (res) => {
 			let text = "";
 			res.setEncoding("utf8");
 			res.on("data", (chunk) => (text += chunk));
@@ -184,9 +184,12 @@ test("a refused key says whether this is a service, and nothing more", async (t)
 	const local = await start(t);
 	assert.deepEqual((await send(local, "GET", "/api/state", { key: null })).json, { error: "Session key required", service: false });
 
+	// A second loopback address stands in for "beyond loopback" without opening a port to the network.
+	// macOS has none by default, so there the flag is covered by the expression alone.
 	const service = await start(t, { host: "127.0.0.2", sessionKey: "k".repeat(MIN_KEY_LENGTH) }).catch(() => null);
-	// Not every machine has a second loopback address to listen on; the flag is the same expression either way.
-	if (service) assert.deepEqual((await send(service, "GET", "/api/state", { key: null })).json, { error: "Session key required", service: true });
+	if (service) {
+		assert.deepEqual((await send(service, "GET", "/api/state", { key: null, host: "127.0.0.2" })).json, { error: "Session key required", service: true });
+	}
 });
 
 test("previews what a scan would cover without running anything", async (t) => {
