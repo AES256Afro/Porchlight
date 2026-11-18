@@ -1213,6 +1213,131 @@ table.nested {
 	color: var(--ink-2);
 }
 
+/* Text a local model wrote: marked as generated, shown as plain text, kept apart from the findings. */
+
+.assist {
+	display: grid;
+	gap: 10px;
+	justify-items: start;
+	margin-bottom: 16px;
+}
+
+.assist[hidden] {
+	display: none;
+}
+
+.assist .banner,
+.assist .generated {
+	justify-self: stretch;
+	margin: 0;
+}
+
+.assist-block {
+	grid-column: 1 / -1;
+	display: grid;
+	gap: 10px;
+	justify-items: start;
+}
+
+.assist-block .assist,
+.card .assist {
+	justify-self: stretch;
+	margin: 0;
+}
+
+.card .assist {
+	margin-top: 12px;
+}
+
+.assist-wait {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	color: var(--ink-2);
+}
+
+.assist-wait .icon {
+	animation: assist-wait 1.4s ease-in-out infinite;
+}
+
+@keyframes assist-wait {
+	50% {
+		opacity: 0.3;
+	}
+}
+
+.generated {
+	padding: 12px 14px;
+	background: var(--surface);
+	border: 1px dashed var(--border);
+	border-radius: 8px;
+}
+
+.detail-panel .generated,
+.card .generated {
+	background: var(--page);
+}
+
+.generated-label {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--ink-2);
+	font-size: 12.5px;
+}
+
+.generated > .hint {
+	margin-top: 2px;
+}
+
+.generated-text {
+	margin-top: 10px;
+	max-width: 80ch;
+}
+
+.generated-text p {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.generated-text p + p {
+	margin-top: 10px;
+}
+
+.ask-form {
+	display: grid;
+	gap: 8px;
+	margin-top: 12px;
+}
+
+.ask-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.ask-form .form-error {
+	color: var(--critical-ink);
+}
+
+textarea {
+	width: 100%;
+	min-height: 72px;
+	padding: 8px 10px;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	background: var(--surface);
+	color: var(--ink);
+	font: inherit;
+	resize: vertical;
+}
+
+textarea::placeholder {
+	color: var(--muted);
+}
+
 /* Dialog and toasts */
 
 .dialog {
@@ -1374,5 +1499,9 @@ legend {
 @media (prefers-reduced-motion: reduce) {
 	.disclosure .icon {
 		transition: none;
+	}
+
+	.assist-wait .icon {
+		animation: none;
 	}
 }

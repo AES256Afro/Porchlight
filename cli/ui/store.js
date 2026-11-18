@@ -19,8 +19,9 @@ export const store = {
 	/**
 	 * `service`: SecurityX runs as a service (a container, under BoxPilot), configured where it is
 	 * managed rather than from a terminal. `monitor.unset`: neither monitor setting was given.
+	 * `assistant`: the local model behind Explain, Summarise and Ask.
 	 *
-	 * @type {{ defaultRoot: string, reportPath: string, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean } } | null}
+	 * @type {{ defaultRoot: string, reportPath: string, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean }, assistant: import("./generated.js").AssistantSettings } | null}
 	 */
 	settings: null,
 	/** @type {ScanReport | null} */
@@ -59,7 +60,13 @@ function emit(change) {
 export function load() {
 	loading ??= (async () => {
 		const state = await api("GET", "/state");
-		store.settings = { defaultRoot: state.defaultRoot, reportPath: state.reportPath, service: state.service === true, monitor: state.monitor };
+		store.settings = {
+			defaultRoot: state.defaultRoot,
+			reportPath: state.reportPath,
+			service: state.service === true,
+			monitor: state.monitor,
+			assistant: state.assistant ?? { configured: false },
+		};
 		store.scan = state.scan;
 		await loadReport();
 		if (store.scan.state === "running") poll();

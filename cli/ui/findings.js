@@ -1,4 +1,5 @@
 // @ts-check
+import { assistAction } from "./assist.js";
 import { banner, emptyState, formatWhen, h, icon, pager, PHASE_TITLES, plural, replace, select, severityBadge, statTile, stepNodes } from "./dom.js";
 import { exportButton, openExportDialog } from "./export.js";
 import { ALL_SEVERITIES, isFiltering, matchesFilter } from "./filter.js";
@@ -136,17 +137,29 @@ export async function renderFindings(view, route) {
 				h("td", { class: "mono wrap col-where" }, row.location),
 				h("td", { class: "nowrap" }, row.suggestion ? PHASE_TITLES[row.suggestion.phase] : ""),
 			),
-			open ? h("tr", { class: "detail-row" }, h("td", { colSpan: 5 }, findingDetail(row))) : null,
+			open ? h("tr", { class: "detail-row" }, h("td", { colSpan: 5 }, findingDetail(row, row.repo))) : null,
 		];
 	}
 }
 
 /**
- * Everything known about one finding, and how to fix it.
+ * Everything known about one finding, and how to fix it. With a local model, a button asks it to
+ * explain the finding, and its answer opens underneath.
  *
  * @param {FindingRow | import("./store.js").SuggestedFinding} finding
+ * @param {string} repo the repository's name, as the report gives it
  */
-export function findingDetail(finding) {
+export function findingDetail(finding, repo) {
+	const assistant = store.settings?.assistant;
+	const explain = assistant?.configured
+		? assistAction(
+				["finding", store.report?.scannedAt, repo, finding.ruleId, finding.location, finding.detail].join("\n"),
+				"/assist/finding",
+				assistant,
+				{ start: "Explain", busy: "Explaining…", again: "Explain again" },
+				() => ({ repo, ruleId: finding.ruleId, location: finding.location, detail: finding.detail }),
+			)
+		: null;
 	const id =
 		finding.kind === "vulnerability"
 			? h("a", { href: `https://osv.dev/vulnerability/${encodeURIComponent(finding.ruleId)}`, target: "_blank", rel: "noopener noreferrer" }, finding.ruleId)
@@ -174,6 +187,7 @@ export function findingDetail(finding) {
 					h("ol", null, ...finding.suggestion.how.map((step) => h("li", null, ...stepNodes(step)))),
 				)
 			: null,
+		explain ? h("div", { class: "assist-block" }, explain.button, explain.panel) : null,
 	);
 }
 

@@ -1,5 +1,6 @@
 // @ts-check
 import { api, ApiError } from "./api.js";
+import { assistAction } from "./assist.js";
 import { banner, formatWhen, h, icon, plural, replace, severityBadge, statTile, stepNodes, toast } from "./dom.js";
 import { exportButton, openExportDialog } from "./export.js";
 
@@ -159,6 +160,18 @@ export async function renderDomains(view, selected) {
 		const verifyButton = /** @type {HTMLButtonElement} */ (
 			h("button", { type: "button", class: "button", onclick: () => act(verifyButton, "Checking DNS…", "verify") }, "Check DNS record")
 		);
+		/** @type {import("./generated.js").AssistantSettings | undefined} */
+		const assistant = state.assistant;
+		const explain =
+			report && assistant?.configured
+				? assistAction(
+						`domain\n${domain.name}\n${report.takenAt}`,
+						"/assist/domain",
+						assistant,
+						{ start: "Explain changes", busy: "Explaining…", again: "Explain again" },
+						() => ({ domain: domain.name }),
+					)
+				: null;
 
 		replace(
 			detail,
@@ -170,11 +183,13 @@ export async function renderDomains(view, selected) {
 					"div",
 					{ class: "actions" },
 					scanButton,
+					explain?.button,
 					report && report.findings.length > 0 ? exportButton(() => openExportDialog({ domain: domain.name })) : null,
 					h("button", { type: "button", class: "button danger", onclick: () => confirmRemove(domain.name) }, "Remove"),
 				),
 			),
 			domain.verified ? null : challengeCard(domain, verifyButton),
+			explain?.panel,
 			report ? reportView(report, suggestions) : h("div", { class: "empty" }, h("h2", null, "No scan yet"), h("p", null, everVerified ? "Scan now to record a baseline. Later scans report what changed." : "Verify the domain first.")),
 		);
 

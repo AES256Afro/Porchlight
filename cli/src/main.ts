@@ -2,6 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { assistantConfig } from "./assist/ollama.ts";
 import { callMonitor, monitorConfig } from "./monitor/client.ts";
 import { exitCode, parseScanReport, renderMarkdown, renderSummary } from "./repos/report.ts";
 import { scanRepos } from "./repos/scan.ts";
@@ -47,6 +48,9 @@ Usage:
 
 The domains commands, and the Domains page of the interface, need
 SECURITYX_MONITOR_URL and SECURITYX_ADMIN_TOKEN.
+
+The interface's Explain, Summarise and Ask buttons use a local model served by
+Ollama, named by SECURITYX_LLM_URL (its address) and SECURITYX_LLM_MODEL.
 `;
 
 /** Returns the process exit code: 0 ok, 1 error or incomplete scan under --fail-on, 2 findings at or above --fail-on. */
@@ -182,6 +186,15 @@ async function ui(args: string[]): Promise<number> {
 	} catch (err) {
 		monitorError = err instanceof Error ? err.message : String(err);
 	}
+	let assistant = null;
+	let assistantError: string | undefined;
+	try {
+		assistant = assistantConfig(process.env);
+	} catch (err) {
+		assistantError = err instanceof Error ? err.message : String(err);
+	}
+	// The address is the switch: BoxPilot fills the model setting with a default, so a model alone turns nothing on.
+	const assistantUnset = !process.env.SECURITYX_LLM_URL?.trim();
 
 	const server = await listenOnFirstFree(candidates, (candidate) =>
 		startUiServer({
@@ -194,6 +207,9 @@ async function ui(args: string[]): Promise<number> {
 			monitorError,
 			// BoxPilot passes an optional setting left empty as an empty variable, so empty counts as not given.
 			monitorUnset: !process.env.SECURITYX_MONITOR_URL && !process.env.SECURITYX_ADMIN_TOKEN,
+			assistant,
+			assistantError,
+			assistantUnset,
 		}),
 	);
 	if (server.port !== port && port !== 0) console.log(`Port ${port} is in use, so this copy is on ${server.port}.`);
@@ -203,6 +219,8 @@ async function ui(args: string[]): Promise<number> {
 		console.log(`SecurityX is running. Open this link (it carries this session's key):\n\n  ${server.url}\n`);
 	}
 	console.log(monitor ? `Monitor: ${monitor.url.host}` : `Monitor: not connected (${monitorError})`);
+	if (assistant) console.log(`Local model: ${assistant.model} at ${assistant.url.host}`);
+	else console.log(assistantUnset ? "Local model: off (set SECURITYX_LLM_URL and SECURITYX_LLM_MODEL to use one)" : `Local model: not connected (${assistantError})`);
 	console.log("Press Ctrl+C to stop.");
 	return 0;
 }

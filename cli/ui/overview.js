@@ -1,5 +1,6 @@
 // @ts-check
 import { api } from "./api.js";
+import { askCard, localModelCard } from "./assist.js";
 import { banner, formatWhen, h, icon, PHASE_TITLES, plural, replace, severityBadge, statTile, toast } from "./dom.js";
 import { coverageBanner } from "./findings.js";
 import { emptyScanHints } from "./hints.js";
@@ -105,7 +106,7 @@ export async function renderOverview(view) {
 
 	async function drawSummary() {
 		const report = store.report;
-		if (!report) return replace(summary, monitorCard());
+		if (!report) return replace(summary, assistantCard(), monitorCard());
 		const rows = findingRows();
 		/** @type {Record<Severity, number>} */
 		const counts = { critical: 0, high: 0, medium: 0, low: 0 };
@@ -156,6 +157,7 @@ export async function renderOverview(view) {
 					h("p", { class: "card-foot" }, h("a", { href: "#/findings/by-repo" }, "All repositories")),
 				),
 			),
+			assistantCard(),
 			monitorCard(),
 		);
 
@@ -201,6 +203,16 @@ export async function renderOverview(view) {
 			replace(phases, h("h2", null, "What to repair first"), banner("error", "Could not build the roadmap", [err instanceof Error ? err.message : String(err)]));
 		}
 	}
+}
+
+/**
+ * Questions about the scan when a local model is connected and there is a scan to ask about; how to
+ * connect one when there is not.
+ */
+function assistantCard() {
+	const assistant = store.settings?.assistant;
+	if (!assistant?.configured) return localModelCard(assistant, store.settings?.service === true);
+	return store.report ? askCard(`ask\n${store.report.scannedAt}`, assistant) : null;
 }
 
 function monitorCard() {

@@ -1,5 +1,6 @@
 // @ts-check
 import { api } from "./api.js";
+import { assistAction } from "./assist.js";
 import { banner, emptyState, h, PHASE_TITLES, plural, replace, select, severityBadge, stepNodes } from "./dom.js";
 import { exportButton, openExportDialog } from "./export.js";
 import { noScanYet } from "./findings.js";
@@ -60,17 +61,35 @@ export async function renderRoadmap(view, route) {
 				},
 			})
 		);
+		// The summary covers the whole roadmap, as the fix for a finding is planned from the whole scan.
+		const assistant = store.settings?.assistant;
+		const summary =
+			assistant?.configured && findingRows().length > 0
+				? assistAction(
+						`roadmap\n${report.scannedAt}`,
+						"/assist/roadmap",
+						assistant,
+						{ start: "Summarise", busy: "Summarising…", again: "Summarise again", note: "This covers the whole roadmap, whatever the filters show." },
+						() => ({}),
+					)
+				: null;
 		replace(
 			view,
 			h(
 				"section",
 				{ class: "page" },
 				header(
-					exportButton(() => {
-						const shown = findingRows().filter((row) => matchesFilter(row, row.repo, filter)).length;
-						openExportDialog({ filter, shown, total: findingRows().length }, "roadmap");
-					}),
+					h(
+						"div",
+						{ class: "actions" },
+						summary?.button,
+						exportButton(() => {
+							const shown = findingRows().filter((row) => matchesFilter(row, row.repo, filter)).length;
+							openExportDialog({ filter, shown, total: findingRows().length }, "roadmap");
+						}),
+					),
 				),
+				summary?.panel,
 				store.notes.length > 0 ? banner("warning", "The scan was incomplete, so this roadmap is too", store.notes) : null,
 				h(
 					"div",

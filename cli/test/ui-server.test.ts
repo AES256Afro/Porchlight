@@ -3,6 +3,7 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
+import { assistantConfig } from "../src/assist/ollama.ts";
 import { listenOnFirstFree } from "../src/main.ts";
 import { monitorConfig } from "../src/monitor/client.ts";
 import type { ScanOptions } from "../src/repos/scan.ts";
@@ -105,7 +106,7 @@ test("serves the page with headers that confine it to this server", async (t) =>
 	assert.equal(page.headers["x-content-type-options"], "nosniff");
 	assert.equal(page.headers["cache-control"], "no-store");
 	assert.ok(!page.text.includes(server.sessionKey), "the page itself must not contain the session key");
-	const scripts = ["app", "api", "dom", "filter", "list", "hints", "store", "export", "overview", "findings", "roadmap", "repos", "domains"];
+	const scripts = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "overview", "findings", "roadmap", "repos", "domains"];
 	for (const asset of ["/styles.css", "/favicon.svg", ...scripts.map((name) => `/${name}.js`)]) {
 		assert.equal((await send(server, "GET", asset, { key: null })).status, 200, asset);
 	}
@@ -537,6 +538,231 @@ test("takes the next free port when the default is taken, but not when a port wa
 		}),
 		/permission denied/,
 	);
+});
+
+// The local model
+
+const MODEL = "qwen-test:9b";
+const assistant = assistantConfig({ SECURITYX_LLM_URL: "http://ollama.test:11434", SECURITYX_LLM_MODEL: MODEL });
+
+/**
+ * A scripted network: the monitor at monitor.example and Ollama at ollama.test. Records what each
+ * was sent, so tests can check what reached the model.
+ */
+function fakeNetwork(handlers: { model?: (body: { messages: { role: string; content: string }[] }) => Response | Promise<Response>; monitor?: (url: URL) => Response } = {}) {
+	const modelCalls: string[] = [];
+	const monitorCalls: { url: string; authorization: string }[] = [];
+	const fetchFn = (async (url: URL, init: RequestInit) => {
+		if (url.hostname === "ollama.test") {
+			modelCalls.push(String(init.body));
+			const answer = handlers.model ?? (() => Response.json({ message: { role: "assistant", content: "<think>Reasoning.</think>\n\nWhat it is: a test answer." } }));
+			return answer(JSON.parse(String(init.body)));
+		}
+		monitorCalls.push({ url: url.toString(), authorization: (init.headers as Record<string, string>).authorization! });
+		return (handlers.monitor ?? (() => Response.json({ error: "Domain is not registered" }, { status: 404 })))(url);
+	}) as unknown as typeof fetch;
+	return { fetchFn, modelCalls, monitorCalls };
+}
+
+async function withReport(server: UiServer & { dir: string }): Promise<void> {
+	await makeTree(server.dir, { "state/": "" });
+	await writeFile(join(server.dir, "state", "repo-scan.json"), JSON.stringify(sampleReport("/work")));
+}
+
+const ASSIST_REQUESTS: [string, unknown][] = [
+	["/api/assist/finding", { repo: "group/worst", ruleId: "rule-critical", location: "package-lock.json" }],
+	["/api/assist/roadmap", {}],
+	["/api/assist/domain", { domain: "example.com" }],
+	["/api/assist/ask", { question: "What first?" }],
+];
+
+test("says when the local model is off, and every assist route then answers 503", async (t) => {
+	const network = fakeNetwork();
+	const server = await start(t, { fetchFn: network.fetchFn, assistantError: "Set SECURITYX_LLM_URL to Ollama's address", assistantUnset: true });
+	await withReport(server);
+
+	assert.deepEqual((await send(server, "GET", "/api/state")).json.assistant, { configured: false, error: "Set SECURITYX_LLM_URL to Ollama's address", unset: true });
+	for (const [path, body] of ASSIST_REQUESTS) {
+		const reply = await send(server, "POST", path, { body });
+		assert.deepEqual([reply.status, reply.json.error], [503, "Set SECURITYX_LLM_URL to Ollama's address"], path);
+	}
+	assert.deepEqual([network.modelCalls.length, network.monitorCalls.length], [0, 0]);
+
+	// A setting given but wrong is a mistake to show, not the usual off state.
+	const wrong = await start(t, { assistantError: "Set SECURITYX_LLM_MODEL to the model's name in Ollama" });
+	assert.deepEqual((await send(wrong, "GET", "/api/state")).json.assistant, { configured: false, error: "Set SECURITYX_LLM_MODEL to the model's name in Ollama", unset: false });
+});
+
+test("names the configured model and where it runs", async (t) => {
+	const server = await start(t, { assistant });
+
+	assert.deepEqual((await send(server, "GET", "/api/state")).json.assistant, { configured: true, model: MODEL, host: "ollama.test:11434" });
+});
+
+test("refuses malformed assist requests before asking anything", async (t) => {
+	const network = fakeNetwork();
+	const monitor = monitorConfig({ SECURITYX_MONITOR_URL: "https://monitor.example", SECURITYX_ADMIN_TOKEN: ADMIN_TOKEN });
+	const server = await start(t, { assistant, monitor, fetchFn: network.fetchFn });
+	await withReport(server);
+
+	const valid = { repo: "group/worst", ruleId: "rule-critical", location: "package-lock.json" };
+	const cases: [string, unknown, RegExp][] = [
+		["finding", {}, /repo must be text/],
+		["finding", { ...valid, repo: 7 }, /repo must be text/],
+		["finding", { ...valid, ruleId: "" }, /ruleId must be text of 1 to 500/],
+		["finding", { ...valid, location: "x".repeat(2001) }, /location must be text of 1 to 2000/],
+		["finding", { ...valid, detail: null }, /detail must be text/],
+		["domain", {}, /Invalid domain name/],
+		["domain", { domain: "../admin" }, /Invalid domain name/],
+		["domain", { domain: "a b.com" }, /Invalid domain name/],
+		["domain", { domain: ["example.com"] }, /Invalid domain name/],
+		["ask", {}, /Ask a question of 1 to 500 characters/],
+		["ask", { question: "   " }, /Ask a question/],
+		["ask", { question: "x".repeat(501) }, /Ask a question/],
+		["ask", { question: { text: "hi" } }, /Ask a question/],
+		["roadmap", [], /Body must be a JSON object/],
+		["ask", "What first?", /Body must be a JSON object/],
+	];
+	for (const [route, body, message] of cases) {
+		const reply = await send(server, "POST", `/api/assist/${route}`, { body });
+		assert.equal(reply.status, 400, `${route} ${JSON.stringify(body)}`);
+		assert.match(reply.json.error, message);
+	}
+	assert.equal((await send(server, "POST", "/api/assist/ask", { rawBody: "question=hi", headers: { "content-type": "text/plain" } })).status, 415);
+	assert.equal((await send(server, "GET", "/api/assist/ask")).status, 405);
+	assert.equal((await send(server, "POST", "/api/assist/everything", { body: {} })).status, 404);
+	assert.equal((await send(server, "POST", "/api/assist/ask", { key: null, body: { question: "hi" } })).status, 401);
+	assert.equal((await send(server, "POST", "/api/assist/ask", { body: { question: "hi" }, headers: { origin: "https://evil.example" } })).status, 403);
+	assert.deepEqual([network.modelCalls.length, network.monitorCalls.length], [0, 0]);
+});
+
+test("answers 404 when there is nothing to explain", async (t) => {
+	const network = fakeNetwork({
+		monitor: (url) =>
+			url.pathname === "/domains/unscanned.example"
+				? Response.json({ domain: { name: "unscanned.example" }, report: null })
+				: Response.json({ error: "Domain is not registered" }, { status: 404 }),
+	});
+	const monitor = monitorConfig({ SECURITYX_MONITOR_URL: "https://monitor.example", SECURITYX_ADMIN_TOKEN: ADMIN_TOKEN });
+	const server = await start(t, { assistant, monitor, fetchFn: network.fetchFn });
+
+	for (const [path, body] of ASSIST_REQUESTS.filter(([path]) => !path.endsWith("/domain"))) {
+		const reply = await send(server, "POST", path, { body });
+		assert.deepEqual([reply.status, reply.json.error], [404, "There is no scan yet. Scan a folder first."], path);
+	}
+	await withReport(server);
+	const gone = await send(server, "POST", "/api/assist/finding", { body: { repo: "group/worst", ruleId: "rule-critical", location: "elsewhere.json" } });
+	assert.deepEqual([gone.status, gone.json.error], [404, "That finding is not in the latest scan. Reload the page to see the current one."]);
+	const otherCommit = await send(server, "POST", "/api/assist/finding", { body: { repo: "group/worst", ruleId: "rule-critical", location: "package-lock.json", detail: "other@2.0.0" } });
+	assert.equal(otherCommit.status, 404);
+
+	const unscanned = await send(server, "POST", "/api/assist/domain", { body: { domain: "unscanned.example" } });
+	assert.deepEqual([unscanned.status, unscanned.json.error], [404, "unscanned.example has not been scanned yet, so there is nothing to explain."]);
+	const unknown = await send(server, "POST", "/api/assist/domain", { body: { domain: "missing.example" } });
+	assert.deepEqual([unknown.status, unknown.json.error], [404, "Domain is not registered"]);
+	assert.equal(network.modelCalls.length, 0);
+});
+
+test("explains a finding, summarises the roadmap and answers a question from the stored report", async (t) => {
+	const network = fakeNetwork();
+	const server = await start(t, { assistant, fetchFn: network.fetchFn });
+	await withReport(server);
+
+	const explained = await send(server, "POST", "/api/assist/finding", { body: { repo: "group/worst", ruleId: "rule-high", location: "package-lock.json", detail: "pkg@1.0.0" } });
+	assert.deepEqual([explained.status, explained.json], [200, { text: "What it is: a test answer.", model: MODEL }]);
+	const sent = JSON.parse(network.modelCalls[0]!);
+	assert.deepEqual([sent.model, sent.stream, sent.think], [MODEL, false, false]);
+	assert.match(sent.messages[1].content, /"title":"A high problem"/);
+	assert.match(sent.messages[1].content, /"repo":"group\/worst"/);
+	assert.ok(!sent.messages[1].content.includes("A critical problem"), "only the finding asked about");
+
+	assert.equal((await send(server, "POST", "/api/assist/roadmap")).status, 200, "the roadmap needs no body");
+	assert.match(JSON.parse(network.modelCalls[1]!).messages[1].content, /"actions":\[\{"phase":"Fix now"/);
+
+	const answered = await send(server, "POST", "/api/assist/ask", { body: { question: "Which repository first?" } });
+	assert.deepEqual(answered.json, { text: "What it is: a test answer.", model: MODEL });
+	assert.match(JSON.parse(network.modelCalls[2]!).messages[1].content, /DATA>>>\n\nThe owner's question:\nWhich repository first\?$/);
+});
+
+test("asks the model one request at a time", async (t) => {
+	let release!: () => void;
+	const network = fakeNetwork({
+		model: () => new Promise<Response>((resolve) => (release = () => resolve(Response.json({ message: { content: "Done." } })))),
+	});
+	const server = await start(t, { assistant, fetchFn: network.fetchFn });
+	await withReport(server);
+
+	const first = send(server, "POST", "/api/assist/roadmap", { body: {} });
+	for (let attempt = 0; attempt < 200 && network.modelCalls.length === 0; attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
+	assert.equal(network.modelCalls.length, 1);
+
+	const second = await send(server, "POST", "/api/assist/ask", { body: { question: "Anything?" } });
+	assert.deepEqual([second.status, second.json.error], [409, "The model is still answering another request. Try again when it has finished."]);
+	assert.equal(network.modelCalls.length, 1, "the second request never reached the model");
+
+	release();
+	assert.deepEqual((await first).json, { text: "Done.", model: MODEL });
+	const third = send(server, "POST", "/api/assist/ask", { body: { question: "Anything?" } });
+	for (let attempt = 0; attempt < 200 && network.modelCalls.length < 2; attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
+	release();
+	assert.equal((await third).status, 200, "the model is free again once it has answered");
+});
+
+test("explains a domain's latest scan from the monitor without ever exposing the admin token", async (t) => {
+	const report = {
+		domain: "example.com",
+		takenAt: "2026-11-17T09:00:00.000Z",
+		baseline: false,
+		hostCount: 2,
+		notes: [],
+		changes: [{ kind: "host_added", host: "new.example.com" }],
+		newFindings: [],
+		resolvedFindings: [],
+		findings: [{ id: "dangling-cname:shop.example.com", severity: "high", host: "shop.example.com", basis: "dns", title: "CNAME target does not resolve" }],
+	};
+	const challenge = "securityx-verify=challenge-value-for-the-owner-only";
+	const network = fakeNetwork({
+		monitor: (url) =>
+			url.pathname === "/domains/refused.example"
+				? Response.json({ error: "Unauthorized" }, { status: 401 })
+				: Response.json({ domain: { name: "example.com", challenge: { type: "TXT", name: "_securityx-challenge.example.com", value: challenge } }, report }),
+	});
+	const monitor = monitorConfig({ SECURITYX_MONITOR_URL: "https://monitor.example", SECURITYX_ADMIN_TOKEN: ADMIN_TOKEN });
+	const server = await start(t, { assistant, monitor, fetchFn: network.fetchFn });
+
+	const reply = await send(server, "POST", "/api/assist/domain", { body: { domain: " Example.COM " } });
+
+	assert.deepEqual([reply.status, reply.json], [200, { text: "What it is: a test answer.", model: MODEL }]);
+	assert.deepEqual(network.monitorCalls, [{ url: "https://monitor.example/domains/example.com", authorization: `Bearer ${ADMIN_TOKEN}` }]);
+	const prompt = network.modelCalls[0]!;
+	assert.match(prompt, /new\.example\.com/);
+	assert.match(prompt, /Remove or repoint the DNS record for shop\.example\.com/);
+	for (const kept of [ADMIN_TOKEN, challenge]) assert.ok(!prompt.includes(kept), "the model gets the scan report and nothing else");
+	assert.ok(!reply.text.includes(ADMIN_TOKEN) && !JSON.stringify(reply.headers).includes(ADMIN_TOKEN));
+
+	// The monitor refusing the token is its problem: the page must not read it as its own key being wrong.
+	const refused = await send(server, "POST", "/api/assist/domain", { body: { domain: "refused.example" } });
+	assert.deepEqual([refused.status, refused.json.error], [502, "The monitor refused the request: Unauthorized"]);
+
+	const unmonitored = await start(t, { assistant, fetchFn: network.fetchFn });
+	assert.deepEqual((await send(unmonitored, "POST", "/api/assist/domain", { body: { domain: "example.com" } })).json, { error: "Set SECURITYX_MONITOR_URL" });
+});
+
+test("turns a model that cannot answer into a clear error, and frees it for the next request", async (t) => {
+	const answers: (() => Response | Promise<Response>)[] = [
+		() => Promise.reject(new TypeError("fetch failed", { cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }) })),
+		() => Response.json({ error: `model "${MODEL}" not found, try pulling it first` }, { status: 404 }),
+		() => Response.json({ message: { content: "Recovered." } }),
+	];
+	const network = fakeNetwork({ model: () => answers.shift()!() });
+	const server = await start(t, { assistant, fetchFn: network.fetchFn });
+	await withReport(server);
+
+	const unreachable = await send(server, "POST", "/api/assist/roadmap");
+	assert.deepEqual([unreachable.status, unreachable.json.error], [502, "Could not reach the model at ollama.test:11434 (ECONNREFUSED). Is Ollama running there?"]);
+	const missing = await send(server, "POST", "/api/assist/roadmap");
+	assert.deepEqual([missing.status, missing.json.error], [502, `Ollama has no model ${MODEL}: add it in Ollama first`]);
+	assert.deepEqual((await send(server, "POST", "/api/assist/roadmap")).json, { text: "Recovered.", model: MODEL });
 });
 
 function pick(value: Record<string, unknown>, keys: string[]): Record<string, unknown> {

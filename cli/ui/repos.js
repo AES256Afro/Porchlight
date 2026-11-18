@@ -238,7 +238,7 @@ export async function renderByRepo(view, route) {
 								h("td", { class: "mono wrap col-where" }, finding.location),
 								h("td", { class: "wrap col-what" }, finding.suggestion?.title ?? ""),
 							),
-							open ? h("tr", { class: "detail-row" }, h("td", { colSpan: 4 }, findingDetail(finding))) : null,
+							open ? h("tr", { class: "detail-row" }, h("td", { colSpan: 4 }, findingDetail(finding, repo.name))) : null,
 						];
 					}),
 				),

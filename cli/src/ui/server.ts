@@ -3,6 +3,9 @@ import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promise
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
+import { AssistantError, chat, type AssistantConfig } from "../assist/ollama.ts";
+import { askPrompt, domainPrompt, findingPrompt, locateFinding, roadmapPrompt, type Prompt } from "../assist/prompts.ts";
+import { MAX_QUESTION } from "../../ui/generated.js";
 import { callMonitor, type MonitorConfig } from "../monitor/client.ts";
 import { coverageNotes, rank, rankRepos } from "../repos/report.ts";
 import { scanRepos } from "../repos/scan.ts";
@@ -28,9 +31,16 @@ export interface UiOptions {
 	monitorError?: string;
 	/** `monitor` is null because neither its address nor its token was given at all. */
 	monitorUnset?: boolean;
+	/** The local model (Ollama) behind Explain, Summarise and Ask. Null or absent turns them off. */
+	assistant?: AssistantConfig | null;
+	/** Why `assistant` is null, shown in the UI. */
+	assistantError?: string;
+	/** `assistant` is null because no model address was given: the features are simply off. */
+	assistantUnset?: boolean;
 	/** A fixed key (SECURITYX_UI_KEY). Without one, each start makes its own. */
 	sessionKey?: string;
 	scan?: typeof scanRepos;
+	/** Used for the monitor and the local model alike. Tests pass a fake. */
 	fetchFn?: typeof fetch;
 }
 
@@ -59,7 +69,7 @@ export type ScanStatus =
 
 const UI_DIR = join(import.meta.dirname, "../../ui");
 /** The page's own modules. Nothing else in the folder is served. */
-const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "store", "export", "overview", "findings", "roadmap", "repos", "domains"];
+const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "overview", "findings", "roadmap", "repos", "domains"];
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
 	"/": { file: "index.html", type: "text/html; charset=utf-8" },
 	"/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
@@ -89,6 +99,8 @@ const HOST_HEADER_PATTERN = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_DEPTH = 6;
 const DOMAIN_PATTERN = /^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/;
+/** What the local model can be asked for, one route each. */
+const ASSIST_ROUTES = ["finding", "roadmap", "domain", "ask"];
 
 class HttpError extends Error {
 	status: number;
@@ -121,6 +133,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	const scan = options.scan ?? scanRepos;
 	let status: ScanStatus = { state: "idle" };
 	let port = options.port;
+	/** Ollama on a small server answers one request at a time, so this asks it one at a time. */
+	let modelBusy = false;
 
 	const server = createServer((req, res) => {
 		handle(req, res).catch((err) => {
@@ -175,8 +189,17 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 							// Neither setting given: the usual state of a fresh install, as opposed to a value to correct.
 							unset: options.monitorUnset ?? false,
 						},
+				assistant: options.assistant
+					? { configured: true, model: options.assistant.model, host: options.assistant.url.host }
+					: {
+							configured: false,
+							error: options.assistantError ?? "The local model is not configured",
+							// No model address: the features are off, the usual state rather than a value to correct.
+							unset: options.assistantUnset ?? false,
+						},
 			});
 		}
+		if (url.pathname.startsWith("/api/assist/")) return assist(req, res, url.pathname.slice("/api/assist/".length), body);
 		if (route === "GET /api/repos/report") return sendJson(res, 200, await loadReport(options.reportPath));
 		if (route === "GET /api/repos/roadmap" || route === "GET /api/repos/export") {
 			const report = await readReport(options.reportPath);
@@ -229,6 +252,86 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			return sendJson(res, code, withSuggestions(answer));
 		}
 		throw new HttpError(404, "Not found");
+	}
+
+	/**
+	 * Asks the local model about what the page shows: a finding, the roadmap, a domain's latest scan,
+	 * or a question about the stored report. The data comes from this server's own copy, never from
+	 * the request, so the page names what to explain and cannot supply what the model reads.
+	 */
+	async function assist(req: IncomingMessage, res: ServerResponse, kind: string, body: unknown): Promise<void> {
+		if (!ASSIST_ROUTES.includes(kind)) throw new HttpError(404, "Not found");
+		if (req.method !== "POST") throw new HttpError(405, "Method not allowed");
+		const assistant = options.assistant;
+		if (!assistant) throw new HttpError(503, options.assistantError ?? "The local model is not configured");
+		const fields = bodyObject(body);
+
+		let prompt: Prompt;
+		if (kind === "domain") {
+			prompt = domainPrompt(await latestDomainReport(domainField(fields)));
+		} else if (kind === "ask") {
+			const question = fields.question;
+			if (typeof question !== "string" || question.trim() === "" || question.length > MAX_QUESTION) {
+				throw new HttpError(400, `Ask a question of 1 to ${MAX_QUESTION} characters`);
+			}
+			prompt = askPrompt(await storedReport(), question);
+		} else if (kind === "finding") {
+			const target = {
+				repo: textField(fields, "repo", 1000),
+				ruleId: textField(fields, "ruleId", 500),
+				location: textField(fields, "location", 2000),
+				detail: fields.detail === undefined ? undefined : textField(fields, "detail", 2000),
+			};
+			const report = await storedReport();
+			const found = locateFinding(report, target);
+			if (!found) throw new HttpError(404, "That finding is not in the latest scan. Reload the page to see the current one.");
+			prompt = findingPrompt(report, found.repo, found.finding);
+		} else {
+			prompt = roadmapPrompt(await storedReport());
+		}
+
+		if (modelBusy) throw new HttpError(409, "The model is still answering another request. Try again when it has finished.");
+		modelBusy = true;
+		// A page that is closed stops waiting, so Ollama stops working on an answer nobody will read.
+		const cancel = new AbortController();
+		const onClose = () => {
+			if (!res.writableFinished) cancel.abort();
+		};
+		res.once("close", onClose);
+		try {
+			const text = await chat(assistant, prompt.messages, { fetchFn: options.fetchFn, signal: cancel.signal });
+			sendJson(res, 200, { text, model: assistant.model, ...(prompt.cut ? { cut: prompt.cut } : {}) });
+		} catch (err) {
+			if (err instanceof AssistantError) throw new HttpError(err.status, err.message);
+			throw err;
+		} finally {
+			res.off("close", onClose);
+			modelBusy = false;
+		}
+	}
+
+	async function storedReport(): Promise<ScanReport> {
+		const report = await readReport(options.reportPath);
+		if (!report) throw new HttpError(404, "There is no scan yet. Scan a folder first.");
+		return report;
+	}
+
+	/** The latest scan report of a domain, read from the monitor. The admin token is added here and never leaves this process. */
+	async function latestDomainReport(domain: string): Promise<MonitorReport & Record<string, unknown>> {
+		if (!options.monitor) throw new HttpError(503, options.monitorError ?? "The monitor is not configured");
+		let answer: { status: number; body: Record<string, unknown> };
+		try {
+			answer = await callMonitor(options.monitor, "GET", `/domains/${encodeURIComponent(domain)}`, undefined, options.fetchFn);
+		} catch (err) {
+			throw new HttpError(502, `Could not reach the monitor: ${err instanceof Error ? err.message : String(err)}`);
+		}
+		const error = typeof answer.body.error === "string" ? answer.body.error : `The monitor answered HTTP ${answer.status}`;
+		// Only "not there" passes through; anything else is the monitor's problem, not the page's.
+		if (answer.status === 404) throw new HttpError(404, error);
+		if (answer.status >= 400) throw new HttpError(502, `The monitor refused the request: ${error}`);
+		const report = answer.body.report;
+		if (!report || typeof report !== "object") throw new HttpError(404, `${domain} has not been scanned yet, so there is nothing to explain.`);
+		return report as MonitorReport & Record<string, unknown>;
 	}
 
 	/** Forwards a domains call to the monitor. The admin token is added here and never reaches the browser. */
@@ -306,6 +409,25 @@ export function originAllowed(origin: string | undefined, host: string, loopback
 	} catch {
 		return false;
 	}
+}
+
+/** A request body as named fields. No body counts as none given. */
+function bodyObject(body: unknown): Record<string, unknown> {
+	if (body === undefined) return {};
+	if (typeof body !== "object" || body === null || Array.isArray(body)) throw new HttpError(400, "Body must be a JSON object");
+	return body as Record<string, unknown>;
+}
+
+function textField(fields: Record<string, unknown>, name: string, max: number): string {
+	const value = fields[name];
+	if (typeof value !== "string" || value === "" || value.length > max) throw new HttpError(400, `${name} must be text of 1 to ${max} characters`);
+	return value;
+}
+
+function domainField(fields: Record<string, unknown>): string {
+	const domain = typeof fields.domain === "string" ? fields.domain.trim().toLowerCase() : "";
+	if (!DOMAIN_PATTERN.test(domain)) throw new HttpError(400, "Invalid domain name");
+	return domain;
 }
 
 function safeDecode(segment: string): string {

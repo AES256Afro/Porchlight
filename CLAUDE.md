@@ -24,6 +24,7 @@ Do not weaken these without the owner asking for it.
 10. **Triage re-ranks; it never drops.** `cli/src/repos/triage.ts` lowers a secret's severity one step per reason (a generic rule, an unlikely path) and records the reason in the finding's `note`. Do not turn it into a filter: a real key can live in a test file. Path rules match whole segments and file-name conventions, never substrings.
 11. **Exports are escaped for their format.** Everything a roadmap or findings export prints from a scan goes through `cli/src/roadmap/escape.ts`: entities in HTML, an apostrophe before formula characters in CSV, escaped text or fenced code in Markdown. The HTML export has no script and loads nothing. Download names are built from a fixed stem and a date, never from request input.
 12. **A suggested fix is the complete repair.** The fix shown for a finding is planned from its whole repository, not from whatever a filter left on show, so following it clears every advisory against the package. An export of part of a scan says it is partial; one from an incomplete scan says what was not covered.
+13. **The local model sees only what the page shows, as data, and is never trusted.** `cli/src/assist/prompts.ts` sends it only fields the page displays, built by the server from its own copy of the report (the request only names what to explain), as one framed JSON block it is told is data, not instructions. Never secret values, authors, emails, the admin token or a domain's challenge. Its output is labelled as generated with the model's name (`generatedText` in `cli/ui/assist.js`), rendered as text with `h()`, never as HTML, and never acted on.
 
 ## Interface conventions
 
@@ -36,7 +37,7 @@ Do not weaken these without the owner asking for it.
 
 ## Testing
 
-- Tests never touch the network. The monitor injects `Deps` (`fetch`, `now`) and tests pass `fakeDeps` from `monitor/test/fake-net.ts`. The CLI injects a `Runner` and tests pass `fakeRunner`.
+- Tests never touch the network. The monitor injects `Deps` (`fetch`, `now`) and tests pass `fakeDeps` from `monitor/test/fake-net.ts`. The CLI injects a `Runner` and tests pass `fakeRunner`; the UI server takes a `fetchFn` for the monitor and the local model, and tests pass a fake for both.
 - Secret-shaped test data is assembled at run time (`fakeAwsKeyId` in `cli/test/helpers.ts`), so this repository's own pre-commit secret scan has nothing to find. Do not commit literal credential-shaped strings.
 - `cli/test/fixtures/osv-scanner-2.7.1.json` is real osv-scanner output, trimmed. When the tool's format changes, capture a new fixture instead of editing this one by hand.
 - osv-scanner exits 127 with an empty, well-formed report when it cannot reach its database. Treat any exit code other than 0, 1 and 128 as a failure, never as "no vulnerabilities".

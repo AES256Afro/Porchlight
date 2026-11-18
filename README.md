@@ -40,6 +40,8 @@ It prints a link. Open it to get both tools in the browser:
 
 Every page with findings has an **Export** button; see [Export a repair roadmap](#export-a-repair-roadmap).
 
+With a local model connected, findings, the roadmap and domains also get **Explain** and **Summarise** buttons, and the Overview takes questions; see [Local model](#local-model).
+
 | Option | Effect |
 | --- | --- |
 | `--port <n>` | Port to listen on (default 4747; on this machine, the next free port if another copy already has it) |
@@ -55,6 +57,7 @@ How the interface is protected:
 - The link carries a session key generated for that run. Every request for data needs it, so other pages in your browser, and other users of the machine, get nothing. The key is kept for that tab and removed from the address bar.
 - It refuses requests addressed to any other host name or sent from another site.
 - The monitor's admin token stays in the SecurityX process. The browser never receives it.
+- A local model is asked by the SecurityX process, from its own copy of the report. The page only names what to explain.
 - The page loads nothing from the network, and has no dependencies or build step.
 
 ## Run on BoxPilot
@@ -88,6 +91,53 @@ Releasing:
 4. Copy the manifest to BoxPilot's `catalog/securityx.yaml` in a BoxPilot pull request. Servers offer the update once a BoxPilot release includes it.
 
 `boxpilot/securityx.yaml` is the source of truth for BoxPilot's `catalog/securityx.yaml`. `npm run check` validates it with BoxPilot's own schema when a BoxPilot checkout is at `../BoxPilot` or `BOXPILOT_DIR`.
+
+## Local model
+
+A local model can explain what a scan found, in the web interface. It is optional: without one, these buttons are not shown.
+
+- **Explain** on a finding (Findings, and By repository): what it is, how it could be abused, and how to fix it.
+- **Summarise** on the Roadmap: a short "fix this first, and why". It covers the whole roadmap, whatever the filters show.
+- **Explain changes** on a domain: the monitor's latest report for it (hosts added or gone, DNS changes, certificates, missing headers, findings) as a short summary.
+- **Ask about this scan** on the Overview: questions answered from the stored report only.
+
+The model is served by [Ollama](https://ollama.com), on the same machine or server. Two settings, read from the environment when `securityx ui` starts and never from the command line:
+
+| Setting | Meaning |
+| --- | --- |
+| `SECURITYX_LLM_URL` | Ollama's address, such as `http://localhost:11434`. Empty turns the features off |
+| `SECURITYX_LLM_MODEL` | The model's name, as `ollama list` shows it |
+
+An address without a model, or one that is not an http or https address, is shown in the interface as a setting to correct.
+
+```bash
+ollama pull hf.co/hauhaucs/qwen3.5-9b-uncensored-hauhaucs-aggressive:Q4_K_M
+export SECURITYX_LLM_URL=http://localhost:11434
+export SECURITYX_LLM_MODEL=hf.co/hauhaucs/qwen3.5-9b-uncensored-hauhaucs-aggressive:Q4_K_M
+securityx ui
+```
+
+On BoxPilot:
+
+1. Install the Ollama app from Apps → Browse.
+2. In its Models tab, add `hf.co/hauhaucs/qwen3.5-9b-uncensored-hauhaucs-aggressive:Q4_K_M`.
+3. In Apps → SecurityX → Settings, set **Local model address** to `http://host.docker.internal:11434` and choose that model under **Local model**. SecurityX restarts with them.
+
+Running the image some other way, give the container a route to the host and both settings: `--add-host host.docker.internal:host-gateway -e SECURITYX_LLM_URL=http://host.docker.internal:11434 -e SECURITYX_LLM_MODEL=<model>`.
+
+What the model is sent:
+
+- Only what the page already shows: for a finding, its scanner, type, severity, rule or advisory ID, title, location, commit or package, ranking note and suggested fix; repository names; the roadmap's actions; a domain report's hosts, DNS changes, findings and notes.
+- Never a secret value (reports have none), an author name or email, the monitor's admin token, or a domain's verification record.
+- Scan data can be written by an attacker (a file name, a package name, a DNS TXT record), so it is sent as one marked block, and the model is told that everything in it is data, not instructions.
+- A large scan is cut to fit what the model can read, most severe first, and the answer says so.
+- One request at a time, to Ollama only. Plain http is allowed, because Ollama runs locally and nothing secret is sent to it.
+
+What comes back:
+
+- Each answer is labelled with the model that wrote it. It is generated and can be wrong: check it against the findings before acting on it.
+- It is shown as plain text, never as HTML, and SecurityX never acts on it.
+- Without a graphics card, a 9B model takes tens of seconds per answer. SecurityX waits up to five minutes.
 
 ## Scan repositories
 
@@ -281,6 +331,7 @@ npm test        # both packages
 - `monitor/src/scan.ts` is the scan pipeline; `snapshot.ts` observes, `findings.ts` and `diff.ts` interpret, `api.ts` is the HTTP API.
 - `cli/src/repos/` is the scanner; `cli/src/monitor/client.ts` is the API client. The CLI has no runtime dependencies and runs its TypeScript directly.
 - `cli/src/roadmap/` turns findings into repairs and renders the exports.
+- `cli/src/assist/` asks the local model: `ollama.ts` is the client, `prompts.ts` builds what it is sent. `cli/ui/assist.js` shows its answers.
 - `cli/src/ui/server.ts` serves the web interface in `cli/ui/`, which is plain JavaScript modules and CSS, type-checked through JSDoc. `store.js` holds what the pages share; `filter.js` and `list.js` are pure logic shared with the server and covered by tests.
 - `.claude/launch.json` starts the interface and a local monitor for previewing in Claude Code.
 - Tests do not touch the network: the monitor's use a scripted internet (`monitor/test/fake-net.ts`), the CLI's a scripted process runner. One CLI test runs the real gitleaks on a throwaway repository.
