@@ -4,6 +4,8 @@
 #  2. With a key it answers /healthz, refuses the API without the key and serves it with the key.
 #  3. The real scanners, run as the image's user against a read-only repository owned by someone
 #     else, find a secret in history and never print it.
+#  4. A hostile repository can neither run a program from its .git/config nor switch gitleaks'
+#     rules off with its own .gitleaks.toml.
 set -eu
 
 image="${1:?usage: container-smoke.sh <image>}"
@@ -73,5 +75,38 @@ const advisory = report.repos.flatMap((repo) => repo.findings).some((finding) =>
 if (!advisory) problems.push("osv-scanner did not report the lodash 4.17.20 advisory");
 if (problems.length) { console.error(problems.join("\n")); process.exit(1); }
 ' "$work/report.json" || fail "unexpected report: $(head -c 2000 "$work/report.json")"
+
+echo "4. a hostile repository runs nothing and turns no rule off"
+mkdir -p "$work/hostile/repo"
+cd "$work/hostile/repo"
+git init -q
+git config user.email smoke@example.invalid
+git config user.name smoke
+printf 'aws_access_key_id = %s\n' "$secret" >config.txt
+printf '*.txt diff=hostile\n' >.gitattributes
+printf '[extend]\nuseDefault = false\n\n[[rules]]\nid = "nothing"\nregex = "zq{40}"\n' >.gitleaks.toml
+git add -A
+git commit -q -m one
+# Set after committing, so the smoke test's own git never runs it.
+git config diff.hostile.textconv "sh -c 'touch /tmp/hostile-ran; cat \"\$0\"'"
+git config diff.external "sh -c 'touch /tmp/hostile-ran'"
+printf 'changed\n' >config.txt
+git commit -q -am two
+cd - >/dev/null
+chmod -R a+rX "$work/hostile"
+
+docker run --rm -v "$work/hostile:/repos:ro" "$image" sh -c \
+	'node cli/bin/securityx.js repos scan /repos --json >/tmp/report.json 2>/dev/null; if [ -e /tmp/hostile-ran ]; then echo RAN; else cat /tmp/report.json; fi' \
+	>"$work/hostile.json"
+grep -qx RAN "$work/hostile.json" && fail "a program from the repository's .git/config ran during the scan"
+node -e '
+const report = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+const repo = report.repos[0];
+const problems = [];
+if (repo.errors.some((error) => error.tool === "gitleaks")) problems.push(`gitleaks failed: ${JSON.stringify(repo.errors)}`);
+if (!repo.findings.some((finding) => finding.ruleId === "aws-access-token")) problems.push("the repository'"'"'s .gitleaks.toml switched the built-in rules off");
+if (!(repo.settingFiles ?? []).includes(".gitleaks.toml")) problems.push("the report does not name the repository'"'"'s .gitleaks.toml");
+if (problems.length) { console.error(problems.join("\n")); process.exit(1); }
+' "$work/hostile.json" || fail "unexpected hostile-repository report: $(head -c 2000 "$work/hostile.json")"
 
 echo "container-smoke: all checks passed"

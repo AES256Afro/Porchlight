@@ -7,7 +7,7 @@ import { buildHash, parseHash } from "./list.js";
 import { renderOverview } from "./overview.js";
 import { renderByRepo } from "./repos.js";
 import { renderRoadmap } from "./roadmap.js";
-import { reset, store, subscribe } from "./store.js";
+import { findingRows, reset, store, subscribe } from "./store.js";
 
 const view = /** @type {HTMLElement} */ (document.getElementById("view"));
 const nav = /** @type {HTMLElement} */ (document.getElementById("nav"));
@@ -28,7 +28,17 @@ let firstRoute = true;
 /** The state of the last scan the sidebar announced, so "finished" is said once. */
 let announced = "";
 
-replace(nav, ...SECTIONS.map(([key, label]) => h("a", { href: `#/${key}`, dataset: { nav: key } }, icon(key), label)));
+/** Says which of the two jobs a section belongs to, above the first section of each. */
+const GROUPS = /** @type {Record<string, string>} */ ({ findings: "Your code", domains: "Your websites" });
+const findingCount = h("span", { class: "count" });
+
+replace(
+	nav,
+	...SECTIONS.flatMap(([key, label]) => [
+		GROUPS[key] ? h("span", { class: "nav-group" }, GROUPS[key]) : null,
+		h("a", { href: `#/${key}`, dataset: { nav: key } }, icon(key), label, key === "findings" ? findingCount : null),
+	]),
+);
 subscribe(drawScanStatus);
 window.addEventListener("hashchange", route);
 void route();
@@ -75,7 +85,7 @@ async function route() {
 		firstRoute = false;
 	} catch (err) {
 		if (current !== navigation) return;
-		if (err instanceof ApiError && err.status === 401) return askForKey();
+		if (err instanceof ApiError && err.status === 401) return askForKey(err.body.service === true);
 		replace(
 			view,
 			h(
@@ -102,6 +112,7 @@ function page(section, context) {
 /** The foot of the sidebar: whether a scan is running, and what the last one covered. Visible on every page. */
 function drawScanStatus() {
 	const scan = store.scan;
+	findingCount.textContent = store.report ? findingRows().length.toLocaleString() : "";
 	if (scan.state === "running") {
 		const known = scan.total > 0;
 		replace(
@@ -121,10 +132,15 @@ function drawScanStatus() {
 	announced = state;
 }
 
-/** Shown when the page was opened without the link `securityx ui` printed. */
-function askForKey() {
+/**
+ * Shown when the page has no key: opened without the link `securityx ui` printed, or, as a service,
+ * before the access key has been pasted in this tab.
+ *
+ * @param {boolean} service
+ */
+function askForKey(service) {
 	const input = /** @type {HTMLInputElement} */ (
-		h("input", { type: "password", name: "key", autocomplete: "off", required: true, "aria-label": "Session key" })
+		h("input", { type: "password", name: "key", autocomplete: "off", required: true, "aria-label": service ? "Access key" : "Session key" })
 	);
 	replace(
 		view,
@@ -143,14 +159,22 @@ function askForKey() {
 						void route();
 					},
 				},
-				h("h2", null, "Session key needed"),
-				h(
-					"p",
-					null,
-					"SecurityX only answers pages opened from the link it printed when it started. Open that link, or paste it, or the part after ",
-					h("code", null, "#k="),
-					", here. When BoxPilot runs SecurityX, paste the access key from the app's sign-in details.",
-				),
+				h("h2", null, service ? "Paste your access key" : "Session key needed"),
+				service
+					? h(
+							"p",
+							null,
+							"Scan results name the files where secrets were found, so this page is locked. In BoxPilot, open Apps → SecurityX and copy the ",
+							h("strong", null, "Access key"),
+							" from its sign-in details, then paste it here. This tab remembers it until you close it.",
+						)
+					: h(
+							"p",
+							null,
+							"SecurityX only answers pages opened from the link it printed when it started. Open that link, or paste it, or the part after ",
+							h("code", null, "#k="),
+							", here.",
+						),
 				h("div", { class: "inline-form" }, h("div", { class: "field grow" }, input), h("button", { type: "submit", class: "button primary" }, "Continue")),
 			),
 		),

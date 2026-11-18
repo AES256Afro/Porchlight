@@ -47,7 +47,7 @@ export async function renderRoadmap(view, route) {
 
 	function draw() {
 		const report = store.report;
-		if (!report) return replace(view, h("section", { class: "page" }, header(null), noScanYet()));
+		if (!report) return replace(view, h("section", { class: "page" }, header(null), noScanYet("The shortest list of repairs appears here, most urgent first. One repair, such as upgrading a package, can clear many problems at once.")));
 		const repos = report.repos.filter((repo) => repo.findings.length > 0).map((repo) => repo.name).sort((a, b) => a.localeCompare(b));
 		const search = /** @type {HTMLInputElement} */ (
 			h("input", {
@@ -91,6 +91,7 @@ export async function renderRoadmap(view, route) {
 				),
 				summary?.panel,
 				store.notes.length > 0 ? banner("warning", "The scan was incomplete, so this roadmap is too", store.notes) : null,
+				store.settingNotes.length > 0 ? banner("warning", "Some repositories tell the scanners to leave findings out", store.settingNotes) : null,
 				h(
 					"div",
 					{ class: "filters" },

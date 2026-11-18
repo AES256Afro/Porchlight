@@ -1444,6 +1444,278 @@ legend {
 	color: #fff;
 }
 
+/* First steps: what a scan would cover, and numbered setup steps. */
+
+.scan-form {
+	display: grid;
+	gap: 12px;
+	margin-top: 12px;
+}
+
+.scan-form .actions {
+	align-items: center;
+	margin-top: 0;
+}
+
+.options {
+	color: var(--ink-2);
+}
+
+.options summary {
+	cursor: pointer;
+	padding: 6px 4px;
+	font-size: 12.5px;
+}
+
+.options .field {
+	margin-top: 6px;
+}
+
+.preview:empty {
+	display: none;
+}
+
+.found,
+.guide {
+	display: grid;
+	gap: 8px;
+	padding: 12px 14px;
+	border: 1px solid var(--hairline);
+	border-radius: 8px;
+	background: var(--page);
+}
+
+.preview .severity {
+	align-items: flex-start;
+	overflow-wrap: anywhere;
+	white-space: normal;
+}
+
+.guide p {
+	max-width: 70ch;
+	color: var(--ink-2);
+}
+
+.chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 0;
+	list-style: none;
+}
+
+.chips li {
+	max-width: 100%;
+	padding: 2px 8px;
+	border: 1px solid var(--hairline);
+	border-radius: 999px;
+	background: var(--surface);
+	color: var(--ink-2);
+	font-size: 12.5px;
+	overflow-wrap: anywhere;
+}
+
+.chips .more {
+	border-color: transparent;
+	background: none;
+}
+
+.steps {
+	display: grid;
+	gap: 10px;
+	max-width: 70ch;
+	margin-top: 4px;
+	padding: 0;
+	list-style: none;
+	counter-reset: step;
+}
+
+.steps li {
+	position: relative;
+	min-height: 24px;
+	padding-left: 36px;
+}
+
+.steps li::before {
+	counter-increment: step;
+	content: counter(step);
+	position: absolute;
+	left: 0;
+	top: -1px;
+	display: grid;
+	place-items: center;
+	width: 24px;
+	height: 24px;
+	border: 1px solid var(--border);
+	border-radius: 50%;
+	color: var(--ink);
+	font-size: 12.5px;
+	font-weight: 600;
+}
+
+.card .steps {
+	margin: 14px 0;
+}
+
+.steps.left {
+	margin: 18px auto 0;
+	text-align: left;
+}
+
+.journey .status-done {
+	color: var(--good);
+}
+
+.steps pre {
+	margin-top: 8px;
+}
+
+.github {
+	display: grid;
+	gap: 10px;
+	margin-top: 18px;
+	padding-top: 16px;
+	border-top: 1px solid var(--hairline);
+}
+
+.github h3 {
+	margin: 0;
+}
+
+.github .inline-form {
+	max-width: 520px;
+}
+
+.pick {
+	display: grid;
+	gap: 8px;
+}
+
+.pick .actions,
+.fetched .actions {
+	align-items: center;
+	margin-top: 0;
+}
+
+.repo-pick {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	border: 1px solid var(--hairline);
+	border-radius: 8px;
+}
+
+.repo-pick.scroll {
+	max-height: 320px;
+	overflow-y: auto;
+}
+
+.repo-pick li {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 6px 12px;
+}
+
+.repo-pick li + li {
+	border-top: 1px solid var(--hairline);
+}
+
+.repo-pick label {
+	display: flex;
+	flex: 1;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 10px;
+	min-height: 28px;
+	cursor: pointer;
+}
+
+.fetched .repo-pick {
+	margin-top: 10px;
+}
+
+.verdict {
+	margin-top: 4px;
+	font-size: 12.5px;
+}
+
+.judgement {
+	display: grid;
+	gap: 8px;
+}
+
+.judgement ol {
+	margin-top: 4px;
+	padding-left: 20px;
+}
+
+.uses {
+	display: grid;
+	gap: 6px;
+	margin-top: 8px;
+	padding: 0;
+	list-style: none;
+}
+
+.uses li {
+	display: grid;
+	gap: 2px;
+}
+
+.field.inline {
+	flex-direction: row;
+	align-items: center;
+	gap: 8px;
+}
+
+.check {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.nav-group {
+	margin: 12px 0 2px;
+	padding: 0 10px;
+	color: var(--muted);
+	font-size: 11.5px;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
+.nav .count {
+	margin-left: auto;
+	color: var(--ink-2);
+	font-size: 12px;
+	font-variant-numeric: tabular-nums;
+}
+
+.journey {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px 18px;
+	margin: 0 0 14px;
+	padding: 0;
+	list-style: none;
+	counter-reset: step;
+	color: var(--ink-2);
+	font-size: 12.5px;
+}
+
+.journey li {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.journey li[aria-current="step"] {
+	color: var(--ink);
+	font-weight: 600;
+}
+
 /* Narrow windows: navigation moves to the top and everything stacks. */
 
 @media (max-width: 900px) {
@@ -1478,6 +1750,8 @@ legend {
 	}
 
 	.nav .icon,
+	.nav .count,
+	.nav-group,
 	.scan-status {
 		display: none;
 	}

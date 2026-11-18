@@ -1,4 +1,5 @@
 // @ts-check
+import { judgementBlock, verdictMark } from "./analysis.js";
 import { assistAction } from "./assist.js";
 import { banner, emptyState, formatWhen, h, icon, pager, PHASE_TITLES, plural, replace, select, severityBadge, statTile, stepNodes } from "./dom.js";
 import { exportButton, openExportDialog } from "./export.js";
@@ -18,6 +19,7 @@ const SORTS = /** @type {[string, string][]} */ ([
 	["repo", "By repository"],
 	["location", "By file"],
 	["title", "By name"],
+	["verdict", "By model verdict"],
 ]);
 
 /**
@@ -30,7 +32,7 @@ const SORTS = /** @type {[string, string][]} */ ([
 export async function renderFindings(view, route) {
 	await load();
 	const filter = filterFromParams(route.params);
-	let sort = /** @type {"severity" | "repo" | "location" | "title"} */ (SORTS.some(([key]) => key === route.params.get("sort")) ? route.params.get("sort") : "severity");
+	let sort = /** @type {"severity" | "repo" | "location" | "title" | "verdict"} */ (SORTS.some(([key]) => key === route.params.get("sort")) ? route.params.get("sort") : "severity");
 	let page = Number(route.params.get("page")) || 1;
 	/** @type {Set<string>} */
 	const expanded = new Set();
@@ -51,6 +53,7 @@ export async function renderFindings(view, route) {
 				{ class: "page" },
 				findingsHeader("all", filter),
 				coverageBanner(),
+				settingsBanner(),
 				filterBar(
 					filter,
 					() => {
@@ -132,6 +135,7 @@ export async function renderFindings(view, route) {
 						h("span", { class: "wrap" }, row.title),
 					),
 					row.suggestion ? h("div", { class: "fix" }, h("span", { class: "fix-label" }, "Fix"), row.suggestion.title) : null,
+					verdictMark(row),
 				),
 				h("td", { class: "wrap" }, row.repo),
 				h("td", { class: "mono wrap col-where" }, row.location),
@@ -187,6 +191,7 @@ export function findingDetail(finding, repo) {
 					h("ol", null, ...finding.suggestion.how.map((step) => h("li", null, ...stepNodes(step)))),
 				)
 			: null,
+		judgementBlock(finding),
 		explain ? h("div", { class: "assist-block" }, explain.button, explain.panel) : null,
 	);
 }
@@ -212,7 +217,7 @@ export function findingsHeader(mode, filter) {
 				{ class: "sub" },
 				report
 					? `${plural(report.repos.length, "repository", "repositories")} under ${report.root} · scanned ${formatWhen(report.scannedAt)} · ${tools}`
-					: "Nothing has been scanned yet.",
+					: "The problems found in your code: leaked secrets and vulnerable packages.",
 			),
 		),
 		h(
@@ -234,16 +239,22 @@ export function findingsHeader(mode, filter) {
 	);
 }
 
-export function noScanYet() {
-	return emptyState(
-		"Nothing scanned yet",
-		"A scan looks through every git repository under a folder for committed secrets and for dependencies with known vulnerabilities.",
-		h("a", { class: "button primary", href: "#/overview" }, "Scan a folder"),
-	);
+/**
+ * In place of a page that has nothing to show until a scan has run: what the page is for, and where to start.
+ *
+ * @param {string} [shows] what this page will hold once there is a scan
+ */
+export function noScanYet(shows = "Every leaked password or key and every vulnerable package appears here, worst first.") {
+	return emptyState("Your code has not been checked yet", shows, h("a", { class: "button primary", href: "#/overview" }, "Check your code"));
 }
 
 export function coverageBanner() {
 	return store.notes.length > 0 ? banner("warning", "This scan is incomplete, so a clean result here is not a clean bill of health", store.notes) : null;
+}
+
+/** Ignore files and scanner settings found in repositories: what they hide is not listed here. */
+export function settingsBanner() {
+	return store.settingNotes.length > 0 ? banner("warning", "Some repositories tell the scanners to leave findings out", store.settingNotes) : null;
 }
 
 /**

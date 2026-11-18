@@ -1,6 +1,6 @@
-import { basename, relative } from "node:path";
+import { basename } from "node:path";
 import { describeFilter, matchesFilter, noFilter, type FindingFilter } from "../../ui/filter.js";
-import { coverageNotes, rankRepos } from "../repos/report.ts";
+import { coverageNotes, rankRepos, repoName } from "../repos/report.ts";
 import { severityRank, type Finding, type ScanReport, type Severity } from "../repos/types.ts";
 import { assemble, emptyCounts, type Action, type FindingRow, type FindingsList, type PhaseKey, type Planned, type Roadmap } from "./types.ts";
 import { bumpKind, highestVersion } from "./versions.ts";
@@ -20,6 +20,11 @@ const MAX_LISTED = 8;
 /**
  * Turns a repository scan into repairs, one per package to upgrade or
  * credential to deal with, instead of one line per finding.
+ *
+ * Every repair is planned from the whole repository; a filter only chooses
+ * which repairs are listed (those clearing at least one finding it lets
+ * through). Planning from the filtered part would name an upgrade that clears
+ * the advisories on show and leaves the others in place.
  */
 export function buildRepoRoadmap(report: ScanReport, filter: FindingFilter = noFilter()): Roadmap {
 	return assemble(
@@ -31,7 +36,7 @@ export function buildRepoRoadmap(report: ScanReport, filter: FindingFilter = noF
 			caveats: coverageNotes(report),
 		},
 		SUMMARIES,
-		plan(report, filter),
+		plan(report).filter(({ group, findings }) => findings.some((finding) => matchesFilter(finding, group, filter))),
 	);
 }
 
@@ -43,7 +48,7 @@ export function buildRepoRoadmap(report: ScanReport, filter: FindingFilter = noF
  */
 export function listRepoFindings(report: ScanReport, filter: FindingFilter = noFilter()): FindingsList {
 	const rows: FindingRow[] = [];
-	for (const { group, phase, action, findings } of plan(report, noFilter())) {
+	for (const { group, phase, action, findings } of plan(report)) {
 		for (const finding of findings) {
 			if (!matchesFilter(finding, group, filter)) continue;
 			rows.push({
@@ -82,19 +87,23 @@ export function listRepoFindings(report: ScanReport, filter: FindingFilter = noF
 /** The repair for each finding of a report, for showing beside it. Keyed by the finding objects of `report`. */
 export function suggestionsFor(report: ScanReport): Map<Finding, { title: string; how: string[]; phase: PhaseKey }> {
 	const suggestions = new Map<Finding, { title: string; how: string[]; phase: PhaseKey }>();
-	for (const { phase, action, findings } of plan(report, noFilter())) {
+	for (const { phase, action, findings } of plan(report)) {
 		for (const finding of findings) suggestions.set(finding, { title: action.title, how: action.how, phase });
 	}
 	return suggestions;
 }
 
-/** Groups findings into actions: one per package to upgrade, credential to rotate, or batch of doubtful matches to check. */
-function plan(report: ScanReport, filter: FindingFilter): Planned<Finding>[] {
+/**
+ * Groups a repository's findings into actions: one per package to upgrade,
+ * credential to rotate, or batch of doubtful matches to check. Takes no
+ * filter on purpose (invariant 12): see buildRepoRoadmap.
+ */
+function plan(report: ScanReport): Planned<Finding>[] {
 	const entries: Planned<Finding>[] = [];
 
 	for (const repo of rankRepos(report.repos)) {
-		const name = relative(report.root, repo.path) || basename(report.root);
-		const findings = repo.findings.filter((finding) => matchesFilter(finding, name, filter));
+		const name = repoName(report, repo);
+		const findings = repo.findings;
 
 		for (const group of groupBy(findings.filter((finding) => finding.kind === "vulnerability"), (finding) => `${finding.location}\n${finding.detail}`)) {
 			const action = upgradeAction(group);

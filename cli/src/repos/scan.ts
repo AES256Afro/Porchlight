@@ -3,6 +3,7 @@ import { discoverRepos } from "./discover.ts";
 import { run as defaultRun, ToolMissingError, type Runner } from "./exec.ts";
 import { runGitleaks } from "./gitleaks.ts";
 import { runOsvScanner } from "./osv.ts";
+import { scannerSettingFiles } from "./settings.ts";
 import type { Finding, RepoResult, ScanReport, ToolName, ToolStatus } from "./types.ts";
 
 interface Tool {
@@ -30,8 +31,12 @@ export interface ScanProgress {
 export interface ScanOptions {
 	root: string;
 	depth: number;
+	/** Further folders to scan in the same report, each looked through to its own depth. */
+	also?: { root: string; depth: number }[];
 	run?: Runner;
 	now?: () => Date;
+	/** Lists a repository's scanner setting files; tests replace it. */
+	settingFiles?: (repo: string) => Promise<string[]>;
 	onProgress?: (progress: ScanProgress) => void;
 }
 
@@ -40,20 +45,24 @@ export async function scanRepos(options: ScanOptions): Promise<ScanReport> {
 	const root = resolve(options.root);
 	const tools = await Promise.all(TOOLS.map((tool) => detect(tool, run)));
 	const available = TOOLS.filter((tool) => tools.some((status) => status.tool === tool.name && status.status === "ok"));
-	const paths = await discoverRepos(root, options.depth);
+	const others = (options.also ?? []).map((other) => ({ root: resolve(other.root), depth: other.depth }));
+	const found = await Promise.all([{ root, depth: options.depth }, ...others].map((place) => discoverRepos(place.root, place.depth)));
+	// A folder inside another is found twice; it is scanned once.
+	const paths = [...new Set(found.flat())];
 
 	const repos: RepoResult[] = [];
 	const queue = [...paths];
 	const worker = async () => {
 		for (let path = queue.shift(); path !== undefined; path = queue.shift()) {
 			options.onProgress?.({ done: repos.length, total: paths.length, path });
-			repos.push(await scanRepo(path, available, run));
+			repos.push(await scanRepo(path, available, run, options.settingFiles ?? scannerSettingFiles));
 		}
 	};
 	await Promise.all(Array.from({ length: REPO_CONCURRENCY }, worker));
 	repos.sort((a, b) => a.path.localeCompare(b.path));
 
-	return { root, scannedAt: (options.now?.() ?? new Date()).toISOString(), tools, repos };
+	const otherRoots = others.map((other) => other.root);
+	return { root, ...(otherRoots.length > 0 ? { otherRoots } : {}), scannedAt: (options.now?.() ?? new Date()).toISOString(), tools, repos };
 }
 
 async function detect(tool: Tool, run: Runner): Promise<ToolStatus> {
@@ -68,8 +77,10 @@ async function detect(tool: Tool, run: Runner): Promise<ToolStatus> {
 }
 
 /** One scanner failing on a repository is recorded against it; the others still run. */
-async function scanRepo(path: string, tools: Tool[], run: Runner): Promise<RepoResult> {
+async function scanRepo(path: string, tools: Tool[], run: Runner, settingFiles: (repo: string) => Promise<string[]>): Promise<RepoResult> {
 	const result: RepoResult = { path, findings: [], errors: [] };
+	const files = await settingFiles(path);
+	if (files.length > 0) result.settingFiles = files;
 	for (const tool of tools) {
 		try {
 			result.findings.push(...(await tool.scan(path, run)));

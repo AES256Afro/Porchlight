@@ -2,6 +2,7 @@
 // Pure helpers for lists and for keeping a page's state in the address.
 // No DOM here, so they are tested directly.
 import { ALL_SEVERITIES, noFilter } from "./filter.js";
+import { verdictRank } from "./generated.js";
 
 /** @typedef {import("./filter.js").FindingFilter} FindingFilter */
 
@@ -104,16 +105,18 @@ const SEVERITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 /**
  * Orders finding rows. Ties always fall back to severity, then place, so the order is stable.
  *
- * @template {{ severity: string, repo: string, location: string, title: string }} T
+ * @template {{ severity: string, repo: string, location: string, title: string, analysis?: { verdict: string } }} T
  * @param {T[]} rows
- * @param {"severity" | "repo" | "location" | "title"} key
+ * @param {"severity" | "repo" | "location" | "title" | "verdict"} key
  * @returns {T[]} a new array
  */
 export function sortFindings(rows, key) {
 	const rank = (/** @type {T} */ row) => SEVERITY_RANK[/** @type {keyof typeof SEVERITY_RANK} */ (row.severity)] ?? 9;
 	const bySeverity = (/** @type {T} */ a, /** @type {T} */ b) => rank(a) - rank(b) || a.repo.localeCompare(b.repo) || a.location.localeCompare(b.location);
 	if (key === "severity") return [...rows].sort(bySeverity);
-	return [...rows].sort((a, b) => a[key].localeCompare(b[key]) || bySeverity(a, b));
+	if (key === "verdict") return [...rows].sort((a, b) => verdictRank(a) - verdictRank(b) || bySeverity(a, b));
+	const text = key;
+	return [...rows].sort((a, b) => a[text].localeCompare(b[text]) || bySeverity(a, b));
 }
 
 /**

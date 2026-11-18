@@ -1,6 +1,6 @@
 // @ts-check
 import { banner, emptyState, h, icon, replace, severityBadge } from "./dom.js";
-import { coverageBanner, filterBar, findingDetail, findingsHeader, noScanYet, severityTiles } from "./findings.js";
+import { coverageBanner, filterBar, findingDetail, findingsHeader, noScanYet, settingsBanner, severityTiles } from "./findings.js";
 import { ALL_SEVERITIES, isFiltering, matchesFilter } from "./filter.js";
 import { filterFromParams, paramsFromFilter } from "./list.js";
 import { findingRows, load, store, subscribe } from "./store.js";
@@ -41,7 +41,7 @@ export async function renderByRepo(view, route) {
 
 	function draw() {
 		if (!store.report) return replace(view, h("section", { class: "page" }, findingsHeader("by-repo"), noScanYet()));
-		replace(view, h("section", { class: "page" }, findingsHeader("by-repo", filter), coverageBanner(), filterBar(filter, update), results));
+		replace(view, h("section", { class: "page" }, findingsHeader("by-repo", filter), coverageBanner(), settingsBanner(), filterBar(filter, update), results));
 		update();
 	}
 
@@ -118,7 +118,8 @@ export async function renderByRepo(view, route) {
 								)
 							: h("span", { class: "disclosure static" }, row.repo.name),
 					),
-					h("td", null, worstBadge(row.counts, row.repo.errors.length > 0)),
+					// A scanner that is not installed checked no repository, so none of them is clean.
+					h("td", null, worstBadge(row.counts, row.repo.errors.length > 0 || (store.report?.tools ?? []).some((tool) => tool.status === "missing"))),
 					...ALL_SEVERITIES.map((severity) => countCell(row.counts[severity])),
 					countCell(row.secrets),
 					countCell(row.vulnerabilities),
@@ -270,7 +271,7 @@ function countCell(count) {
  * The most severe level a repository has, or that it is clean.
  *
  * @param {Record<Severity, number>} counts
- * @param {boolean} incomplete whether a scanner failed on this repository
+ * @param {boolean} incomplete whether a scanner failed on this repository or was not installed
  */
 function worstBadge(counts, incomplete) {
 	const worst = ALL_SEVERITIES.find((severity) => counts[severity] > 0);

@@ -3,6 +3,10 @@ import { api, ApiError } from "./api.js";
 import { assistAction } from "./assist.js";
 import { banner, formatWhen, h, icon, plural, replace, severityBadge, statTile, stepNodes, toast } from "./dom.js";
 import { exportButton, openExportDialog } from "./export.js";
+import { domainFromInput, monitorSetupSteps } from "./hints.js";
+
+const WATCHES = "Watches the domains you own for new subdomains, DNS changes, expiring certificates and missing security headers. It only looks at what is public.";
+const README_MONITOR = "https://github.com/AES256Afro/SecurityX#monitor-domains";
 
 /**
  * @typedef {object} Domain
@@ -63,7 +67,7 @@ export async function renderDomains(view, selected) {
 	const list = h("ul", { class: "domain-list", "aria-label": "Domains" });
 	const detail = h("div", { class: "detail" });
 	const input = /** @type {HTMLInputElement} */ (
-		h("input", { type: "text", name: "domain", placeholder: "example.com", spellcheck: false, autocomplete: "off", required: true, "aria-label": "Domain to add" })
+		h("input", { type: "text", name: "domain", placeholder: "example.com", spellcheck: false, autocomplete: "off", required: true, "aria-label": "Website to add, as a domain name such as example.com" })
 	);
 
 	replace(
@@ -74,14 +78,15 @@ export async function renderDomains(view, selected) {
 			h(
 				"div",
 				{ class: "page-head" },
-				h("div", null, h("h1", null, "Domains"), h("p", { class: "sub" }, `Monitor at ${state.monitor.host}`)),
-				h("form", { class: "inline-form", onsubmit: addDomain }, h("div", { class: "field grow" }, input), h("button", { type: "submit", class: "button primary" }, "Add domain")),
+				h("div", null, h("h1", null, "Domains"), h("p", { class: "sub" }, `The websites you own, checked by your monitor at ${state.monitor.host}.`)),
+				h("form", { class: "inline-form", onsubmit: addDomain }, h("div", { class: "field grow" }, input), h("button", { type: "submit", class: "button primary" }, "Add a website")),
 			),
 			h("div", { class: "split" }, list, detail),
 		),
 	);
 
-	await refreshList();
+	// A monitor that cannot be reached shows its error, and nothing else: not "No domains yet".
+	if (!(await refreshList())) return () => {};
 	if (!selected && domains[0]) {
 		// Changing the address re-renders this page with that domain selected.
 		location.hash = `#/domains/${domains[0].name}`;
@@ -90,12 +95,21 @@ export async function renderDomains(view, selected) {
 	await showDetail();
 	return () => {};
 
+	/**
+	 * Lists the monitor's domains. When the monitor cannot be reached the list is
+	 * left empty and the error is shown in its place: an unreachable monitor
+	 * says nothing about whether any domains are registered.
+	 *
+	 * @returns {Promise<boolean>} whether the list was loaded
+	 */
 	async function refreshList() {
 		try {
 			domains = (await api("GET", "/domains")).domains;
 		} catch (err) {
 			domains = [];
-			replace(detail, banner("error", "Could not load domains", [message(err)]));
+			replace(list);
+			replace(detail, banner("error", "Could not load domains", [message(err), "Nothing is shown until the monitor answers. Try again in a moment."]));
+			return false;
 		}
 		replace(
 			list,
@@ -119,18 +133,27 @@ export async function renderDomains(view, selected) {
 				h(
 					"div",
 					{ class: "empty" },
-					h("h2", null, "No domains yet"),
-					h("p", null, "Add a domain you control. You will be given a DNS record to publish, which proves it is yours before anything is scanned."),
+					h("h2", null, "Add your first website"),
+					h("p", null, "Type its domain name above, such as example.com, and choose Add a website."),
+					h(
+						"ol",
+						{ class: "steps left" },
+						h("li", null, h("strong", null, "Add it."), " One domain covers its subdomains too."),
+						h("li", null, h("strong", null, "Prove it is yours."), " You are given one DNS record to add where the domain is managed. Nothing is checked before that."),
+						h("li", null, h("strong", null, "Scan."), " The first scan records how things are now. After that the monitor checks every hour and shows what changed."),
+					),
 				),
 			);
 		}
+		return true;
 	}
 
 	/** @param {SubmitEvent} event */
 	async function addDomain(event) {
 		event.preventDefault();
 		try {
-			const { domain } = await api("POST", "/domains", { domain: input.value });
+			// People paste a whole address; the monitor wants the name alone.
+			const { domain } = await api("POST", "/domains", { domain: domainFromInput(input.value) });
 			input.value = "";
 			if (domain.name === selected) await refreshList().then(showDetail);
 			else location.hash = `#/domains/${domain.name}`;
@@ -188,9 +211,17 @@ export async function renderDomains(view, selected) {
 					h("button", { type: "button", class: "button danger", onclick: () => confirmRemove(domain.name) }, "Remove"),
 				),
 			),
+			report ? null : journey(everVerified ? 3 : 2),
 			domain.verified ? null : challengeCard(domain, verifyButton),
 			explain?.panel,
-			report ? reportView(report, suggestions) : h("div", { class: "empty" }, h("h2", null, "No scan yet"), h("p", null, everVerified ? "Scan now to record a baseline. Later scans report what changed." : "Verify the domain first.")),
+			report
+				? reportView(report, suggestions)
+				: h(
+						"div",
+						{ class: "empty" },
+						h("h2", null, everVerified ? "Ready for its first scan" : "Not scanned yet"),
+						h("p", null, everVerified ? "Choose Scan now. The first scan records how things are today; later scans show what changed." : "Add the DNS record above, then choose Check DNS record. Scanning starts once it is found."),
+					),
 		);
 
 		/**
@@ -271,14 +302,15 @@ function challengeCard(domain, verifyButton) {
 	return h(
 		"div",
 		{ class: "card" },
-		h("h3", null, lapsed ? "The verification record is missing" : "Prove you control this domain"),
+		h("h3", null, lapsed ? "The verification record is missing" : `Prove ${domain.name} is yours`),
 		h(
 			"p",
 			null,
 			lapsed
 				? "Scanning is paused. Put this DNS record back, then check it."
-				: "Publish this DNS record, then check it. Nothing is scanned until it resolves, and it is re-checked before every scan, so leave it in place.",
+				: `Open the place where DNS for ${domain.name} is managed (Cloudflare, Namecheap, GoDaddy or wherever you bought it) and add a new record with these three values. Then choose Check DNS record.`,
 		),
+		lapsed ? null : h("p", { class: "hint" }, "Nothing is scanned until the record is found. It is looked for again before every scan, so leave it in place."),
 		h(
 			"dl",
 			{ class: "record" },
@@ -417,48 +449,65 @@ function findingsTable(title, findings, suggestions) {
 }
 
 /**
- * How to connect the monitor. From a terminal, the settings are environment variables given at start;
+ * Where a newly added domain is on its way to a first scan.
+ *
+ * @param {2 | 3} current
+ */
+function journey(current) {
+	const steps = ["Added", "Prove it is yours", "First scan"];
+	return h(
+		"ol",
+		{ class: "journey", "aria-label": "Setting up this website" },
+		...steps.map((label, index) => {
+			const number = index + 1;
+			return h("li", { "aria-current": number === current ? "step" : null }, number < current ? icon("good", "status-done") : `${number}.`, label);
+		}),
+	);
+}
+
+/**
+ * How to set up website checks. From a terminal, the settings are environment variables given at start;
  * as a service (a container, under BoxPilot) they are the app's settings where it is managed.
  *
  * @param {{ error?: string, unset?: boolean }} monitor
  * @param {boolean} service
  */
 function notConnected(monitor, service) {
-	const reason = h("p", null, monitor.error ?? "The monitor is not configured", ".");
-	const steps = service
-		? [
-				// Nothing given yet is the usual state after installing, not a mistake to quote back.
-				monitor.unset ? null : reason,
-				h(
-					"p",
-					null,
-					"In BoxPilot, open Apps → SecurityX → Settings. Fill in ",
-					h("strong", null, "Monitor address"),
-					" (the monitor's https address) and ",
-					h("strong", null, "Monitor admin token"),
-					", then confirm. SecurityX restarts with them.",
-				),
-				h("p", { class: "hint" }, "Running the image some other way? Set SECURITYX_MONITOR_URL and SECURITYX_ADMIN_TOKEN in the container's environment and restart it."),
-			]
-		: [
-				reason,
-				h("p", null, "Stop SecurityX, set where the monitor is and its admin token, then start it again:"),
-				h(
-					"pre",
-					null,
-					h("code", null, "export SECURITYX_MONITOR_URL=http://localhost:5173\nexport SECURITYX_ADMIN_TOKEN=<the monitor's ADMIN_TOKEN>\nsecurityx ui"),
-				),
-			];
+	const steps = monitorSetupSteps(service);
 	return h(
 		"section",
 		{ class: "page" },
-		h("div", { class: "page-head" }, h("div", null, h("h1", null, "Domains"), h("p", { class: "sub" }, "The attack-surface monitor is not connected."))),
+		h("div", { class: "page-head" }, h("div", null, h("h1", null, "Domains"), h("p", { class: "sub" }, WATCHES))),
 		h(
 			"div",
 			{ class: "card" },
-			h("h3", null, "Connect the monitor"),
-			...steps,
-			h("p", { class: "hint" }, "The token stays in the SecurityX process. It is never sent to this page."),
+			h("h2", null, "Set up website checks"),
+			h(
+				"p",
+				null,
+				"Websites are checked by the SecurityX monitor: a small service that runs on your own Cloudflare account, not on this ",
+				service ? "server" : "computer",
+				". That way it can check every hour and keep the history even when this page is closed. This page shows what it finds.",
+			),
+			// Nothing given yet is the usual state after installing, not a mistake to quote back.
+			monitor.unset || !monitor.error ? null : banner("warning", "A monitor setting needs correcting", [monitor.error]),
+			h(
+				"ol",
+				{ class: "steps" },
+				...steps.map((step, index) =>
+					h(
+						"li",
+						null,
+						...stepNodes(step),
+						index === 0 ? h("span", null, " ", h("a", { href: README_MONITOR, target: "_blank", rel: "noreferrer" }, "Open the instructions")) : null,
+						!service && index === steps.length - 1
+							? h("pre", null, h("code", null, "export SECURITYX_MONITOR_URL=<the monitor's address>\nexport SECURITYX_ADMIN_TOKEN=<its admin token>\nsecurityx ui"))
+							: null,
+					),
+				),
+			),
+			h("p", { class: "hint" }, "The token stays inside SecurityX. It is never sent to this page."),
+			service ? h("p", { class: "hint" }, "Running the image some other way? Set SECURITYX_MONITOR_URL and SECURITYX_ADMIN_TOKEN in the container's environment and restart it.") : null,
 		),
 	);
 }

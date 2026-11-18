@@ -14,6 +14,8 @@ export interface FakeNet {
 	https?: Record<string, { status?: number; headers?: Record<string, string> }>;
 	/** Names whose DNS lookups fail at the transport level. */
 	dnsDown?: string[];
+	/** Names the resolver cannot answer for: HTTP 200 with DNS status 2 (SERVFAIL) and no records. */
+	dnsServfail?: string[];
 }
 
 export interface FakeDeps extends Deps {
@@ -57,6 +59,7 @@ function dns(net: FakeNet, url: URL): Response {
 	const name = url.searchParams.get("name")!;
 	const type = url.searchParams.get("type") as keyof typeof TYPE_CODE;
 	if (net.dnsDown?.includes(name)) return new Response("upstream error", { status: 502 });
+	if (net.dnsServfail?.includes(name)) return Response.json({ Status: 2 });
 
 	const answers: { name: string; type: number; data: string }[] = [];
 	const push = (kind: keyof typeof TYPE_CODE, values: string[] = []) => {

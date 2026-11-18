@@ -1,6 +1,23 @@
+import { fileURLToPath } from "node:url";
 import { firstLine, type Runner } from "./exec.ts";
 import { triageSecret } from "./triage.ts";
 import type { Finding } from "./types.ts";
+
+/**
+ * gitleaks' built-in rules, shipped with SecurityX. Passing it with --config
+ * means a scanned repository's own .gitleaks.toml is never loaded, so a
+ * repository cannot switch detection off.
+ */
+export const GITLEAKS_CONFIG = fileURLToPath(new URL("./gitleaks.toml", import.meta.url));
+
+/**
+ * What gitleaks hands to `git log`. A scanned repository is hostile input, and
+ * its .git/config can name programs for git to run while it prints diffs: a
+ * textconv driver, an external diff, a signature checker. These options switch
+ * all three off. `--full-history --all` are gitleaks' own defaults, which a
+ * custom --log-opts replaces.
+ */
+export const GIT_LOG_OPTIONS = "--full-history --all --no-textconv --no-ext-diff --no-show-signature";
 
 /**
  * Scans a repository's whole commit history for secrets. `--redact` is not
@@ -10,6 +27,12 @@ import type { Finding } from "./types.ts";
 export async function runGitleaks(repo: string, run: Runner): Promise<Finding[]> {
 	const { code, stdout, stderr } = await run("gitleaks", [
 		"git",
+		"--config",
+		GITLEAKS_CONFIG,
+		`--log-opts=${GIT_LOG_OPTIONS}`,
+		// Read .gitleaksignore from the repository only, never from the folder SecurityX runs in.
+		"--gitleaks-ignore-path",
+		repo,
 		"--report-format",
 		"json",
 		"--report-path",
@@ -23,8 +46,18 @@ export async function runGitleaks(repo: string, run: Runner): Promise<Finding[]>
 		"0",
 		repo,
 	]);
-	if (code !== 0) throw new Error(firstLine(stderr) || `gitleaks exited with code ${code}`);
+	if (code !== 0) throw new Error(errorLine(stderr) || `gitleaks exited with code ${code}`);
+	// When git cannot read the repository (another user's, a broken worktree, a
+	// corrupt .git), gitleaks logs the error, reports nothing and still exits 0.
+	// At --log-level error a good run writes nothing to stderr, so anything
+	// there means the history was not read: a failure, never a clean result.
+	if (stderr.trim() !== "") throw new Error(errorLine(stderr));
 	return parseGitleaks(stdout);
+}
+
+/** gitleaks' first error line without its timestamp and level, e.g. "[git] fatal: detected dubious ownership…". */
+function errorLine(stderr: string): string {
+	return firstLine(stderr.replace(/^.*?\bERR\s+/gm, ""));
 }
 
 export function parseGitleaks(output: string): Finding[] {

@@ -194,6 +194,28 @@ describe("scanning", () => {
 		expect(report.hostCount).toBe(1);
 	});
 
+	it("treats a lookup the resolver could not answer as not observed, not as no records", async () => {
+		const deps = fakeDeps(healthyNet());
+		await registerVerified(deps, DOMAIN);
+		const shop = `shop.${DOMAIN}`;
+		deps.net.ct = [...(deps.net.ct as []), { names: [shop], ...VALID_CERT }];
+		deps.net.hosts![shop] = { cname: ["closed-store.vendor.example"] };
+		await scan(deps);
+
+		// SERVFAIL arrives as HTTP 200 with no records, for the apex and the alias alike.
+		deps.net.dnsServfail = [DOMAIN, shop];
+		deps.clock = new Date("2026-11-18T12:00:00Z");
+		const report = (await scan(deps)).body.report;
+
+		expect(report.changes).toEqual([]);
+		expect(report.resolvedFindings).toEqual([]);
+		expect(report.newFindings).toEqual([]);
+		expect(report.findings.map((finding: { id: string }) => finding.id)).toContain(
+			`dangling-cname:${shop}`,
+		);
+		expect(report.hostCount).toBe(3);
+	});
+
 	it("probes at most MAX_HOSTS hosts, lists the rest, and stays within its request budget", async () => {
 		const net = healthyNet();
 		const extras = ["a", "b", "c", "d"].map((label) => `${label}.${DOMAIN}`);

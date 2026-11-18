@@ -26,9 +26,9 @@ function fakeFetch(answer: (url: URL, init: RequestInit) => Response | Promise<R
 
 const reply = (content: string) => Response.json({ model: "qwen-test:9b", message: { role: "assistant", content }, done: true });
 
-async function failure(fetchFn: typeof fetch, options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<AssistantError> {
+async function failure(fetchFn: typeof fetch, options: { timeoutMs?: number; signal?: AbortSignal } = {}, using = config): Promise<AssistantError> {
 	try {
-		await chat(config, messages, { fetchFn, ...options });
+		await chat(using, messages, { fetchFn, ...options });
 	} catch (err) {
 		assert.ok(err instanceof AssistantError, String(err));
 		assert.ok(!err.message.includes(PROMPT_MARKER), "an error never repeats the prompt");
@@ -317,4 +317,67 @@ test("explains a domain's latest scan: changes, then findings, with nothing but 
 	// A report missing parts, or with entries in a shape this version does not know, still works.
 	const sparse = dataOf(domainPrompt({ domain: "example.com", takenAt: "x", findings: [{ id: 1 }], notes: "not a list" } as unknown as MonitorReport & Record<string, unknown>));
 	assert.deepEqual([sparse.firstScan, sparse.hostCount, sparse.notes, sparse.openFindings, sparse.changes], [false, null, [], [], []]);
+});
+
+/** Key-shaped, assembled at run time so nothing credential-like is committed. */
+const API_KEY = ["sk", "test", "k".repeat(30)].join("-");
+
+test("chooses a hosted model by provider, with its address fixed and its key required", () => {
+	const claude = assistantConfig({ SECURITYX_LLM_PROVIDER: "anthropic", SECURITYX_LLM_API_KEY: API_KEY });
+	assert.deepEqual([claude.provider, claude.url.href, claude.model], ["anthropic", "https://api.anthropic.com/v1/messages", "claude-opus-5-5"]);
+	// A local model's name left in the setting, as BoxPilot leaves it, is not this provider's.
+	assert.equal(assistantConfig({ SECURITYX_LLM_PROVIDER: "anthropic", SECURITYX_LLM_API_KEY: API_KEY, SECURITYX_LLM_MODEL: "hf.co/x/y:Q4" }).model, "claude-opus-5-5");
+	assert.equal(assistantConfig({ SECURITYX_LLM_PROVIDER: "Anthropic", SECURITYX_LLM_API_KEY: API_KEY, SECURITYX_LLM_MODEL: "claude-haiku-5-5" }).model, "claude-haiku-5-5");
+	// No setting moves a key to another address.
+	assert.equal(assistantConfig({ SECURITYX_LLM_PROVIDER: "deepseek", SECURITYX_LLM_API_KEY: API_KEY, SECURITYX_LLM_MODEL: "some-model", SECURITYX_LLM_URL: "https://evil.example" }).url.href, "https://api.deepseek.com/chat/completions");
+	assert.equal(assistantConfig({ SECURITYX_LLM_PROVIDER: "openai", SECURITYX_LLM_API_KEY: API_KEY, SECURITYX_LLM_MODEL: "some-model" }).url.host, "api.openai.com");
+
+	assert.throws(() => assistantConfig({ SECURITYX_LLM_PROVIDER: "anthropic" }), /SECURITYX_LLM_API_KEY to your Claude API key/);
+	assert.throws(() => assistantConfig({ SECURITYX_LLM_PROVIDER: "anthropic", SECURITYX_LLM_API_KEY: "short" }), /not an API key/);
+	assert.throws(() => assistantConfig({ SECURITYX_LLM_PROVIDER: "openai", SECURITYX_LLM_API_KEY: API_KEY }), /SECURITYX_LLM_MODEL to the OpenAI model/);
+	assert.throws(() => assistantConfig({ SECURITYX_LLM_PROVIDER: "gemini", SECURITYX_LLM_API_KEY: API_KEY }), /must be one of/);
+});
+
+test("reaches a server that speaks OpenAI's format at the owner's own address, such as LM Studio", async () => {
+	const studio = assistantConfig({ SECURITYX_LLM_PROVIDER: "compatible", SECURITYX_LLM_URL: "http://bigbox:1234", SECURITYX_LLM_MODEL: "qwen/qwen3-9b" });
+	assert.equal(studio.url.href, "http://bigbox:1234/v1/chat/completions");
+	assert.equal(assistantConfig({ SECURITYX_LLM_PROVIDER: "compatible", SECURITYX_LLM_URL: "http://localhost:8080/api/v1/", SECURITYX_LLM_MODEL: "m" }).url.href, "http://localhost:8080/api/v1/chat/completions");
+	assert.throws(() => assistantConfig({ SECURITYX_LLM_PROVIDER: "compatible", SECURITYX_LLM_MODEL: "m" }), /model server's address/);
+	assert.throws(() => assistantConfig({ SECURITYX_LLM_PROVIDER: "compatible", SECURITYX_LLM_URL: "http://localhost:1234/v1" }), /SECURITYX_LLM_MODEL/);
+
+	const fetchFn = fakeFetch(() => Response.json({ choices: [{ message: { content: "<think>hm</think>Hello." } }] }));
+	assert.equal(await chat(studio, messages, { fetchFn }), "Hello.");
+	const { init } = fetchFn.calls[0]!;
+	assert.equal((init.headers as Record<string, string>).authorization, undefined, "no key was given, so none is sent");
+	assert.deepEqual(JSON.parse(String(init.body)), { model: "qwen/qwen3-9b", messages });
+});
+
+test("asks Claude with the key in a header only, and treats a refusal as no answer", async () => {
+	const claude = assistantConfig({ SECURITYX_LLM_PROVIDER: "anthropic", SECURITYX_LLM_API_KEY: API_KEY });
+	const fetchFn = fakeFetch(() => Response.json({ stop_reason: "end_turn", content: [{ type: "thinking", thinking: "" }, { type: "text", text: "Rotate the key." }] }));
+
+	assert.equal(await chat(claude, messages, { fetchFn }), "Rotate the key.");
+	const { url, init } = fetchFn.calls[0]!;
+	assert.equal(url, "https://api.anthropic.com/v1/messages");
+	const headers = init.headers as Record<string, string>;
+	assert.equal(headers["x-api-key"], API_KEY);
+	assert.equal(headers["anthropic-version"], "2026-10-21");
+	assert.equal(init.redirect, "error");
+	const body = JSON.parse(String(init.body));
+	assert.ok(!String(init.body).includes(API_KEY), "the key is not in the body");
+	assert.deepEqual([body.model, body.system, body.messages], ["claude-opus-5-5", "rules", [{ role: "user", content: messages[1]!.content }]]);
+	// A security finding can trip a safety classifier, so another model is allowed to answer instead.
+	assert.deepEqual([body.fallbacks, headers["anthropic-beta"]], ["default", "server-side-fallback-2026-07-01"]);
+	assert.equal(body.temperature, undefined);
+
+	const refused = await failure(fakeFetch(() => Response.json({ stop_reason: "refusal", content: [] })), {}, claude);
+	assert.match(refused.message, /Claude declined to answer/);
+	const denied = await failure(fakeFetch(() => Response.json({ error: { message: `invalid x-api-key ${API_KEY}` } }, { status: 401 })), {}, claude);
+	assert.match(denied.message, /Claude refused the API key/);
+	const limited = await failure(fakeFetch(() => Response.json({ error: { message: `slow down ${API_KEY}` } }, { status: 429 })), {}, claude);
+	assert.match(limited.message, /limiting requests/);
+	for (const error of [refused, denied, limited]) {
+		assert.ok(!error.message.includes(API_KEY), "no error repeats the key");
+		assert.ok(!error.message.includes(PROMPT_MARKER));
+	}
 });

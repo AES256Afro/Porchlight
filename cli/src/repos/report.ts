@@ -1,4 +1,4 @@
-import { relative } from "node:path";
+import { basename, isAbsolute, relative } from "node:path";
 import { SEVERITIES, severityRank, type Finding, type RepoResult, type ScanReport, type Severity } from "./types.ts";
 
 export type Counts = Record<Severity, number>;
@@ -74,7 +74,29 @@ export function coverageNotes(report: ScanReport): string[] {
 	}
 	for (const repo of report.repos) {
 		for (const error of repo.errors) {
-			notes.push(`${error.tool} failed on ${name(report, repo)}: ${error.message}`);
+			notes.push(`${error.tool} failed on ${repoName(report, repo)}: ${error.message}`);
+		}
+	}
+	return notes;
+}
+
+/**
+ * What each repository told a scanner to leave out. These do not make the scan
+ * incomplete (an owner silences a false match this way), but whatever they
+ * hide is not in the report, so the report says where to look.
+ */
+export function settingNotes(report: ScanReport): string[] {
+	const notes: string[] = [];
+	for (const repo of report.repos) {
+		for (const file of repo.settingFiles ?? []) {
+			const base = file.split("/").at(-1);
+			const effect =
+				base === ".gitleaks.toml"
+					? "SecurityX ignored it and used gitleaks' built-in rules"
+					: base === ".gitleaksignore"
+						? "secrets it lists are not in this report"
+						: "vulnerabilities or packages it ignores are not in this report";
+			notes.push(`${repoName(report, repo)} has ${file}: ${effect}.`);
 		}
 	}
 	return notes;
@@ -96,18 +118,22 @@ export function renderMarkdown(report: ScanReport): string {
 	if (notes.length > 0) {
 		lines.push("## Not covered", "", ...notes.map((note) => `- ${note}`), "");
 	}
+	const settings = settingNotes(report);
+	if (settings.length > 0) {
+		lines.push("## Left out by repository settings", "", ...settings.map((note) => `- ${note}`), "");
+	}
 
 	const ranked = rankRepos(report.repos);
 	lines.push("## Summary", "", "| Repository | Critical | High | Medium | Low |", "| --- | ---: | ---: | ---: | ---: |");
 	for (const repo of ranked) {
 		const counts = countBySeverity(repo.findings);
-		lines.push(`| ${name(report, repo)} | ${SEVERITIES.map((severity) => counts[severity]).join(" | ")} |`);
+		lines.push(`| ${repoName(report, repo)} | ${SEVERITIES.map((severity) => counts[severity]).join(" | ")} |`);
 	}
 	lines.push("");
 
 	for (const repo of ranked) {
 		if (repo.findings.length === 0) continue;
-		lines.push(`## ${name(report, repo)}`, "");
+		lines.push(`## ${repoName(report, repo)}`, "");
 		for (const finding of rank(repo.findings)) {
 			lines.push(
 				`- **${finding.severity}** ${finding.kind} \`${finding.ruleId}\` in \`${finding.location}\` ` +
@@ -129,6 +155,7 @@ export function renderSummary(report: ScanReport): string {
 			SEVERITIES.map((severity) => `${totals[severity]} ${severity}`).join(", "),
 	];
 	for (const note of coverageNotes(report)) lines.push(`Not covered: ${note}`);
+	for (const note of settingNotes(report)) lines.push(`Left out by repository settings: ${note}`);
 	return lines.join("\n");
 }
 
@@ -136,6 +163,24 @@ function repoCount(report: ScanReport): string {
 	return report.repos.length === 1 ? "1 repository" : `${report.repos.length} repositories`;
 }
 
-function name(report: ScanReport, repo: RepoResult): string {
-	return relative(report.root, repo.path) || ".";
+/**
+ * How a repository is named everywhere: its path under the scanned folder, or
+ * the folder's own name when the folder is itself the repository. The page,
+ * the filters, the exports and the model all use this one name, so a filter
+ * picked on the page matches the same repositories on the server.
+ */
+export function repoName(report: ScanReport, repo: RepoResult): string {
+	return nameUnder(report.root, report.otherRoots, repo.path);
+}
+
+/**
+ * A repository in one of the further folders is named under that folder's own name
+ * (`github/owner/repository`), so it cannot be taken for one in the main folder.
+ */
+export function nameUnder(root: string, otherRoots: string[] | undefined, path: string): string {
+	for (const other of otherRoots ?? []) {
+		const inside = relative(other, path);
+		if (inside !== "" && !inside.startsWith("..") && !isAbsolute(inside)) return `${basename(other)}/${inside}`;
+	}
+	return relative(root, path) || basename(root) || ".";
 }

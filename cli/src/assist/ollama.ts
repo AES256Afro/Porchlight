@@ -1,8 +1,32 @@
-/** Where the local model is and which one to use. Read from the environment, never from the command line. */
+/** Who answers: Ollama on the owner's own machine or server, or a hosted model reached with the owner's API key. */
+/** `compatible`: any server that speaks OpenAI's chat format at an address the owner gives, such as LM Studio or a llama.cpp server. */
+export type Provider = "ollama" | "anthropic" | "openai" | "deepseek" | "compatible";
+type HostedProvider = "anthropic" | "openai" | "deepseek";
+
+/** Where the model is and which one to use. Read from the environment, never from the command line. */
 export interface AssistantConfig {
-	/** Ollama's base address, ending in "/" so the API path is added beneath it. */
+	/** Ollama's base address, ending in "/" so the API path is added beneath it. For a hosted model, the provider's API. */
 	url: URL;
 	model: string;
+	/** Absent means Ollama. */
+	provider?: Provider;
+	/** A hosted provider's key. Sent to that provider's fixed address only; never to the browser, a log or a report. */
+	apiKey?: string;
+}
+
+/**
+ * The hosted providers. Each address is fixed here, so a key can only ever be sent to the provider
+ * it belongs to: no setting moves it.
+ */
+export const HOSTED: Record<HostedProvider, { name: string; url: string; defaultModel?: string }> = {
+	anthropic: { name: "Claude", url: "https://api.anthropic.com/v1/messages", defaultModel: "claude-opus-5-5" },
+	openai: { name: "OpenAI", url: "https://api.openai.com/v1/chat/completions" },
+	deepseek: { name: "DeepSeek", url: "https://api.deepseek.com/chat/completions" },
+};
+
+/** Whether what is sent leaves the owner's own machines. */
+export function isHosted(config: AssistantConfig): boolean {
+	return config.provider !== undefined && config.provider in HOSTED;
 }
 
 export interface ChatMessage {
@@ -34,6 +58,13 @@ export const DEFAULT_TIMEOUT_MS = 300_000;
 export const MODEL_OPTIONS = { temperature: 0.2, num_ctx: 8192, num_predict: 500 } as const;
 
 const MODEL_NAME = /^[\w.\-/:@+]{1,200}$/;
+const API_KEY = /^[\x21-\x7e]{20,400}$/;
+const ANTHROPIC_VERSION = "2026-10-21";
+/** Room for the model's reasoning as well as its answer; an answer cut short by the limit is worse than a long wait. */
+const HOSTED_MAX_TOKENS = 16_000;
+/** Claude models that take a fallback model when a safety classifier declines: security findings can trip one. */
+const TAKES_FALLBACK = /^claude-(?:opus-5|fable-5|sonnet-5-5)/;
+const FALLBACK_BETA = "server-side-fallback-2026-07-01";
 
 /**
  * Reads the local model's settings. An empty address means the features are off; the caller tells
@@ -41,8 +72,43 @@ const MODEL_NAME = /^[\w.\-/:@+]{1,200}$/;
  * allowed: Ollama runs on this machine or this server, and nothing secret is sent to it.
  */
 export function assistantConfig(env: Record<string, string | undefined>): AssistantConfig {
-	const rawUrl = env.SECURITYX_LLM_URL?.trim();
+	const provider = (env.SECURITYX_LLM_PROVIDER?.trim().toLowerCase() || "ollama") as Provider;
 	const model = env.SECURITYX_LLM_MODEL?.trim();
+	if (provider !== "ollama" && provider !== "compatible") {
+		const hosted = HOSTED[provider];
+		if (!hosted) throw new Error("SECURITYX_LLM_PROVIDER must be one of: ollama, compatible, anthropic, openai, deepseek");
+		const apiKey = env.SECURITYX_LLM_API_KEY?.trim();
+		if (!apiKey) throw new Error(`Set SECURITYX_LLM_API_KEY to your ${hosted.name} API key`);
+		if (!API_KEY.test(apiKey)) throw new Error("SECURITYX_LLM_API_KEY is not an API key: expected 20 or more characters with no spaces");
+		// A name shaped like Ollama's (`hf.co/…:Q4`) is a setting left over from a local model, not this provider's.
+		const named = model && !/[/:]/.test(model) ? model : undefined;
+		if (named && !MODEL_NAME.test(named)) throw new Error("SECURITYX_LLM_MODEL is not a model name");
+		const chosen = named ?? hosted.defaultModel;
+		if (!chosen) throw new Error(`Set SECURITYX_LLM_MODEL to the ${hosted.name} model to use, as ${hosted.name} names it`);
+		return { provider, url: new URL(hosted.url), model: chosen, apiKey };
+	}
+	const rawUrl = env.SECURITYX_LLM_URL?.trim();
+	if (provider === "compatible") {
+		if (!rawUrl) throw new Error("Set SECURITYX_LLM_URL to the model server's address, for example http://localhost:1234/v1 for LM Studio");
+		let base: URL;
+		try {
+			base = new URL(rawUrl);
+		} catch {
+			throw new Error("SECURITYX_LLM_URL is not an address. Give the model server's, for example http://localhost:1234/v1");
+		}
+		if (base.protocol !== "http:" && base.protocol !== "https:") throw new Error("SECURITYX_LLM_URL must start with http:// or https://");
+		if (base.username || base.password) throw new Error("SECURITYX_LLM_URL must not carry a user name or password");
+		if (!model) throw new Error("Set SECURITYX_LLM_MODEL to the model's name, as the model server lists it");
+		if (!MODEL_NAME.test(model)) throw new Error("SECURITYX_LLM_MODEL is not a model name");
+		const apiKey = env.SECURITYX_LLM_API_KEY?.trim() || undefined;
+		if (apiKey && !/^[\x21-\x7e]{1,400}$/.test(apiKey)) throw new Error("SECURITYX_LLM_API_KEY must have no spaces");
+		base.search = "";
+		base.hash = "";
+		if (!base.pathname.endsWith("/")) base.pathname += "/";
+		// LM Studio and llama.cpp serve the API under /v1; an address given without it gets it.
+		if (base.pathname === "/") base.pathname = "/v1/";
+		return { provider, url: new URL("chat/completions", base), model, ...(apiKey ? { apiKey } : {}) };
+	}
 	if (!rawUrl) throw new Error("Set SECURITYX_LLM_URL to Ollama's address, for example http://localhost:11434, to turn on the local model");
 	let url: URL;
 	try {
@@ -78,6 +144,8 @@ export async function chat(config: AssistantConfig, messages: ChatMessage[], opt
 		const code = (err as { cause?: { code?: unknown } })?.cause?.code;
 		return new AssistantError(502, `Could not reach the model at ${host}${typeof code === "string" ? ` (${code})` : ""}. Is Ollama running there?`);
 	};
+
+	if (config.provider !== undefined && config.provider !== "ollama") return hostedChat(config, messages, fetchFn, signal, failed);
 
 	let response: Response;
 	let text: string;
@@ -117,6 +185,65 @@ export async function chat(config: AssistantConfig, messages: ChatMessage[], opt
 	const answer = withoutThinking(content);
 	if (answer === "") throw new AssistantError(502, "The model gave an empty answer. Try again");
 	return answer;
+}
+
+/**
+ * Asks a hosted model, or a server of the owner's that speaks OpenAI's chat format. The key travels in a header to the provider's fixed address and nowhere
+ * else; redirects are refused so it cannot be passed on. A refusal or an empty answer is an error
+ * that says so, never an answer.
+ */
+async function hostedChat(config: AssistantConfig, messages: ChatMessage[], fetchFn: typeof fetch, signal: AbortSignal, failed: (err: unknown) => AssistantError): Promise<string> {
+	const name = config.provider === "compatible" || config.provider === undefined || config.provider === "ollama" ? `The model server at ${config.url.host}` : HOSTED[config.provider].name;
+	const claude = config.provider === "anthropic";
+	const system = messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
+	const user = messages.filter((message) => message.role === "user").map((message) => ({ role: "user", content: message.content }));
+	const fallback = claude && TAKES_FALLBACK.test(config.model);
+	const headers: Record<string, string> = claude
+		? { "content-type": "application/json", "x-api-key": config.apiKey ?? "", "anthropic-version": ANTHROPIC_VERSION, ...(fallback ? { "anthropic-beta": FALLBACK_BETA } : {}) }
+		: { "content-type": "application/json", ...(config.apiKey ? { authorization: `Bearer ${config.apiKey}` } : {}) };
+	const body = claude
+		? { model: config.model, max_tokens: HOSTED_MAX_TOKENS, system, messages: user, output_config: { effort: "medium" }, ...(fallback ? { fallbacks: "default" } : {}) }
+		: { model: config.model, messages };
+
+	let response: Response;
+	let text: string;
+	try {
+		response = await fetchFn(config.url, { method: "POST", headers, body: JSON.stringify(body), redirect: "error", signal });
+		text = await response.text();
+	} catch (err) {
+		throw failed(err);
+	}
+	let answer: Record<string, unknown> | null = null;
+	try {
+		answer = JSON.parse(text);
+	} catch {
+		// Not JSON: handled by status below.
+	}
+	if (!response.ok) {
+		const detail = (answer?.error as { message?: unknown } | undefined)?.message;
+		const why = typeof detail === "string" ? `: ${scrub(detail, config.apiKey).slice(0, 200)}` : "";
+		if (response.status === 401 || response.status === 403) throw new AssistantError(502, `${name} refused the API key. Check SECURITYX_LLM_API_KEY`);
+		if (response.status === 404) throw new AssistantError(502, `${name} has no model ${config.model}. Check SECURITYX_LLM_MODEL`);
+		if (response.status === 429) throw new AssistantError(502, `${name} is limiting requests, or the account is out of credit. Try again later${why}`);
+		throw new AssistantError(502, `${name} failed (HTTP ${response.status})${why}`);
+	}
+	let content = "";
+	if (claude) {
+		if (answer?.stop_reason === "refusal") throw new AssistantError(502, `${name} declined to answer this request`);
+		const blocks = Array.isArray(answer?.content) ? (answer.content as { type?: unknown; text?: unknown }[]) : [];
+		content = blocks.filter((block) => block?.type === "text" && typeof block.text === "string").map((block) => block.text).join("");
+	} else {
+		const choice = (Array.isArray(answer?.choices) ? answer.choices[0] : null) as { message?: { content?: unknown } } | null;
+		if (typeof choice?.message?.content === "string") content = choice.message.content;
+	}
+	const cleaned = withoutThinking(content);
+	if (cleaned === "") throw new AssistantError(502, `${name} gave an empty answer. Try again`);
+	return cleaned;
+}
+
+/** An error message from a provider, with the key taken out in case it was echoed back. */
+function scrub(text: string, apiKey: string | undefined): string {
+	return apiKey ? text.replaceAll(apiKey, "[key]") : text;
 }
 
 /**

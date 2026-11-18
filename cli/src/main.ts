@@ -1,8 +1,8 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { assistantConfig } from "./assist/ollama.ts";
+import { assistantConfig, isHosted } from "./assist/ollama.ts";
 import { callMonitor, monitorConfig } from "./monitor/client.ts";
 import { exitCode, parseScanReport, renderMarkdown, renderSummary } from "./repos/report.ts";
 import { scanRepos } from "./repos/scan.ts";
@@ -10,6 +10,7 @@ import { SEVERITIES, type Severity } from "./repos/types.ts";
 import type { MonitorReport } from "./roadmap/domains.ts";
 import { CONTENTS, exportDomain, exportRepos, parseFilter, type ExportFile } from "./roadmap/export.ts";
 import { FORMATS } from "./roadmap/render.ts";
+import { tokenProblem } from "./github/github.ts";
 import { startUiServer } from "./ui/server.ts";
 
 const USAGE = `SecurityX
@@ -51,6 +52,13 @@ SECURITYX_MONITOR_URL and SECURITYX_ADMIN_TOKEN.
 
 The interface's Explain, Summarise and Ask buttons use a local model served by
 Ollama, named by SECURITYX_LLM_URL (its address) and SECURITYX_LLM_MODEL.
+
+Other models, chosen with SECURITYX_LLM_PROVIDER: "compatible" for a server
+that speaks OpenAI's format at SECURITYX_LLM_URL (LM Studio, llama.cpp), or a
+hosted one ("anthropic", "openai", "deepseek") with SECURITYX_LLM_API_KEY.
+
+The interface can fetch repositories from GitHub to scan. Public ones need
+nothing; private ones need SECURITYX_GITHUB_TOKEN, a token that can read them.
 `;
 
 /** Returns the process exit code: 0 ok, 1 error or incomplete scan under --fail-on, 2 findings at or above --fail-on. */
@@ -193,15 +201,23 @@ async function ui(args: string[]): Promise<number> {
 	} catch (err) {
 		assistantError = err instanceof Error ? err.message : String(err);
 	}
+	// BoxPilot passes an optional setting left empty as an empty variable, so empty counts as not given.
+	const githubToken = process.env.SECURITYX_GITHUB_TOKEN?.trim() || undefined;
+	const githubError = githubToken ? (tokenProblem(githubToken) ?? undefined) : undefined;
+	const reportPath = resolve(values.report ?? join(homedir(), ".securityx", "repo-scan.json"));
 	// The address is the switch: BoxPilot fills the model setting with a default, so a model alone turns nothing on.
-	const assistantUnset = !process.env.SECURITYX_LLM_URL?.trim();
+	// Off, as opposed to a setting to correct: no provider chosen and no address given.
+	const assistantUnset = !process.env.SECURITYX_LLM_PROVIDER?.trim() && !process.env.SECURITYX_LLM_URL?.trim();
 
 	const server = await listenOnFirstFree(candidates, (candidate) =>
 		startUiServer({
 			port: candidate,
 			host: values.host,
 			sessionKey: fixedKey,
-			reportPath: resolve(values.report ?? join(homedir(), ".securityx", "repo-scan.json")),
+			reportPath,
+			// Fetched repositories are kept beside the report: in a container, on its data volume.
+			github: { dir: join(dirname(reportPath), "github"), ...(githubToken && !githubError ? { token: githubToken } : {}) },
+			githubError,
 			defaultRoot: resolve(values.root),
 			monitor,
 			monitorError,
@@ -219,8 +235,9 @@ async function ui(args: string[]): Promise<number> {
 		console.log(`SecurityX is running. Open this link (it carries this session's key):\n\n  ${server.url}\n`);
 	}
 	console.log(monitor ? `Monitor: ${monitor.url.host}` : `Monitor: not connected (${monitorError})`);
-	if (assistant) console.log(`Local model: ${assistant.model} at ${assistant.url.host}`);
-	else console.log(assistantUnset ? "Local model: off (set SECURITYX_LLM_URL and SECURITYX_LLM_MODEL to use one)" : `Local model: not connected (${assistantError})`);
+	if (assistant) console.log(`Model: ${assistant.model} at ${assistant.url.host}${isHosted(assistant) ? " (hosted: what the pages show is sent there when you ask)" : ""}`);
+	else console.log(assistantUnset ? "Model: off (set SECURITYX_LLM_URL and SECURITYX_LLM_MODEL for a local one, or SECURITYX_LLM_PROVIDER and SECURITYX_LLM_API_KEY for a hosted one)" : `Model: not connected (${assistantError})`);
+	console.log(githubError ? `GitHub: token not used (${githubError})` : githubToken ? "GitHub: token set, private repositories can be fetched" : "GitHub: no token, public repositories only (set SECURITYX_GITHUB_TOKEN for private ones)");
 	console.log("Press Ctrl+C to stop.");
 	return 0;
 }

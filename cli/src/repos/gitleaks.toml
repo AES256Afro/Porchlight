@@ -1,0 +1,5 @@
+# SecurityX passes this file to gitleaks with --config, so a scanned repository's own
+# .gitleaks.toml (which could switch the default rules off) is never used. It keeps gitleaks'
+# built-in rules exactly as they ship.
+[extend]
+useDefault = true

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { describeFilter, isFiltering, matchesFilter, noFilter } from "../ui/filter.js";
 import { generatedLabel, localModelSetup, MAX_QUESTION, paragraphs, questionProblem, SUGGESTED_MODEL, waitingLabel } from "../ui/generated.js";
-import { emptyScanHints } from "../ui/hints.js";
+import { domainFromInput, emptyScanHints, fetchByDefault, githubTokenSteps, monitorSetupSteps, previewAdvice } from "../ui/hints.js";
 import { buildHash, filterFromParams, paginate, paramsFromFilter, parseHash, sortFindings } from "../ui/list.js";
 
 const finding = { severity: "high", kind: "vulnerability", ruleId: "GHSA-x", location: "web/package-lock.json", detail: "pillow@12.3.0", title: "Heap overflow" };
@@ -132,4 +132,66 @@ test("says how to connect a local model where SecurityX runs, quoting a setting 
 	assert.ok(service.steps.includes("In BoxPilot, open Apps → SecurityX → Settings and fill in Local model address and Local model."));
 	assert.equal(localModelSetup(wrong, true).reason, wrong.error);
 	assert.equal(localModelSetup(null, true).reason, null);
+});
+
+test("before a scan, says how many repositories it would cover, or how to get some there", () => {
+	const found = previewAdvice({ root: "/home/me/Projects", exists: true, total: 2, repos: ["a", "b"], fetched: 0, depth: 3 }, { service: false });
+	assert.equal(found.found, true);
+	assert.equal(found.title, "2 repositories in /home/me/Projects");
+	assert.equal(previewAdvice({ root: "/repos", exists: true, total: 1, repos: ["a"], fetched: 0, depth: 3 }, { service: true }).title, "1 repository on this server");
+
+	// What was fetched from GitHub is counted with the folder, and said apart from it.
+	assert.equal(previewAdvice({ root: "/p", exists: true, total: 5, repos: [], fetched: 2, depth: 3 }, { service: false }).title, "5 repositories: 3 in /p, 2 fetched from GitHub");
+	assert.equal(previewAdvice({ root: "/repos", exists: true, total: 1, repos: [], fetched: 1, depth: 3 }, { service: true }).title, "1 repository fetched from GitHub");
+
+	// On a server there are two ways to get repositories there, the easy one first.
+	const server = previewAdvice({ root: "/repos", exists: true, total: 0, repos: [], fetched: 0, depth: 3 }, { service: true });
+	assert.equal(server.found, false);
+	assert.match(server.title, /no repositories on this server yet/);
+	assert.match(server.lines[0] ?? "", /cannot see your laptop/);
+	assert.equal(server.steps.length, 2);
+	assert.match(server.steps[0] ?? "", /Fetch them from GitHub/);
+	assert.match(server.steps[1] ?? "", /"Repositories to scan".*Apps → SecurityX → Settings/);
+
+	// From a terminal the answer is another folder, or looking deeper; never BoxPilot.
+	const local = previewAdvice({ root: "/usr/share", exists: true, total: 0, repos: [], fetched: 0, depth: 3 }, { service: false });
+	assert.equal(local.title, "No git repositories in /usr/share");
+	assert.deepEqual(local.steps, []);
+	assert.match(local.lines.join(" "), /looked 3 folder levels down/);
+	assert.doesNotMatch(local.lines.join(" "), /BoxPilot/);
+	assert.equal(previewAdvice({ root: "/usr/share", exists: true, total: 0, repos: [], fetched: 0, depth: 6 }, null).lines.length, 1);
+	assert.equal(previewAdvice({ root: "/nope", exists: false, total: 0, repos: [], fetched: 0, depth: 3 }, null).title, "/nope is not a folder");
+});
+
+test("setting up website checks is three steps, ending where the two values are entered", () => {
+	const service = monitorSetupSteps(true);
+	const local = monitorSetupSteps(false);
+	assert.equal(service.length, 3);
+	assert.equal(local.length, 3);
+	assert.match(service[2] ?? "", /Apps → SecurityX → Settings.*"Monitor address".*"Monitor admin token"/);
+	assert.doesNotMatch(local[2] ?? "", /BoxPilot/);
+	assert.equal(service[0], local[0]);
+});
+
+test("a pasted web address is reduced to its domain name", () => {
+	assert.equal(domainFromInput("  https://Example.com/shop?x=1#top "), "example.com");
+	assert.equal(domainFromInput("http://user@example.com:8443/"), "example.com");
+	assert.equal(domainFromInput("example.com."), "example.com");
+	assert.equal(domainFromInput("shop.example.com"), "shop.example.com");
+	// Anything else is left for the server to refuse, with its own message.
+	assert.equal(domainFromInput("not a domain"), "not a domain");
+});
+
+test("adding a GitHub token is three steps, ending where it is entered, and asks for read access only", () => {
+	const service = githubTokenSteps(true);
+	const local = githubTokenSteps(false);
+	assert.equal(service.length, 3);
+	assert.match(service[1] ?? "", /"Contents" to Read-only/);
+	assert.match(service[2] ?? "", /Apps → SecurityX → Settings.*"GitHub token"/);
+	assert.match(local[2] ?? "", /SECURITYX_GITHUB_TOKEN/);
+	assert.doesNotMatch(local[2] ?? "", /BoxPilot/);
+
+	assert.equal(fetchByDefault({ fork: false, archived: false }), true);
+	assert.equal(fetchByDefault({ fork: true, archived: false }), false);
+	assert.equal(fetchByDefault({ fork: false, archived: true }), false);
 });

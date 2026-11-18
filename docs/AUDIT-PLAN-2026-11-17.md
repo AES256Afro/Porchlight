@@ -1,0 +1,176 @@
+# SecurityX audit, plan and milestones (2026-11-17)
+
+Read-only audit of `main` at `740fe46` (0.3.0). No source was changed. Baseline: `npm run check` clean; 56 monitor and 102 CLI tests pass.
+
+Labels: **[R]** reproduced, **[C]** confirmed by reading the code, **[P]** plausible and still to be confirmed.
+
+## How the audit ran
+
+| Stage | What ran | Sweeps | Stop rule |
+|---|---|---|---|
+| 1 | Design, quality of life, function, usability of the web interface, plus a live walk-through (desktop, phone width, light and dark) | 10 per category (40) | 7 sweeps found nothing new |
+| 2 | Security (5 sub-categories) and bugs/code quality | 7 security, 10 bug | A category was dropped after 3 sweeps with no new issue. Security ended at sweep 7, bugs at sweep 10. |
+| 3 | Readability and visual, quality of life, features, optimisation | 3 per category (12) | Each category was dropped after 3 sweeps |
+
+Checked and sound: the ownership gate comes first; no redirects are followed; the admin token fails closed and is compared in constant time; all SQL is parameterised; the UI server's Host, Origin, session-key and CSP checks held against 11 crafted requests; there is no `innerHTML`; HTML and CSV escaping, download names and model-prompt framing are correct; CI actions are pinned by SHA.
+
+## Change list
+
+### Security
+
+| ID | Sev | Finding | Where | Fix |
+|---|---|---|---|---|
+| S1 | **High** | A scanned repo's `.git/config` diff driver runs commands during the scan **[R]**. In the container, `safe.directory '*'` removes git's protection against foreign-owned repos, so anyone who can write a repo under the mount runs code next to `SECURITYX_ADMIN_TOKEN`. | `cli/src/repos/gitleaks.ts:11`, `Dockerfile:9` | Pass `--log-opts="--all --full-history --no-textconv --no-ext-diff"`. Narrow `safe.directory` to `/repos/*`. Consider scanning a `clone --bare --no-local` copy. |
+| S2 | Med | gitleaks exits 0 with `[]` when git cannot read the repo (dubious ownership, broken worktree), so the repo shows as **clean** **[R]**. | `gitleaks.ts:26` | Treat non-empty stderr as a failure. Add a fake-runner test. |
+| S3 | Med | A repo's own `.gitleaks.toml` (`useDefault=false`) or `osv-scanner.toml` turns detection off silently **[R for gitleaks]**. | `gitleaks.ts`, `osv.ts:16` | Pass a shipped `--config` that extends the defaults. Add a coverage note when a repo carries scanner config or ignore files. |
+| S4 | Med | DoH `Status` (SERVFAIL/REFUSED, sent with HTTP 200) is read as "no records" **[R]**. This breaks invariant 5: hosts are dropped and findings "resolved". | `monitor/src/doh.ts:34` | Throw unless `Status` is 0 or 3. Add `Status: 2` to `fake-net.ts`. |
+| S5 | Low | Terminal control characters in file names reach the terminal and exports. | `report.ts:113`, `main.ts:96` | Strip C0/C1 characters before printing and in `mdText`/`csvCell`. |
+| S6 | Low | Markdown exports still autolink URLs and `@user` on GitHub. | `cli/src/roadmap/escape.ts:30` | Escape `@` and `:`, and break `www.`, or put data fields in code spans. |
+| S7 | Low | `--out` report files are written 0644, while the UI saves 0600. | `main.ts:105,155` | Write them with `{ mode: 0o600 }`. |
+| S8 | Info | The base image is not pinned by digest. CI imports BoxPilot's schema from its default branch. | `Dockerfile:4`, `ci.yml:19` | Pin the digest, and pin the schema to a BoxPilot tag. |
+
+### Bugs
+
+| ID | Sev | Finding | Where |
+|---|---|---|---|
+| B1 | **High** | A filtered roadmap plans the upgrade from the filtered subset, so it names a version that does not clear every advisory **[R]**. This breaks invariant 12. | `cli/src/roadmap/repos.ts:97` |
+| B2 | **High** | A UI scan with no scanner installed overwrites the last good report (the CLI refuses this) **[R]**. | `cli/src/ui/server.ts:225` |
+| B3 | High | A repo with a missing scanner shows a green "Clean" badge **[C]**. | `cli/ui/repos.js:275`, `scan.ts:72` |
+| B4 | High | A monitor outage is shown as "No domains yet". The error banner is overwritten **[R]**. | `cli/ui/domains.js:96-126` |
+| B5 | Med | When the scan root is itself a repo, it is named `basename(root)` on the server and `.` on the page, so filters and exports disagree **[R]**. | `roadmap/repos.ts:96` and 3 others |
+| B6 | Med | Each cron tick runs an hour late, so the scan interval drifts to interval + 1h. | `monitor/src/store.ts:74` |
+| B7 | Med | After a lapse, re-verifying still shows "Ownership check failed" until the next scan. | `monitor/src/api.ts:112` |
+| B8 | Med | Dead certificate-log names take the `MAX_HOSTS` probe slots forever. The host list only grows. | `monitor/src/snapshot.ts:43-63` |
+| B9 | Med | Header findings are "resolved" when a site returns a 5xx, then "new" again on the next scan. | `monitor/src/findings.ts:154` |
+| B10 | Med | A failed monitor scan sends no alert and waits a full interval before retrying. | `monitor/src/scan.ts:55` |
+| B11 | Low | One failed poll marks a running scan "failed" and stops tracking it. | `cli/ui/store.js:124` |
+| B12 | Low | `severity=none` round-trips in the address, but the server rejects it, so an export of "what the filters show" fails. | `list.js:95`, `export.ts:37` |
+| B13 | Low | The dangling-CNAME title names the wrong hop, because the chain is sorted. | `findings.ts:45` |
+| B14 | Low | A 0.x minor upgrade is not flagged as breaking. | `roadmap/versions.ts:49` |
+| B15 | Low | A monitor URL with a path drops its prefix. | `cli/src/monitor/client.ts:44` |
+| B16 | Low | Malformed percent-encoding gives a 500, not a 404. | `monitor/src/api.ts:54` |
+| B17 | Low | An expiring certificate that then expires is reported as "Resolved". | certificate finding IDs |
+| B18 | Low | A cron scan and a manual scan of the same domain can send the same alert twice. | `runScan`, no claim step |
+| B19 | Low | gitleaks dedupe merges two different secrets found on the same file and line. | `gitleaks.ts:41` |
+
+### Interface (Stage 1, highest value)
+
+- **Accessibility.**
+  - Focus is lost on every in-place redraw (disclosures, pager, sorts, tabs).
+  - The scan status live region is rewritten every 800 ms.
+  - In light mode the Medium and High severity icons are 1.8:1 and 2.6:1 (WCAG asks for 3:1), and `--muted` text is 3.4:1 (AA asks for 4.5:1).
+  - Field borders are about 1.5:1.
+  - Roadmap tabs have no arrow keys or tabpanel.
+  - The remove dialog has no accessible name.
+- **Feedback.**
+  - Error toasts vanish after 8 s, and the DNS verify result is never shown inline.
+  - A wrong session key gives no message.
+  - There is no loading state between pages.
+  - Overlapping Explain clicks get a 409 banner.
+  - Scans and model answers cannot be cancelled.
+- **Filters.**
+  - There is no "Clear filters" action.
+  - Switching views drops the filters.
+  - A Roadmap severity filter can be set from the address but has no control on the page.
+  - A stale `?repo=` shows "All repositories" while still filtering.
+  - The By-repository sort is not kept in the address.
+  - "Show all" and roadmap groups render whole lists.
+- **Hierarchy.**
+  - The "N credentials look live" warning is buried at the bottom of a card. Make it a top banner that links to the actions.
+  - Overview tiles are not links.
+  - Roadmap and Findings do not link to each other.
+- **Live walk-through.**
+  - Stat tiles leave one orphaned on its own row.
+  - On a phone, "Domains" scrolls out of the top nav with no cue.
+  - The domain page's findings table is clipped at medium widths.
+  - "Add domain" is stacked awkwardly in the header.
+  - User-facing copy says "MAX_HOSTS is 12".
+  - The add-domain error passes through raw API text (`Body must be {"domain": ...}`).
+  - "Start it again with: securityx ui" is wrong under BoxPilot.
+
+## Plan and milestones
+
+Each milestone ships as its own release with tests that would have caught its bugs.
+
+### M1: Trustworthy results (security and broken invariants). Size: M
+
+**Status, 2026-11-17: built, not committed.**
+- S1–S4 and B1–B5 are fixed, with tests that fail on the old code (DNS status, roadmap) or that run the real gitleaks against a hostile repository.
+- Invariant 14 has been added to CLAUDE.md.
+- Container smoke step 4 has been added, but no Docker daemon was available here, so it will first run in CI.
+- osv-scanner: a repository's `osv-scanner.toml` is named in the report but not overridden.
+
+S1, S2, S3, S4, B1, B2, B3, B4, B5.
+
+New tests:
+- a fake runner returning gitleaks stderr with exit 0;
+- DoH `Status: 2`;
+- a filtered roadmap in which the filtered-out advisory carries the highest fix;
+- a scan root that is itself a repo;
+- a hostile-repo fixture with a textconv driver and a `.gitleaks.toml`, built at run time.
+
+Add a CLAUDE.md invariant, subject to the owner's approval: **"A scanned repository is hostile input: its config never runs code or changes detection."**
+
+**Done when:** every [R] item has a failing-then-passing test, and the container smoke test scans a seeded hostile repo.
+
+### M2: Monitor correctness. Size: M
+
+B6, B7, B8, B9, B10 (retry after 1–2 h, and alert after N errors in a row), B13, B16, B17, B18, and B15 on the client side.
+
+Also run the cron `*/10` (24 domains a day today). Add `deduplicate=Y` to the crt.sh query and cap its body size.
+
+**Done when:** the schedule test steps exactly 24 h, header findings survive a 200 → 503 → 200 sequence without alerts, and an error streak is visible in `domains list`.
+
+### M3: Output hygiene. Size: S
+
+S5, S6, S7, B12, B14, B19.
+
+Pin the base image digest and the BoxPilot schema (S8). Fix the picomatch dev advisory.
+
+### M4: Accessible and calmer interface. Size: M–L
+
+- Focus restore on redraw.
+- Throttle the live region.
+- Light-mode contrast tokens, plus type, spacing and radius scales (14 font sizes down to about 5).
+- Toasts that persist for errors.
+- Wrong-key message and loading states.
+- Clear and keep filters across views, show hidden filters, sort in the address, page long lists.
+- Promote the credentials banner.
+- Fix the walk-through layout issues.
+- Move shared parts out of `findings.js`.
+- Import the monitor types instead of re-declaring them.
+
+**Done when:** a keyboard-only run through every page keeps focus, axe or a manual WCAG AA check passes in both themes, and nothing orphans or clips at 375, 800 or 1280 px.
+
+### M5: Daily-use quality of life. Size: M
+
+- Per-command `--help`, `--version`, and `securityx doctor`.
+- `[3/17]` progress lines with timings.
+- CLI scans saved where the UI reads them.
+- Rescan a single repo, and cancel a scan or a model answer.
+- BoxPilot settings for depth and schedule.
+- Cache the parsed report by mtime.
+- `availableParallelism()`, and run the two scanners concurrently.
+- CI npm and buildx caches and parallel jobs.
+- Split the 250-line server closure into a gate plus a route table.
+- Move releasing to `RELEASING.md` and open the README with a quick start.
+
+### M6: Features that fit the invariants. Size: L
+
+1. Repo scan history and "new since last scan" (a failed scanner never counts as resolved).
+2. Mark a secret rotated or accepted, with a reason and an expiry. It **re-ranks only** and stays listed and exported (invariant 10).
+3. Scheduled repo scans in the container, with owner-only notifications (counts, titles and paths; never values or authors).
+4. Free monitor checks from data already fetched: HSTS details, cookie flags, DNSSEC (AD bit), SPF.
+5. `/domains/:name/history` and a timeline, plus open-finding counts in the domain list.
+6. Notification formats for Slack, Discord, ntfy and email.
+7. SBOM and licences (CycloneDX export).
+8. Offline OSV database cached in `/data`.
+9. Incremental gitleaks scans (`last..HEAD`, with a full scan weekly).
+
+### Owner decisions needed
+
+1. **DMARC, MTA-STS and TLS-RPT TXT lookups.** Are these fixed protocol labels allowed under invariant 2? They are not subdomain guesses, but they add DNS queries, and the ownership-gate request-list tests would change.
+2. **Default local model.** The suggested `…uncensored-hauhaucs-aggressive` quant is from an unvetted publisher and is weaker against injected instructions. Switch to a mainstream instruct model?
+3. **A separate exit code for "incomplete scan".** This is breaking for CI users.
+4. **Rotated/accepted design (M6.2).** Confirm it re-ranks only.
+5. **`docs/ACTIVE-TESTING.md`.** It still waits for your answers and conflicts with invariant 2.

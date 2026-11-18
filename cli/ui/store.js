@@ -6,7 +6,8 @@ import { api, ApiError } from "./api.js";
 
 /** @typedef {import("../src/repos/types.ts").Finding} Finding */
 /** @typedef {{ title: string, how: string[], phase: "now" | "next" | "schedule" | "later" }} Suggestion */
-/** @typedef {Finding & { suggestion?: Suggestion }} SuggestedFinding */
+/** @typedef {import("../src/analysis/analyse.ts").Judgement} Judgement */
+/** @typedef {Finding & { suggestion?: Suggestion, analysis?: Judgement }} SuggestedFinding */
 /** @typedef {Omit<import("../src/repos/types.ts").RepoResult, "findings"> & { name: string, findings: SuggestedFinding[] }} Repo */
 /** @typedef {Omit<import("../src/repos/types.ts").ScanReport, "repos"> & { repos: Repo[] }} ScanReport */
 /** @typedef {import("../src/ui/server.ts").ScanStatus} ScanStatus */
@@ -21,7 +22,7 @@ export const store = {
 	 * managed rather than from a terminal. `monitor.unset`: neither monitor setting was given.
 	 * `assistant`: the local model behind Explain, Summarise and Ask.
 	 *
-	 * @type {{ defaultRoot: string, reportPath: string, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean }, assistant: import("./generated.js").AssistantSettings } | null}
+	 * @type {{ defaultRoot: string, reportPath: string, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean }, github: { token: boolean, error?: string }, assistant: import("./generated.js").AssistantSettings } | null}
 	 */
 	settings: null,
 	/** @type {ScanReport | null} */
@@ -29,6 +30,9 @@ export const store = {
 	/** What the scan could not check. */
 	/** @type {string[]} */
 	notes: [],
+	/** What repositories told the scanners to leave out. */
+	/** @type {string[]} */
+	settingNotes: [],
 	/** @type {ScanStatus} */
 	scan: { state: "idle" },
 };
@@ -65,6 +69,7 @@ export function load() {
 			reportPath: state.reportPath,
 			service: state.service === true,
 			monitor: state.monitor,
+			github: state.github ?? { token: false },
 			assistant: state.assistant ?? { configured: false },
 		};
 		store.scan = state.scan;
@@ -85,12 +90,14 @@ export function reset() {
 	store.settings = null;
 	store.report = null;
 	store.notes = [];
+	store.settingNotes = [];
 }
 
 export async function loadReport() {
 	const data = await api("GET", "/repos/report");
 	store.report = /** @type {ScanReport | null} */ (data.report);
 	store.notes = data.notes;
+	store.settingNotes = data.settingNotes ?? [];
 	rows = null;
 	emit("report");
 }

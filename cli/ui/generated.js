@@ -5,7 +5,7 @@
  * What `/api/state` says about the local model. `unset`: no model address was given, so the
  * features are simply off, as opposed to a setting to correct.
  *
- * @typedef {{ configured: boolean, model?: string, host?: string, error?: string, unset?: boolean }} AssistantSettings
+ * @typedef {{ configured: boolean, model?: string, host?: string, hosted?: boolean, error?: string, unset?: boolean }} AssistantSettings
  */
 
 /** The longest question the server takes, in characters. */
@@ -78,4 +78,53 @@ export function localModelSetup(assistant, service) {
 		steps: ["Start Ollama and add a model to it. Then stop SecurityX and start it again with the model's address and name:"],
 		commands: `export SECURITYX_LLM_URL=http://localhost:11434\nexport SECURITYX_LLM_MODEL=${SUGGESTED_MODEL}\nsecurityx ui`,
 	};
+}
+
+/** How each of the model's verdicts on a finding is worded, and how they order: most pressing first. */
+export const VERDICT_LABELS = /** @type {const} */ ({
+	confirmed: "Model: confirmed",
+	likely: "Model: likely real",
+	unclear: "Model: unclear",
+	unlikely: "Model: unlikely to matter",
+});
+
+const VERDICT_ORDER = Object.keys(VERDICT_LABELS);
+
+/**
+ * Where a finding sorts by the model's verdict. One the model has not judged goes after those it
+ * has, and "unlikely" goes last of all: a sort, never a filter, so nothing is hidden by it.
+ *
+ * @param {{ analysis?: { verdict: string } } | undefined} finding
+ */
+export function verdictRank(finding) {
+	const verdict = finding?.analysis?.verdict;
+	if (verdict === undefined) return 3;
+	if (verdict === "unlikely") return 4;
+	const index = VERDICT_ORDER.indexOf(verdict);
+	return index === -1 ? 3 : index;
+}
+
+/**
+ * What the analysis has covered, in a sentence.
+ *
+ * @param {{ items: number, judged: number, waiting: Record<string, number> } | null | undefined} summary
+ */
+export function analysisProgress(summary) {
+	if (!summary) return "";
+	const urgent = (summary.waiting.critical ?? 0) + (summary.waiting.high ?? 0);
+	const left = summary.items - summary.judged;
+	if (left === 0) return `The model has judged all ${summary.items.toLocaleString()} items of this scan.`;
+	return `The model has judged ${summary.judged.toLocaleString()} of ${summary.items.toLocaleString()} items. ${urgent.toLocaleString()} critical or high ${urgent === 1 ? "one is" : "ones are"} waiting.`;
+}
+
+/**
+ * What starting an analysis sends, and where, said before it is sent.
+ *
+ * @param {AssistantSettings} assistant
+ */
+export function analysisNotice(assistant) {
+	const what = "For each finding it is sent the finding as shown here and, for a vulnerable package, the lines of your code that import it. Secret values are never sent, and no file content is sent for a leaked secret.";
+	return assistant.hosted
+		? `This sends that to ${assistant.host}, outside your own machines, under your API key, and each item is billed to it. ${what}`
+		: `${what} It goes to your own model at ${assistant.host}.`;
 }

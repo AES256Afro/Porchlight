@@ -1,5 +1,4 @@
-import { relative } from "node:path";
-import { countBySeverity, coverageNotes, rank, rankRepos } from "../repos/report.ts";
+import { countBySeverity, coverageNotes, rank, rankRepos, repoName } from "../repos/report.ts";
 import type { Finding, RepoResult, ScanReport } from "../repos/types.ts";
 import { domainSuggestions, type MonitorFinding, type MonitorReport } from "../roadmap/domains.ts";
 import { buildRepoRoadmap, suggestionsFor } from "../roadmap/repos.ts";
@@ -76,6 +75,33 @@ const TASKS = {
 		"Keep it under 250 words.",
 	],
 };
+
+/** What the model is asked to answer with when it judges a finding. */
+const ANALYSIS_TASK = [
+	"Judge the one item in the data: a problem a scanner found in one of the owner's repositories, with the evidence SecurityX gathered about it.",
+	'For a vulnerable package, "evidence" says how the package is declared, which of the repository\'s own files import it ("uses": the first few, each with the line that names it), in how many files, and whether those are all test code. For a leaked secret there is no file content: judge from the rule, the path and the ranking note.',
+	"Decide how likely it is that this is a real problem for this repository:",
+	'- "confirmed": the evidence shows it. A runtime dependency that the repository\'s own non-test code imports; a secret in a file that is plainly real configuration.',
+	'- "likely": probably real, but the evidence does not show the vulnerable part being used.',
+	'- "unlikely": the evidence points away from it. A development-only dependency, a package only test code imports, or one nothing imports; a secret in test data or an example file.',
+	'- "unclear": the evidence does not let you say.',
+	"A secret that reached git history must still be rotated whatever you decide: say so in the steps. Never say a finding can be ignored.",
+	"Then give the repair as up to five short steps, specific to this repository: name the files from the evidence, and follow the suggested fix when there is one.",
+	'This task replaces the plain-text rule above. Answer with one JSON object and nothing else, no code fence: {"verdict": "confirmed" | "likely" | "unlikely" | "unclear", "reason": "one or two sentences naming the evidence you relied on", "steps": ["step", "step"]}',
+];
+
+/** Judge one finding, or one package's findings, from the evidence gathered for it. */
+export function analysisPrompt(item: Record<string, unknown>): Prompt {
+	return build(ANALYSIS_TASK, clipDeep(item), null);
+}
+
+/** Every string anywhere in the value cut to the field cap, so no file line or title crowds out the rest. */
+function clipDeep(value: unknown): unknown {
+	if (typeof value === "string") return clip(value);
+	if (Array.isArray(value)) return value.slice(0, 50).map(clipDeep);
+	if (typeof value === "object" && value !== null) return Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, clipDeep(inner)]));
+	return value;
+}
 
 /** Finds a finding of the stored report by what the page knows of it. `detail` tells apart findings at one place. */
 export function locateFinding(
@@ -283,10 +309,6 @@ function values(value: unknown): string | string[] {
 	if (!Array.isArray(value)) return clip(value);
 	const shown = value.slice(0, MAX_VALUES).map(clip);
 	return value.length > MAX_VALUES ? [...shown, `and ${value.length - MAX_VALUES} more`] : shown;
-}
-
-function repoName(report: ScanReport, repo: RepoResult): string {
-	return relative(report.root, repo.path) || ".";
 }
 
 function list(value: unknown): unknown[] {

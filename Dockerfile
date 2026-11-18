@@ -1,12 +1,15 @@
 # SecurityX for BoxPilot: the web interface with both scanners. Repositories to scan are mounted
-# read-only at /repos; the latest scan report lives in /data. The attack-surface monitor itself
+# read-only at /repos, or fetched from GitHub into /data/github; the latest scan report lives in /data. The attack-surface monitor itself
 # stays a Cloudflare Worker; this image only talks to it as a client.
 FROM node:24-alpine
 
 # gitleaks reads history with git. The repositories are someone else's files mounted read-only,
-# and git refuses to read a repository owned by another user unless told it is safe.
+# and git refuses to read a repository owned by another user unless told it is safe: only those
+# under /repos are. Repositories fetched from GitHub belong to this image's own user and need no
+# such exception. A repository's own .git/config still runs nothing, because gitleaks is given
+# git options that switch diff programs off (see cli/src/repos/gitleaks.ts).
 RUN apk add --no-cache git \
- && git config --system --add safe.directory '*'
+ && git config --system --add safe.directory '/repos/*'
 
 # The scanners, pinned and checked against the checksums their releases publish. To update one,
 # change its version and both of its checksums together.

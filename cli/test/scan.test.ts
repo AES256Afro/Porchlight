@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { access, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { coverageNotes, exceeds, exitCode, renderMarkdown, renderSummary } from "../src/repos/report.ts";
+import { GIT_LOG_OPTIONS, GITLEAKS_CONFIG } from "../src/repos/gitleaks.ts";
+import { coverageNotes, exceeds, exitCode, renderMarkdown, renderSummary, repoName } from "../src/repos/report.ts";
 import { scanRepos } from "../src/repos/scan.ts";
+import { scannerSettingFiles } from "../src/repos/settings.ts";
 import type { ScanReport } from "../src/repos/types.ts";
 import { fakeAwsKeyId, fakeRunner, git, installed, makeTree, tempDir } from "./helpers.ts";
 
@@ -106,6 +108,56 @@ test("a scanner failing on one repository is recorded and the rest still run", a
 	assert.deepEqual(coverageNotes(report), ["gitleaks failed on clean: fatal: bad object HEAD"]);
 });
 
+test("gitleaks reporting nothing because git could not read the history is a failure, not a clean result", async () => {
+	const root = await twoRepos();
+	const run = fakeRunner({
+		gitleaks: (args) =>
+			args[0] === "version"
+				? { stdout: "8.30.1" }
+				: {
+						code: 0,
+						stdout: "[]",
+						stderr: `8:51PM ERR [git] fatal: detected dubious ownership in repository at '/x'\n8:51PM ERR error="stderr is not empty"\n`,
+					},
+		"osv-scanner": "missing",
+	});
+
+	const report = await scanRepos({ root, depth: 2, run, now: NOW });
+
+	assert.deepEqual(report.repos[0]!.errors, [{ tool: "gitleaks", message: "[git] fatal: detected dubious ownership in repository at '/x'" }]);
+	assert.equal(exitCode(report, "critical"), 1, "a gate cannot pass on a history that was never read");
+});
+
+test("gitleaks uses SecurityX's rules and stops git running the repository's diff programs", async () => {
+	const root = await twoRepos();
+	const run = fakeRunner({ gitleaks: (args) => ({ stdout: args[0] === "version" ? "8.30.1" : "[]" }), "osv-scanner": "missing" });
+
+	await scanRepos({ root, depth: 2, run, now: NOW });
+
+	const scan = run.calls.find((call) => call[0] === "gitleaks" && call[1] === "git")!;
+	const repo = scan.at(-1)!;
+	assert.equal(scan[scan.indexOf("--config") + 1], GITLEAKS_CONFIG);
+	assert.ok(scan.includes(`--log-opts=${GIT_LOG_OPTIONS}`));
+	for (const option of ["--no-textconv", "--no-ext-diff", "--all"]) assert.ok(GIT_LOG_OPTIONS.split(" ").includes(option), option);
+	assert.equal(scan[scan.indexOf("--gitleaks-ignore-path") + 1], repo, "ignore files come from the repository, not the working folder");
+	assert.ok(scan.includes("--redact"));
+});
+
+test("lists the files that tell a scanner to leave findings out, without reading dependencies or .git", async () => {
+	const repo = await tempDir();
+	await makeTree(repo, {
+		".gitleaksignore": "abc:config.ini:generic-api-key:1\n",
+		".gitleaks.toml": "[extend]\nuseDefault = false\n",
+		"web/osv-scanner.toml": "",
+		"web/node_modules/dep/osv-scanner.toml": "",
+		".git/osv-scanner.toml": "",
+		"api/README.md": "",
+	});
+
+	assert.deepEqual((await scannerSettingFiles(repo)).sort(), [".gitleaks.toml", ".gitleaksignore", "web/osv-scanner.toml"]);
+	assert.deepEqual(await scannerSettingFiles(join(repo, "api")), []);
+});
+
 test("an unreachable vulnerability database is a failure, not a clean result", async () => {
 	const root = await twoRepos();
 	// What osv-scanner really does offline: exit 127, yet a well-formed empty report on stdout.
@@ -174,6 +226,41 @@ test("--fail-on thresholds", () => {
 	assert.deepEqual([exitCode(missingTool, "critical"), exitCode(missingTool, "medium")], [1, 2]);
 });
 
+test("end to end: a hostile repository can neither run a program nor switch gitleaks' rules off", async (t) => {
+	if (!(await installed("gitleaks"))) return t.skip("gitleaks is not installed");
+	const root = await tempDir();
+	const repo = join(root, "hostile");
+	const marker = join(root, "ran");
+	const program = `sh -c 'touch "${marker}"; cat "$0"'`;
+	await makeTree(repo, {
+		"config.txt": `aws_access_key_id = ${fakeAwsKeyId()}\n`,
+		".gitattributes": "*.txt diff=hostile\n",
+		// Turns every built-in rule off and adds one that never matches.
+		".gitleaks.toml": `[extend]\nuseDefault = false\n\n[[rules]]\nid = "nothing"\nregex = "zq{40}"\n`,
+	});
+	await git(repo, "init", "-q");
+	await git(repo, "config", "diff.hostile.textconv", program);
+	await git(repo, "config", "diff.external", program);
+	await git(repo, "add", "-A");
+	await git(repo, "commit", "-q", "-m", "one");
+	await writeFile(join(repo, "config.txt"), "changed\n");
+	await git(repo, "commit", "-q", "-am", "two");
+
+	const report = await scanRepos({ root, depth: 1, now: NOW });
+
+	await assert.rejects(access(marker), "no program from the repository's .git/config ran");
+	const scanned = report.repos[0]!;
+	assert.deepEqual(
+		scanned.errors.filter((error) => error.tool === "gitleaks"),
+		[],
+	);
+	assert.ok(
+		scanned.findings.some((finding) => finding.ruleId === "aws-access-token"),
+		"the built-in rules ran although the repository's .gitleaks.toml turns them off",
+	);
+	assert.deepEqual(scanned.settingFiles, [".gitleaks.toml"]);
+});
+
 test("end to end: the real gitleaks finds a secret in history and the report never contains it", async (t) => {
 	if (!(await installed("gitleaks"))) return t.skip("gitleaks is not installed");
 	const root = await tempDir();
@@ -201,4 +288,21 @@ test("end to end: the real gitleaks finds a secret in history and the report nev
 	for (const text of [report, result.stdout, result.stderr]) {
 		assert.ok(!text.includes(key), "the secret value must not appear in any output");
 	}
+});
+
+test("scans a further folder in the same report and names its repositories apart", async () => {
+	const dir = await tempDir();
+	await makeTree(dir, { "projects/shop/.git/HEAD": "ref", "data/github/me/shop/.git/HEAD": "ref", "data/github/me/too/deep/nested/.git/HEAD": "ref" });
+	const root = join(dir, "projects");
+	const github = join(dir, "data", "github");
+
+	const report = await scanRepos({ root, depth: 3, also: [{ root: github, depth: 2 }, { root, depth: 3 }], run: fakeRunner({}), settingFiles: async () => [] });
+
+	// Found once each, the second folder only to its own depth.
+	assert.deepEqual(report.repos.map((repo) => repo.path), [join(github, "me", "shop"), join(root, "shop")]);
+	assert.deepEqual(report.otherRoots, [github, root]);
+	// Two repositories called "shop" stay two names.
+	assert.deepEqual(report.repos.map((repo) => repoName({ ...report, otherRoots: [github] }, repo)), ["github/me/shop", "shop"]);
+	// A report from before this existed is named as it always was.
+	assert.equal((await scanRepos({ root, depth: 3, run: fakeRunner({}), settingFiles: async () => [] })).otherRoots, undefined);
 });

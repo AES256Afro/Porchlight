@@ -35,10 +35,21 @@ export interface RepoResult {
 	findings: Finding[];
 	/** Scanners that ran but failed on this repository. Its findings are then incomplete. */
 	errors: { tool: ToolName; message: string }[];
+	/**
+	 * Files in the repository that tell a scanner to leave findings out
+	 * (.gitleaksignore, osv-scanner.toml), or that SecurityX ignored
+	 * (.gitleaks.toml). Missing from older reports.
+	 */
+	settingFiles?: string[];
 }
 
 export interface ScanReport {
 	root: string;
+	/**
+	 * Further folders scanned along with `root`, such as the one holding repositories fetched from
+	 * GitHub. A repository in one is named under that folder's own name. Missing from older reports.
+	 */
+	otherRoots?: string[];
 	scannedAt: string;
 	tools: ToolStatus[];
 	repos: RepoResult[];

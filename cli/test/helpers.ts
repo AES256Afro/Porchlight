@@ -48,13 +48,16 @@ export function fakeAwsKeyId(): string {
 /** A scripted runner: maps a program name to its result, or to "missing". */
 export function fakeRunner(
 	programs: Record<string, "missing" | ((args: string[]) => Partial<ExecResult>)>,
-): Runner & { calls: string[][] } {
+): Runner & { calls: string[][]; envs: (Record<string, string> | undefined)[] } {
 	const calls: string[][] = [];
-	const runner: Runner = async (command, args) => {
+	/** The environment each call was given, in the same order as `calls`. */
+	const envs: (Record<string, string> | undefined)[] = [];
+	const runner: Runner = async (command, args, options) => {
 		calls.push([command, ...args]);
+		envs.push(options?.env);
 		const program = programs[command];
 		if (program === undefined || program === "missing") throw new ToolMissingError(command);
 		return { code: 0, stdout: "", stderr: "", ...program(args) };
 	};
-	return Object.assign(runner, { calls });
+	return Object.assign(runner, { calls, envs });
 }

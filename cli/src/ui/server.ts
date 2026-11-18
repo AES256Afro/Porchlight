@@ -2,14 +2,18 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { homedir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
-import { AssistantError, chat, type AssistantConfig } from "../assist/ollama.ts";
+import { dirname, join, resolve } from "node:path";
+import { judge, readAnalysis, saveAnalysis, unitKey, unitsOf, VERDICTS, type AnalysisFile } from "../analysis/analyse.ts";
+import { AssistantError, chat, isHosted, type AssistantConfig } from "../assist/ollama.ts";
 import { askPrompt, domainPrompt, findingPrompt, locateFinding, roadmapPrompt, type Prompt } from "../assist/prompts.ts";
 import { MAX_QUESTION } from "../../ui/generated.js";
+import { fetchedRepos, fetchRepo, GithubError, listRepos, parseRepoName, removeFetched, validOwner, type GithubConfig } from "../github/github.ts";
 import { callMonitor, type MonitorConfig } from "../monitor/client.ts";
-import { coverageNotes, rank, rankRepos } from "../repos/report.ts";
+import { discoverRepos } from "../repos/discover.ts";
+import type { Runner } from "../repos/exec.ts";
+import { coverageNotes, nameUnder, rank, rankRepos, repoName, settingNotes } from "../repos/report.ts";
 import { scanRepos } from "../repos/scan.ts";
-import type { ScanReport } from "../repos/types.ts";
+import { SEVERITIES, type ScanReport, type Severity } from "../repos/types.ts";
 import { domainSuggestions, type MonitorReport } from "../roadmap/domains.ts";
 import { exportDomain, exportRepos, ExportError, parseFilter, type ExportFile } from "../roadmap/export.ts";
 import { buildRepoRoadmap, suggestionsFor } from "../roadmap/repos.ts";
@@ -37,6 +41,12 @@ export interface UiOptions {
 	assistantError?: string;
 	/** `assistant` is null because no model address was given: the features are simply off. */
 	assistantUnset?: boolean;
+	/** Where repositories fetched from GitHub are kept, and the token to fetch them with. Defaults to a folder beside the report, with no token. */
+	github?: GithubConfig;
+	/** Why the GitHub token that was given is not used, shown in the UI. */
+	githubError?: string;
+	/** Runs git when fetching. Tests pass a fake. */
+	run?: Runner;
 	/** A fixed key (SECURITYX_UI_KEY). Without one, each start makes its own. */
 	sessionKey?: string;
 	scan?: typeof scanRepos;
@@ -67,9 +77,21 @@ export type ScanStatus =
 			depth?: number;
 	  };
 
+/** Fetching repositories from GitHub: one batch at a time, each repository's failure kept beside the rest. */
+export type FetchStatus =
+	| { state: "idle" }
+	| { state: "running"; done: number; total: number; current: string | null; errors: { repo: string; message: string }[] }
+	| { state: "done"; finishedAt: string; total: number; errors: { repo: string; message: string }[] };
+
+/** The model judging findings one at a time, in the background. */
+export type AnalysisStatus =
+	| { state: "idle" }
+	| { state: "running"; done: number; total: number; current: string | null; failed: number }
+	| { state: "done" | "stopped"; finishedAt: string; done: number; total: number; failed: number; lastError?: string };
+
 const UI_DIR = join(import.meta.dirname, "../../ui");
 /** The page's own modules. Nothing else in the folder is served. */
-const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "overview", "findings", "roadmap", "repos", "domains"];
+const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains"];
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
 	"/": { file: "index.html", type: "text/html; charset=utf-8" },
 	"/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
@@ -98,6 +120,15 @@ const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 const HOST_HEADER_PATTERN = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*|\[[0-9a-f:.]+\])(?::\d{1,5})?$/i;
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_DEPTH = 6;
+/** Repositories named in a preview of what a scan would cover. The count is always the full one. */
+const PREVIEW_NAMES = 60;
+/** Findings one analysis run may judge, and how many it judges unless told otherwise. */
+const MAX_ANALYSE = 500;
+const DEFAULT_ANALYSE = 25;
+/** Repositories one fetch may name. */
+const MAX_FETCH = 300;
+/** Fetched repositories sit two folders down: owner, then repository. */
+const GITHUB_DEPTH = 2;
 const DOMAIN_PATTERN = /^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/;
 /** What the local model can be asked for, one route each. */
 const ASSIST_ROUTES = ["finding", "roadmap", "domain", "ask"];
@@ -131,7 +162,12 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	}
 	const sessionKey = options.sessionKey ?? randomBytes(24).toString("base64url");
 	const scan = options.scan ?? scanRepos;
+	const github: GithubConfig = options.github ?? { dir: join(dirname(options.reportPath), "github") };
 	let status: ScanStatus = { state: "idle" };
+	let fetching: FetchStatus = { state: "idle" };
+	const analysisPath = join(dirname(options.reportPath), "repo-analysis.json");
+	let analysing: AnalysisStatus = { state: "idle" };
+	let stopAnalysis: AbortController | null = null;
 	let port = options.port;
 	/** Ollama on a small server answers one request at a time, so this asks it one at a time. */
 	let modelBusy = false;
@@ -168,7 +204,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		}
 
 		if (!originAllowed(req.headers.origin, host, loopbackOnly)) throw new HttpError(403, "Cross-site request refused");
-		if (!sessionMatches(req.headers[SESSION_HEADER], sessionKey)) throw new HttpError(401, "Session key required");
+		// Says whether this is a service, so the page can tell the reader where their key is kept.
+		if (!sessionMatches(req.headers[SESSION_HEADER], sessionKey)) return sendJson(res, 401, { error: "Session key required", service: !loopbackOnly });
 
 		const body = req.method === "POST" ? await readJsonBody(req) : undefined;
 		const route = `${req.method} ${url.pathname}`;
@@ -189,8 +226,10 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 							// Neither setting given: the usual state of a fresh install, as opposed to a value to correct.
 							unset: options.monitorUnset ?? false,
 						},
+				// Whether a token is set, never the token.
+				github: { token: github.token !== undefined, ...(options.githubError ? { error: options.githubError } : {}) },
 				assistant: options.assistant
-					? { configured: true, model: options.assistant.model, host: options.assistant.url.host }
+					? { configured: true, model: options.assistant.model, host: options.assistant.url.host, hosted: isHosted(options.assistant) }
 					: {
 							configured: false,
 							error: options.assistantError ?? "The local model is not configured",
@@ -200,7 +239,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			});
 		}
 		if (url.pathname.startsWith("/api/assist/")) return assist(req, res, url.pathname.slice("/api/assist/".length), body);
-		if (route === "GET /api/repos/report") return sendJson(res, 200, await loadReport(options.reportPath));
+		if (route === "GET /api/repos/report") return sendJson(res, 200, await loadReport(options.reportPath, analysisPath));
+		if (url.pathname === "/api/analysis" || url.pathname === "/api/analysis/stop") return analysisRoute(res, route, body);
 		if (route === "GET /api/repos/roadmap" || route === "GET /api/repos/export") {
 			const report = await readReport(options.reportPath);
 			if (!report) throw new HttpError(404, "There is no scan yet. Scan a folder first.");
@@ -210,22 +250,37 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			return sendDownload(res, exportRepos(report, exportChoice(query), filter));
 		}
 		if (route === "GET /api/repos/scan") return sendJson(res, 200, { scan: status });
+		if (route === "GET /api/repos/preview") {
+			return sendJson(res, 200, { preview: await previewScan(url.searchParams.get("root") ?? options.defaultRoot, url.searchParams.get("depth"), github.dir) });
+		}
+		if (url.pathname === "/api/github" || url.pathname.startsWith("/api/github/")) return githubRoute(res, route, url, body);
 		if (route === "POST /api/repos/scan") {
 			if (status.state === "running") throw new HttpError(409, "A scan is already running");
+			// A repository half fetched is not one to scan.
+			if (fetching.state === "running") throw new HttpError(409, "Repositories are still being fetched from GitHub. Scan when that has finished.");
+			if (analysing.state === "running") throw new HttpError(409, "The model is still analysing the last scan. Stop that first, or wait for it to finish.");
 			const { root, depth } = await scanRequest(body);
+			const also = (await fetchedRepos(github.dir)).length > 0 ? [{ root: github.dir, depth: GITHUB_DEPTH }] : undefined;
 			status = { state: "running", root, startedAt: new Date().toISOString(), done: 0, total: 0, current: null };
 			// Not awaited: the scan outlives this request and the UI polls for progress.
 			void scan({
 				root,
 				depth,
+				...(also ? { also } : {}),
 				onProgress: ({ done, total, path }) => {
-					if (status.state === "running") status = { ...status, done, total, current: relative(root, path) || "." };
+					if (status.state === "running") status = { ...status, done, total, current: nameUnder(root, also?.map((other) => other.root), path) };
 				},
 			})
 				.then(async (report) => {
 					if (report.repos.length === 0) {
 						const error = `No git repositories found under ${root}`;
 						status = { state: "failed", root, finishedAt: new Date().toISOString(), error, noRepositories: true, depth };
+						return;
+					}
+					// A scan that checked nothing must not replace one that did.
+					if (report.tools.every((tool) => tool.status === "missing")) {
+						const error = `No scanner is installed. Install one: ${report.tools.map((tool) => tool.installHint).join("; ")}`;
+						status = { state: "failed", root, finishedAt: new Date().toISOString(), error };
 						return;
 					}
 					await saveReport(options.reportPath, report);
@@ -250,6 +305,137 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		if (url.pathname === "/api/domains" || url.pathname.startsWith("/api/domains/")) {
 			const [code, answer] = await proxyToMonitor(req.method ?? "GET", url.pathname, body);
 			return sendJson(res, code, withSuggestions(answer));
+		}
+		throw new HttpError(404, "Not found");
+	}
+
+	/**
+	 * The model as a step of the analysis: judges findings from the stored report, worst first, one
+	 * at a time, saving each judgement as it arrives so a stop or a restart loses nothing. What it
+	 * reads is built here from this server's own copy of the report and the repository's files.
+	 */
+	async function analysisRoute(res: ServerResponse, route: string, body: unknown): Promise<void> {
+		if (route === "POST /api/analysis/stop") {
+			stopAnalysis?.abort();
+			return sendJson(res, 200, { status: analysing });
+		}
+		if (route === "GET /api/analysis") {
+			const report = await readReport(options.reportPath);
+			if (!report) return sendJson(res, 200, { status: analysing, summary: null });
+			const stored = await readAnalysis(analysisPath, report);
+			const units = unitsOf(report);
+			const waiting = Object.fromEntries(SEVERITIES.map((severity) => [severity, 0])) as Record<Severity, number>;
+			const verdicts = Object.fromEntries(VERDICTS.map((verdict) => [verdict, 0]));
+			for (const unit of units) {
+				const judged = stored.items[unit.key];
+				if (judged) verdicts[judged.verdict] = (verdicts[judged.verdict] ?? 0) + 1;
+				else waiting[unit.severity]++;
+			}
+			return sendJson(res, 200, { status: analysing, summary: { items: units.length, judged: units.length - Object.values(waiting).reduce((sum, count) => sum + count, 0), waiting, verdicts } });
+		}
+		if (route !== "POST /api/analysis") throw new HttpError(404, "Not found");
+
+		const assistant = options.assistant;
+		if (!assistant) throw new HttpError(503, options.assistantError ?? "No model is connected");
+		if (analysing.state === "running") throw new HttpError(409, "The analysis is already running");
+		if (status.state === "running") throw new HttpError(409, "A scan is running. Analyse when it has finished.");
+		const fields = bodyObject(body);
+		const limit = fields.limit ?? DEFAULT_ANALYSE;
+		if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > MAX_ANALYSE) throw new HttpError(400, `Choose how many to analyse, from 1 to ${MAX_ANALYSE}`);
+		const severities = fields.severities ?? ["critical", "high"];
+		if (!Array.isArray(severities) || severities.length === 0 || !severities.every((severity) => SEVERITIES.includes(severity as Severity))) {
+			throw new HttpError(400, "Severities must be some of: critical, high, medium, low");
+		}
+		const report = await storedReport();
+		const stored = await readAnalysis(analysisPath, report);
+		const queue = unitsOf(report)
+			.filter((unit) => !stored.items[unit.key] && severities.includes(unit.severity))
+			.slice(0, limit);
+		if (queue.length === 0) throw new HttpError(409, "Nothing is waiting to be analysed at those severities");
+
+		const stop = new AbortController();
+		stopAnalysis = stop;
+		analysing = { state: "running", done: 0, total: queue.length, current: null, failed: 0 };
+		// Not awaited: the analysis outlives this request and the page polls for progress.
+		void (async () => {
+			let done = 0;
+			let failed = 0;
+			let lastError: string | undefined;
+			for (const unit of queue) {
+				if (stop.signal.aborted) break;
+				analysing = { state: "running", done, total: queue.length, current: `${unit.repoName}: ${unit.kind === "vulnerability" ? unit.findings[0]?.detail : unit.findings[0]?.location}`, failed };
+				// Explain and Ask share the one model; whichever asked first finishes first.
+				while (modelBusy && !stop.signal.aborted) await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+				if (stop.signal.aborted) break;
+				modelBusy = true;
+				try {
+					stored.items[unit.key] = await judge(report, unit, assistant, { fetchFn: options.fetchFn, signal: stop.signal });
+					await saveAnalysis(analysisPath, stored);
+				} catch (err) {
+					if (stop.signal.aborted) break;
+					failed++;
+					lastError = err instanceof Error ? err.message : String(err);
+					// A model that cannot be reached, or a key it refuses, will fail every item the same way.
+					if (failed >= 3 && done === 0) break;
+				} finally {
+					modelBusy = false;
+				}
+				done++;
+			}
+			analysing = { state: stop.signal.aborted ? "stopped" : "done", finishedAt: new Date().toISOString(), done: done - failed, total: queue.length, failed, ...(lastError ? { lastError } : {}) };
+		})();
+		return sendJson(res, 202, { status: analysing });
+	}
+
+	/**
+	 * Repositories on GitHub: which can be fetched, fetching them, and removing a fetched one. The
+	 * token is used here and never reaches the browser; the page only learns whether one is set.
+	 */
+	async function githubRoute(res: ServerResponse, route: string, url: URL, body: unknown): Promise<void> {
+		try {
+			if (route === "GET /api/github") {
+				return sendJson(res, 200, { token: github.token !== undefined, fetched: await fetchedRepos(github.dir), job: fetching });
+			}
+			if (route === "GET /api/github/repos") {
+				const owner = url.searchParams.get("owner")?.trim() || undefined;
+				if (owner !== undefined && !validOwner(owner)) throw new HttpError(400, "That is not a GitHub account name. Type the name alone, such as octocat.");
+				return sendJson(res, 200, { repos: await listRepos(github, owner, options.fetchFn) });
+			}
+			if (route === "POST /api/github/fetch") {
+				if (fetching.state === "running") throw new HttpError(409, "Repositories are already being fetched");
+				if (status.state === "running") throw new HttpError(409, "A scan is running. Fetch when it has finished.");
+				const fields = bodyObject(body);
+				const names = fields.all === true ? await fetchedRepos(github.dir) : fields.repos;
+				if (!Array.isArray(names) || names.length === 0 || names.length > MAX_FETCH || !names.every((name) => typeof name === "string" && parseRepoName(name))) {
+					throw new HttpError(400, `Choose 1 to ${MAX_FETCH} repositories, each named owner/repository`);
+				}
+				const wanted = [...new Set(names as string[])];
+				fetching = { state: "running", done: 0, total: wanted.length, current: null, errors: [] };
+				// Not awaited: fetching outlives this request and the page polls for progress.
+				void (async () => {
+					const errors: { repo: string; message: string }[] = [];
+					for (const [index, repo] of wanted.entries()) {
+						fetching = { state: "running", done: index, total: wanted.length, current: repo, errors };
+						try {
+							await fetchRepo(github, repo, options.run);
+						} catch (err) {
+							errors.push({ repo, message: err instanceof Error ? err.message : String(err) });
+						}
+					}
+					fetching = { state: "done", finishedAt: new Date().toISOString(), total: wanted.length, errors };
+				})();
+				return sendJson(res, 202, { job: fetching });
+			}
+			if (route === "DELETE /api/github/fetched") {
+				if (fetching.state === "running" || status.state === "running") throw new HttpError(409, "Wait for the fetch or scan that is running to finish");
+				const name = url.searchParams.get("repo") ?? "";
+				if (!parseRepoName(name)) throw new HttpError(400, "Name the repository as owner/repository");
+				await removeFetched(github.dir, name);
+				return sendJson(res, 200, { fetched: await fetchedRepos(github.dir) });
+			}
+		} catch (err) {
+			if (err instanceof GithubError) throw new HttpError(err.status, err.message);
+			throw err;
 		}
 		throw new HttpError(404, "Not found");
 	}
@@ -492,6 +678,33 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 	}
 }
 
+/** What a scan of a folder would cover, found the way a scan finds it: nothing is run and nothing is read but folder names. */
+export interface ScanPreview {
+	root: string;
+	/** Whether `root` is a folder this process can see. */
+	exists: boolean;
+	/** How many repositories a scan would cover. */
+	total: number;
+	/** The first of them, named as the report names them. */
+	repos: string[];
+	/** How many of them were fetched from GitHub rather than found in `root`. */
+	fetched: number;
+	depth: number;
+}
+
+async function previewScan(root: string, depthText: string | null, githubDir: string): Promise<ScanPreview> {
+	const depth = depthText === null ? 3 : Number(depthText);
+	if (!Number.isInteger(depth) || depth < 0 || depth > MAX_DEPTH) throw new HttpError(400, `Depth must be a whole number from 0 to ${MAX_DEPTH}`);
+	if (root.trim() === "") throw new HttpError(400, "Choose a folder to scan");
+	const absolute = resolve(root.trim().replace(/^~(?=$|\/)/, homedir()));
+	const info = await stat(absolute).catch(() => null);
+	if (!info?.isDirectory()) return { root: absolute, exists: false, total: 0, repos: [], fetched: 0, depth };
+	const inFolder = await discoverRepos(absolute, depth);
+	const fromGithub = (await discoverRepos(githubDir, GITHUB_DEPTH)).filter((path) => !inFolder.includes(path));
+	const names = [...inFolder, ...fromGithub].slice(0, PREVIEW_NAMES).map((path) => nameUnder(absolute, [githubDir], path));
+	return { root: absolute, exists: true, total: inFolder.length + fromGithub.length, repos: names, fetched: fromGithub.length, depth };
+}
+
 async function scanRequest(body: unknown): Promise<{ root: string; depth: number }> {
 	const { root, depth = 3 } = (body ?? {}) as { root?: unknown; depth?: unknown };
 	if (typeof root !== "string" || root.trim() === "") throw new HttpError(400, "Choose a folder to scan");
@@ -505,20 +718,29 @@ async function scanRequest(body: unknown): Promise<{ root: string; depth: number
 	return { root: absolute, depth };
 }
 
-/** The stored report, ordered worst first, each finding with its suggested fix, and what the scan did not cover. */
-async function loadReport(path: string): Promise<{ report: unknown; notes: string[] }> {
+/**
+ * The stored report, ordered worst first, each finding with its suggested fix,
+ * what the scan did not cover, and what repositories told the scanners to leave out.
+ */
+async function loadReport(path: string, analysisPath: string): Promise<{ report: unknown; notes: string[]; settingNotes: string[] }> {
 	const report = await readReport(path);
-	if (!report) return { report: null, notes: [] };
+	if (!report) return { report: null, notes: [], settingNotes: [] };
 	const suggestions = suggestionsFor(report);
+	const analysis: AnalysisFile = await readAnalysis(analysisPath, report);
 	return {
 		notes: coverageNotes(report),
+		settingNotes: settingNotes(report),
 		report: {
 			...report,
-			repos: rankRepos(report.repos).map((repo) => ({
-				...repo,
-				name: relative(report.root, repo.path) || ".",
-				findings: rank(repo.findings).map((finding) => ({ ...finding, suggestion: suggestions.get(finding) })),
-			})),
+			repos: rankRepos(report.repos).map((repo) => {
+				const name = repoName(report, repo);
+				return {
+					...repo,
+					name,
+					// The model's judgement rides beside the finding; it changes nothing about it.
+					findings: rank(repo.findings).map((finding) => ({ ...finding, suggestion: suggestions.get(finding), analysis: analysis.items[unitKey(name, finding)] })),
+				};
+			}),
 		},
 	};
 }

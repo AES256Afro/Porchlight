@@ -113,6 +113,44 @@ test("a filtered roadmap covers only what matches and says so", () => {
 	assert.equal(buildRepoRoadmap(sampleReport(), { ...noFilter(), query: "PILLOW" }).totals.actions, 1);
 });
 
+test("a filter never shrinks a fix: the upgrade shown clears the advisories the filter hides too", () => {
+	const report: ScanReport = {
+		root: "/work",
+		scannedAt: "2026-11-17T12:00:00.000Z",
+		tools: [],
+		repos: [
+			{
+				path: "/work/app",
+				errors: [],
+				// The critical advisory is fixed early; the high one that the filter hides needs a later release.
+				findings: [vuln("GHSA-crit", "critical", "lodash@4.17.0", "4.17.12"), vuln("GHSA-high", "high", "lodash@4.17.0", "4.18.0")],
+			},
+		],
+	};
+	const upgrades = (filter: Parameters<typeof buildRepoRoadmap>[1]) =>
+		buildRepoRoadmap(report, filter).phases.flatMap((phase) => phase.groups.flatMap((group) => group.actions.map((action) => action.title)));
+	const expected = ["Upgrade lodash from 4.17.0 to 4.18.0 or later"];
+
+	assert.deepEqual(upgrades({ ...noFilter(), severities: ["critical"] }), expected);
+	assert.deepEqual(upgrades({ ...noFilter(), query: "GHSA-crit" }), expected);
+	assert.deepEqual(upgrades({ ...noFilter(), severities: ["low"] }), [], "a repair is listed only when it clears something the filter lets through");
+	assert.equal(listRepoFindings(report, { ...noFilter(), severities: ["critical"] }).rows[0]!.suggestion, expected[0], "the roadmap and the findings list agree");
+});
+
+test("a folder that is itself a repository is named the same way by the roadmap, the list and the filters", () => {
+	const report: ScanReport = {
+		root: "/work/shop",
+		scannedAt: "2026-11-17T12:00:00.000Z",
+		tools: [],
+		repos: [{ path: "/work/shop", errors: [], findings: [vuln("GHSA-x", "high", "pkg@1.0.0", "1.0.1")] }],
+	};
+	const filter = { ...noFilter(), repo: "shop" };
+
+	assert.equal(buildRepoRoadmap(report, filter).totals.actions, 1);
+	assert.equal(listRepoFindings(report, filter).rows[0]!.place, "shop");
+	assert.equal(buildRepoRoadmap(report, { ...noFilter(), repo: "." }).totals.actions, 0);
+});
+
 test("carries the scan's gaps into the roadmap", () => {
 	const report = sampleReport();
 	report.tools[1] = { tool: "osv-scanner", status: "missing", installHint: "brew install osv-scanner" };

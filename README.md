@@ -33,10 +33,10 @@ securityx ui
 
 It prints a link. Open it to get both tools in the browser:
 
-- **Overview**: start a scan and watch its progress, see where things stand, and go to what needs doing first.
+- **Overview**: the two jobs, "Check your code" and "Check your websites". Before a scan it names the repositories it found in the folder; when it finds none, or the monitor is not set up, it says what to do next in numbered steps. After a scan it shows where things stand and what needs doing first.
 - **Findings**: every finding in one list, most severe first, each with the repair that clears it. Switch to **By repository** to see them grouped. Filter by severity, type, repository or text; the filters are kept in the address, so a reload or a shared link shows the same view.
 - **Roadmap**: what to repair, in order. One action, such as upgrading a package, can clear many findings.
-- **Domains**: register a domain, copy its verification record, check it, scan, and read what changed, with a suggested fix for each finding. This page needs `SECURITYX_MONITOR_URL` and `SECURITYX_ADMIN_TOKEN` set when you start the interface (see [Monitor domains](#monitor-domains)).
+- **Domains**: add a website by its domain name, prove it is yours with one DNS record, scan, and read what changed, with a suggested fix for each finding. Until the monitor is connected the page walks through setting it up. It needs `SECURITYX_MONITOR_URL` and `SECURITYX_ADMIN_TOKEN` set when you start the interface (see [Monitor domains](#monitor-domains)).
 
 Every page with findings has an **Export** button; see [Export a repair roadmap](#export-a-repair-roadmap).
 
@@ -64,7 +64,8 @@ How the interface is protected:
 
 SecurityX is in the [BoxPilot](https://github.com/AES256Afro/BoxPilot) catalog: install it from Apps → Browse like any other app. BoxPilot runs the public image `ghcr.io/aes256afro/securityx`, the web interface with gitleaks and osv-scanner built in. The monitor still runs on Cloudflare; the image is only its client.
 
-- **Repositories to scan**: the folder of checkouts on the server (default `/srv/projects`), mounted read-only at `/repos`.
+- **Repositories to scan**: fetch them from GitHub on the page (see [Fetch repositories from GitHub](#fetch-repositories-from-github)), or use a folder of checkouts on the server (default `/srv/projects`), mounted read-only at `/repos`. Both are scanned together.
+- **GitHub token**: optional, `SECURITYX_GITHUB_TOKEN`, for fetching private repositories.
 - **Access key**: BoxPilot generates `SECURITYX_UI_KEY`. The page asks for it once per browser tab.
 - **Monitor address and admin token**: optional, for the Domains page.
 - It starts on the tailnet only, because a report names the files and commits where secrets were found.
@@ -74,7 +75,7 @@ Outside BoxPilot:
 ```bash
 export SECURITYX_UI_KEY="$(openssl rand -hex 32)"   # keep it: the page asks for it
 docker run -d --name securityx -p 127.0.0.1:4747:4747 -e SECURITYX_UI_KEY \
-  -v "$HOME/Projects:/repos:ro" -v securityx-data:/data ghcr.io/aes256afro/securityx:0.3.0
+  -v "$HOME/Projects:/repos:ro" -v securityx-data:/data ghcr.io/aes256afro/securityx:0.4.0
 ```
 
 In the container, `securityx ui --host 0.0.0.0` changes what protects it:
@@ -169,10 +170,46 @@ A finding ranked below high says why. Ranking never removes a finding: a real ke
 What to know:
 
 - Secret values are never written to the report or the terminal. gitleaks always runs with `--redact`, and author names and emails are dropped.
-- A scanner that is not installed, or that failed on a repository, is listed under "Not covered" in the report. A report with that section is not a clean result.
+- A scanner that is not installed, or that failed on a repository, is listed under "Not covered" in the report. A report with that section is not a clean result. That includes gitleaks reporting nothing because git could not read a repository's history.
+- A scanned repository is treated as hostile input. gitleaks always uses its built-in rules, so a repository's own `.gitleaks.toml` cannot switch detection off, and git is told not to run the diff programs a repository's `.git/config` can name. Ignore files a repository carries (`.gitleaksignore`, `osv-scanner.toml`) are honoured, and the report names each one under "Left out by repository settings", since whatever they hide is not listed.
 - Dependency scanning needs network access: osv-scanner sends package names and versions to the OSV database (api.osv.dev). Offline, it is reported as not covered.
 - Uncommitted and git-ignored files are not scanned.
 - `reports/` is git-ignored: a report names the files and commits where secrets were found.
+
+## Deeper analysis with a model
+
+With a model connected, the Overview page has a **Deeper analysis** card. It has the model judge findings from your last scan, worst first, a number at a time:
+
+- All the advisories against one package in one place are judged together; a leaked secret is judged alone. A scan of 1,860 findings is about 580 items.
+- For a vulnerable package, SecurityX first reads the evidence itself: whether `package.json` declares it as a runtime or development dependency, and which of the repository's own files import it. The model gets that evidence and answers with a verdict (confirmed, likely, unlikely, unclear), its reason, and repair steps for that repository.
+- Each finding shows the verdict, and its detail shows the reason, the steps and exactly what the model was shown. **By model verdict** on the Findings page puts confirmed ones first.
+- A verdict is advice. It never changes a severity, a count, the roadmap or an export, and never hides a finding.
+- For a leaked secret, no file content is sent: the lines around a secret may hold it. Secret values are never sent.
+
+Which model, chosen with `SECURITYX_LLM_PROVIDER`:
+
+| Provider | Settings | Where your data goes |
+| --- | --- | --- |
+| `ollama` (default) | `SECURITYX_LLM_URL`, `SECURITYX_LLM_MODEL` | Your own Ollama, on this machine or your server |
+| `compatible` | `SECURITYX_LLM_URL` (such as `http://localhost:1234/v1`), `SECURITYX_LLM_MODEL`, optional `SECURITYX_LLM_API_KEY` | Your own server that speaks OpenAI's format: LM Studio, llama.cpp |
+| `anthropic` | `SECURITYX_LLM_API_KEY`; model defaults to `claude-opus-5-5` | Anthropic |
+| `openai` | `SECURITYX_LLM_API_KEY`, `SECURITYX_LLM_MODEL` | OpenAI |
+| `deepseek` | `SECURITYX_LLM_API_KEY`, `SECURITYX_LLM_MODEL` | DeepSeek |
+
+A hosted provider is sent what the pages show, plus the import lines above, and bills each request to your key. Its address is fixed in the code, so the key cannot be sent anywhere else. A local model on a processor takes about a minute an item; a hosted one, seconds.
+
+## Fetch repositories from GitHub
+
+A copy of SecurityX on a server can only scan repositories that are on that server. The Overview page's **Get repositories from GitHub** section puts them there: type a GitHub account name to list its public repositories, tick the ones to check, and choose Fetch. They are copied beside the report (`/data/github` in the container) and scanned along with the folder; in a report they are named `github/<owner>/<repository>`.
+
+Private repositories need a token. On GitHub, make a fine-grained personal access token with access to the repositories you want checked and **Contents: Read-only**, then give it to SecurityX as `SECURITYX_GITHUB_TOKEN` (in BoxPilot: Apps → SecurityX → Settings → GitHub token). With a token set, leaving the account name empty lists everything the token can read.
+
+What to know:
+
+- A fetched repository is a copy as of when it was fetched. Choose **Update all from GitHub** before checking again; **Remove** deletes a copy from this machine and leaves GitHub's untouched.
+- The token is sent only to GitHub. It is never put in a command's arguments, an address, a repository's configuration, a report or the browser.
+- Only `github.com` is contacted, at addresses built from names that match GitHub's naming rules. Cloning runs none of a repository's code: hooks, submodules, symbolic links, credential helpers and your own git settings are switched off, and redirects are not followed.
+- Forks and archived repositories start unticked.
 
 ## Export a repair roadmap
 

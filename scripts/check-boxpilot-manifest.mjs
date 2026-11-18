@@ -31,6 +31,8 @@ if (volume("repos")?.container !== flag("--root")) local.push(`volume repos is m
 if (volume("repos")?.readOnly !== true) local.push("volume repos must be read-only");
 if (!flag("--report")?.startsWith(`${volume("data")?.container}/`)) local.push(`the report ${flag("--report")} is not inside volume data (${volume("data")?.container})`);
 if (key?.type !== "password" || key?.generate !== true) local.push("SECURITYX_UI_KEY must be a generated password");
+const githubToken = raw.env?.find((entry) => entry.name === "SECURITYX_GITHUB_TOKEN");
+if (githubToken && (githubToken.type !== "password" || githubToken.secret !== true || githubToken.generate === true)) local.push("SECURITYX_GITHUB_TOKEN must be a secret password the owner supplies");
 if (raw.defaultExposure !== "tailnet") local.push("defaultExposure must stay tailnet: a report names where secrets were found");
 // BoxPilot's catalog file is catalog/securityx.yaml, and a manifest's id must match its file name.
 if (raw.id !== "securityx") local.push(`id is ${raw.id}: BoxPilot's catalog lists SecurityX as securityx`);

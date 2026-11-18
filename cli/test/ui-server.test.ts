@@ -6,6 +6,7 @@ import { test, type TestContext } from "node:test";
 import { assistantConfig } from "../src/assist/ollama.ts";
 import { listenOnFirstFree } from "../src/main.ts";
 import { monitorConfig } from "../src/monitor/client.ts";
+import type { Runner } from "../src/repos/exec.ts";
 import type { ScanOptions } from "../src/repos/scan.ts";
 import type { ScanReport } from "../src/repos/types.ts";
 import { hostAllowed, MIN_KEY_LENGTH, originAllowed, startUiServer, type UiOptions, type UiServer } from "../src/ui/server.ts";
@@ -179,6 +180,124 @@ test("listens beyond loopback only with a fixed key long enough to guard it", as
 	assert.equal((await send(server, "GET", "/api/state", { key: null })).status, 401);
 });
 
+test("a refused key says whether this is a service, and nothing more", async (t) => {
+	const local = await start(t);
+	assert.deepEqual((await send(local, "GET", "/api/state", { key: null })).json, { error: "Session key required", service: false });
+
+	const service = await start(t, { host: "127.0.0.2", sessionKey: "k".repeat(MIN_KEY_LENGTH) }).catch(() => null);
+	// Not every machine has a second loopback address to listen on; the flag is the same expression either way.
+	if (service) assert.deepEqual((await send(service, "GET", "/api/state", { key: null })).json, { error: "Session key required", service: true });
+});
+
+test("previews what a scan would cover without running anything", async (t) => {
+	const scans: string[] = [];
+	const server = await start(t, {
+		scan: async (options) => {
+			scans.push(options.root);
+			return { root: options.root, scannedAt: "2026-11-17T22:00:00Z", tools: [], repos: [] };
+		},
+	});
+	await makeTree(server.dir, { "projects/shop/.git/HEAD": "ref", "projects/blog/.git/HEAD": "ref", "projects/notes/readme.md": "x", "projects/deep/a/b/c/site/.git/HEAD": "ref" });
+	const root = join(server.dir, "projects");
+	const preview = async (query: string) => (await send(server, "GET", `/api/repos/preview?${query}`)).json.preview;
+
+	assert.deepEqual(await preview(`root=${encodeURIComponent(root)}`), { root, exists: true, total: 2, repos: ["blog", "shop"], fetched: 0, depth: 3 });
+	assert.deepEqual((await preview(`root=${encodeURIComponent(root)}&depth=6`)).repos, ["blog", "deep/a/b/c/site", "shop"]);
+	// A folder that is itself a repository is named as the report names it.
+	assert.deepEqual((await preview(`root=${encodeURIComponent(join(root, "shop"))}`)).repos, ["shop"]);
+	// An empty folder and a missing one are different answers, and neither is an error.
+	assert.deepEqual(await preview(`root=${encodeURIComponent(join(root, "notes"))}`), { root: join(root, "notes"), exists: true, total: 0, repos: [], fetched: 0, depth: 3 });
+	assert.equal((await preview(`root=${encodeURIComponent(join(root, "missing"))}`)).exists, false);
+	// With no folder named, the one the server was started with.
+	assert.equal((await preview("")).root, server.dir);
+
+	assert.equal((await send(server, "GET", `/api/repos/preview?root=${encodeURIComponent(root)}&depth=9`)).status, 400);
+	assert.equal((await send(server, "GET", "/api/repos/preview?root=", { key: null })).status, 401);
+	assert.deepEqual(scans, []);
+});
+
+test("fetches chosen repositories from GitHub one at a time, and scans them along with the folder", async (t) => {
+	const token = ["github", "pat", "y".repeat(30)].join("_");
+	const cloned: string[] = [];
+	// Stands in for git: a clone makes the folder git would have made.
+	const run: Runner = async (command, args) => {
+		assert.equal(command, "git");
+		const url = args.find((arg) => arg.startsWith("https://github.com/")) ?? "";
+		cloned.push(url);
+		if (url.endsWith("/broken.git")) return { code: 128, stdout: "", stderr: "fatal: early EOF\n" };
+		await makeTree(args.at(-1) ?? "", { ".git/HEAD": "ref" });
+		return { code: 0, stdout: "", stderr: "" };
+	};
+	let scanned: ScanOptions | undefined;
+	const dir = await tempDir();
+	const withToken = await startUiServer({
+		port: 0,
+		reportPath: join(dir, "state", "repo-scan.json"),
+		defaultRoot: dir,
+		monitor: null,
+		run,
+		github: { dir: join(dir, "state", "github"), token },
+		fetchFn: (async (_url: string, init: RequestInit) => {
+			assert.equal((init.headers as Record<string, string>).authorization, `Bearer ${token}`);
+			return Response.json([{ full_name: "me/app", private: true }, { full_name: "me/broken" }]);
+		}) as unknown as typeof fetch,
+		scan: async (options) => ((scanned = options), sampleReport(options.root)),
+	});
+	t.after(() => withToken.close());
+
+	// The page learns that a token is set, and never the token.
+	const state = await send(withToken, "GET", "/api/state");
+	assert.deepEqual(state.json.github, { token: true });
+	assert.ok(!state.text.includes(token));
+	const listed = await send(withToken, "GET", "/api/github/repos");
+	assert.deepEqual(listed.json.repos.map((repo: { name: string }) => repo.name), ["me/app", "me/broken"]);
+	assert.ok(!listed.text.includes(token));
+
+	for (const body of [{}, { repos: [] }, { repos: ["me/app", "../etc"] }, { repos: "me/app" }, { repos: ["https://evil.example/x.git"] }]) {
+		assert.equal((await send(withToken, "POST", "/api/github/fetch", { body })).status, 400);
+	}
+	assert.deepEqual(cloned, []);
+
+	assert.equal((await send(withToken, "POST", "/api/github/fetch", { body: { repos: ["me/app", "me/broken", "me/app"] } })).status, 202);
+	const job = await untilFetched(withToken);
+	assert.equal(job.total, 2, "a repository named twice is fetched once");
+	assert.deepEqual(job.errors, [{ repo: "me/broken", message: "early EOF" }]);
+	assert.deepEqual(cloned, ["https://github.com/me/app.git", "https://github.com/me/broken.git"]);
+	assert.deepEqual((await send(withToken, "GET", "/api/github")).json.fetched, ["me/app"]);
+
+	// What a scan would cover now includes it, named apart from the folder's own repositories.
+	const { preview } = (await send(withToken, "GET", "/api/repos/preview")).json;
+	assert.deepEqual([preview.total, preview.fetched, preview.repos], [1, 1, ["github/me/app"]]);
+	assert.equal((await send(withToken, "POST", "/api/repos/scan", { body: { root: dir } })).status, 202);
+	await untilScan(withToken, "done");
+	assert.deepEqual(scanned?.also, [{ root: join(dir, "state", "github"), depth: 2 }]);
+
+	assert.equal((await send(withToken, "DELETE", "/api/github/fetched?repo=..%2F..")).status, 400);
+	assert.deepEqual((await send(withToken, "DELETE", "/api/github/fetched?repo=me%2Fapp")).json.fetched, []);
+	assert.equal((await send(withToken, "GET", "/api/github", { key: null })).status, 401);
+});
+
+test("without a token, lists only a named account, and a scan covers the folder alone", async (t) => {
+	let scanned: ScanOptions | undefined;
+	const asked: string[] = [];
+	const server = await start(t, {
+		fetchFn: (async (url: string) => (asked.push(url), Response.json([{ full_name: "octocat/Hello-World" }]))) as unknown as typeof fetch,
+		scan: async (options) => ((scanned = options), sampleReport(options.root)),
+	});
+
+	assert.deepEqual((await send(server, "GET", "/api/state")).json.github, { token: false });
+	const noOwner = await send(server, "GET", "/api/github/repos");
+	assert.equal(noOwner.status, 400);
+	assert.match(noOwner.json.error, /Name a GitHub account/);
+	assert.equal((await send(server, "GET", "/api/github/repos?owner=..%2Fuser")).status, 400);
+	assert.deepEqual(asked, []);
+	assert.equal((await send(server, "GET", "/api/github/repos?owner=octocat")).json.repos[0].name, "octocat/Hello-World");
+
+	await send(server, "POST", "/api/repos/scan", { body: { root: server.dir } });
+	await untilScan(server, "done");
+	assert.equal(scanned?.also, undefined);
+});
+
 test("beyond loopback, accepts the names people use and still refuses other sites", () => {
 	// Loopback: its own names only, which defeats DNS rebinding.
 	assert.equal(hostAllowed("127.0.0.1:4747", 4747, true), true);
@@ -240,7 +359,7 @@ test("runs one scan at a time, reports progress, and stores the result privately
 	await makeTree(server.dir, { "projects/": "" });
 	const root = join(server.dir, "projects");
 
-	assert.deepEqual((await send(server, "GET", "/api/repos/report")).json, { report: null, notes: [] });
+	assert.deepEqual((await send(server, "GET", "/api/repos/report")).json, { report: null, notes: [], settingNotes: [] });
 
 	const started = await send(server, "POST", "/api/repos/scan", { body: { root, depth: 2 } });
 	assert.equal(started.status, 202);
@@ -295,6 +414,45 @@ test("reports a failed scan, and a scan that found no repositories, as failures"
 	assert.equal(empty.noRepositories, true);
 	assert.equal(empty.depth, 2);
 	assert.deepEqual((await send(server, "GET", "/api/repos/report")).json.report, null);
+});
+
+test("a scan with no scanner installed fails and keeps the report it would have replaced", async (t) => {
+	const nothingInstalled: ScanReport = {
+		...sampleReport("/x"),
+		tools: [
+			{ tool: "gitleaks", status: "missing", installHint: "brew install gitleaks" },
+			{ tool: "osv-scanner", status: "missing", installHint: "brew install osv-scanner" },
+		],
+		repos: [{ path: "/x/app", findings: [], errors: [] }],
+	};
+	const server = await start(t, { scan: async () => nothingInstalled });
+	const reportPath = join(server.dir, "state", "repo-scan.json");
+	await makeTree(server.dir, { "state/": "" });
+	await writeFile(reportPath, JSON.stringify(sampleReport("/work")));
+
+	await send(server, "POST", "/api/repos/scan", { body: { root: server.dir } });
+	const failed = await untilScan(server, "failed");
+
+	assert.match(failed.error, /No scanner is installed\. Install one: brew install gitleaks; brew install osv-scanner/);
+	assert.equal(JSON.parse(await readFile(reportPath, "utf8")).root, "/work", "the earlier report is still there");
+});
+
+test("names the files that tell a scanner to leave findings out", async (t) => {
+	const server = await start(t);
+	const reportPath = join(server.dir, "state", "repo-scan.json");
+	await makeTree(server.dir, { "state/": "" });
+	const report = sampleReport("/work");
+	report.repos[0]!.settingFiles = [".gitleaks.toml", ".gitleaksignore", "web/osv-scanner.toml"];
+	await writeFile(reportPath, JSON.stringify(report));
+
+	const reply = (await send(server, "GET", "/api/repos/report")).json;
+
+	assert.deepEqual(reply.settingNotes, [
+		"clean has .gitleaks.toml: SecurityX ignored it and used gitleaks' built-in rules.",
+		"clean has .gitleaksignore: secrets it lists are not in this report.",
+		"clean has web/osv-scanner.toml: vulnerabilities or packages it ignores are not in this report.",
+	]);
+	assert.equal(reply.notes.length, 1, "setting files do not make the scan incomplete");
 });
 
 test("shows an existing report file and says so when it is not one", async (t) => {
@@ -596,7 +754,7 @@ test("says when the local model is off, and every assist route then answers 503"
 test("names the configured model and where it runs", async (t) => {
 	const server = await start(t, { assistant });
 
-	assert.deepEqual((await send(server, "GET", "/api/state")).json.assistant, { configured: true, model: MODEL, host: "ollama.test:11434" });
+	assert.deepEqual((await send(server, "GET", "/api/state")).json.assistant, { configured: true, model: MODEL, host: "ollama.test:11434", hosted: false });
 });
 
 test("refuses malformed assist requests before asking anything", async (t) => {
@@ -682,6 +840,55 @@ test("explains a finding, summarises the roadmap and answers a question from the
 	const answered = await send(server, "POST", "/api/assist/ask", { body: { question: "Which repository first?" } });
 	assert.deepEqual(answered.json, { text: "What it is: a test answer.", model: MODEL });
 	assert.match(JSON.parse(network.modelCalls[2]!).messages[1].content, /DATA>>>\n\nThe owner's question:\nWhich repository first\?$/);
+});
+
+test("has the model judge findings in the background, worst first, and shows each judgement beside its finding", async (t) => {
+	const asked: string[] = [];
+	const server = await start(t, {
+		assistant,
+		fetchFn: (async (_url: string, init: RequestInit) => {
+			asked.push(String(init.body));
+			return Response.json({ message: { content: '{"verdict":"unlikely","reason":"Nothing imports it.","steps":["Upgrade it anyway"]}' } });
+		}) as unknown as typeof fetch,
+	});
+	await makeTree(server.dir, { "state/": "" });
+	await writeFile(join(server.dir, "state", "repo-scan.json"), JSON.stringify(sampleReport(server.dir)));
+
+	const before = (await send(server, "GET", "/api/analysis")).json;
+	assert.deepEqual(before.status, { state: "idle" });
+	assert.equal(before.summary.judged, 0);
+	for (const body of [{ limit: 0 }, { limit: 501 }, { limit: "2" }, { severities: ["urgent"] }, { severities: [] }]) {
+		assert.equal((await send(server, "POST", "/api/analysis", { body })).status, 400);
+	}
+	assert.deepEqual(asked, []);
+
+	assert.equal((await send(server, "POST", "/api/analysis", { body: { limit: 1, severities: ["critical", "high", "medium", "low"] } })).status, 202);
+	let after = (await send(server, "GET", "/api/analysis")).json;
+	for (let attempt = 0; attempt < 200 && after.status.state === "running"; attempt++) {
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		after = (await send(server, "GET", "/api/analysis")).json;
+	}
+	assert.deepEqual([after.status.state, after.status.done, after.status.failed], ["done", 1, 0]);
+	assert.equal(after.summary.judged, 1);
+	assert.equal(after.summary.verdicts.unlikely, 1);
+	assert.equal(asked.length, 1);
+
+	// The judgement rides beside the finding; the finding itself, and every count, is as the scanner left it.
+	const { report } = (await send(server, "GET", "/api/repos/report")).json;
+	const findings = report.repos.flatMap((repo: { findings: unknown[] }) => repo.findings) as { severity: string; analysis?: { verdict: string; model: string } }[];
+	const judged = findings.filter((finding) => finding.analysis);
+	assert.ok(judged.length >= 1);
+	assert.deepEqual([judged[0]?.analysis?.verdict, judged[0]?.analysis?.model], ["unlikely", MODEL]);
+	assert.deepEqual(findings.map((finding) => finding.severity).sort(), sampleReport(server.dir).repos.flatMap((repo) => repo.findings.map((finding) => finding.severity)).sort());
+	assert.equal((await stat(join(server.dir, "state", "repo-analysis.json"))).mode & 0o777, 0o600);
+});
+
+test("analysis needs a model, and a report to analyse", async (t) => {
+	const off = await start(t);
+	assert.equal((await send(off, "POST", "/api/analysis", { body: {} })).status, 503);
+	assert.deepEqual((await send(off, "GET", "/api/analysis")).json, { status: { state: "idle" }, summary: null });
+	const noReport = await start(t, { assistant });
+	assert.equal((await send(noReport, "POST", "/api/analysis", { body: {} })).status, 404);
 });
 
 test("asks the model one request at a time", async (t) => {
@@ -770,6 +977,16 @@ function pick(value: Record<string, unknown>, keys: string[]): Record<string, un
 }
 
 // oxlint-disable-next-line typescript/no-explicit-any -- the status shape varies by state
+// oxlint-disable-next-line typescript/no-explicit-any -- assertions read arbitrary response shapes
+async function untilFetched(server: UiServer): Promise<any> {
+	for (let attempt = 0; attempt < 200; attempt++) {
+		const { job } = (await send(server, "GET", "/api/github")).json;
+		if (job.state === "done") return job;
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+	throw new Error("the fetch never finished");
+}
+
 async function untilScan(server: UiServer, state: string): Promise<any> {
 	for (let attempt = 0; attempt < 200; attempt++) {
 		const { scan } = (await send(server, "GET", "/api/repos/scan")).json;

@@ -6,8 +6,13 @@ export interface ExecResult {
 	stderr: string;
 }
 
+export interface RunOptions {
+	/** Added to this process's environment for the one command. */
+	env?: Record<string, string>;
+}
+
 /** Runs a program and resolves with its exit code and output, whatever the code. */
-export type Runner = (command: string, args: string[]) => Promise<ExecResult>;
+export type Runner = (command: string, args: string[], options?: RunOptions) => Promise<ExecResult>;
 
 export class ToolMissingError extends Error {
 	constructor(command: string) {
@@ -23,9 +28,10 @@ const MAX_OUTPUT_BYTES = 256 * 1024 * 1024;
  * Arguments are passed as an array and no shell is involved, so repository
  * paths cannot be interpreted as commands.
  */
-export const run: Runner = (command, args) =>
+export const run: Runner = (command, args, options) =>
 	new Promise((resolve, reject) => {
-		execFile(command, args, { timeout: TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES }, (error, stdout, stderr) => {
+		const env = options?.env ? { ...process.env, ...options.env } : undefined;
+		execFile(command, args, { timeout: TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES, env }, (error, stdout, stderr) => {
 			if (!error) return resolve({ code: 0, stdout, stderr });
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return reject(new ToolMissingError(command));
 			if (typeof error.code === "number") return resolve({ code: error.code, stdout, stderr });

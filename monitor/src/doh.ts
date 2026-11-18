@@ -18,7 +18,16 @@ export interface DnsAnswer {
 	data: string;
 }
 
-/** Resolves `name` over DNS-over-HTTPS. Throws on transport failure, never on an empty answer. */
+/** DNS response codes that are answers: NOERROR (records or none) and NXDOMAIN (no such name). */
+const ANSWERED = new Set([0, 3]);
+
+/**
+ * Resolves `name` over DNS-over-HTTPS. Throws when no answer came back, never
+ * on an empty answer. A resolver that could not get an answer (SERVFAIL,
+ * REFUSED: a broken delegation, a DNSSEC failure, an upstream timeout) still
+ * replies with HTTP 200 and no records, so the DNS status is checked too:
+ * reading that as "no records" would report hosts gone and findings resolved.
+ */
 export async function resolve(
 	name: string,
 	type: RecordType,
@@ -32,7 +41,10 @@ export async function resolve(
 		signal: AbortSignal.timeout(8_000),
 	});
 	if (!res.ok) throw new Error(`DNS lookup ${type} ${name}: HTTP ${res.status}`);
-	const body = (await res.json()) as { Answer?: DnsAnswer[] };
+	const body = (await res.json()) as { Status?: unknown; Answer?: DnsAnswer[] };
+	if (typeof body.Status !== "number" || !ANSWERED.has(body.Status)) {
+		throw new Error(`DNS lookup ${type} ${name}: no answer (DNS status ${String(body.Status)})`);
+	}
 	return Array.isArray(body.Answer) ? body.Answer : [];
 }
 
