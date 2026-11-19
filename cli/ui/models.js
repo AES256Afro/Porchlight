@@ -57,9 +57,9 @@ export const MODEL_CHOICES = [
 		name: "Ollama on another computer",
 		group: "server",
 		provider: "ollama",
-		url: "http://bigbox:11434",
+		url: "",
 		key: "none",
-		help: "Any computer you can reach, such as one on your tailnet.",
+		help: "Any computer you can reach, such as one on your tailnet. Ollama listens on port 11434, so the address is like http://my-server:11434.",
 		placeholder: "qwen3:8b",
 	},
 	{

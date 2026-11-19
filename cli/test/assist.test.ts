@@ -344,8 +344,8 @@ test("chooses a hosted model by provider, with its address fixed and its key req
 });
 
 test("reaches a server that speaks OpenAI's format at the owner's own address, such as LM Studio", async () => {
-	const studio = assistantConfig({ SECURITYX_LLM_PROVIDER: "compatible", SECURITYX_LLM_URL: "http://bigbox:1234", SECURITYX_LLM_MODEL: "qwen/qwen3-9b" });
-	assert.equal(studio.url.href, "http://bigbox:1234/v1/chat/completions");
+	const studio = assistantConfig({ SECURITYX_LLM_PROVIDER: "compatible", SECURITYX_LLM_URL: "http://my-server:1234", SECURITYX_LLM_MODEL: "qwen/qwen3-9b" });
+	assert.equal(studio.url.href, "http://my-server:1234/v1/chat/completions");
 	assert.equal(assistantConfig({ SECURITYX_LLM_PROVIDER: "compatible", SECURITYX_LLM_URL: "http://localhost:8080/api/v1/", SECURITYX_LLM_MODEL: "m" }).url.href, "http://localhost:8080/api/v1/chat/completions");
 	assert.throws(() => assistantConfig({ SECURITYX_LLM_PROVIDER: "compatible", SECURITYX_LLM_MODEL: "m" }), /model server's address/);
 	assert.throws(() => assistantConfig({ SECURITYX_LLM_PROVIDER: "compatible", SECURITYX_LLM_URL: "http://localhost:1234/v1" }), /SECURITYX_LLM_MODEL/);
