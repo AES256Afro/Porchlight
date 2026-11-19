@@ -53,6 +53,12 @@ import { SEVERITIES, type ScanReport, type Severity } from "../repos/types.ts";
 import { domainSuggestions, type MonitorReport } from "../roadmap/domains.ts";
 import { exportDomain, exportRepos, ExportError, parseFilter, type ExportFile } from "../roadmap/export.ts";
 import { buildRepoRoadmap, listRepoFindings, suggestionsFor } from "../roadmap/repos.ts";
+import { DEFAULT_GOAL, DEFAULT_MAX_TURNS, DEFAULT_MIN_GAP_MS, investigate, MAX_GOAL, MAX_TURNS_LIMIT, newRun, type Run } from "../investigate/engine.ts";
+import { exportInvestigation, INVESTIGATION_FORMATS, type InvestigationFormat } from "../investigate/export.ts";
+import { challengeName, challengeValue, checkOwnership, newToken, readDomains, saveDomains, tokenFromChallenge } from "../investigate/ownership.ts";
+import { abortableSleep, parseDomain, RateLimiter } from "../investigate/scope.ts";
+import { isRunId, RunStore, settled } from "../investigate/store.ts";
+import { liveNet, TOOLS as INVESTIGATION_TOOLS, type Net } from "../investigate/tools.ts";
 
 export interface UiOptions {
 	/** 0 picks a free port. */
@@ -97,6 +103,10 @@ export interface UiOptions {
 	accessPort?: number;
 	/** Checks the computer SecurityX runs on. Tests pass a fake. */
 	hostCheck?: (options: Omit<HostCheckOptions, "run">) => Promise<HostReport>;
+	/** The network "Investigate with a model" uses for HTTP and TCP. Tests pass a scripted one. */
+	investigateNet?: Net;
+	/** The least time between two actions on one host (default 1 s). Tests pass 0. */
+	investigateMinGapMs?: number;
 }
 
 /** The model in use: chosen in Settings, or given at start-up. */
@@ -175,7 +185,7 @@ export type AnalysisStatus =
 
 const UI_DIR = join(import.meta.dirname, "../../ui");
 /** The page's own modules. Nothing else in the folder is served. */
-const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths"];
+const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths", "investigate"];
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
 	"/": { file: "index.html", type: "text/html; charset=utf-8" },
 	"/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
@@ -300,6 +310,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		if (analysing.state === "running") busy.push("Deeper analysis is running");
 		if (muralJob.state === "running") busy.push("A mural is being written");
 		if (hostStatus.state === "running") busy.push("This computer is being checked");
+		if (investigation) busy.push(`An investigation of ${investigation.run.domain} is running`);
 		if (sending > 0) busy.push("A model is answering what you sent it");
 		else if (modelBusy && muralJob.state !== "running" && analysing.state !== "running") busy.push("The model is answering");
 		return busy;
@@ -648,6 +659,227 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		throw new HttpError(404, "Not found");
 	}
 
+
+	// "Investigate with a model": one run at a time, on a domain whose ownership record holds its token.
+	const investigateDir = join(dirname(options.reportPath), "investigations");
+	const investigateDomainsPath = join(dirname(options.reportPath), "investigate-domains.json");
+	const runStore = new RunStore(investigateDir);
+	const investigateNet: Net = options.investigateNet ?? (options.fetchFn ? { ...liveNet, fetch: options.fetchFn } : liveNet);
+	let investigation: InvestigationJob | null = null;
+	/** Saves run by run, in order, so a slow write never lands after a newer one. */
+	let runSaves: Promise<void> = Promise.resolve();
+
+	/** What a run sends to the model, in words, for the page to show before anything is sent. */
+	function investigationDisclosure(config: AssistantConfig): string {
+		const where = isHosted(config) ? `${HOSTED[config.provider as HostedProvider].name} (${config.url.host}), outside your machines` : `the model at ${config.url.host}`;
+		return `Each turn sends ${where}: the domain, your goal, the tool list, the findings so far and the latest results of the tools, which are your site's DNS records and HTTP responses (headers and up to 1 500 characters of each body, with Set-Cookie values left out). It never sends the ownership token, your scans, keys or anything from this computer.`;
+	}
+
+	async function investigateDomains() {
+		const file = await readDomains(investigateDomainsPath);
+		return Object.entries(file.domains)
+			.sort(([a], [b]) => a.localeCompare(b))
+			.map(([name, entry]) => ({
+				name,
+				source: entry.source,
+				...(entry.verifiedAt ? { verifiedAt: entry.verifiedAt } : {}),
+				challenge: { type: "TXT", name: challengeName(name), value: challengeValue(entry.token) },
+			}));
+	}
+
+	/** A domain from the request that the owner has added, with its token. */
+	async function addedDomain(fields: Record<string, unknown>): Promise<{ name: string; token: string }> {
+		const name = parseDomain(fields.domain);
+		if (!name) throw new HttpError(400, "Type a domain such as example.com");
+		const entry = (await readDomains(investigateDomainsPath)).domains[name];
+		if (!entry) throw new HttpError(404, `Add ${name} first, and publish its TXT record`);
+		return { name, token: entry.token };
+	}
+
+	/** True or false from DNS; a lookup that failed is an error, never "verified". */
+	async function proveOwnership(name: string, token: string): Promise<boolean> {
+		try {
+			return await checkOwnership(name, token, options.fetchFn ?? fetch);
+		} catch (err) {
+			throw new HttpError(502, `Could not ask DNS for the TXT record: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	async function currentRun(id: string): Promise<Run | null> {
+		if (investigation?.run.id === id) return investigation.run;
+		const stored = await runStore.read(id);
+		return stored ? settled(stored) : null;
+	}
+
+	async function investigateRoute(res: ServerResponse, route: string, url: URL, body: unknown, gate: Gate): Promise<void> {
+		// Stopping is always allowed; anything that adds a target or sends a request is for this computer's page only.
+		const here = gate.loopbackOnly && !gate.tailnet;
+		if (route === "POST /api/investigate/stop") {
+			investigation?.stop.abort();
+			return sendJson(res, 200, { stopped: investigation !== null });
+		}
+		if (route === "GET /api/investigate") {
+			const config = model.config;
+			return sendJson(res, 200, {
+				canChange: here,
+				domains: await investigateDomains(),
+				runs: await runStore.list(),
+				active: investigation ? investigation.run : null,
+				assistant: assistantSummary(),
+				...(config ? { disclosure: investigationDisclosure(config) } : {}),
+				monitor: options.monitor !== null,
+				tools: INVESTIGATION_TOOLS,
+				defaults: { goal: DEFAULT_GOAL, maxTurns: DEFAULT_MAX_TURNS, maxTurnsLimit: MAX_TURNS_LIMIT, minGapMs: options.investigateMinGapMs ?? DEFAULT_MIN_GAP_MS, maxGoal: MAX_GOAL },
+			});
+		}
+		if (route === "GET /api/investigate/run") {
+			const id = url.searchParams.get("id");
+			const run = isRunId(id) ? await currentRun(id) : null;
+			if (!run) throw new HttpError(404, "There is no such investigation");
+			return sendJson(res, 200, { run });
+		}
+		if (route === "GET /api/investigate/export") {
+			const id = url.searchParams.get("id");
+			const run = isRunId(id) ? await currentRun(id) : null;
+			if (!run) throw new HttpError(404, "There is no such investigation");
+			const format = url.searchParams.get("format") ?? "md";
+			if (!(INVESTIGATION_FORMATS as readonly string[]).includes(format)) throw new HttpError(400, `Choose a format: ${INVESTIGATION_FORMATS.join(" or ")}`);
+			return sendDownload(res, exportInvestigation(run, format as InvestigationFormat));
+		}
+		if (!here) throw new HttpError(403, "Investigations are run from the page on the Mac that runs SecurityX");
+		const fields = bodyObject(body);
+
+		if (route === "POST /api/investigate/domains") {
+			const name = parseDomain(fields.domain);
+			if (!name) throw new HttpError(400, "Type a domain such as example.com");
+			const file = await readDomains(investigateDomainsPath);
+			if (!file.domains[name]) {
+				// When the monitor already watches this domain, its record serves here too.
+				let token: string | null = null;
+				if (options.monitor) {
+					const answer = await callMonitor(options.monitor, "GET", `/domains/${encodeURIComponent(name)}`, undefined, options.fetchFn).catch(() => null);
+					if (answer?.status === 200) token = tokenFromChallenge(answer.body?.domain?.challenge?.value);
+				}
+				file.domains[name] = { token: token ?? newToken(), addedAt: new Date().toISOString(), source: token ? "monitor" : "local" };
+				await saveDomains(investigateDomainsPath, file);
+			}
+			return sendJson(res, 200, { domains: await investigateDomains() });
+		}
+		if (route === "POST /api/investigate/domains/remove") {
+			const name = parseDomain(fields.domain);
+			if (!name) throw new HttpError(400, "Type a domain such as example.com");
+			if (investigation?.run.domain === name) throw new HttpError(409, "Stop the investigation of this domain first");
+			const file = await readDomains(investigateDomainsPath);
+			delete file.domains[name];
+			await saveDomains(investigateDomainsPath, file);
+			return sendJson(res, 200, { domains: await investigateDomains() });
+		}
+		if (route === "POST /api/investigate/verify") {
+			const { name, token } = await addedDomain(fields);
+			const verified = await proveOwnership(name, token);
+			if (verified) {
+				const file = await readDomains(investigateDomainsPath);
+				const entry = file.domains[name];
+				if (entry) {
+					entry.verifiedAt = new Date().toISOString();
+					await saveDomains(investigateDomainsPath, file);
+				}
+			}
+			return sendJson(res, 200, { verified, domains: await investigateDomains() });
+		}
+		if (route === "POST /api/investigate/approve") {
+			const active = investigation;
+			if (!active || active.run.id !== fields.run || !active.approval || active.approval.stepId !== fields.step) {
+				throw new HttpError(409, "That action is no longer waiting for approval");
+			}
+			if (typeof fields.approve !== "boolean") throw new HttpError(400, "Say whether to approve");
+			const { resolve: answer } = active.approval;
+			active.approval = null;
+			answer(fields.approve);
+			return sendJson(res, 200, { approved: fields.approve });
+		}
+		if (route === "POST /api/investigate/finding") {
+			if (!isRunId(fields.run)) throw new HttpError(400, "Name the investigation");
+			const status = fields.status;
+			if (status !== "open" && status !== "accepted" && status !== "dismissed") throw new HttpError(400, "Choose accepted, dismissed or open");
+			const run = await currentRun(fields.run);
+			const finding = run?.findings.find((item) => item.id === fields.finding);
+			if (!run || !finding) throw new HttpError(404, "That finding is not in this investigation");
+			finding.status = status;
+			if (investigation?.run !== run) await runStore.save(run);
+			else await saveActive(run);
+			return sendJson(res, 200, { finding });
+		}
+		if (route !== "POST /api/investigate/start") throw new HttpError(404, "Not found");
+
+		const config = model.config;
+		if (!config) throw new HttpError(503, model.error ?? "No model is connected. Choose one in Settings → Model");
+		if (investigation) throw new HttpError(409, `An investigation of ${investigation.run.domain} is already running. Stop it first`);
+		const { name, token } = await addedDomain(fields);
+		const goal = fields.goal === undefined || fields.goal === "" ? DEFAULT_GOAL : fields.goal;
+		if (typeof goal !== "string" || goal.trim() === "" || goal.length > MAX_GOAL) throw new HttpError(400, `Write a goal of 1 to ${MAX_GOAL} characters`);
+		const maxTurns = fields.maxTurns ?? DEFAULT_MAX_TURNS;
+		if (typeof maxTurns !== "number" || !Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > MAX_TURNS_LIMIT) throw new HttpError(400, `Choose 1 to ${MAX_TURNS_LIMIT} turns`);
+		const hosted = isHosted(config);
+		// The page shows what will be sent; a hosted model is used only once the owner has said yes to it.
+		if (hosted && fields.sendsToHosted !== true) throw new HttpError(409, investigationDisclosure(config));
+		if (!(await proveOwnership(name, token))) {
+			throw new HttpError(409, `The TXT record ${challengeName(name)} does not hold ${challengeValue(token)} yet. Publish it, wait a few minutes, and check again`);
+		}
+
+		const run = newRun({ domain: name, goal: goal.trim(), model: config.model, modelHost: config.url.host, hosted, maxTurns, minGapMs: options.investigateMinGapMs ?? DEFAULT_MIN_GAP_MS });
+		const stop = new AbortController();
+		const active: InvestigationJob = { run, stop, approval: null };
+		investigation = active;
+		await saveActive(run);
+		// Not awaited: the run outlives this request and the page polls for progress.
+		void investigate(run, {
+			ask: async (system, user, signal) => {
+				const local = !hosted;
+				// The owner's own model answers one request at a time; Explain and Ask wait their turn.
+				while (local && modelBusy && !signal.aborted) await abortableSleep(500, signal);
+				if (local) modelBusy = true;
+				try {
+					return await chat(config, [{ role: "system", content: system }, { role: "user", content: user }], { fetchFn: options.fetchFn, signal, timeoutMs: INVESTIGATE_TIMEOUT_MS, maxTokens: INVESTIGATE_TOKENS });
+				} finally {
+					if (local) modelBusy = false;
+				}
+			},
+			net: investigateNet,
+			verify: async (signal) => {
+				// Read again each time: a domain removed from the list is no longer proven.
+				const entry = (await readDomains(investigateDomainsPath)).domains[name];
+				return entry !== undefined && entry.token === token && (await checkOwnership(name, token, options.fetchFn ?? fetch, signal));
+			},
+			approve: (request, signal) =>
+				new Promise<boolean>((resolveApproval) => {
+					const done = (approved: boolean) => {
+						signal.removeEventListener("abort", abort);
+						if (active.approval?.stepId === request.stepId) active.approval = null;
+						resolveApproval(approved);
+					};
+					const abort = () => done(false);
+					if (signal.aborted) return done(false);
+					signal.addEventListener("abort", abort, { once: true });
+					active.approval = { stepId: request.stepId, resolve: done };
+				}),
+			limiter: new RateLimiter(run.minGapMs),
+			onChange: (changed) => saveActive(changed),
+		}, stop.signal)
+			.catch(() => {})
+			.finally(async () => {
+				await runSaves;
+				if (investigation === active) investigation = null;
+				await runStore.prune().catch(() => {});
+			});
+		return sendJson(res, 202, { run });
+	}
+
+	function saveActive(run: Run): Promise<void> {
+		runSaves = runSaves.then(() => runStore.save(run)).catch((err) => console.error(`securityx ui: could not save the investigation: ${err instanceof Error ? err.message : String(err)}`));
+		return runSaves;
+	}
+
 	const localGate: Gate = { loopbackOnly, key: () => sessionKey, port: () => port, tailnet: false };
 	const respond = (gate: Gate) => (req: IncomingMessage, res: ServerResponse) => {
 		handle(req, res, gate).catch((err) => {
@@ -721,6 +953,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		}
 		if (route === "POST /api/repos/send") return sendRoute(res, body);
 		if (url.pathname === "/api/host" || url.pathname === "/api/host/check") return hostRoute(res, route, body);
+		if (url.pathname === "/api/investigate" || url.pathname.startsWith("/api/investigate/")) return investigateRoute(res, route, url, body, gate);
 		if (route === "GET /api/repos/history") {
 			const report = await readReport(options.reportPath);
 			const scans = (await history.list()).reverse();
@@ -1078,6 +1311,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		access: () => accessStatus,
 		url: `http://127.0.0.1:${port}/#k=${sessionKey}`,
 		close: async () => {
+			investigation?.stop.abort();
 			clearInterval(accessRetry);
 			await stopAccess();
 			await new Promise<void>((resolveClose) => {
@@ -1107,6 +1341,9 @@ const SEND_TOKENS = 3_000;
 const SEND_TIMEOUT_MS = 1_200_000;
 /** A 9B model on a processor reads the prompt and writes the mural in a few minutes. */
 const MURAL_TIMEOUT_MS = 900_000;
+/** One investigation turn: a short JSON answer, though a model on a processor still takes a while. */
+const INVESTIGATE_TIMEOUT_MS = 300_000;
+const INVESTIGATE_TOKENS = 1_500;
 
 type MuralJob =
 	| { state: "idle" }
@@ -1246,7 +1483,14 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 }
 
 /** Sends a file to save. Its name is built from a fixed stem and a date, never from request input. */
-function sendDownload(res: ServerResponse, file: ExportFile): void {
+interface InvestigationJob {
+	run: Run;
+	stop: AbortController;
+	/** The action waiting for the owner, and how to answer it. */
+	approval: { stepId: string; resolve: (approved: boolean) => void } | null;
+}
+
+function sendDownload(res: ServerResponse, file: Pick<ExportFile, "contentType" | "filename" | "body">): void {
 	res.writeHead(200, {
 		...SECURITY_HEADERS,
 		"content-type": file.contentType,

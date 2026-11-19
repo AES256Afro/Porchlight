@@ -3,6 +3,7 @@ import { adoptSessionKey, api, ApiError, setSessionKey } from "./api.js";
 import { emptyState, formatWhen, h, icon, plural, replace, severityBadge, stepNodes, toast } from "./dom.js";
 import { renderDomains } from "./domains.js";
 import { renderFindings } from "./findings.js";
+import { renderInvestigate } from "./investigate.js";
 import { hostName, renderHost } from "./host.js";
 import { applyLook, homeSection, rememberedLook } from "./appearance.js";
 import { buildHash, parseHash } from "./list.js";
@@ -22,6 +23,7 @@ const SECTIONS = /** @type {const} */ ([
 	["findings", "Findings"],
 	["roadmap", "Roadmap"],
 	["domains", "Domains"],
+	["investigate", "Investigate"],
 	["host", "This Mac"],
 	["settings", "Settings"],
 ]);
@@ -166,6 +168,7 @@ function page(section, context) {
 	if (section === "findings") return context.path[1] === "by-repo" ? renderByRepo(view, context) : renderFindings(view, context);
 	if (section === "roadmap") return renderRoadmap(view, context);
 	if (section === "domains") return renderDomains(view, context.path[1]);
+	if (section === "investigate") return renderInvestigate(view, context.path[1]);
 	if (section === "settings") return renderSettings(view);
 	if (section === "host") return renderHost(view);
 	return renderOverview(view);
