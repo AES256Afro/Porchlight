@@ -194,7 +194,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
 	private func startServer() {
 		guard let launcher = Bundle.main.url(forResource: "launch", withExtension: "sh") else {
-			fail("This copy of SecurityX is incomplete (launch.sh is missing). Build it again with mac/build.sh.")
+			fail("This copy of SecurityX is incomplete (launch.sh is missing). Install it again, or build it with mac/build.sh.")
 			return
 		}
 		try? FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)

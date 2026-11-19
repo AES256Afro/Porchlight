@@ -6,6 +6,7 @@ An attack-surface monitor (Cloudflare Worker, `monitor/`) and a repository scann
 
 - `npm run check` and `npm test` at the root cover both packages.
 - Monitor: `npm run dev`, `npm run db:migrate:local`, `npx cf deploy --dry-run` (builds and validates; needs no login).
+- Mac app: `sh mac/build.sh --install` builds one for this machine. `sh mac/build.sh --dmg` builds the download attached to a release: the CLI from the last commit, never uncommitted changes, plus copies of `node`, gitleaks and osv-scanner with their licences. The DMG must hold nothing of the machine that built it (no path, name, setting or token), and each bundled program must link only to macOS's own libraries; the script checks the latter. Search a mounted DMG for the owner's paths and names before attaching it to a release.
 - Cloudflare work goes through the `cf` CLI and `monitor/cloudflare.config.ts`. Do not add Wrangler or a Wrangler config file.
 
 ## Invariants

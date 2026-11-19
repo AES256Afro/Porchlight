@@ -49,7 +49,9 @@ npm run setup
 node cli/bin/securityx.js ui --root ~/Projects
 ```
 
-Open the link it prints, then choose **Check your code**. To open it as a Mac app instead, see [Mac app](#mac-app).
+Open the link it prints, then choose **Check your code**.
+
+On a Mac with Apple silicon you can skip all of that: download `SecurityX-<version>-arm64.dmg` from the [latest release](https://github.com/AES256Afro/SecurityX/releases/latest) and see [Mac app](#mac-app).
 
 ## How it is built
 
@@ -118,15 +120,31 @@ How the interface is protected:
 
 ## Mac app
 
-To open SecurityX like any other app, with no terminal, build a window around the web interface:
+SecurityX.app opens SecurityX like any other app, with no terminal. It starts the web interface, shows it in its own window, and stops it when the window closes. If a scan, an analysis or a model's answer is still running when you close the window or quit, it asks first (**Keep Working** or **Quit Anyway**); everything else is saved as it changes, and it opens on the page you left. Exports are saved to Downloads, and links to advisories open in your browser.
+
+### Download it
+
+On a Mac with Apple silicon (M1 or later) and macOS 13.5 or later:
+
+1. Download `SecurityX-<version>-arm64.dmg` from the [latest release](https://github.com/AES256Afro/SecurityX/releases/latest).
+2. Open it and drag SecurityX into Applications.
+3. Open SecurityX. It is not notarized by Apple, so the first time macOS says "SecurityX Not Opened". Choose **Done**, then open System Settings → Privacy & Security and choose **Open Anyway** beside "SecurityX was blocked". After that it opens like any other app.
+
+The app carries its own Node.js, gitleaks and osv-scanner, so nothing else needs installing except git: macOS offers Apple's command line tools the first time a scan needs them. If you install newer scanners with Homebrew (`brew install gitleaks osv-scanner`), it uses those instead.
+
+### Or build it from a checkout
 
 ```bash
 sh mac/build.sh --install
 ```
 
-This puts `SecurityX.app` in `~/Applications`. Opening it starts `securityx ui` from this checkout, shows the page in its own window, and stops it when the window closes. If a scan, an analysis or a model's answer is still running when you close the window or quit, it asks first (**Keep Working** or **Quit Anyway**); everything else is saved as it changes, and it opens on the page you left. Exports are saved to Downloads, and links to advisories open in your browser. It needs the Xcode command line tools (`xcode-select --install`), and it's built for this machine: it runs the `node`, gitleaks and osv-scanner that were on your PATH when you built it, so rebuild after moving the checkout or changing Node.
+This puts `SecurityX.app` in `~/Applications`, running `securityx ui` from this checkout. It needs the Xcode command line tools (`xcode-select --install`), and it's built for this machine: it runs the `node`, gitleaks and osv-scanner that were on your PATH when you built it, so rebuild after moving the checkout or changing Node.
 
-Settings are read from `~/.securityx/app.env` each time it starts (copy `mac/app.env.example`): the folder to offer, the monitor's address, a model, a GitHub token. With only the monitor's address set, the admin token is read from `monitor/.secrets.production`. The interface's own log is in `~/.securityx/app.log` (SecurityX → Show Log).
+`sh mac/build.sh --dmg` makes the download instead: `mac/build/SecurityX-<version>-arm64.dmg`, with the CLI from the last commit (never uncommitted changes) and copies of the `node`, gitleaks and osv-scanner on your PATH, with their licences. It checks that each runs on another Mac, and the app holds no path, name or setting of the machine that built it.
+
+### Settings
+
+Settings are read from `~/.securityx/app.env` each time it starts (copy `mac/app.env.example`): the folder to offer, the monitor's address and admin token, a model, a GitHub token. An app built from a checkout reads the admin token from `monitor/.secrets.production` when only the monitor's address is set. The model and the look are chosen in the app, under Settings. The interface's own log is in `~/.securityx/app.log` (SecurityX → Show Log).
 
 ## Open it from other devices
 
@@ -159,7 +177,7 @@ Outside BoxPilot:
 ```bash
 export SECURITYX_UI_KEY="$(openssl rand -hex 32)"   # keep it: the page asks for it
 docker run -d --name securityx -p 127.0.0.1:4747:4747 -e SECURITYX_UI_KEY \
-  -v "$HOME/Projects:/repos:ro" -v securityx-data:/data ghcr.io/aes256afro/securityx:0.5.0
+  -v "$HOME/Projects:/repos:ro" -v securityx-data:/data ghcr.io/aes256afro/securityx:0.5.1
 ```
 
 In the container, `securityx ui --host 0.0.0.0` changes what protects it:
