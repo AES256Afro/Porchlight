@@ -1,9 +1,62 @@
 # SecurityX
 
+Find the keys and passwords committed to your code and the packages with known security holes, across every repository you have, and see what to fix first. Keep an eye on the websites you own as well. SecurityX runs on your own machine, as a page in your browser or as a Mac app.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/overview-dark.png">
+  <img alt="The Overview: counts by severity, what to repair first, the most affected repositories, credentials that look live, and what was fixed since the last scan" src="docs/screenshots/overview.png">
+</picture>
+
+## Features
+
+- **Every repository at once.** Scans every git repository under a folder for committed secrets, old commits included ([gitleaks](https://github.com/gitleaks/gitleaks)), and for vulnerable dependencies ([osv-scanner](https://github.com/google/osv-scanner)). Everything lands in one list, most severe first. A key in a test file or an example is ranked lower, never hidden.
+- **A repair roadmap.** Findings become actions in four steps: Fix now, Fix next, Schedule, When convenient. One package upgrade can clear dozens of advisories, and the version to upgrade to is worked out from the whole repository, so following it clears every advisory against that package.
+- **Since the last scan.** Every scan is kept. The Overview says what is new and what was fixed. A finding counts as fixed only if the next scan really looked for it again; one that could not be checked is never shown as fixed.
+- **Your own status and note on each finding**: Open, In progress, Fixed, Accepted risk or False positive.
+- **Any model, or none.** A model can explain a finding, summarise the roadmap, answer questions about a scan, or judge each finding against your code. Run one on your Mac (Ollama, Unsloth Studio, LM Studio), on another computer, or use Claude, ChatGPT, Gemini or DeepSeek through their APIs; choose it in Settings. What a model says is shown as advice beside a finding. It never changes a severity, a count or the roadmap.
+- **Exports** in Markdown, HTML, CSV or JSON. HTML, Markdown and JSON exports can include a mural written by a model: what was found, what to fix and in what order, what has been done, and what to do next.
+- **Fetch repositories from GitHub**, public or private, and scan them along with the ones on disk.
+- **Watch your websites.** A Cloudflare Worker checks the domains you own every hour for new hostnames, DNS changes, expiring certificates and missing security headers. It scans a domain only after you prove it is yours with a DNS record.
+- **A Mac app, twelve looks, and access from your other devices** over Tailscale.
+
+| | |
+| --- | --- |
+| ![Findings in the Split view look: the list on the left, the chosen finding's advisory, fix and your note on the right](docs/screenshots/split-view.png) | ![The Roadmap: four steps, each action with where it is, what it clears and how to do it](docs/screenshots/roadmap.png) |
+| **Findings**, in the Split view look | **Roadmap**: what to fix, in order |
+| ![Findings by repository in the Severity dashboard look, with counts by severity in the sidebar](docs/screenshots/dashboard.png) | ![Settings → Model: models on this Mac, on another computer, or through an API](docs/screenshots/settings-model.png) |
+| **By repository**, in the Severity dashboard look | **Settings → Model**: any model, or none |
+| ![Settings → Appearance: twelve looks with previews](docs/screenshots/settings-appearance.png) | ![The Roadmap in the Terminal look: monospace, green on black](docs/screenshots/terminal.png) |
+| **Settings → Appearance**: twelve looks | The **Terminal** look |
+
+The screenshots show made-up repositories, checked by the real scanners.
+
+### What leaves your machine
+
+- **To [OSV.dev](https://osv.dev)**: the names and versions of the packages your repositories use, so osv-scanner can look up their advisories. Never your code.
+- **To a hosted model, if you choose one**: only what the page shows about the findings you ask about. Never a secret's value, a commit author or an email address. The page warns you before anything is sent.
+- **To GitHub**, only if you fetch repositories from it.
+- **To your own Cloudflare account**, if you deploy the monitor.
+
+Everything else, including the reports, stays on your machine, readable only by you.
+
+## Quick start
+
+```bash
+brew install node gitleaks osv-scanner
+git clone https://github.com/AES256Afro/SecurityX.git
+cd SecurityX
+npm run setup
+node cli/bin/securityx.js ui --root ~/Projects
+```
+
+Open the link it prints, then choose **Check your code**. To open it as a Mac app instead, see [Mac app](#mac-app).
+
+## How it is built
+
 Two security tools behind one command line:
 
+- **Repository scanner** (`cli/`): scans every git repository under a folder for committed secrets and vulnerable dependencies, and merges the results into one ranked report. It has no runtime dependencies: Node runs its TypeScript directly, and the web interface is plain JavaScript with no build step.
 - **Attack-surface monitor** (`monitor/`): a scheduled Cloudflare Worker that watches domains you own for new hostnames, DNS changes, expiring certificates and missing security headers, and alerts on what changed since the last scan.
-- **Repository scanner** (`cli/`): scans every git repository under a folder for committed secrets and vulnerable dependencies, and merges the results into one ranked report.
 
 ## Setup
 
@@ -106,7 +159,7 @@ Outside BoxPilot:
 ```bash
 export SECURITYX_UI_KEY="$(openssl rand -hex 32)"   # keep it: the page asks for it
 docker run -d --name securityx -p 127.0.0.1:4747:4747 -e SECURITYX_UI_KEY \
-  -v "$HOME/Projects:/repos:ro" -v securityx-data:/data ghcr.io/aes256afro/securityx:0.4.0
+  -v "$HOME/Projects:/repos:ro" -v securityx-data:/data ghcr.io/aes256afro/securityx:0.5.0
 ```
 
 In the container, `securityx ui --host 0.0.0.0` changes what protects it:
