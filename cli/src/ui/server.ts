@@ -7,6 +7,7 @@ import { judge, readAnalysis, saveAnalysis, unitKey, unitsOf, VERDICTS, type Ana
 import { AssistantError, chat, isHosted, type AssistantConfig } from "../assist/ollama.ts";
 import { askPrompt, domainPrompt, findingPrompt, locateFinding, roadmapPrompt, type Prompt } from "../assist/prompts.ts";
 import { MAX_QUESTION } from "../../ui/generated.js";
+import { DEFAULT_LOOK, isLook } from "../../ui/looks.js";
 import { fetchedRepos, fetchRepo, GithubError, listRepos, parseRepoName, removeFetched, validOwner, type GithubConfig } from "../github/github.ts";
 import { callMonitor, type MonitorConfig } from "../monitor/client.ts";
 import { discoverRepos } from "../repos/discover.ts";
@@ -91,7 +92,7 @@ export type AnalysisStatus =
 
 const UI_DIR = join(import.meta.dirname, "../../ui");
 /** The page's own modules. Nothing else in the folder is served. */
-const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains"];
+const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings"];
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
 	"/": { file: "index.html", type: "text/html; charset=utf-8" },
 	"/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
@@ -166,6 +167,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	let status: ScanStatus = { state: "idle" };
 	let fetching: FetchStatus = { state: "idle" };
 	const analysisPath = join(dirname(options.reportPath), "repo-analysis.json");
+	/** The interface's own preferences (the chosen look), kept beside the report. */
+	const settingsPath = join(dirname(options.reportPath), "ui-settings.json");
 	let analysing: AnalysisStatus = { state: "idle" };
 	let stopAnalysis: AbortController | null = null;
 	let port = options.port;
@@ -215,6 +218,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				defaultRoot: options.defaultRoot,
 				reportPath: options.reportPath,
 				scan: status,
+				appearance: await readAppearance(settingsPath),
 				// A service (a container, under BoxPilot) is configured where it is managed, not from a shell,
 				// so the page explains connecting the monitor in those terms.
 				service: !loopbackOnly,
@@ -237,6 +241,12 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 							unset: options.assistantUnset ?? false,
 						},
 			});
+		}
+		if (route === "POST /api/settings") {
+			const appearance = (body as { appearance?: unknown } | undefined)?.appearance;
+			if (!isLook(appearance)) throw new HttpError(400, "Unknown appearance");
+			await saveAppearance(settingsPath, appearance as string);
+			return sendJson(res, 200, { appearance });
 		}
 		if (url.pathname.startsWith("/api/assist/")) return assist(req, res, url.pathname.slice("/api/assist/".length), body);
 		if (route === "GET /api/repos/report") return sendJson(res, 200, await loadReport(options.reportPath, analysisPath));
@@ -764,6 +774,23 @@ async function readReport(path: string): Promise<ScanReport | null> {
 		throw new HttpError(500, `The report file is not a SecurityX scan report: ${path}`);
 	}
 	return report;
+}
+
+/** The chosen look, or the default when none was saved or the file holds something else. */
+async function readAppearance(path: string): Promise<string> {
+	try {
+		const saved = (JSON.parse(await readFile(path, "utf8")) as { appearance?: unknown }).appearance;
+		return isLook(saved) ? (saved as string) : DEFAULT_LOOK;
+	} catch {
+		return DEFAULT_LOOK;
+	}
+}
+
+async function saveAppearance(path: string, appearance: string): Promise<void> {
+	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+	const temporary = `${path}.${process.pid}.tmp`;
+	await writeFile(temporary, `${JSON.stringify({ appearance }, null, "\t")}\n`, { mode: 0o600 });
+	await rename(temporary, path);
 }
 
 /** Reports say where secrets were found, so a new one is readable only by its owner. */

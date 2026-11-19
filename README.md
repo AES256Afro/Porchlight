@@ -37,6 +37,7 @@ It prints a link. Open it to get both tools in the browser:
 - **Findings**: every finding in one list, most severe first, each with the repair that clears it. Switch to **By repository** to see them grouped. Filter by severity, type, repository or text; the filters are kept in the address, so a reload or a shared link shows the same view.
 - **Roadmap**: what to repair, in order. One action, such as upgrading a package, can clear many findings.
 - **Domains**: add a website by its domain name, prove it is yours with one DNS record, scan, and read what changed, with a suggested fix for each finding. Until the monitor is connected the page walks through setting it up. It needs `SECURITYX_MONITOR_URL` and `SECURITYX_ADMIN_TOKEN` set when you start the interface (see [Monitor domains](#monitor-domains)).
+- **Settings**: pick one of twelve looks under **Appearance** (Standard, Light, Severity dashboard, Top tabs, Split view, Roadmap first, Terminal, Native Mac, Repository cards, Model plan view, High contrast, Compact). The choice is saved beside the report (`ui-settings.json`) and used every time SecurityX opens. It also lists what SecurityX is connected to.
 
 Every page with findings has an **Export** button; see [Export a repair roadmap](#export-a-repair-roadmap).
 
@@ -59,6 +60,18 @@ How the interface is protected:
 - The monitor's admin token stays in the SecurityX process. The browser never receives it.
 - A local model is asked by the SecurityX process, from its own copy of the report. The page only names what to explain.
 - The page loads nothing from the network, and has no dependencies or build step.
+
+## Mac app
+
+To open SecurityX like any other app, with no terminal, build a window around the web interface:
+
+```bash
+sh mac/build.sh --install
+```
+
+This puts `SecurityX.app` in `~/Applications`. Opening it starts `securityx ui` from this checkout, shows the page in its own window, and stops it when the window closes. Exports are saved to Downloads, and links to advisories open in your browser. It needs the Xcode command line tools (`xcode-select --install`), and it's built for this machine: it runs the `node`, gitleaks and osv-scanner that were on your PATH when you built it, so rebuild after moving the checkout or changing Node.
+
+Settings are read from `~/.securityx/app.env` each time it starts (copy `mac/app.env.example`): the folder to offer, the monitor's address, a model, a GitHub token. With only the monitor's address set, the admin token is read from `monitor/.secrets.production`. The interface's own log is in `~/.securityx/app.log` (SecurityX → Show Log).
 
 ## Run on BoxPilot
 

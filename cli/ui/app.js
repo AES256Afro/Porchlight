@@ -1,13 +1,15 @@
 // @ts-check
 import { adoptSessionKey, ApiError, setSessionKey } from "./api.js";
-import { emptyState, formatWhen, h, icon, plural, replace, toast } from "./dom.js";
+import { emptyState, formatWhen, h, icon, plural, replace, severityBadge, toast } from "./dom.js";
 import { renderDomains } from "./domains.js";
 import { renderFindings } from "./findings.js";
+import { applyLook, homeSection, rememberedLook } from "./appearance.js";
 import { buildHash, parseHash } from "./list.js";
 import { renderOverview } from "./overview.js";
 import { renderByRepo } from "./repos.js";
 import { renderRoadmap } from "./roadmap.js";
-import { findingRows, reset, store, subscribe } from "./store.js";
+import { renderSettings } from "./settings.js";
+import { findingRows, load, reset, store, subscribe } from "./store.js";
 
 const view = /** @type {HTMLElement} */ (document.getElementById("view"));
 const nav = /** @type {HTMLElement} */ (document.getElementById("nav"));
@@ -18,7 +20,11 @@ const SECTIONS = /** @type {const} */ ([
 	["findings", "Findings"],
 	["roadmap", "Roadmap"],
 	["domains", "Domains"],
+	["settings", "Settings"],
 ]);
+
+// The last look this browser showed, until the server says which was chosen.
+applyLook(rememberedLook());
 
 /** Stops whatever the current page left running. */
 let leave = () => {};
@@ -29,7 +35,7 @@ let firstRoute = true;
 let announced = "";
 
 /** Says which of the two jobs a section belongs to, above the first section of each. */
-const GROUPS = /** @type {Record<string, string>} */ ({ findings: "Your code", domains: "Your websites" });
+const GROUPS = /** @type {Record<string, string>} */ ({ findings: "Your code", domains: "Your websites", settings: "SecurityX" });
 const findingCount = h("span", { class: "count" });
 
 replace(
@@ -39,7 +45,17 @@ replace(
 		h("a", { href: `#/${key}`, dataset: { nav: key } }, icon(key), label, key === "findings" ? findingCount : null),
 	]),
 );
-subscribe(drawScanStatus);
+/** Counts by severity in the sidebar; shown only by the "Severity dashboard" look. */
+const severityStrip = h("div", { class: "severity-strip", "aria-label": "Findings by severity" });
+scanStatus.before(severityStrip);
+subscribe((change) => {
+	if (change === "settings" && store.settings) applyLook(store.settings.appearance);
+	drawScanStatus();
+});
+// The chosen look applies on every page, including the first one opened.
+// The key comes first: a load started without it would fail for every page waiting on it.
+adoptSessionKey();
+void load().catch(() => {});
 window.addEventListener("hashchange", route);
 void route();
 
@@ -50,7 +66,7 @@ async function route() {
 	const { path, params } = parseHash(location.hash);
 	// Addresses from before the pages were reorganised still work.
 	if (path[0] === "repos") return void location.replace("#/findings/by-repo");
-	const section = SECTIONS.some(([key]) => key === path[0]) ? /** @type {string} */ (path[0]) : "overview";
+	const section = SECTIONS.some(([key]) => key === path[0]) ? /** @type {string} */ (path[0]) : homeSection();
 	if (path[0] !== section) path.splice(0, path.length, section);
 
 	for (const link of nav.querySelectorAll("a")) {
@@ -106,13 +122,28 @@ function page(section, context) {
 	if (section === "findings") return context.path[1] === "by-repo" ? renderByRepo(view, context) : renderFindings(view, context);
 	if (section === "roadmap") return renderRoadmap(view, context);
 	if (section === "domains") return renderDomains(view, context.path[1]);
+	if (section === "settings") return renderSettings(view);
 	return renderOverview(view);
 }
 
 /** The foot of the sidebar: whether a scan is running, and what the last one covered. Visible on every page. */
 function drawScanStatus() {
 	const scan = store.scan;
-	findingCount.textContent = store.report ? findingRows().length.toLocaleString() : "";
+	const rows = store.report ? findingRows() : [];
+	findingCount.textContent = store.report ? rows.length.toLocaleString() : "";
+	replace(
+		severityStrip,
+		...(store.report
+			? /** @type {const} */ (["critical", "high", "medium", "low"]).map((severity) =>
+					h(
+						"a",
+						{ class: "severity-count", href: `#/findings?severity=${severity}` },
+						severityBadge(severity),
+						h("strong", null, rows.filter((row) => row.severity === severity).length.toLocaleString()),
+					),
+				)
+			: []),
+	);
 	if (scan.state === "running") {
 		const known = scan.total > 0;
 		replace(

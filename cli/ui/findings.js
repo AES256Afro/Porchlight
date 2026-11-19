@@ -5,6 +5,7 @@ import { banner, emptyState, formatWhen, h, icon, pager, PHASE_TITLES, plural, r
 import { exportButton, openExportDialog } from "./export.js";
 import { ALL_SEVERITIES, isFiltering, matchesFilter } from "./filter.js";
 import { debounce, filterFromParams, paginate, paramsFromFilter, sortFindings } from "./list.js";
+import { currentLook } from "./appearance.js";
 import { findingRows, load, store, subscribe } from "./store.js";
 
 /** @typedef {import("./filter.js").FindingFilter} FindingFilter */
@@ -82,19 +83,35 @@ export async function renderFindings(view, route) {
 				all.length === 0 ? emptyState("No findings", "The scan found nothing wrong in what it covered.") : emptyState("No findings match", "Loosen the filters to see more."),
 			);
 		}
+		const table = h(
+			"div",
+			{ class: "table-wrap" },
+			h(
+				"table",
+				{ class: "data" },
+				h("thead", null, h("tr", null, ...["Severity", "Finding", "Repository", "Where", "When"].map((label) => h("th", { scope: "col" }, label)))),
+				h("tbody", null, ...shown.items.flatMap(findingRow)),
+			),
+		);
+		// "Split view" shows the chosen finding beside the list instead of under its row.
+		const chosen = splitView() ? shown.items.find((row) => expanded.has(rowKey(row))) : undefined;
 		replace(
 			results,
 			severityTiles(matching, isFiltering(filter)),
-			h(
-				"div",
-				{ class: "table-wrap" },
-				h(
-					"table",
-					{ class: "data" },
-					h("thead", null, h("tr", null, ...["Severity", "Finding", "Repository", "Where", "When"].map((label) => h("th", { scope: "col" }, label)))),
-					h("tbody", null, ...shown.items.flatMap(findingRow)),
-				),
-			),
+			splitView()
+				? h(
+						"div",
+						{ class: "split-view" },
+						table,
+						h(
+							"aside",
+							{ class: "split-detail", "aria-label": "Chosen finding" },
+							chosen ? h("h2", null, chosen.title) : h("p", { class: "hint" }, "Choose a finding to see its detail here."),
+							chosen ? h("p", { class: "sub" }, severityBadge(chosen.severity), ` ${chosen.repo} · `, h("span", { class: "mono" }, chosen.location)) : null,
+							chosen ? findingDetail(chosen, chosen.repo) : null,
+						),
+					)
+				: table,
 			pager(shown, "findings", (next) => {
 				page = next;
 				update();
@@ -105,11 +122,15 @@ export async function renderFindings(view, route) {
 
 	/** @param {FindingRow} row */
 	function findingRow(row) {
-		const key = `${row.repo}\n${row.ruleId}\n${row.location}\n${row.detail}`;
+		const key = rowKey(row);
 		const open = expanded.has(key);
 		const toggle = () => {
 			if (open) expanded.delete(key);
-			else expanded.add(key);
+			else {
+				// Beside the list there is room for one finding at a time.
+				if (splitView()) expanded.clear();
+				expanded.add(key);
+			}
 			update();
 		};
 		return [
@@ -141,9 +162,18 @@ export async function renderFindings(view, route) {
 				h("td", { class: "mono wrap col-where" }, row.location),
 				h("td", { class: "nowrap" }, row.suggestion ? PHASE_TITLES[row.suggestion.phase] : ""),
 			),
-			open ? h("tr", { class: "detail-row" }, h("td", { colSpan: 5 }, findingDetail(row, row.repo))) : null,
+			open && !splitView() ? h("tr", { class: "detail-row" }, h("td", { colSpan: 5 }, findingDetail(row, row.repo))) : null,
 		];
 	}
+}
+
+/** @param {FindingRow} row */
+function rowKey(row) {
+	return `${row.repo}\n${row.ruleId}\n${row.location}\n${row.detail}`;
+}
+
+function splitView() {
+	return currentLook() === "split";
 }
 
 /**

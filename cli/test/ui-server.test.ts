@@ -998,3 +998,31 @@ async function untilScan(server: UiServer, state: string): Promise<any> {
 	}
 	throw new Error(`scan never reached state "${state}"`);
 }
+
+test("keeps the chosen appearance beside the report, and accepts only the offered looks", async (t) => {
+	const server = await start(t);
+	assert.equal((await send(server, "GET", "/api/state")).json.appearance, "today");
+
+	const saved = await send(server, "POST", "/api/settings", { body: { appearance: "terminal" } });
+	assert.equal(saved.status, 200);
+	assert.equal((await send(server, "GET", "/api/state")).json.appearance, "terminal");
+
+	for (const appearance of ["../../etc/passwd", "", 3, null]) {
+		const refused = await send(server, "POST", "/api/settings", { body: { appearance } });
+		assert.equal(refused.status, 400);
+	}
+	assert.equal((await send(server, "POST", "/api/settings", { key: null, body: { appearance: "light" } })).status, 401);
+	assert.equal((await send(server, "GET", "/api/state")).json.appearance, "terminal");
+
+	// A copy started later reads the same choice.
+	const again = await start(t, { reportPath: join(server.dir, "state", "repo-scan.json") });
+	assert.equal((await send(again, "GET", "/api/state")).json.appearance, "terminal");
+});
+
+test("serves every look's script, and offers twelve looks", async (t) => {
+	const server = await start(t);
+	for (const path of ["/looks.js", "/appearance.js", "/settings.js"]) assert.equal((await send(server, "GET", path, { key: null })).status, 200);
+	const { LOOKS } = await import("../ui/looks.js");
+	assert.equal(LOOKS.length, 12);
+	assert.equal(new Set(LOOKS.map((look) => look.id)).size, 12);
+});

@@ -12,7 +12,7 @@ import { api, ApiError } from "./api.js";
 /** @typedef {Omit<import("../src/repos/types.ts").ScanReport, "repos"> & { repos: Repo[] }} ScanReport */
 /** @typedef {import("../src/ui/server.ts").ScanStatus} ScanStatus */
 /** @typedef {SuggestedFinding & { repo: string }} FindingRow */
-/** @typedef {"report" | "scan"} Change */
+/** @typedef {"report" | "scan" | "settings"} Change */
 
 const POLL_MS = 800;
 
@@ -22,7 +22,7 @@ export const store = {
 	 * managed rather than from a terminal. `monitor.unset`: neither monitor setting was given.
 	 * `assistant`: the local model behind Explain, Summarise and Ask.
 	 *
-	 * @type {{ defaultRoot: string, reportPath: string, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean }, github: { token: boolean, error?: string }, assistant: import("./generated.js").AssistantSettings } | null}
+	 * @type {{ defaultRoot: string, reportPath: string, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean }, github: { token: boolean, error?: string }, assistant: import("./generated.js").AssistantSettings, appearance: string } | null}
 	 */
 	settings: null,
 	/** @type {ScanReport | null} */
@@ -71,7 +71,9 @@ export function load() {
 			monitor: state.monitor,
 			github: state.github ?? { token: false },
 			assistant: state.assistant ?? { configured: false },
+			appearance: state.appearance ?? "today",
 		};
+		emit("settings");
 		store.scan = state.scan;
 		await loadReport();
 		if (store.scan.state === "running") poll();

@@ -120,9 +120,9 @@ export async function renderByRepo(view, route) {
 					),
 					// A scanner that is not installed checked no repository, so none of them is clean.
 					h("td", null, worstBadge(row.counts, row.repo.errors.length > 0 || (store.report?.tools ?? []).some((tool) => tool.status === "missing"))),
-					...ALL_SEVERITIES.map((severity) => countCell(row.counts[severity])),
-					countCell(row.secrets),
-					countCell(row.vulnerabilities),
+					...ALL_SEVERITIES.map((severity) => countCell(row.counts[severity], SEVERITY_LABELS[severity])),
+					countCell(row.secrets, "Secrets"),
+					countCell(row.vulnerabilities, "Vulnerabilities"),
 				),
 			);
 			if (open) body.append(h("tr", { class: "detail-row" }, h("td", { colSpan: 8 }, findingsList(row.repo, row.findings))));
@@ -262,9 +262,13 @@ export async function renderByRepo(view, route) {
 	}
 }
 
-/** @param {number} count */
-function countCell(count) {
-	return h("td", { class: count === 0 ? "num zero" : "num" }, count.toLocaleString());
+/**
+ * @param {number} count
+ * @param {string} label
+ */
+function countCell(count, label) {
+	// The label is shown only where the column headings are not, as on repository cards.
+	return h("td", { class: count === 0 ? "num zero" : "num", dataset: { label } }, count.toLocaleString());
 }
 
 /**

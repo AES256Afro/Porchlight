@@ -88,6 +88,10 @@ const ICONS = {
 		["path", { d: "m2.5 4 1.2 1.2L5.8 3M2.5 11.2l1.2 1.2 2.1-2.2", fill: "none", stroke: "currentColor", "stroke-width": 1.5, "stroke-linecap": "round", "stroke-linejoin": "round" }],
 		["path", { d: "M8.5 4.2h5M8.5 11.6h5", fill: "none", stroke: "currentColor", "stroke-width": 1.6, "stroke-linecap": "round" }],
 	],
+	settings: [
+		["circle", { cx: 8, cy: 8, r: 2.2, fill: "none", stroke: "currentColor", "stroke-width": 1.5 }],
+		["path", { d: "M8 1.8v1.8M8 12.4v1.8M1.8 8h1.8M12.4 8h1.8M3.6 3.6l1.3 1.3M11.1 11.1l1.3 1.3M3.6 12.4l1.3-1.3M11.1 4.9l1.3-1.3", fill: "none", stroke: "currentColor", "stroke-width": 1.5, "stroke-linecap": "round" }],
+	],
 	domains: [
 		["circle", { cx: 8, cy: 8, r: 6, fill: "none", stroke: "currentColor", "stroke-width": 1.5 }],
 		["path", { d: "M2 8h12M8 2c2 2 2.6 3.8 2.6 6S10 12 8 14c-2-2-2.6-3.8-2.6-6S6 4 8 2Z", fill: "none", stroke: "currentColor", "stroke-width": 1.3 }],

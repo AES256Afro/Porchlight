@@ -167,6 +167,54 @@ Pin the base image digest and the BoxPilot schema (S8). Fix the picomatch dev ad
 8. Offline OSV database cached in `/data`.
 9. Incremental gitleaks scans (`last..HEAD`, with a full scan weekly).
 
+### M7: Private data, not only secrets. Size: L
+
+*Added 2026-11-19 at the owner's request.* Today a scan finds credentials (gitleaks) and vulnerable packages (osv-scanner) and nothing else. Personal data committed to a repository is a leak too, even when it isn't a key. M7 looks for it.
+
+**What it looks for:**
+
+| Kind | Examples | How it is told apart from noise |
+| --- | --- | --- |
+| Contact details | email addresses, phone numbers | `example.com`/`.test` domains, `555-01xx` numbers and the repository's own author address rank low |
+| Government and financial IDs | US SSN, IBAN, payment card numbers | checksum (Luhn, IBAN mod 97) and known test card numbers rank low |
+| Location | street addresses, GPS coordinates, EXIF location in committed photos | coordinates only with enough precision to point at a house |
+| Network internals | private IPs, internal host names, VPN and tailnet addresses | documentation ranges (RFC 5737) rank low |
+| Data dumps | `.sql`, `.sqlite`, `.db`, `.csv` or `.json` with many email-like values, `.har`, `.eml`/`.mbox`, notebook outputs | flagged by type and volume, not line by line |
+| Personal documents | committed PDFs or images named like passports, IDs, tax forms, CVs, bank statements | file name and type only; contents are not read |
+
+**How it runs:**
+- A second gitleaks pass with SecurityX's own private-data rules (a fixed file shipped with SecurityX, like `GITLEAKS_CONFIG`), so history is covered the same way secrets are. It always runs with `--redact`.
+- A small read-only pass over tracked files for what patterns can't catch: file types, dump volume, EXIF location. No symbolic links, no git configuration, no code from the repository (invariant 14).
+- A new finding type, `private-data`, with its own filter, severity badge and roadmap action ("remove from history with git filter-repo, then add to .gitignore").
+
+**What stays true:**
+- Reports carry the kind, the file, the line and a count, never the value (invariant 3 extended to private data).
+- Triage re-ranks and never drops (invariant 10): sample data in a test fixture still appears, one step lower, with the reason.
+- A model judging a private-data finding sees no file content, the same as for a secret (invariant 16).
+
+**Done when:** a seeded fixture with each kind (values built at run time, like `fakeAwsKeyId`) is found in both the working tree and a deleted commit, the report contains none of the values, and example data ranks below real-looking data.
+
+### M8: Scan options: how deep a scan goes. Size: M
+
+*Added 2026-11-19 at the owner's request.* Today the only option is "folder levels to look through". M8 adds presets in the scan form's Options and matching CLI flags:
+
+| Preset | Secrets | Dependencies | Private data | History | Afterwards |
+| --- | --- | --- | --- | --- | --- |
+| Quick | current files | yes | no | none | — |
+| Standard (today) | full history | yes | no | all branches | — |
+| Deep | full history | yes | yes | all branches | Deeper analysis by the model starts on its own |
+
+Under the presets, separate switches:
+- which checks to run (secrets, dependencies, private data);
+- history (none, the last N commits, or everything);
+- folder levels (as today);
+- repositories to skip;
+- **uncommitted and git-ignored files** (off by default). These hold real `.env` files, which never left the machine. Findings there are labelled "on this computer only", so they don't read as leaks.
+
+Any scan with less than the full set says so in the report and every export (invariant 12, "Not covered"), so a Quick scan never reads as a clean result. The chosen options are saved with the report and shown on the Overview.
+
+**Done when:** each preset's report names exactly what it covered, a Quick scan of a repository with a secret only in history says history wasn't covered, and the options survive a reload (in the address, like the filters).
+
 ### Owner decisions needed
 
 1. **DMARC, MTA-STS and TLS-RPT TXT lookups.** Are these fixed protocol labels allowed under invariant 2? They are not subdomain guesses, but they add DNS queries, and the ownership-gate request-list tests would change.
@@ -174,3 +222,6 @@ Pin the base image digest and the BoxPilot schema (S8). Fix the picomatch dev ad
 3. **A separate exit code for "incomplete scan".** This is breaking for CI users.
 4. **Rotated/accepted design (M6.2).** Confirm it re-ranks only.
 5. **`docs/ACTIVE-TESTING.md`.** It still waits for your answers and conflicts with invariant 2.
+6. **M7 kinds.** Which kinds of private data to look for: all six in the table, or a subset? Street addresses and names are the noisiest.
+7. **M7 values.** No value at all in the report (proposed), or a masked hint such as `j•••@g•••.com`?
+8. **M8 local files.** Should Deep include uncommitted and git-ignored files by default, or keep them a separate switch?
