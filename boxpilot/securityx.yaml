@@ -14,8 +14,8 @@ risk: low
 # A scan report names the files and commits where secrets were found, so it starts on the tailnet only.
 defaultExposure: tailnet
 image:
-  reference: ghcr.io/aes256afro/securityx:0.6.1@sha256:d11bfed01b6959e71f247afb07ab03f28acd3871c0ac6783a8ae54a5fc8b4360
-  version: "0.6.1"
+  reference: ghcr.io/aes256afro/securityx:0.7.0
+  version: "0.7.0"
 user: "1000:1000"
 ports:
   - id: web

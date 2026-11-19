@@ -182,7 +182,7 @@ Outside BoxPilot:
 ```bash
 export SECURITYX_UI_KEY="$(openssl rand -hex 32)"   # keep it: the page asks for it
 docker run -d --name securityx -p 127.0.0.1:4747:4747 -e SECURITYX_UI_KEY \
-  -v "$HOME/Projects:/repos:ro" -v securityx-data:/data ghcr.io/aes256afro/securityx:0.6.1
+  -v "$HOME/Projects:/repos:ro" -v securityx-data:/data ghcr.io/aes256afro/securityx:0.7.0
 ```
 
 In the container, `securityx ui --host 0.0.0.0` changes what protects it:
