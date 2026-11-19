@@ -8,6 +8,7 @@
  * the counts or the roadmap of the export it sits in.
  */
 import { unitKey, unitsOf, VERDICTS, type AnalysisFile, type Verdict } from "../analysis/analyse.ts";
+import type { Comparison } from "../repos/history.ts";
 import type { ScanReport, Severity } from "../repos/types.ts";
 import type { FindingsList, Roadmap } from "../roadmap/types.ts";
 
@@ -24,6 +25,18 @@ export interface MuralFacts {
 	actions: { phase: string; actions: number }[];
 	/** The model's Deeper analysis of this scan, across the whole scan. */
 	analysis: { items: number; judged: number; verdicts: Record<Verdict, number> };
+	/**
+	 * Against the previous scan kept, across the whole scan; absent when there is none. `unchecked`:
+	 * findings this scan could not look for again, which are not fixed.
+	 */
+	sinceLastScan?: {
+		previousScannedAt: string;
+		fixed: number;
+		new: number;
+		unchecked: number;
+		/** The most severe fixed findings, as the Overview lists them. */
+		fixedExamples: { repo: string; title: string; severity: Severity }[];
+	};
 }
 
 /** What the model wrote, checked. */
@@ -54,7 +67,10 @@ const MAX_ITEMS = 6;
 const MAX_ITEM = 300;
 const MAX_HEADLINE = 200;
 
-export function muralFacts(report: ScanReport, roadmap: Roadmap, list: FindingsList, analysis: AnalysisFile): MuralFacts {
+/** Fixed findings named in the mural's data; the rest are counted. */
+const MAX_FIXED_EXAMPLES = 15;
+
+export function muralFacts(report: ScanReport, roadmap: Roadmap, list: FindingsList, analysis: AnalysisFile, change: Comparison | null = null): MuralFacts {
 	const findings = { critical: 0, high: 0, medium: 0, low: 0, total: list.rows.length, secrets: 0, vulnerabilities: 0 };
 	for (const row of list.rows) {
 		findings[row.severity]++;
@@ -80,6 +96,17 @@ export function muralFacts(report: ScanReport, roadmap: Roadmap, list: FindingsL
 		findings,
 		actions: roadmap.phases.map((phase) => ({ phase: phase.title, actions: phase.groups.reduce((sum, group) => sum + group.actions.length, 0) })),
 		analysis: { items: units.length, judged, verdicts },
+		...(change
+			? {
+					sinceLastScan: {
+						previousScannedAt: change.previousScannedAt,
+						fixed: change.fixedCount,
+						new: change.newCount,
+						unchecked: change.uncheckedCount,
+						fixedExamples: change.fixed.slice(0, MAX_FIXED_EXAMPLES).map(({ repo, title, severity }) => ({ repo, title, severity })),
+					},
+				}
+			: {}),
 	};
 }
 

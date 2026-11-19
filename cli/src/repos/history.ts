@@ -47,6 +47,11 @@ export interface Comparison {
 	previousScannedAt: string;
 	newCount: number;
 	fixedCount: number;
+	/**
+	 * Findings of the previous scan that this one could not look for again: its scanner was missing
+	 * or failed, or the repository was not in this scan. Not found is not fixed, so they are counted here.
+	 */
+	uncheckedCount: number;
 	/** Keys of the findings that are new, for the page to mark. */
 	newKeys: string[];
 	/** The fixed findings, most severe first, up to MAX_FIXED_LISTED. */
@@ -63,18 +68,40 @@ export function keyed(report: ScanReport): Map<string, { repo: string; finding: 
 	return map;
 }
 
-/** What is new in `current` and what `previous` had that `current` does not. */
+/**
+ * Each repository and scanner a scan actually looked with: the scanner was installed and did not
+ * fail on that repository. A finding outside these was not looked for, so its absence says nothing.
+ */
+function checked(report: ScanReport): Set<string> {
+	const ran = report.tools.filter((tool) => tool.status === "ok").map((tool) => tool.tool);
+	const pairs = new Set<string>();
+	for (const repo of report.repos) {
+		const name = repoName(report, repo);
+		for (const tool of ran) if (!repo.errors.some((error) => error.tool === tool)) pairs.add(`${name}\n${tool}`);
+	}
+	return pairs;
+}
+
+/**
+ * What is new in `current`, and what `previous` had that `current` looked for and did not find. A
+ * finding counts as fixed only where the later scan checked again, and as new only where the earlier
+ * one had checked: a scanner that was missing or failed never makes a finding look fixed or new.
+ */
 export function compareScans(previous: ScanReport, current: ScanReport): Comparison {
 	const before = keyed(previous);
 	const after = keyed(current);
-	const newKeys = [...after.keys()].filter((key) => !before.has(key));
-	const gone = [...before.entries()].filter(([key]) => !after.has(key)).map(([, value]) => value);
+	const checkedBefore = checked(previous);
+	const checkedAfter = checked(current);
+	const newKeys = [...after.entries()].filter(([key, { repo, finding }]) => !before.has(key) && checkedBefore.has(`${repo}\n${finding.tool}`)).map(([key]) => key);
+	const missing = [...before.entries()].filter(([key]) => !after.has(key)).map(([, value]) => value);
+	const gone = missing.filter(({ repo, finding }) => checkedAfter.has(`${repo}\n${finding.tool}`));
 	const order = new Map(rank(gone.map((entry) => entry.finding)).map((finding, index) => [finding, index]));
 	gone.sort((a, b) => order.get(a.finding)! - order.get(b.finding)!);
 	return {
 		previousScannedAt: previous.scannedAt,
 		newCount: newKeys.length,
 		fixedCount: gone.length,
+		uncheckedCount: missing.length - gone.length,
 		newKeys,
 		fixed: gone.slice(0, MAX_FIXED_LISTED).map(({ repo, finding }) => ({
 			repo,

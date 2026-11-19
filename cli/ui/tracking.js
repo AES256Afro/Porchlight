@@ -41,15 +41,21 @@ export function statusLabel(status) {
 }
 
 /**
- * One line on what changed since the previous scan, or null when there is no previous scan.
+ * One line on what changed since the previous scan, or null when there is no previous scan. Findings
+ * this scan could not look for again are said separately: not found is not fixed.
  *
- * @param {{ previousScannedAt: string, newCount: number, fixedCount: number } | null} change
+ * @param {{ previousScannedAt: string, newCount: number, fixedCount: number, uncheckedCount?: number } | null} change
  */
 export function changeSummary(change) {
 	if (!change) return null;
-	if (change.newCount === 0 && change.fixedCount === 0) return "Nothing new and nothing fixed since the previous scan.";
+	const unchecked = change.uncheckedCount ?? 0;
+	const caveat =
+		unchecked > 0
+			? ` ${unchecked.toLocaleString()} ${unchecked === 1 ? "finding" : "findings"} of the previous scan could not be checked again, so ${unchecked === 1 ? "it is" : "they are"} not counted as fixed.`
+			: "";
+	if (change.newCount === 0 && change.fixedCount === 0) return `Nothing new and nothing fixed since the previous scan.${caveat}`;
 	const parts = [];
 	if (change.newCount > 0) parts.push(`${change.newCount.toLocaleString()} new`);
 	if (change.fixedCount > 0) parts.push(`${change.fixedCount.toLocaleString()} fixed`);
-	return `${parts.join(", ")} since the previous scan.`;
+	return `${parts.join(", ")} since the previous scan.${caveat}`;
 }

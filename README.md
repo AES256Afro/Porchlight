@@ -318,7 +318,7 @@ It is written when you press Export, after any Deeper analysis has finished, and
 
 - The model reads the counts, the roadmap's actions and the findings it judged real: never a secret value, a reason or evidence it wrote, an author or an email. Like every model answer, it is data to the model, not instructions.
 - The mural is labelled with the model's name as generated text, and escaped like everything else in the export. It never changes the export's findings, counts or roadmap.
-- SecurityX never changes your code, so "What has been done" covers what was checked and judged. Fixes made since the last scan will need scan history (plan item M6.1).
+- "What has been done" leads with what was fixed since the previous scan, from the scan history, and the figures show fixed and new counts. A finding counts as fixed only if the newer scan looked for it again: if a scanner was missing or failed, or a repository was left out, its findings are counted as "could not be checked again", never as fixed. SecurityX itself never changes your code.
 - The last mural is kept in `repo-mural.json` beside the report, for one scan and one set of filters.
 
 ## Send to a model

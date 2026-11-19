@@ -98,7 +98,7 @@ const MURAL_TASK = [
 	'- "headline": one sentence on where things stand.',
 	'- "found": up to 5 points on what the scan found: the counts, the worst problems and where they are.',
 	'- "decided": up to 5 points on what to fix first and in what order, following the roadmap\'s phases.',
-	'- "done": up to 4 points on the work done so far: what was scanned, and what the Deeper analysis judged. SecurityX never changes code, so never say anything was fixed.',
+	'- "done": up to 4 points on the work done so far. If "facts.sinceLastScan" is there, lead with it: "fixed" findings were in the previous scan and are gone now, which means the owner fixed them (name the most severe from "fixedExamples"); "new" ones appeared since. Then what was scanned and what the Deeper analysis judged. Never call anything fixed that is not counted in "fixed": "unchecked" findings could not be looked for again and may still be there. SecurityX itself never changes code.',
 	'- "next": up to 5 concrete next steps, most important first. If "notCovered" lists anything, one step is to cover it. If "scope" is set, say this covers only part of the scan.',
 	"Each point is one plain sentence of under 25 words. Name repositories and packages exactly as the data writes them. Use only the data.",
 	'This task replaces the plain-text rule above. Answer with one JSON object and nothing else, no code fence: {"headline": "...", "found": ["..."], "decided": ["..."], "done": ["..."], "next": ["..."]}',

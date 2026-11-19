@@ -61,6 +61,12 @@ function muralFigures(mural: Mural): [string, string][] {
 		["Repositories affected", `${number(mural.facts.repositoriesAffected)} of ${number(mural.facts.repositories)}`],
 		[now ? `Actions: ${now.phase}` : "Actions", number(now?.actions ?? 0)],
 		["Judged by a model", `${number(analysis.judged)} of ${number(analysis.items)}`],
+		...(mural.facts.sinceLastScan
+			? ([
+					["Fixed since last scan", number(mural.facts.sinceLastScan.fixed)],
+					["New since last scan", number(mural.facts.sinceLastScan.new)],
+				] as [string, string][])
+			: []),
 	];
 }
 

@@ -1201,7 +1201,8 @@ test("access waits for Tailscale, and a service never opens a second listener", 
 
 test("a mural is written in the background for one scan and its filters, and an export carries it only when asked", async (t) => {
 	let answer = JSON.stringify({ headline: "Where things stand", found: ["Four problems"], decided: ["Rotate the key first"], done: ["Scanned three repositories"], next: ["Upgrade"] });
-	const fetchFn = (async () => Response.json({ message: { content: answer } })) as unknown as typeof fetch;
+	let calls = 0;
+	const fetchFn = (async () => (calls++, Response.json({ message: { content: answer } }))) as unknown as typeof fetch;
 	const server = await start(t, { assistant, fetchFn });
 	await withReport(server);
 	const settle = async (query = "") => {
@@ -1229,12 +1230,14 @@ test("a mural is written in the background for one scan and its filters, and an 
 	assert.equal((await send(server, "GET", "/api/repos/export?format=html&mural=1&severity=high")).status, 409);
 	assert.equal((await send(server, "GET", "/api/repos/mural?severity=high")).json.current, false);
 
-	// An answer that is not a mural is an error, never a mural.
+	// An answer that is not a mural is an error, never a mural, after one more try.
 	answer = "I could not do that.";
+	const callsBefore = calls;
 	await send(server, "POST", "/api/repos/mural?severity=high");
 	const failed = await settle("?severity=high");
 	assert.deepEqual([failed.state, failed.current], ["failed", true]);
 	assert.match(failed.error, /did not answer with the mural/);
+	assert.equal(calls - callsBefore, 2, "it tried twice");
 
 	const without = await start(t);
 	await withReport(without);
@@ -1314,10 +1317,14 @@ test("sending needs a scan to send", async (t) => {
 // History, the owner's notes, and what quitting would lose
 
 test("keeps every scan, and says what is new and what was fixed since the one before", async (t) => {
-	let next = sampleReport("/work");
+	// Both scans ran both scanners. (The sample has osv-scanner missing, and a scanner that did not run
+	// finds nothing: that is never a fix. test/history.test.ts covers that case.)
+	const ran = (report: ScanReport): ScanReport => ({ ...report, tools: report.tools.map((tool) => ({ ...tool, status: "ok" as const })) });
+	let next = ran(sampleReport("/work"));
 	const scan = (async () => next) as unknown as UiOptions["scan"];
 	const server = await start(t, { scan });
 	await withReport(server);
+	await writeFile(join(server.dir, "state", "repo-scan.json"), JSON.stringify(ran(sampleReport("/work"))));
 
 	// A report from before history was kept starts it once the server reads it again.
 	const restarted = await start(t, { reportPath: join(server.dir, "state", "repo-scan.json"), scan });
@@ -1325,7 +1332,7 @@ test("keeps every scan, and says what is new and what was fixed since the one be
 	assert.deepEqual([first.scans.length, first.change], [1, null]);
 
 	// The next scan: the critical finding upgraded away, a new one in "mild".
-	next = sampleReport("/work");
+	next = ran(sampleReport("/work"));
 	next.scannedAt = "2026-11-19T12:00:00.000Z";
 	next.repos[2]!.findings = [next.repos[2]!.findings[0]!];
 	next.repos[1]!.findings.push({ ...next.repos[1]!.findings[0]!, ruleId: "rule-brand-new", title: "A brand new problem" });

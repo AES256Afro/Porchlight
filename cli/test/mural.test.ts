@@ -91,3 +91,38 @@ test("a mural in an export is labelled, escaped for each format, and never fits 
 	assert.throws(() => exportRepos(scan, { format: "csv" }, noFilter(), board), /cannot go in a spreadsheet/);
 	assert.ok(!exportRepos(scan, { format: "html" }).body.includes('class="mural"'), "no mural unless one is asked for");
 });
+
+test("the mural counts what was fixed since the last scan, and only what this scan could check again", () => {
+	const scan = report();
+	const roadmap = buildRepoRoadmap(scan);
+	const change = {
+		previousScannedAt: "2026-11-18T07:00:00.000Z",
+		newCount: 1,
+		fixedCount: 2,
+		uncheckedCount: 5,
+		newKeys: [],
+		fixed: [
+			{ repo: "web", severity: "critical" as const, kind: "vulnerability" as const, ruleId: "GHSA-9", title: "next request smuggling", location: "package-lock.json", detail: "next@14.0.0" },
+			{ repo: "web", severity: "low" as const, kind: "secret" as const, ruleId: "generic-api-key", title: "Generic key", location: "a.ts:1", detail: "commit def" },
+		],
+	};
+	const facts = muralFacts(scan, roadmap, listRepoFindings(scan, noFilter()), { scannedAt: scan.scannedAt, items: {} }, change);
+	assert.deepEqual(facts.sinceLastScan, {
+		previousScannedAt: "2026-11-18T07:00:00.000Z",
+		fixed: 2,
+		new: 1,
+		unchecked: 5,
+		fixedExamples: [
+			{ repo: "web", title: "next request smuggling", severity: "critical" },
+			{ repo: "web", title: "Generic key", severity: "low" },
+		],
+	});
+	const user = muralPrompt(facts, roadmap, []).messages[1]!.content;
+	assert.match(user, /next request smuggling/);
+	assert.match(user, /"unchecked":5/);
+	assert.ok(!user.includes("commit def"), "a fixed finding is named by its title, never its commit");
+
+	const page = exportRepos(scan, { format: "html" }, noFilter(), { ...mural(scan), facts }).body;
+	assert.match(page, /<span>Fixed since last scan<\/span><strong>2<\/strong>/);
+	assert.ok(!exportRepos(scan, { format: "html" }, noFilter(), mural(scan)).body.includes("Fixed since last scan"), "no history, no such figure");
+});

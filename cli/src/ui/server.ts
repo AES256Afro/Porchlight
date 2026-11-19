@@ -546,14 +546,25 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 
 		const roadmap = buildRepoRoadmap(report, filter);
 		const analysis = await readAnalysis(analysisPath, report);
-		const facts = muralFacts(report, roadmap, listRepoFindings(report, filter), analysis);
+		// What was fixed since the previous scan, where this scan could check again: the "done" column's best evidence.
+		const change = await history.latestChange(report).catch(() => null);
+		const facts = muralFacts(report, roadmap, listRepoFindings(report, filter), analysis, change);
 		const prompt = muralPrompt(facts, roadmap, judgedHighlights(report, analysis).slice(0, MURAL_HIGHLIGHTS));
 		muralJob = { state: "running", key, startedAt: new Date().toISOString() };
 		modelBusy = true;
 		void (async () => {
 			try {
-				const text = await chat(config, prompt.messages, { fetchFn: options.fetchFn, timeoutMs: MURAL_TIMEOUT_MS, maxTokens: MURAL_TOKENS });
-				const mural: Mural = { ...parseMural(text), model: config.model, generatedAt: new Date().toISOString(), facts, cut: prompt.cut };
+				// A small model now and then answers with something other than the JSON asked for: it gets one more try.
+				let written: ReturnType<typeof parseMural> | undefined;
+				for (let attempt = 1; !written; attempt++) {
+					const text = await chat(config, prompt.messages, { fetchFn: options.fetchFn, timeoutMs: MURAL_TIMEOUT_MS, maxTokens: MURAL_TOKENS });
+					try {
+						written = parseMural(text);
+					} catch (err) {
+						if (attempt >= MURAL_ATTEMPTS || !(err instanceof MuralError)) throw err;
+					}
+				}
+				const mural: Mural = { ...written, model: config.model, generatedAt: new Date().toISOString(), facts, cut: prompt.cut };
 				// Kept beside the report, so a later export can use it without writing it again.
 				await saveMural(muralPath, { key, mural }).catch(() => {});
 				muralJob = { state: "done", key, mural };
@@ -1034,6 +1045,8 @@ export function checkKey(key: string): void {
 
 /** A mural reads at most this many findings the model judged real, most severe first. */
 const MURAL_HIGHLIGHTS = 40;
+/** Tries at a mural whose answer is not the JSON asked for, before saying so. */
+const MURAL_ATTEMPTS = 2;
 /** Room for about 20 short points as JSON. */
 const MURAL_TOKENS = 1_500;
 /** A repair plan is longer than an explanation; this is what a local model may write for one. */

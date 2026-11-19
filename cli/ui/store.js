@@ -40,7 +40,7 @@ export const store = {
 	/** @type {Record<string, import("./tracking.js").FindingNote>} */
 	findingNotes: {},
 	/** The latest scan against the one before it; null until there are two. */
-	/** @type {{ previousScannedAt: string, newCount: number, fixedCount: number, newKeys: string[], fixed: { repo: string, severity: import("./filter.js").Severity, kind: string, ruleId: string, title: string, location: string, detail: string }[] } | null} */
+	/** @type {{ previousScannedAt: string, newCount: number, fixedCount: number, uncheckedCount?: number, newKeys: string[], fixed: { repo: string, severity: import("./filter.js").Severity, kind: string, ruleId: string, title: string, location: string, detail: string }[] } | null} */
 	change: null,
 	/** Every kept scan, newest first. */
 	/** @type {{ file: string, scannedAt: string, root: string, repositories: number, findings: number, counts: Record<string, number>, newCount?: number, fixedCount?: number }[]} */
