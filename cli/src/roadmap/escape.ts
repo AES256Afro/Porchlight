@@ -39,3 +39,13 @@ export function mdCode(text: string): string {
 	const pad = flat.startsWith("`") || flat.endsWith("`") ? " " : "";
 	return `${fence}${pad}${flat}${pad}${fence}`;
 }
+
+/**
+ * A fenced code block, for text kept as it was captured (an HTTP response, say). The fence is longer
+ * than any run of backticks inside, so nothing in the text can close it.
+ */
+export function mdBlock(text: string): string {
+	const longestRun = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+	const fence = "`".repeat(Math.max(3, longestRun + 1));
+	return `${fence}text\n${text.replace(/\r\n?/g, "\n")}\n${fence}`;
+}

@@ -97,6 +97,10 @@ const ICONS = {
 		["rect", { x: 2.5, y: 3, width: 11, height: 7.5, rx: 1.2, fill: "none", stroke: "currentColor", "stroke-width": 1.5 }],
 		["path", { d: "M1.2 13h13.6", fill: "none", stroke: "currentColor", "stroke-width": 1.5, "stroke-linecap": "round" }],
 	],
+	investigate: [
+		["circle", { cx: 7, cy: 7, r: 4.5, fill: "none", stroke: "currentColor", "stroke-width": 1.5 }],
+		["path", { d: "m10.4 10.4 3.6 3.6", fill: "none", stroke: "currentColor", "stroke-width": 1.7, "stroke-linecap": "round" }],
+	],
 	domains: [
 		["circle", { cx: 8, cy: 8, r: 6, fill: "none", stroke: "currentColor", "stroke-width": 1.5 }],
 		["path", { d: "M2 8h12M8 2c2 2 2.6 3.8 2.6 6S10 12 8 14c-2-2-2.6-3.8-2.6-6S6 4 8 2Z", fill: "none", stroke: "currentColor", "stroke-width": 1.3 }],

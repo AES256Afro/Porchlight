@@ -2738,3 +2738,74 @@ fieldset.looks legend {
 #settings-appearance:focus {
 	outline: none;
 }
+
+/* Investigate with a model: the run, what waits for approval, the steps and their evidence. */
+.investigate-run-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.investigate-domain + .investigate-domain {
+	margin-top: 16px;
+	padding-top: 16px;
+	border-top: 1px solid var(--hairline);
+}
+
+.investigate-domain h3 {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+}
+
+.investigate-approval {
+	margin: 12px 0;
+}
+
+.investigate-pre {
+	max-height: 320px;
+	margin: 6px 0;
+	padding: 8px 10px;
+	overflow: auto;
+	font-size: 12px;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	background: var(--page);
+	border: 1px solid var(--hairline);
+	border-radius: 6px;
+}
+
+.investigate-steps,
+.investigate-findings {
+	display: grid;
+	gap: 10px;
+	margin: 8px 0;
+	padding-left: 0;
+	list-style: none;
+}
+
+.investigate-step,
+.investigate-finding {
+	padding: 8px 10px;
+	border: 1px solid var(--hairline);
+	border-radius: 6px;
+	min-width: 0;
+}
+
+.investigate-step code {
+	margin-left: 6px;
+	overflow-wrap: anywhere;
+}
+
+.investigate-step.outcome-refused,
+.investigate-step.outcome-denied,
+.investigate-step.outcome-stopped {
+	border-style: dashed;
+}
+
+.investigate-run h3 {
+	margin-top: 18px;
+}
