@@ -11,6 +11,9 @@ import type { MonitorReport } from "./roadmap/domains.ts";
 import { CONTENTS, exportDomain, exportRepos, parseFilter, type ExportFile } from "./roadmap/export.ts";
 import { FORMATS } from "./roadmap/render.ts";
 import { tokenProblem } from "./github/github.ts";
+import { checkHost } from "./host/check.ts";
+import { renderHostText } from "./host/render.ts";
+import { run } from "./repos/exec.ts";
 import { startUiServer } from "./ui/server.ts";
 
 const USAGE = `SecurityX
@@ -39,6 +42,11 @@ Usage:
   securityx domains show <domain>  Latest report
   securityx domains remove <domain>
   securityx domains export <domain>  Repair roadmap for a domain; takes --content, --format and --out
+
+  securityx host check             Check this computer: updates, built-in protection, what accepts
+                                   connections, credentials in files, installed packages. Reads only
+      --json                       Print the result as JSON
+      --offline                    Do not ask Apple for updates or look packages up on OSV.dev
 
   securityx ui                     Open the local web interface for both tools
       --port <n>                   Port to listen on (default: 4747, or the next free port)
@@ -69,6 +77,7 @@ export async function main(argv: string[]): Promise<number> {
 		if (group === "repos" && command === "export") return await reposExport(rest);
 		if (group === "domains" && command === "export") return await domainsExport(rest);
 		if (group === "domains" && command) return await domains(command, rest);
+		if (group === "host" && command === "check") return await hostCheck(rest);
 		if (group === "ui") return await ui(argv.slice(1));
 	} catch (err) {
 		console.error(`securityx: ${err instanceof Error ? err.message : String(err)}`);
@@ -119,6 +128,20 @@ async function reposScan(args: string[]): Promise<number> {
 	const code = exitCode(report, failOn as Severity | undefined);
 	if (code === 1) console.error("securityx: the scan was incomplete (see \"Not covered\"), so --fail-on cannot pass");
 	return code;
+}
+
+async function hostCheck(args: string[]): Promise<number> {
+	const { values } = parseArgs({ args, options: { json: { type: "boolean", default: false }, offline: { type: "boolean", default: false } } });
+	const report = await checkHost({
+		run,
+		askApple: !values.offline,
+		lookUpPackages: !values.offline,
+		onProgress: ({ done, total, current }) => {
+			if (current) console.error(`Checking ${done + 1} of ${total}: ${current}`);
+		},
+	});
+	process.stdout.write(values.json ? `${JSON.stringify(report, null, "\t")}\n` : renderHostText(report));
+	return 0;
 }
 
 const EXPORT_OPTIONS = {

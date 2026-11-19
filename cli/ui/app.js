@@ -3,6 +3,7 @@ import { adoptSessionKey, api, ApiError, setSessionKey } from "./api.js";
 import { emptyState, formatWhen, h, icon, plural, replace, severityBadge, toast } from "./dom.js";
 import { renderDomains } from "./domains.js";
 import { renderFindings } from "./findings.js";
+import { hostName, renderHost } from "./host.js";
 import { applyLook, homeSection, rememberedLook } from "./appearance.js";
 import { buildHash, parseHash } from "./list.js";
 import { renderOverview } from "./overview.js";
@@ -20,6 +21,7 @@ const SECTIONS = /** @type {const} */ ([
 	["findings", "Findings"],
 	["roadmap", "Roadmap"],
 	["domains", "Domains"],
+	["host", "This Mac"],
 	["settings", "Settings"],
 ]);
 
@@ -35,21 +37,26 @@ let firstRoute = true;
 let announced = "";
 
 /** Says which of the two jobs a section belongs to, above the first section of each. */
-const GROUPS = /** @type {Record<string, string>} */ ({ findings: "Your code", domains: "Your websites", settings: "SecurityX" });
+const GROUPS = /** @type {Record<string, string>} */ ({ findings: "Your code", domains: "Your websites", host: "Your computer", settings: "SecurityX" });
 const findingCount = h("span", { class: "count" });
+/** "This Mac", or "This computer" when SecurityX runs on something else. */
+const hostLabel = h("span", null, "This Mac");
 
 replace(
 	nav,
 	...SECTIONS.flatMap(([key, label]) => [
 		GROUPS[key] ? h("span", { class: "nav-group" }, GROUPS[key]) : null,
-		h("a", { href: `#/${key}`, dataset: { nav: key } }, icon(key), label, key === "findings" ? findingCount : null),
+		h("a", { href: `#/${key}`, dataset: { nav: key } }, icon(key), key === "host" ? hostLabel : label, key === "findings" ? findingCount : null),
 	]),
 );
 /** Counts by severity in the sidebar; shown only by the "Severity dashboard" look. */
 const severityStrip = h("div", { class: "severity-strip", "aria-label": "Findings by severity" });
 scanStatus.before(severityStrip);
 subscribe((change) => {
-	if (change === "settings" && store.settings) applyLook(store.settings.appearance);
+	if (change === "settings" && store.settings) {
+		applyLook(store.settings.appearance);
+		hostLabel.textContent = hostName();
+	}
 	drawScanStatus();
 });
 // The chosen look applies on every page, including the first one opened.
@@ -99,7 +106,7 @@ async function route() {
 		if (link.dataset.nav === section) link.setAttribute("aria-current", "page");
 		else link.removeAttribute("aria-current");
 	}
-	document.title = `${SECTIONS.find(([key]) => key === section)?.[1]} · SecurityX`;
+	document.title = `${section === "host" ? hostName() : SECTIONS.find(([key]) => key === section)?.[1]} · SecurityX`;
 
 	leave();
 	leave = () => {};
@@ -152,6 +159,7 @@ function page(section, context) {
 	if (section === "roadmap") return renderRoadmap(view, context);
 	if (section === "domains") return renderDomains(view, context.path[1]);
 	if (section === "settings") return renderSettings(view);
+	if (section === "host") return renderHost(view);
 	return renderOverview(view);
 }
 

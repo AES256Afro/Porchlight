@@ -4,6 +4,7 @@ import { request } from "node:http";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { assistantConfig } from "../src/assist/ollama.ts";
+import type { HostReport } from "../src/host/types.ts";
 import { listenOnFirstFree } from "../src/main.ts";
 import { monitorConfig } from "../src/monitor/client.ts";
 import type { Runner } from "../src/repos/exec.ts";
@@ -1392,4 +1393,76 @@ test("says what is still running, and remembers the place in the page but never 
 	for (const view of ["#k=secret", "#/overview&k=abc", "https://evil.test/#/x", "#/a b"]) {
 		assert.equal((await send(server, "POST", "/api/view", { body: { view } })).status, 400, view);
 	}
+});
+
+test("this computer is checked in the background, kept readable only by its owner, and named while busy", async (t) => {
+	let finish: (report: HostReport) => void = () => {};
+	const asked: unknown[] = [];
+	const server = await start(t, {
+		hostCheck: (options) => {
+			asked.push({ askApple: options.askApple, lookUpPackages: options.lookUpPackages });
+			options.onProgress?.({ done: 2, total: 10, current: "FileVault" });
+			return new Promise((resolve) => (finish = resolve));
+		},
+	});
+	assert.deepEqual((await send(server, "GET", "/api/host")).json, { status: { state: "idle" }, report: null, service: false });
+	assert.equal((await send(server, "POST", "/api/host/check", { body: { askApple: "yes" } })).status, 400);
+
+	const started = await send(server, "POST", "/api/host/check", { body: { askApple: false } });
+	assert.equal(started.status, 202);
+	assert.deepEqual(asked, [{ askApple: false, lookUpPackages: true }]);
+	const running = (await send(server, "GET", "/api/host")).json.status;
+	assert.deepEqual([running.state, running.done, running.total, running.current], ["running", 2, 10, "FileVault"]);
+	assert.equal((await send(server, "POST", "/api/host/check", { body: {} })).status, 409);
+	assert.ok((await send(server, "GET", "/api/busy")).json.busy.includes("This computer is being checked"));
+
+	finish({
+		checkedAt: "2026-11-19T00:00:00.000Z",
+		platform: "darwin",
+		os: { name: "macOS", version: "27.2.1", build: "26B131" },
+		checks: [{ id: "filevault", area: "protection", title: "FileVault disk encryption", status: "passed", severity: "high", detail: "On." }],
+		notCovered: ["Apps are not checked."],
+		lookups: { apple: false, packages: true },
+	});
+	let done;
+	for (let tries = 0; tries < 50; tries++) {
+		done = (await send(server, "GET", "/api/host")).json;
+		if (done.status.state !== "running") break;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.equal(done.status.state, "done");
+	assert.equal(done.report.checks[0].id, "filevault");
+	const file = join(server.dir, "state", "host-check.json");
+	assert.equal((await stat(file)).mode & 0o777, 0o600);
+	assert.equal(JSON.parse(await readFile(file, "utf8")).os.version, "27.2.1");
+	assert.equal((await send(server, "GET", "/api/state")).json.platform, process.platform);
+	assert.equal((await send(server, "GET", "/host.js")).status, 200);
+});
+
+test("a failed host check is reported as failed, and a service never checks the computer it runs on", async (t) => {
+	const server = await start(t, { hostCheck: async () => Promise.reject(new Error("netstat timed out")) });
+	await send(server, "POST", "/api/host/check", { body: {} });
+	let status;
+	for (let tries = 0; tries < 50; tries++) {
+		status = (await send(server, "GET", "/api/host")).json.status;
+		if (status.state !== "running") break;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.deepEqual([status.state, status.error], ["failed", "netstat timed out"]);
+
+	let called = false;
+	const service = await start(t, {
+		host: "127.0.0.2",
+		sessionKey: "k".repeat(MIN_KEY_LENGTH),
+		hostCheck: async () => {
+			called = true;
+			throw new Error("must not run");
+		},
+	}).catch(() => null);
+	if (!service) return t.skip("127.0.0.2 is not available on this machine");
+	const refused = await send(service, "POST", "/api/host/check", { body: {}, host: "127.0.0.2" });
+	assert.equal(refused.status, 409);
+	assert.match(refused.json.error, /container/);
+	assert.deepEqual((await send(service, "GET", "/api/host", { host: "127.0.0.2" })).json, { status: { state: "idle" }, report: null, service: true });
+	assert.equal(called, false);
 });

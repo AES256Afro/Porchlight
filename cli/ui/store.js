@@ -13,7 +13,9 @@ import { findingKey } from "./tracking.js";
 /** @typedef {Omit<import("../src/repos/types.ts").ScanReport, "repos"> & { repos: Repo[] }} ScanReport */
 /** @typedef {import("../src/ui/server.ts").ScanStatus} ScanStatus */
 /** @typedef {SuggestedFinding & { repo: string }} FindingRow */
-/** @typedef {"report" | "scan" | "settings" | "notes"} Change */
+/** @typedef {import("../src/host/types.ts").HostReport} HostReport */
+/** @typedef {import("../src/ui/server.ts").HostStatus} HostStatus */
+/** @typedef {"report" | "scan" | "settings" | "notes" | "host"} Change */
 
 const POLL_MS = 800;
 
@@ -23,7 +25,9 @@ export const store = {
 	 * managed rather than from a terminal. `monitor.unset`: neither monitor setting was given.
 	 * `assistant`: the local model behind Explain, Summarise and Ask.
 	 *
-	 * @type {{ defaultRoot: string, reportPath: string, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean }, github: { token: boolean, error?: string }, assistant: import("./generated.js").AssistantSettings, appearance: string, remote: boolean, sendTargets: import("./send-text.js").SendTarget[], lastView: string | null } | null}
+	 * `platform`: the operating system SecurityX runs on, such as "darwin".
+	 *
+	 * @type {{ defaultRoot: string, reportPath: string, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean }, github: { token: boolean, error?: string }, assistant: import("./generated.js").AssistantSettings, appearance: string, remote: boolean, platform: string, sendTargets: import("./send-text.js").SendTarget[], lastView: string | null } | null}
 	 */
 	settings: null,
 	/** @type {ScanReport | null} */
@@ -45,6 +49,12 @@ export const store = {
 	/** Every kept scan, newest first. */
 	/** @type {{ file: string, scannedAt: string, root: string, repositories: number, findings: number, counts: Record<string, number>, newCount?: number, fixedCount?: number }[]} */
 	scans: [],
+	/**
+	 * The check of the computer SecurityX runs on. `service`: it does not run here (a container).
+	 *
+	 * @type {{ status: HostStatus, report: HostReport | null, service: boolean }}
+	 */
+	host: { status: { state: "idle" }, report: null, service: false },
 };
 
 /** @type {Set<string>} */
@@ -58,6 +68,8 @@ let loading = null;
 let rows = null;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let pollTimer;
+/** @type {ReturnType<typeof setTimeout> | undefined} */
+let hostTimer;
 
 /**
  * @param {(change: Change) => void} listener
@@ -86,6 +98,7 @@ export function load() {
 			assistant: state.assistant ?? { configured: false },
 			appearance: state.appearance ?? "today",
 			remote: state.remote === true,
+			platform: typeof state.platform === "string" ? state.platform : "",
 			sendTargets: Array.isArray(state.sendTargets) ? state.sendTargets : [],
 			lastView: typeof state.lastView === "string" ? state.lastView : null,
 		};
@@ -122,6 +135,7 @@ export function setAssistant(assistant) {
 /** Forgets everything, so the next `load` starts again. Used after the session key changes. */
 export function reset() {
 	clearTimeout(pollTimer);
+	clearTimeout(hostTimer);
 	loading = null;
 	rows = null;
 	store.settings = null;
@@ -224,4 +238,45 @@ function poll() {
 export function findingRows() {
 	rows ??= (store.report?.repos ?? []).flatMap((repo) => repo.findings.map((finding) => ({ ...finding, repo: repo.name })));
 	return rows;
+}
+
+/** Reads what the last check of this computer found, and follows a check that is running. */
+export async function loadHost() {
+	const data = await api("GET", "/host");
+	store.host = { status: data.status, report: data.report ?? null, service: data.service === true };
+	emit("host");
+	if (store.host.status.state === "running") pollHost();
+}
+
+/**
+ * Starts a check of this computer. It only reads; the options say whether it may ask Apple for
+ * updates and look packages up on OSV.dev.
+ *
+ * @param {{ askApple: boolean, lookUpPackages: boolean }} options
+ */
+export async function startHostCheck(options) {
+	try {
+		const { status } = await api("POST", "/host/check", options);
+		store.host.status = status;
+		emit("host");
+	} catch (err) {
+		// Already running, started from another tab: follow it instead.
+		if (!(err instanceof ApiError && err.status === 409 && !store.host.service)) throw err;
+	}
+	pollHost();
+}
+
+function pollHost() {
+	clearTimeout(hostTimer);
+	hostTimer = setTimeout(async () => {
+		try {
+			const data = await api("GET", "/host");
+			store.host = { status: data.status, report: data.report ?? null, service: data.service === true };
+			emit("host");
+			if (data.status.state === "running") pollHost();
+		} catch (err) {
+			store.host.status = { state: "failed", finishedAt: "", error: err instanceof Error ? err.message : String(err) };
+			emit("host");
+		}
+	}, POLL_MS);
 }

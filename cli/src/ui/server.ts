@@ -44,6 +44,9 @@ import { discoverRepos } from "../repos/discover.ts";
 import type { Runner } from "../repos/exec.ts";
 import { coverageNotes, nameUnder, rank, rankRepos, repoName, settingNotes } from "../repos/report.ts";
 import { History, readNotes, setNote } from "../repos/history.ts";
+import { checkHost, type HostCheckOptions } from "../host/check.ts";
+import type { HostReport } from "../host/types.ts";
+import { run as runCommand } from "../repos/exec.ts";
 import { scanRepos } from "../repos/scan.ts";
 import { findingKey, isStatus, MAX_NOTE } from "../../ui/tracking.js";
 import { SEVERITIES, type ScanReport, type Severity } from "../repos/types.ts";
@@ -92,6 +95,8 @@ export interface UiOptions {
 	tailnetAddress?: () => string | null;
 	/** The port other devices use (default 4747). Tests pass 0. */
 	accessPort?: number;
+	/** Checks the computer SecurityX runs on. Tests pass a fake. */
+	hostCheck?: (options: Omit<HostCheckOptions, "run">) => Promise<HostReport>;
 }
 
 /** The model in use: chosen in Settings, or given at start-up. */
@@ -150,6 +155,13 @@ export type ScanStatus =
 	  };
 
 /** Fetching repositories from GitHub: one batch at a time, each repository's failure kept beside the rest. */
+/** The check of this computer (`cli/src/host/`), run in the background like a scan. */
+export type HostStatus =
+	| { state: "idle" }
+	| { state: "running"; startedAt: string; done: number; total: number; current: string }
+	| { state: "done"; finishedAt: string }
+	| { state: "failed"; finishedAt: string; error: string };
+
 export type FetchStatus =
 	| { state: "idle" }
 	| { state: "running"; done: number; total: number; current: string | null; errors: { repo: string; message: string }[] }
@@ -163,7 +175,7 @@ export type AnalysisStatus =
 
 const UI_DIR = join(import.meta.dirname, "../../ui");
 /** The page's own modules. Nothing else in the folder is served. */
-const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes"];
+const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas"];
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
 	"/": { file: "index.html", type: "text/html; charset=utf-8" },
 	"/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
@@ -260,6 +272,10 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	// The mural for an export, written in the background: a model on a processor takes minutes.
 	const muralPath = join(dirname(options.reportPath), "repo-mural.json");
 	let muralJob: MuralJob = (await readMural(muralPath)) ?? { state: "idle" };
+	// The check of this computer: what it found is kept beside the report, readable only by its owner.
+	const hostPath = join(dirname(options.reportPath), "host-check.json");
+	const runHostCheck = options.hostCheck ?? ((hostOptions) => checkHost({ run: runCommand, ...hostOptions }));
+	let hostStatus: HostStatus = { state: "idle" };
 	const startup: ModelInUse = { config: options.assistant ?? null, error: options.assistantError, unset: options.assistantUnset ?? false, source: "startup" };
 	/** A key given at start-up for a hosted provider, used for that provider when Settings has none. */
 	const startupKeys: Partial<Record<HostedProvider, string>> =
@@ -283,9 +299,42 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		if (fetching.state === "running") busy.push("Repositories are being fetched from GitHub");
 		if (analysing.state === "running") busy.push("Deeper analysis is running");
 		if (muralJob.state === "running") busy.push("A mural is being written");
+		if (hostStatus.state === "running") busy.push("This computer is being checked");
 		if (sending > 0) busy.push("A model is answering what you sent it");
 		else if (modelBusy && muralJob.state !== "running" && analysing.state !== "running") busy.push("The model is answering");
 		return busy;
+	}
+
+	/**
+	 * The check of this computer. It only reads (invariant 19). As a service it does not run: in a
+	 * container it would describe the container, not the computer the owner cares about.
+	 */
+	async function hostRoute(res: ServerResponse, route: string, body: unknown): Promise<void> {
+		if (route === "GET /api/host") return sendJson(res, 200, { status: hostStatus, report: loopbackOnly ? await readHostReport(hostPath) : null, service: !loopbackOnly });
+		if (route !== "POST /api/host/check") throw new HttpError(404, "Not found");
+		if (!loopbackOnly) throw new HttpError(409, "SecurityX runs in a container here, so it cannot see the computer it runs on.");
+		if (hostStatus.state === "running") throw new HttpError(409, "This computer is already being checked");
+		const fields = bodyObject(body);
+		for (const name of ["askApple", "lookUpPackages"]) {
+			if (fields[name] !== undefined && typeof fields[name] !== "boolean") throw new HttpError(400, `${name} must be true or false`);
+		}
+		hostStatus = { state: "running", startedAt: new Date().toISOString(), done: 0, total: 0, current: "" };
+		// Not awaited: the page polls for progress, as it does for a scan.
+		void runHostCheck({
+			askApple: fields.askApple !== false,
+			lookUpPackages: fields.lookUpPackages !== false,
+			onProgress: ({ done, total, current }) => {
+				if (hostStatus.state === "running") hostStatus = { ...hostStatus, done, total, current };
+			},
+		})
+			.then(async (report) => {
+				await saveHostReport(hostPath, report);
+				hostStatus = { state: "done", finishedAt: new Date().toISOString() };
+			})
+			.catch((err) => {
+				hostStatus = { state: "failed", finishedAt: new Date().toISOString(), error: err instanceof Error ? err.message : String(err) };
+			});
+		return sendJson(res, 202, { status: hostStatus });
 	}
 
 	/**
@@ -652,6 +701,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				service: !loopbackOnly,
 				// Opened from another device over the tailnet, rather than on this computer.
 				remote: gate.tailnet,
+				// The computer SecurityX runs on, so the page can call it "This Mac".
+				platform: process.platform,
 				monitor: options.monitor
 					? { configured: true, host: options.monitor.url.host }
 					: {
@@ -669,6 +720,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			});
 		}
 		if (route === "POST /api/repos/send") return sendRoute(res, body);
+		if (url.pathname === "/api/host" || url.pathname === "/api/host/check") return hostRoute(res, route, body);
 		if (route === "GET /api/repos/history") {
 			const report = await readReport(options.reportPath);
 			const scans = (await history.list()).reverse();
@@ -1357,6 +1409,24 @@ async function saveView(path: string, view: string): Promise<void> {
 }
 
 /** Reports say where secrets were found, so a new one is readable only by its owner. */
+async function readHostReport(path: string): Promise<HostReport | null> {
+	try {
+		const report = JSON.parse(await readFile(path, "utf8")) as HostReport;
+		return Array.isArray(report?.checks) ? report : null;
+	} catch {
+		return null;
+	}
+}
+
+/** What this computer's check found says where it is weak, so only its owner can read it. */
+async function saveHostReport(path: string, report: HostReport): Promise<void> {
+	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+	const temporary = `${path}.${process.pid}.tmp`;
+	await writeFile(temporary, `${JSON.stringify(report, null, "\t")}\n`, { mode: 0o600 });
+	await chmod(temporary, 0o600);
+	await rename(temporary, path);
+}
+
 async function saveReport(path: string, report: ScanReport): Promise<void> {
 	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
 	const temporary = `${path}.${process.pid}.tmp`;

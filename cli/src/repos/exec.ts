@@ -9,6 +9,8 @@ export interface ExecResult {
 export interface RunOptions {
 	/** Added to this process's environment for the one command. */
 	env?: Record<string, string>;
+	/** Stop the command after this long (default 10 minutes). */
+	timeoutMs?: number;
 }
 
 /** Runs a program and resolves with its exit code and output, whatever the code. */
@@ -31,7 +33,7 @@ const MAX_OUTPUT_BYTES = 256 * 1024 * 1024;
 export const run: Runner = (command, args, options) =>
 	new Promise((resolve, reject) => {
 		const env = options?.env ? { ...process.env, ...options.env } : undefined;
-		execFile(command, args, { timeout: TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES, env }, (error, stdout, stderr) => {
+		execFile(command, args, { timeout: options?.timeoutMs ?? TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES, env }, (error, stdout, stderr) => {
 			if (!error) return resolve({ code: 0, stdout, stderr });
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return reject(new ToolMissingError(command));
 			if (typeof error.code === "number") return resolve({ code: error.code, stdout, stderr });

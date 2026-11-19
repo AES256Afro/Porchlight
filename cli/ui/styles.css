@@ -2621,3 +2621,73 @@ fieldset.looks legend {
 	text-align: right;
 	font-variant-numeric: tabular-nums;
 }
+
+/* This Mac: the check of the computer SecurityX runs on */
+
+.host-progress {
+	display: grid;
+	gap: 6px;
+	margin-top: 12px;
+}
+
+.host-list {
+	display: grid;
+}
+
+.host-check {
+	padding: 12px 0;
+	border-top: 1px solid var(--hairline);
+}
+
+.host-list > .host-check:first-child {
+	border-top: 0;
+}
+
+.host-check-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 10px;
+}
+
+.host-detail {
+	margin: 4px 0 0;
+	color: var(--ink-2);
+	overflow-wrap: anywhere;
+}
+
+.host-fix {
+	margin: 6px 0 0;
+	padding-left: 20px;
+	color: var(--ink-2);
+	font-size: 13px;
+	overflow-wrap: anywhere;
+}
+
+.host-fix li + li {
+	margin-top: 3px;
+}
+
+.host-check .fix-details ul {
+	margin: 4px 0 0;
+	padding-left: 20px;
+	font-size: 12.5px;
+	overflow-wrap: anywhere;
+}
+
+.host-passed {
+	margin-top: 10px;
+}
+
+.host-passed summary {
+	cursor: pointer;
+	color: var(--ink-2);
+	font-size: 13px;
+}
+
+.host-not-covered {
+	margin: 6px 0 0;
+	padding-left: 20px;
+	color: var(--ink-2);
+}
+

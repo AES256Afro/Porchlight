@@ -17,6 +17,7 @@ Find the keys and passwords committed to your code and the packages with known s
 - **Exports** in Markdown, HTML, CSV or JSON. HTML, Markdown and JSON exports can include a mural written by a model: what was found, what to fix and in what order, what has been done, and what to do next.
 - **Fetch repositories from GitHub**, public or private, and scan them along with the ones on disk.
 - **Watch your websites.** A Cloudflare Worker checks the domains you own every hour for new hostnames, DNS changes, expiring certificates and missing security headers. It scans a domain only after you prove it is yours with a DNS record.
+- **Check this Mac.** A read-only check of the computer SecurityX runs on: pending updates, FileVault, the firewall and macOS's other protections, what accepts connections from the network, credentials kept in plain-text files, and installed npm and Python packages with known vulnerabilities.
 - **A Mac app, twelve looks, and access from your other devices** over Tailscale.
 
 | | |
@@ -32,7 +33,8 @@ The screenshots show made-up repositories, checked by the real scanners.
 
 ### What leaves your machine
 
-- **To [OSV.dev](https://osv.dev)**: the names and versions of the packages your repositories use, so osv-scanner can look up their advisories. Never your code.
+- **To [OSV.dev](https://osv.dev)**: the names and versions of the packages your repositories use, so osv-scanner can look up their advisories. Never your code. **This Mac** sends the names and versions of the npm and Python packages installed on the computer, unless you turn that off.
+- **To Apple**: when **This Mac** checks for updates, macOS asks Apple's update servers, as it does on its own. You can turn that off and use macOS's last check instead.
 - **To a hosted model, if you choose one**: only what the page shows about the findings you ask about. Never a secret's value, a commit author or an email address. The page warns you before anything is sent.
 - **To GitHub**, only if you fetch repositories from it.
 - **To your own Cloudflare account**, if you deploy the monitor.
@@ -91,6 +93,7 @@ It prints a link. Open it to get both tools in the browser:
 - **Overview**: the two jobs, "Check your code" and "Check your websites". Before a scan it names the repositories it found in the folder; when it finds none, or the monitor is not set up, it says what to do next in numbered steps. After a scan it shows where things stand and what needs doing first.
 - **Findings**: every finding in one list, most severe first, each with the repair that clears it. Switch to **By repository** to see them grouped. Filter by severity, type, repository or text; the filters are kept in the address, so a reload or a shared link shows the same view.
 - **Roadmap**: what to repair, in order. One action, such as upgrading a package, can clear many findings.
+- **This Mac**: check the computer SecurityX runs on; see [Check this Mac](#check-this-mac).
 - **Domains**: add a website by its domain name, prove it is yours with one DNS record, scan, and read what changed, with a suggested fix for each finding. Until the monitor is connected the page walks through setting it up. It needs `SECURITYX_MONITOR_URL` and `SECURITYX_ADMIN_TOKEN` set when you start the interface (see [Monitor domains](#monitor-domains)).
 - **Settings**: pick one of twelve looks under **Appearance** (Standard, Light, Severity dashboard, Top tabs, Split view, Roadmap first, Terminal, Native Mac, Repository cards, Model plan view, High contrast, Compact). The choice is saved beside the report (`ui-settings.json`) and used every time SecurityX opens. It also lists what SecurityX is connected to.
 
@@ -406,6 +409,36 @@ Every model you have set up under Settings → Model is offered, so you can send
 Each finished scan is kept beside the report (`history/`, the last 50). The Overview's **Since the last scan** card counts what is new and what was fixed against the scan before, names the fixed findings, and lists past scans; new findings are marked **New** on the Findings page. A finding is the same finding across scans when its repository, advisory or rule, file and detail match, so upgrading a package counts its old findings as fixed.
 
 Open a finding to give it a status (Open, In progress, Fixed, Accepted risk, False positive) and a note. They are kept in `finding-notes.json` beside the report and stay with the finding in later scans. They never change a severity, a count, the roadmap or an export.
+
+## Check this Mac
+
+**This Mac** (under "Your computer" in the sidebar) checks the computer SecurityX runs on. From a terminal:
+
+```bash
+securityx host check              # add --json for JSON, --offline to skip asking Apple and OSV.dev
+```
+
+What it looks at:
+
+| Part | What it checks |
+| --- | --- |
+| Updates | Updates waiting to be installed (`softwareupdate --list`), and whether macOS installs Security Responses by itself |
+| Built-in protection | FileVault, System Integrity Protection, Gatekeeper, the firewall and its stealth mode, automatic login, the guest account, how soon the screen locks |
+| Reachable from the network | Every program listening on an address other than localhost (`netstat`), named: Remote Login, Screen Sharing, File Sharing and the other Sharing services, AirPlay Receiver, and installed apps. Listening on your tailnet only passes |
+| Credentials kept in files | Private keys in `~/.ssh` without a passphrase or readable by others, and credentials in plain text in `~/.aws/credentials`, `~/.git-credentials`, `~/.netrc`, `~/.npmrc`, `~/.docker/config.json`, `~/.pypirc`, `~/.config/gh/hosts.yml` and `~/.kube/config` |
+| Installed packages | npm's global packages and the Python packages of the `python3` on your PATH, looked up on OSV.dev; Homebrew packages with a newer version |
+
+Each problem comes with its severity and the steps to repair it. On Linux it checks credentials and packages only.
+
+How it is kept safe:
+
+- It only reads. It never changes a setting, never runs anything with `sudo` or asks for a password, and never contacts another computer on your network.
+- A credential file is read only to tell whether it holds a credential. The page shows the file, the kind of credential and who can read it, never the value.
+- A check that could not run, or whose answer SecurityX did not recognise, is shown as **Could not check**, never as passed. Each command has a time limit, so one that hangs cannot stop the rest.
+- The result is kept in `host-check.json` beside the report, readable only by you, because it describes where the computer is weak.
+- As a service (BoxPilot) it does not run: in a container it would see the container, not the computer.
+
+Not covered: apps in `/Applications` and from the App Store, Ruby gems, Go and Rust tools, other Python environments, and services that use UDP.
 
 ## Monitor domains
 
