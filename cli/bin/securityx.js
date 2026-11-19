@@ -1,5 +1,3 @@
 #!/usr/bin/env node
-// Runs the TypeScript sources directly; Node strips the types at load time.
-import { main } from "../src/main.ts";
-
-process.exitCode = await main(process.argv.slice(2));
+// The command's earlier name, kept so scripts and Mac apps built before the rename still start it.
+import "./porchlight.js";

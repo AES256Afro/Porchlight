@@ -8,7 +8,7 @@ beforeEach(resetDb);
 describe("authentication", () => {
 	it("answers the health check without credentials and reveals nothing", async () => {
 		const response = await call(fakeDeps(), "GET", "/", { token: null });
-		expect(response).toEqual({ status: 200, body: "securityx-monitor\n" });
+		expect(response).toEqual({ status: 200, body: "porchlight-monitor\n" });
 	});
 
 	it("rejects missing and wrong tokens", async () => {
@@ -87,9 +87,9 @@ describe("domain management", () => {
 		});
 		expect(first.body.domain.challenge).toMatchObject({
 			type: "TXT",
-			name: "_securityx-challenge.example.test",
+			name: "_porchlight-challenge.example.test",
 		});
-		expect(first.body.domain.challenge.value).toMatch(/^securityx-verify=[0-9a-f]{48}$/);
+		expect(first.body.domain.challenge.value).toMatch(/^porchlight-verify=[0-9a-f]{48}$/);
 		expect(again.body.domain.challenge).toEqual(first.body.domain.challenge);
 		expect((await call(deps, "GET", "/domains")).body.domains).toHaveLength(1);
 	});

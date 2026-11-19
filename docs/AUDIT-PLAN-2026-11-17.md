@@ -1,4 +1,4 @@
-# SecurityX audit, plan and milestones (2026-11-17)
+# Porchlight audit, plan and milestones (2026-11-17)
 
 Read-only audit of `main` at `740fe46` (0.3.0). No source was changed. Baseline: `npm run check` clean; 56 monitor and 102 CLI tests pass.
 
@@ -20,7 +20,7 @@ Checked and sound: the ownership gate comes first; no redirects are followed; th
 
 | ID | Sev | Finding | Where | Fix |
 |---|---|---|---|---|
-| S1 | **High** | A scanned repo's `.git/config` diff driver runs commands during the scan **[R]**. In the container, `safe.directory '*'` removes git's protection against foreign-owned repos, so anyone who can write a repo under the mount runs code next to `SECURITYX_ADMIN_TOKEN`. | `cli/src/repos/gitleaks.ts:11`, `Dockerfile:9` | Pass `--log-opts="--all --full-history --no-textconv --no-ext-diff"`. Narrow `safe.directory` to `/repos/*`. Consider scanning a `clone --bare --no-local` copy. |
+| S1 | **High** | A scanned repo's `.git/config` diff driver runs commands during the scan **[R]**. In the container, `safe.directory '*'` removes git's protection against foreign-owned repos, so anyone who can write a repo under the mount runs code next to `PORCHLIGHT_ADMIN_TOKEN`. | `cli/src/repos/gitleaks.ts:11`, `Dockerfile:9` | Pass `--log-opts="--all --full-history --no-textconv --no-ext-diff"`. Narrow `safe.directory` to `/repos/*`. Consider scanning a `clone --bare --no-local` copy. |
 | S2 | Med | gitleaks exits 0 with `[]` when git cannot read the repo (dubious ownership, broken worktree), so the repo shows as **clean** **[R]**. | `gitleaks.ts:26` | Treat non-empty stderr as a failure. Add a fake-runner test. |
 | S3 | Med | A repo's own `.gitleaks.toml` (`useDefault=false`) or `osv-scanner.toml` turns detection off silently **[R for gitleaks]**. | `gitleaks.ts`, `osv.ts:16` | Pass a shipped `--config` that extends the defaults. Add a coverage note when a repo carries scanner config or ignore files. |
 | S4 | Med | DoH `Status` (SERVFAIL/REFUSED, sent with HTTP 200) is read as "no records" **[R]**. This breaks invariant 5: hosts are dropped and findings "resolved". | `monitor/src/doh.ts:34` | Throw unless `Status` is 0 or 3. Add `Status: 2` to `fake-net.ts`. |
@@ -86,7 +86,7 @@ Checked and sound: the ownership gate comes first; no redirects are followed; th
   - "Add domain" is stacked awkwardly in the header.
   - User-facing copy says "MAX_HOSTS is 12".
   - The add-domain error passes through raw API text (`Body must be {"domain": ...}`).
-  - "Start it again with: securityx ui" is wrong under BoxPilot.
+  - "Start it again with: porchlight ui" is wrong under BoxPilot.
 
 ## Plan and milestones
 
@@ -144,7 +144,7 @@ Pin the base image digest and the BoxPilot schema (S8). Fix the picomatch dev ad
 
 ### M5: Daily-use quality of life. Size: M
 
-- Per-command `--help`, `--version`, and `securityx doctor`.
+- Per-command `--help`, `--version`, and `porchlight doctor`.
 - `[3/17]` progress lines with timings.
 - CLI scans saved where the UI reads them.
 - Rescan a single repo, and cancel a scan or a model answer.
@@ -183,7 +183,7 @@ Pin the base image digest and the BoxPilot schema (S8). Fix the picomatch dev ad
 | Personal documents | committed PDFs or images named like passports, IDs, tax forms, CVs, bank statements | file name and type only; contents are not read |
 
 **How it runs:**
-- A second gitleaks pass with SecurityX's own private-data rules (a fixed file shipped with SecurityX, like `GITLEAKS_CONFIG`), so history is covered the same way secrets are. It always runs with `--redact`.
+- A second gitleaks pass with Porchlight's own private-data rules (a fixed file shipped with Porchlight, like `GITLEAKS_CONFIG`), so history is covered the same way secrets are. It always runs with `--redact`.
 - A small read-only pass over tracked files for what patterns can't catch: file types, dump volume, EXIF location. No symbolic links, no git configuration, no code from the repository (invariant 14).
 - A new finding type, `private-data`, with its own filter, severity badge and roadmap action ("remove from history with git filter-repo, then add to .gitignore").
 

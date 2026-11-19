@@ -1,4 +1,4 @@
-// Checks boxpilot/securityx.yaml: first against what this repository ships, then with BoxPilot's
+// Checks boxpilot/porchlight.yaml: first against what this repository ships, then with BoxPilot's
 // own validateManifest when a BoxPilot checkout is at BOXPILOT_DIR (default ../BoxPilot).
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import YAML from "yaml";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const manifestFile = path.join(root, "boxpilot/securityx.yaml");
+const manifestFile = path.join(root, "boxpilot/porchlight.yaml");
 const boxpilot = path.resolve(root, process.env.BOXPILOT_DIR ?? "../BoxPilot");
 const schemaFile = path.join(boxpilot, "server/catalog/schema.mjs");
 
@@ -35,10 +35,11 @@ const githubToken = raw.env?.find((entry) => entry.name === "SECURITYX_GITHUB_TO
 if (githubToken && (githubToken.type !== "password" || githubToken.secret !== true || githubToken.generate === true)) local.push("SECURITYX_GITHUB_TOKEN must be a secret password the owner supplies");
 if (raw.defaultExposure !== "tailnet") local.push("defaultExposure must stay tailnet: a report names where secrets were found");
 // BoxPilot's catalog file is catalog/securityx.yaml, and a manifest's id must match its file name.
-if (raw.id !== "securityx") local.push(`id is ${raw.id}: BoxPilot's catalog lists SecurityX as securityx`);
+// Servers have Porchlight installed under this id, so it stays.
+if (raw.id !== "securityx") local.push(`id is ${raw.id}: BoxPilot's catalog lists Porchlight as securityx`);
 
 if (local.length) {
-	console.error(`boxpilot/securityx.yaml:\n- ${local.join("\n- ")}`);
+	console.error(`boxpilot/porchlight.yaml:\n- ${local.join("\n- ")}`);
 	process.exit(1);
 }
 
@@ -50,7 +51,7 @@ if (!existsSync(schemaFile)) {
 const { validateManifest } = await import(pathToFileURL(schemaFile).href);
 const { errors } = validateManifest(raw);
 if (errors.length) {
-	console.error(`boxpilot/securityx.yaml fails BoxPilot's schema:\n- ${errors.join("\n- ")}`);
+	console.error(`boxpilot/porchlight.yaml fails BoxPilot's schema:\n- ${errors.join("\n- ")}`);
 	process.exit(1);
 }
 console.log(`BoxPilot manifest: valid against ${path.relative(root, schemaFile)}.`);

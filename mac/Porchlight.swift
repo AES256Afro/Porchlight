@@ -1,4 +1,4 @@
-// SecurityX for the Mac: a window around `securityx ui`.
+// Porchlight for the Mac: a window around `porchlight ui`.
 //
 // It starts the local web interface (through launch.sh, written by build.sh),
 // waits for the link it prints, shows that page in its own window, and stops
@@ -19,11 +19,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 	/** Set once quitting needs no more questions: nothing was running, the owner said so, or the system asked. */
 	private var quitConfirmed = false
 	private var savedTo: [ObjectIdentifier: URL] = [:]
-	private let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".securityx/app.log")
+	private let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".porchlight/app.log")
 
 	private var signalSources: [DispatchSourceSignal] = []
 
+	/// The data folder had an earlier name. It moves once, before anything writes to it, and the old
+	/// path stays as a link to the new one for anything built before the rename.
+	private func moveOldDataFolder() {
+		let files = FileManager.default
+		let home = files.homeDirectoryForCurrentUser
+		let current = home.appendingPathComponent(".porchlight")
+		let old = home.appendingPathComponent(".securityx")
+		guard !files.fileExists(atPath: current.path) else { return }
+		// attributesOfItem does not follow a link, so an old path that is already a link is left alone.
+		guard let type = (try? files.attributesOfItem(atPath: old.path))?[.type] as? FileAttributeType, type == .typeDirectory else { return }
+		do {
+			try files.moveItem(at: old, to: current)
+			try files.createSymbolicLink(atPath: old.path, withDestinationPath: ".porchlight")
+		} catch {
+			// Left where it is: the server then starts with nothing, and a new scan fills it.
+		}
+	}
+
 	func applicationDidFinishLaunching(_ notification: Notification) {
+		moveOldDataFolder()
 		// Stopped from outside (kill, logout): quit the normal way, so the server stops too.
 		for sig in [SIGTERM, SIGINT, SIGHUP] {
 			signal(sig, SIG_IGN)
@@ -52,7 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 		return false
 	}
 
-	/// Everything SecurityX keeps (the report, history, statuses and notes, settings, the page you were on)
+	/// Everything Porchlight keeps (the report, history, statuses and notes, settings, the page you were on)
 	/// is saved as it changes. What a quit loses is work still running: a scan, an analysis, a model's
 	/// answer. The page says what is running; if anything is, the owner chooses.
 	func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -66,12 +85,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 		}
 		// A page that does not answer never keeps the app open.
 		DispatchQueue.main.asyncAfter(deadline: .now() + 3) { finish(true) }
-		webView.callAsyncJavaScript("return window.securityxBusy ? await window.securityxBusy() : ''", arguments: [:], in: nil, in: .page) { [weak self] result in
+		webView.callAsyncJavaScript("return window.porchlightBusy ? await window.porchlightBusy() : ''", arguments: [:], in: nil, in: .page) { [weak self] result in
 			let busy = ((try? result.get()) as? String) ?? ""
 			if busy.isEmpty || answered { return finish(true) }
 			answered = true
 			let alert = NSAlert()
-			alert.messageText = "SecurityX is still working"
+			alert.messageText = "Porchlight is still working"
 			alert.informativeText = "\(busy).\n\nQuitting stops it, and what it has not finished is lost. Your report, history, statuses and notes are already saved."
 			alert.addButton(withTitle: "Keep Working")
 			alert.addButton(withTitle: "Quit Anyway")
@@ -98,7 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 		webView.isHidden = true
 		if #available(macOS 13.3, *) { webView.isInspectable = true }
 
-		status = NSTextField(labelWithString: "Starting SecurityX…")
+		status = NSTextField(labelWithString: "Starting Porchlight…")
 		status.font = .systemFont(ofSize: 15)
 		status.textColor = .secondaryLabelColor
 		status.alignment = .center
@@ -124,11 +143,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 			contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820),
 			styleMask: [.titled, .closable, .miniaturizable, .resizable],
 			backing: .buffered, defer: false)
-		window.title = "SecurityX"
+		window.title = "Porchlight"
 		window.minSize = NSSize(width: 720, height: 480)
 		window.contentView = content
 		window.center()
-		window.setFrameAutosaveName("SecurityXMain")
+		window.setFrameAutosaveName("PorchlightMain")
 		window.delegate = self
 		window.makeKeyAndOrderFront(nil)
 	}
@@ -147,13 +166,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 			it.keyEquivalentModifierMask = mods
 			return it
 		}
-		submenu("SecurityX", [
-			item("About SecurityX", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""),
+		submenu("Porchlight", [
+			item("About Porchlight", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""),
 			.separator(),
 			item("Show Log", #selector(showLog), "l", [.command, .shift]),
 			.separator(),
-			item("Hide SecurityX", #selector(NSApplication.hide(_:)), "h"),
-			item("Quit SecurityX", #selector(NSApplication.terminate(_:)), "q"),
+			item("Hide Porchlight", #selector(NSApplication.hide(_:)), "h"),
+			item("Quit Porchlight", #selector(NSApplication.terminate(_:)), "q"),
 		])
 		submenu("Edit", [
 			item("Undo", Selector(("undo:")), "z"),
@@ -194,7 +213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
 	private func startServer() {
 		guard let launcher = Bundle.main.url(forResource: "launch", withExtension: "sh") else {
-			fail("This copy of SecurityX is incomplete (launch.sh is missing). Install it again, or build it with mac/build.sh.")
+			fail("This copy of Porchlight is incomplete (launch.sh is missing). Install it again, or build it with mac/build.sh.")
 			return
 		}
 		try? FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -221,7 +240,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 			try process.run()
 			server = process
 		} catch {
-			fail("SecurityX could not start: \(error.localizedDescription)")
+			fail("Porchlight could not start: \(error.localizedDescription)")
 		}
 	}
 
@@ -239,7 +258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 	private func serverStopped(_ code: Int32) {
 		if quitting { return }
 		let tail = output.split(separator: "\n").suffix(8).joined(separator: "\n")
-		fail("SecurityX stopped (exit code \(code)).\n\n\(tail)\n\nThe full log is in ~/.securityx/app.log.")
+		fail("Porchlight stopped (exit code \(code)).\n\n\(tail)\n\nThe full log is in ~/.porchlight/app.log.")
 	}
 
 	private func fail(_ message: String) {

@@ -91,7 +91,7 @@ export function openExportDialog(target, initialContent = "roadmap") {
 								h(
 									"span",
 									{ class: "hint" },
-									"A one-page board at the top: what was found, what to fix first, what has been done and what to do next, beside figures SecurityX counts itself. It is written when you press Export, after any Deeper analysis has finished. A model on a processor takes a few minutes. For HTML, Markdown and JSON.",
+									"A one-page board at the top: what was found, what to fix first, what has been done and what to do next, beside figures Porchlight counts itself. It is written when you press Export, after any Deeper analysis has finished. A model on a processor takes a few minutes. For HTML, Markdown and JSON.",
 								),
 								assistant?.hosted
 									? h("span", { class: "hint" }, `It sends the roadmap's actions, the counts and the findings the model judged real to ${assistant.host}. Never secret values, authors or emails.`)

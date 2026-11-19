@@ -46,7 +46,7 @@ test("the model's answer becomes a mural only when it is the object asked for", 
 	assert.throws(() => parseMural('{"headline": "Empty", "found": [], "decided": [], "next": []}'), /mural was empty/);
 });
 
-test("SecurityX counts the mural's figures itself", () => {
+test("Porchlight counts the mural's figures itself", () => {
 	const scan = report();
 	const facts = mural(scan).facts;
 	assert.deepEqual([facts.findings.total, facts.findings.critical, facts.findings.high, facts.findings.secrets, facts.findings.vulnerabilities], [2, 1, 1, 1, 1]);

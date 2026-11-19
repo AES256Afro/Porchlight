@@ -257,10 +257,10 @@ test("escaping helpers", () => {
 
 test("names export files safely", () => {
 	const when = "2026-11-17T12:00:00.000Z";
-	assert.equal(fileStem("roadmap", when), "securityx-roadmap-2026-11-17");
-	assert.equal(fileStem("findings", when, "Example.com"), "securityx-findings-example.com-2026-11-17");
-	assert.equal(fileStem("roadmap", when, '../../etc/passwd"\r\nX: y'), "securityx-roadmap-etc-passwd-x-y-2026-11-17");
-	assert.equal(fileStem("roadmap", '"\r\nX: y'), "securityx-roadmap");
+	assert.equal(fileStem("roadmap", when), "porchlight-roadmap-2026-11-17");
+	assert.equal(fileStem("findings", when, "Example.com"), "porchlight-findings-example.com-2026-11-17");
+	assert.equal(fileStem("roadmap", when, '../../etc/passwd"\r\nX: y'), "porchlight-roadmap-etc-passwd-x-y-2026-11-17");
+	assert.equal(fileStem("roadmap", '"\r\nX: y'), "porchlight-roadmap");
 });
 
 test("lists every finding with the repair that clears it, most severe first", () => {

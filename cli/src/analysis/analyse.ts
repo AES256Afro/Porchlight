@@ -8,7 +8,7 @@ import { suggestionsFor } from "../roadmap/repos.ts";
 import { gatherEvidence, packageName, type Evidence } from "./evidence.ts";
 
 /**
- * The model as a step of the analysis: for each finding it is given the evidence SecurityX gathered
+ * The model as a step of the analysis: for each finding it is given the evidence Porchlight gathered
  * and asked how likely the problem is real here, and how to repair it in this repository.
  *
  * Its answer is advice, kept apart from the scan. It is stored in its own file, shown labelled with

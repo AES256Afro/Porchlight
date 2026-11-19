@@ -80,7 +80,7 @@ export function serverKeyFor(url: string): string {
 
 /**
  * Applies a request to what was saved, checking each field. Keys for other choices are kept.
- * `fallbackKeys`: keys given when SecurityX started (SECURITYX_LLM_API_KEY), used when none is saved.
+ * `fallbackKeys`: keys given when Porchlight started (PORCHLIGHT_LLM_API_KEY), used when none is saved.
  */
 export function nextSaved(previous: SavedModel | null, request: ModelRequest): SavedModel {
 	const choice = modelChoice(request.choice);
@@ -120,7 +120,7 @@ function setupOf(saved: SavedModel): { url?: string; model?: string } {
 	return { ...(saved.url !== undefined ? { url: saved.url } : {}), ...(saved.model !== undefined ? { model: saved.model } : {}) };
 }
 
-/** A model "Send to a model" can use. `id` is SecurityX's own: a choice id, or "startup". */
+/** A model "Send to a model" can use. `id` is Porchlight's own: a choice id, or "startup". */
 export interface SendTarget {
 	id: string;
 	/** As the page shows it: where it runs and which model. */
@@ -165,7 +165,7 @@ export function sendTargets(
 			// A choice that no longer connects (its key removed, say) is simply not offered.
 		}
 	}
-	if (startup) add("startup", "set when SecurityX started", startup, !saved);
+	if (startup) add("startup", "set when Porchlight started", startup, !saved);
 	return targets.sort((a, b) => Number(b.current) - Number(a.current));
 }
 
@@ -194,7 +194,7 @@ export function configFor(saved: SavedModel, options: { fallbackKeys?: Partial<R
 	if (!model) throw new ModelSettingError(choice.provider === "ollama" ? "Choose a model: Find models lists the ones Ollama has" : "Choose a model: Find models lists them");
 	try {
 		return assistantConfig(
-			{ SECURITYX_LLM_PROVIDER: choice.provider, SECURITYX_LLM_URL: saved.url, SECURITYX_LLM_MODEL: model, SECURITYX_LLM_API_KEY: apiKey },
+			{ PORCHLIGHT_LLM_PROVIDER: choice.provider, PORCHLIGHT_LLM_URL: saved.url, PORCHLIGHT_LLM_MODEL: model, PORCHLIGHT_LLM_API_KEY: apiKey },
 			{ exactModel: true },
 		);
 	} catch (err) {
@@ -205,11 +205,11 @@ export function configFor(saved: SavedModel, options: { fallbackKeys?: Partial<R
 /** Start-up messages name environment variables; the Settings page names its own fields. */
 function inSettingsWords(message: string): string {
 	return message
-		.replace(/^SECURITYX_LLM_URL is not an address\..*$/, "That is not an address. Give one such as http://localhost:11434")
-		.replace(/^SECURITYX_LLM_URL must start with .*$/, "The address must start with http:// or https://")
-		.replace(/^SECURITYX_LLM_URL must not carry .*$/, "Leave the user name and password out of the address")
-		.replace(/^SECURITYX_LLM_MODEL is not a model name.*$/, "That is not a model name")
-		.replace(/SECURITYX_LLM_\w+/g, "this setting");
+		.replace(/^PORCHLIGHT_LLM_URL is not an address\..*$/, "That is not an address. Give one such as http://localhost:11434")
+		.replace(/^PORCHLIGHT_LLM_URL must start with .*$/, "The address must start with http:// or https://")
+		.replace(/^PORCHLIGHT_LLM_URL must not carry .*$/, "Leave the user name and password out of the address")
+		.replace(/^PORCHLIGHT_LLM_MODEL is not a model name.*$/, "That is not a model name")
+		.replace(/PORCHLIGHT_LLM_\w+/g, "this setting");
 }
 
 /** Which choice a start-up configuration amounts to, to show it in Settings. */

@@ -1,5 +1,5 @@
 /**
- * Checks the computer SecurityX runs on, reading only (CLAUDE.md invariant 19). Each step runs on
+ * Checks the computer Porchlight runs on, reading only (CLAUDE.md invariant 19). Each step runs on
  * its own: one that fails becomes "unknown" for what it covers and the others still run.
  */
 import { homedir } from "node:os";

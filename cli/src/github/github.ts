@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { firstLine, run as defaultRun, type Runner } from "../repos/exec.ts";
 
 /**
- * Fetching repositories from GitHub, so a copy of SecurityX on a server has something to scan.
+ * Fetching repositories from GitHub, so a copy of Porchlight on a server has something to scan.
  *
  * What keeps this safe:
  * - The only host ever contacted is GitHub's, at addresses built here from an owner and a
@@ -53,7 +53,7 @@ const API_TIMEOUT_MS = 20_000;
 
 /** Why a token cannot be used, or null when it is well formed. Says nothing about whether GitHub accepts it. */
 export function tokenProblem(token: string): string | null {
-	return TOKEN_PATTERN.test(token) ? null : "SECURITYX_GITHUB_TOKEN is not a GitHub token: expected 20 or more letters, digits and underscores";
+	return TOKEN_PATTERN.test(token) ? null : "PORCHLIGHT_GITHUB_TOKEN is not a GitHub token: expected 20 or more letters, digits and underscores";
 }
 
 export function validOwner(owner: string): boolean {
@@ -86,7 +86,7 @@ export async function listRepos(config: GithubConfig, owner: string | undefined,
 				headers: {
 					accept: "application/vnd.github+json",
 					"x-github-api-version": "2022-11-28",
-					"user-agent": "securityx",
+					"user-agent": "porchlight",
 					...(config.token ? { authorization: `Bearer ${config.token}` } : {}),
 				},
 				// The token is for this host alone, so the request is never passed on to another.

@@ -1,5 +1,5 @@
 /**
- * The host check: what SecurityX can see of the computer it runs on, by reading only. It never
+ * The host check: what Porchlight can see of the computer it runs on, by reading only. It never
  * changes a setting, never asks for more privilege than the person running it has, and never looks
  * at another machine. What it could not look at is "unknown", which is never shown as passed.
  */

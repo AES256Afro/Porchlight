@@ -12,7 +12,7 @@ import type { ScanReport } from "../src/repos/types.ts";
 import { fakeAwsKeyId, fakeRunner, git, installed, makeTree, tempDir } from "./helpers.ts";
 
 const exec = promisify(execFile);
-const CLI = join(import.meta.dirname, "../bin/securityx.js");
+const CLI = join(import.meta.dirname, "../bin/porchlight.js");
 const NOW = () => new Date("2026-11-17T12:00:00Z");
 
 const gitleaksRow = (file: string) => ({ RuleID: "generic-api-key", Description: "Generic API key", StartLine: 3, File: file, Commit: "abcdef1234567890" });
@@ -128,7 +128,7 @@ test("gitleaks reporting nothing because git could not read the history is a fai
 	assert.equal(exitCode(report, "critical"), 1, "a gate cannot pass on a history that was never read");
 });
 
-test("gitleaks uses SecurityX's rules and stops git running the repository's diff programs", async () => {
+test("gitleaks uses Porchlight's rules and stops git running the repository's diff programs", async () => {
 	const root = await twoRepos();
 	const run = fakeRunner({ gitleaks: (args) => ({ stdout: args[0] === "version" ? "8.30.1" : "[]" }), "osv-scanner": "missing" });
 

@@ -7,7 +7,7 @@ const MAX_DIRS = 5_000;
 
 /**
  * Files in a repository that tell a scanner to leave findings out, as paths
- * relative to the repository. SecurityX honours them, since an owner uses them
+ * relative to the repository. Porchlight honours them, since an owner uses them
  * to silence a false match, but the report names them so that nothing is
  * left out without a trace. A repository's .gitleaks.toml is listed too: it is
  * ignored (see GITLEAKS_CONFIG), and the report says so.

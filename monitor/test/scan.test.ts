@@ -46,7 +46,7 @@ describe("ownership gate", () => {
 		const response = await scan(deps);
 
 		expect(response.status).toBe(403);
-		expect(response.body.challenge.name).toBe(`_securityx-challenge.${DOMAIN}`);
+		expect(response.body.challenge.name).toBe(`_porchlight-challenge.${DOMAIN}`);
 		expect(deps.requests).toEqual([]);
 	});
 
@@ -55,7 +55,7 @@ describe("ownership gate", () => {
 		const created = await call(deps, "POST", "/domains", { body: { domain: DOMAIN } });
 		const { name, value } = created.body.domain.challenge;
 
-		deps.net.txt = { [name]: ["securityx-verify=someone-elses-token"] };
+		deps.net.txt = { [name]: ["porchlight-verify=someone-elses-token"] };
 		expect((await call(deps, "POST", `/domains/${DOMAIN}/verify`)).status).toBe(409);
 		expect((await scan(deps)).status).toBe(403);
 
@@ -63,8 +63,25 @@ describe("ownership gate", () => {
 		const verified = await call(deps, "POST", `/domains/${DOMAIN}/verify`);
 		expect(verified.status).toBe(200);
 		expect(verified.body.domain.verified).toBe(true);
-		// Verification itself only ever asked DNS for the challenge record.
-		expect(deps.requests.every((url) => url.includes("_securityx-challenge."))).toBe(true);
+		// Verification itself only ever asked DNS for the challenge record (the current one, or the
+		// one published before the rename).
+		expect(deps.requests.every((url) => /_(porchlight|securityx)-challenge\./.test(url))).toBe(
+			true,
+		);
+	});
+
+	it("still accepts a record published before the rename", async () => {
+		const deps = fakeDeps(healthyNet());
+		const created = await call(deps, "POST", "/domains", { body: { domain: DOMAIN } });
+		const token = String(created.body.domain.challenge.value).replace("porchlight-verify=", "");
+
+		deps.net.txt = { [`_securityx-challenge.${DOMAIN}`]: [`securityx-verify=${token}`] };
+		expect((await call(deps, "POST", `/domains/${DOMAIN}/verify`)).status).toBe(200);
+		expect((await scan(deps)).status).toBe(200);
+
+		// Someone else's token under the old label proves nothing.
+		deps.net.txt = { [`_securityx-challenge.${DOMAIN}`]: ["securityx-verify=someone-elses-token"] };
+		expect((await scan(deps)).status).toBe(403);
 	});
 
 	it("stops scanning, and alerts once, when the challenge record is removed", async () => {
@@ -81,7 +98,7 @@ describe("ownership gate", () => {
 		expect(deps.alerts).toHaveLength(1);
 		expect(deps.alerts[0]!.text).toContain("ownership check failed");
 		const beyondTheGate = deps.requests.filter(
-			(url) => !url.includes("_securityx-challenge.") && !url.includes("hooks."),
+			(url) => !/_(porchlight|securityx)-challenge\./.test(url) && !url.includes("hooks."),
 		);
 		expect(beyondTheGate).toEqual([]);
 		expect((await call(deps, "GET", `/domains/${DOMAIN}`)).body.domain.verified).toBe(false);
@@ -90,7 +107,7 @@ describe("ownership gate", () => {
 	it("reports a DNS outage as an error, not as lost ownership", async () => {
 		const deps = fakeDeps(healthyNet());
 		await registerVerified(deps, DOMAIN);
-		deps.net.dnsDown = [`_securityx-challenge.${DOMAIN}`];
+		deps.net.dnsDown = [`_porchlight-challenge.${DOMAIN}`];
 
 		expect((await scan(deps)).status).toBe(502);
 		expect(deps.alerts).toEqual([]);

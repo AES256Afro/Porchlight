@@ -76,41 +76,41 @@ const FALLBACK_BETA = "server-side-fallback-2026-07-01";
 
 /**
  * Reads the local model's settings. An empty address means the features are off; the caller tells
- * that apart from a mistake by checking whether SECURITYX_LLM_URL was given at all. Plain http is
+ * that apart from a mistake by checking whether PORCHLIGHT_LLM_URL was given at all. Plain http is
  * allowed: Ollama runs on this machine or this server, and nothing secret is sent to it.
  */
 export function assistantConfig(env: Record<string, string | undefined>, options: { exactModel?: boolean } = {}): AssistantConfig {
-	const provider = (env.SECURITYX_LLM_PROVIDER?.trim().toLowerCase() || "ollama") as Provider;
-	const model = env.SECURITYX_LLM_MODEL?.trim();
+	const provider = (env.PORCHLIGHT_LLM_PROVIDER?.trim().toLowerCase() || "ollama") as Provider;
+	const model = env.PORCHLIGHT_LLM_MODEL?.trim();
 	if (provider !== "ollama" && provider !== "compatible") {
 		const hosted = HOSTED[provider];
-		if (!hosted) throw new Error("SECURITYX_LLM_PROVIDER must be one of: ollama, compatible, anthropic, openai, gemini, deepseek");
-		const apiKey = env.SECURITYX_LLM_API_KEY?.trim();
-		if (!apiKey) throw new Error(`Set SECURITYX_LLM_API_KEY to your ${hosted.name} API key`);
-		if (!API_KEY.test(apiKey)) throw new Error("SECURITYX_LLM_API_KEY is not an API key: expected 20 or more characters with no spaces");
+		if (!hosted) throw new Error("PORCHLIGHT_LLM_PROVIDER must be one of: ollama, compatible, anthropic, openai, gemini, deepseek");
+		const apiKey = env.PORCHLIGHT_LLM_API_KEY?.trim();
+		if (!apiKey) throw new Error(`Set PORCHLIGHT_LLM_API_KEY to your ${hosted.name} API key`);
+		if (!API_KEY.test(apiKey)) throw new Error("PORCHLIGHT_LLM_API_KEY is not an API key: expected 20 or more characters with no spaces");
 		// A name shaped like Ollama's (`hf.co/…:Q4`) is a setting left over from a local model, not this provider's.
 		// A name chosen for this provider in Settings is taken as it is.
 		const named = model && (options.exactModel || !/[/:]/.test(model)) ? model : undefined;
-		if (named && !MODEL_NAME.test(named)) throw new Error("SECURITYX_LLM_MODEL is not a model name");
+		if (named && !MODEL_NAME.test(named)) throw new Error("PORCHLIGHT_LLM_MODEL is not a model name");
 		const chosen = named ?? hosted.defaultModel;
-		if (!chosen) throw new Error(`Set SECURITYX_LLM_MODEL to the ${hosted.name} model to use, as ${hosted.name} names it`);
+		if (!chosen) throw new Error(`Set PORCHLIGHT_LLM_MODEL to the ${hosted.name} model to use, as ${hosted.name} names it`);
 		return { provider, url: new URL(hosted.url), model: chosen, apiKey };
 	}
-	const rawUrl = env.SECURITYX_LLM_URL?.trim();
+	const rawUrl = env.PORCHLIGHT_LLM_URL?.trim();
 	if (provider === "compatible") {
-		if (!rawUrl) throw new Error("Set SECURITYX_LLM_URL to the model server's address, for example http://localhost:1234/v1 for LM Studio");
+		if (!rawUrl) throw new Error("Set PORCHLIGHT_LLM_URL to the model server's address, for example http://localhost:1234/v1 for LM Studio");
 		let base: URL;
 		try {
 			base = new URL(rawUrl);
 		} catch {
-			throw new Error("SECURITYX_LLM_URL is not an address. Give the model server's, for example http://localhost:1234/v1");
+			throw new Error("PORCHLIGHT_LLM_URL is not an address. Give the model server's, for example http://localhost:1234/v1");
 		}
-		if (base.protocol !== "http:" && base.protocol !== "https:") throw new Error("SECURITYX_LLM_URL must start with http:// or https://");
-		if (base.username || base.password) throw new Error("SECURITYX_LLM_URL must not carry a user name or password");
-		if (!model) throw new Error("Set SECURITYX_LLM_MODEL to the model's name, as the model server lists it");
-		if (!MODEL_NAME.test(model)) throw new Error("SECURITYX_LLM_MODEL is not a model name");
-		const apiKey = env.SECURITYX_LLM_API_KEY?.trim() || undefined;
-		if (apiKey && !/^[\x21-\x7e]{1,400}$/.test(apiKey)) throw new Error("SECURITYX_LLM_API_KEY must have no spaces");
+		if (base.protocol !== "http:" && base.protocol !== "https:") throw new Error("PORCHLIGHT_LLM_URL must start with http:// or https://");
+		if (base.username || base.password) throw new Error("PORCHLIGHT_LLM_URL must not carry a user name or password");
+		if (!model) throw new Error("Set PORCHLIGHT_LLM_MODEL to the model's name, as the model server lists it");
+		if (!MODEL_NAME.test(model)) throw new Error("PORCHLIGHT_LLM_MODEL is not a model name");
+		const apiKey = env.PORCHLIGHT_LLM_API_KEY?.trim() || undefined;
+		if (apiKey && !/^[\x21-\x7e]{1,400}$/.test(apiKey)) throw new Error("PORCHLIGHT_LLM_API_KEY must have no spaces");
 		base.search = "";
 		base.hash = "";
 		if (!base.pathname.endsWith("/")) base.pathname += "/";
@@ -118,19 +118,19 @@ export function assistantConfig(env: Record<string, string | undefined>, options
 		if (base.pathname === "/") base.pathname = "/v1/";
 		return { provider, url: new URL("chat/completions", base), model, ...(apiKey ? { apiKey } : {}) };
 	}
-	if (!rawUrl) throw new Error("Set SECURITYX_LLM_URL to Ollama's address, for example http://localhost:11434, to turn on the local model");
+	if (!rawUrl) throw new Error("Set PORCHLIGHT_LLM_URL to Ollama's address, for example http://localhost:11434, to turn on the local model");
 	let url: URL;
 	try {
 		url = new URL(rawUrl);
 	} catch {
-		throw new Error("SECURITYX_LLM_URL is not an address. Give Ollama's, for example http://localhost:11434");
+		throw new Error("PORCHLIGHT_LLM_URL is not an address. Give Ollama's, for example http://localhost:11434");
 	}
 	if (url.protocol !== "http:" && url.protocol !== "https:") {
-		throw new Error("SECURITYX_LLM_URL must start with http:// or https://, for example http://localhost:11434");
+		throw new Error("PORCHLIGHT_LLM_URL must start with http:// or https://, for example http://localhost:11434");
 	}
-	if (url.username || url.password) throw new Error("SECURITYX_LLM_URL must not carry a user name or password");
-	if (!model) throw new Error("Set SECURITYX_LLM_MODEL to the model's name in Ollama, as `ollama list` shows it");
-	if (!MODEL_NAME.test(model)) throw new Error("SECURITYX_LLM_MODEL is not a model name: use the name `ollama list` shows");
+	if (url.username || url.password) throw new Error("PORCHLIGHT_LLM_URL must not carry a user name or password");
+	if (!model) throw new Error("Set PORCHLIGHT_LLM_MODEL to the model's name in Ollama, as `ollama list` shows it");
+	if (!MODEL_NAME.test(model)) throw new Error("PORCHLIGHT_LLM_MODEL is not a model name: use the name `ollama list` shows");
 	url.search = "";
 	url.hash = "";
 	if (!url.pathname.endsWith("/")) url.pathname += "/";
@@ -185,13 +185,13 @@ export async function chat(config: AssistantConfig, messages: ChatMessage[], opt
 		}
 		if (response.status === 404) {
 			// Ollama answers a missing model with its own JSON error; a bare 404 means there is no Ollama API here.
-			throw new AssistantError(502, `${host} has no Ollama API at /api/chat (HTTP 404). Check SECURITYX_LLM_URL`);
+			throw new AssistantError(502, `${host} has no Ollama API at /api/chat (HTTP 404). Check PORCHLIGHT_LLM_URL`);
 		}
 		const detail = ollamaError ? `: ${ollamaError.slice(0, 200)}` : "";
 		throw new AssistantError(502, `The model at ${host} failed (HTTP ${response.status})${detail}`);
 	}
 	const content = body?.message?.content;
-	if (typeof content !== "string") throw new AssistantError(502, `The answer from ${host} is not one SecurityX can read. Is it Ollama?`);
+	if (typeof content !== "string") throw new AssistantError(502, `The answer from ${host} is not one Porchlight can read. Is it Ollama?`);
 	const answer = withoutThinking(content);
 	if (answer === "") throw new AssistantError(502, "The model gave an empty answer. Try again");
 	return answer;

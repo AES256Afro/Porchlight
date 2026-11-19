@@ -40,9 +40,9 @@ let firstRoute = true;
 let announced = "";
 
 /** Says which of the two jobs a section belongs to, above the first section of each. */
-const GROUPS = /** @type {Record<string, string>} */ ({ findings: "Your code", domains: "Your websites", host: "Your computer", settings: "SecurityX" });
+const GROUPS = /** @type {Record<string, string>} */ ({ findings: "Your code", domains: "Your websites", host: "Your computer", settings: "Porchlight" });
 const findingCount = h("span", { class: "count" });
-/** "This Mac", or "This computer" when SecurityX runs on something else. */
+/** "This Mac", or "This computer" when Porchlight runs on something else. */
 const hostLabel = h("span", null, "This Mac");
 
 replace(
@@ -84,7 +84,7 @@ function rememberView() {
 }
 
 /** For the Mac app, before it quits: what would be lost, one item a line, or "" when nothing would. */
-/** @type {any} */ (window).securityxBusy = async () => {
+/** @type {any} */ (window).porchlightBusy = async () => {
 	try {
 		const { busy } = await api("GET", "/busy");
 		return Array.isArray(busy) ? busy.join("\n") : "";
@@ -92,6 +92,8 @@ function rememberView() {
 		return "";
 	}
 };
+// A Mac app built before the rename asks under the earlier name.
+/** @type {any} */ (window).securityxBusy = /** @type {any} */ (window).porchlightBusy;
 window.addEventListener("hashchange", route);
 void route();
 
@@ -109,7 +111,7 @@ async function route() {
 		if (link.dataset.nav === section) link.setAttribute("aria-current", "page");
 		else link.removeAttribute("aria-current");
 	}
-	document.title = `${section === "host" ? hostName() : SECTIONS.find(([key]) => key === section)?.[1]} · SecurityX`;
+	document.title = `${section === "host" ? hostName() : SECTIONS.find(([key]) => key === section)?.[1]} · Porchlight`;
 
 	leave();
 	leave = () => {};
@@ -212,7 +214,7 @@ function drawScanStatus() {
 }
 
 /**
- * Shown when the page has no key: opened without the link `securityx ui` printed, or, as a service
+ * Shown when the page has no key: opened without the link `porchlight ui` printed, or, as a service
  * or from another device, before the access key has been pasted in this tab.
  *
  * @param {"local" | "service" | "tailnet"} where
@@ -244,20 +246,20 @@ function askForKey(where) {
 					? h(
 							"p",
 							null,
-							"This is SecurityX on your Mac, opened from another device. On the Mac, open Settings → Access from other devices and copy the link or the key, then paste it here. This tab remembers it until you close it.",
+							"This is Porchlight on your Mac, opened from another device. On the Mac, open Settings → Access from other devices and copy the link or the key, then paste it here. This tab remembers it until you close it.",
 						)
 					: service
 					? h(
 							"p",
 							null,
-							...stepNodes("Scan results name the files where secrets were found, so this page is locked. In BoxPilot, open Apps → SecurityX and copy the "),
+							...stepNodes("Scan results name the files where secrets were found, so this page is locked. In BoxPilot, open Apps → Porchlight and copy the "),
 							h("strong", null, "Access key"),
 							" from its sign-in details, then paste it here. This tab remembers it until you close it.",
 						)
 					: h(
 							"p",
 							null,
-							"SecurityX only answers pages opened from the link it printed when it started. Open that link, or paste it, or the part after ",
+							"Porchlight only answers pages opened from the link it printed when it started. Open that link, or paste it, or the part after ",
 							h("code", null, "#k="),
 							", here.",
 						),

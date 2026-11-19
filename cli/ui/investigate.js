@@ -1,6 +1,6 @@
 // @ts-check
 // "Investigate with a model": a model plans an investigation of a website you have proven you own,
-// and SecurityX carries it out with a few fixed tools. This page adds domains and shows their
+// and Porchlight carries it out with a few fixed tools. This page adds domains and shows their
 // ownership record, starts a run, puts each HTTP request and TCP connection to you first, and shows
 // the steps, the evidence and what the model judged. Everything here comes from the target or the
 // model, so every element is built with h() and shown as text.
@@ -78,7 +78,7 @@ export async function renderInvestigate(view, runId) {
 					h(
 						"p",
 						{ class: "sub" },
-						"A model plans an investigation of a website you have proven you own, one step at a time. SecurityX runs each step with a few fixed tools: DNS lookups on their own, every HTTP request and TCP connection only after you approve it. Nothing outside the domain and its subdomains is touched.",
+						"A model plans an investigation of a website you have proven you own, one step at a time. Porchlight runs each step with a few fixed tools: DNS lookups on their own, every HTTP request and TCP connection only after you approve it. Nothing outside the domain and its subdomains is touched.",
 					),
 				),
 			),
@@ -194,11 +194,11 @@ export async function renderInvestigate(view, runId) {
 				h(
 					"p",
 					null,
-					"An investigation runs only on a domain whose DNS holds SecurityX's ownership record. It is checked when the run starts and again before every action; if it disappears, the run stops.",
+					"An investigation runs only on a domain whose DNS holds Porchlight's ownership record. It is checked when the run starts and again before every action; if it disappears, the run stops.",
 				),
 				state.monitor ? h("p", { class: "hint" }, "When the monitor already watches a domain, its record is used here too, so you publish one record for both.") : null,
 				...domainCards,
-				state.canChange ? addForm : h("p", { class: "hint" }, "Domains are added on the Mac that runs SecurityX."),
+				state.canChange ? addForm : h("p", { class: "hint" }, "Domains are added on the Mac that runs Porchlight."),
 			),
 			state.domains.length > 0 && state.canChange ? startCard(assistant) : null,
 		);
@@ -274,7 +274,7 @@ export async function renderInvestigate(view, runId) {
 	/** @param {import("./generated.js").AssistantSettings} assistant */
 	function startCard(assistant) {
 		if (!assistant.configured) {
-			return h("div", { class: "card" }, h("h2", null, "Start an investigation"), h("p", null, ...stepNodes("Choose a model in Settings → Model first. The model plans each step; SecurityX checks and runs it.")));
+			return h("div", { class: "card" }, h("h2", null, "Start an investigation"), h("p", null, ...stepNodes("Choose a model in Settings → Model first. The model plans each step; Porchlight checks and runs it.")));
 		}
 		const domainSelect = /** @type {HTMLSelectElement} */ (h("select", { name: "domain", "aria-label": "Domain" }, ...state.domains.map((domain) => h("option", { value: domain.name }, domain.name))));
 		const goal = /** @type {HTMLTextAreaElement} */ (h("textarea", { name: "goal", rows: 3, maxLength: state.defaults.maxGoal, "aria-label": "Goal" }));
@@ -405,7 +405,7 @@ export async function renderInvestigate(view, runId) {
 							h("button", { type: "button", class: "button primary", onclick: () => void answer(true) }, "Approve"),
 							h("button", { type: "button", class: "button", onclick: () => void answer(false) }, "Deny"),
 						)
-					: h("p", { class: "hint" }, "Approve it on the Mac that runs SecurityX."),
+					: h("p", { class: "hint" }, "Approve it on the Mac that runs Porchlight."),
 			),
 		);
 	}

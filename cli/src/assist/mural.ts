@@ -2,7 +2,7 @@
  * The mural: a one-page board a model writes for an export, so the owner can see, and show others,
  * what a scan found, what the plan is, what has been done and what comes next.
  *
- * The model writes words only. The numbers beside them (`MuralFacts`) are counted by SecurityX from
+ * The model writes words only. The numbers beside them (`MuralFacts`) are counted by Porchlight from
  * the report, so a reader can check the words against them. The mural is added to an export only
  * when asked for, in its own section labelled with the model's name; it never changes the findings,
  * the counts or the roadmap of the export it sits in.
@@ -12,7 +12,7 @@ import type { Comparison } from "../repos/history.ts";
 import type { ScanReport, Severity } from "../repos/types.ts";
 import type { FindingsList, Roadmap } from "../roadmap/types.ts";
 
-/** What SecurityX itself counted, shown beside the model's words. */
+/** What Porchlight itself counted, shown beside the model's words. */
 export interface MuralFacts {
 	source: string;
 	scannedAt: string;

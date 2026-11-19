@@ -1,7 +1,7 @@
-SecurityX
+Porchlight
 =========
 
-Drag SecurityX into Applications, then open it from there.
+Drag Porchlight into Applications, then open it from there.
 
 It needs a Mac with Apple silicon (M1 or later) and macOS 13.5 or later.
 
@@ -9,16 +9,16 @@ It needs a Mac with Apple silicon (M1 or later) and macOS 13.5 or later.
 The first time you open it
 --------------------------
 
-SecurityX is not from the App Store and is not notarized by Apple, so macOS stops it the first
-time with "SecurityX Not Opened". To open it:
+Porchlight is not from the App Store and is not notarized by Apple, so macOS stops it the first
+time with "Porchlight Not Opened". To open it:
 
 1. Choose Done.
-2. Open System Settings → Privacy & Security, scroll down to "SecurityX was blocked", and choose
+2. Open System Settings → Privacy & Security, scroll down to "Porchlight was blocked", and choose
    Open Anyway. Confirm with your password or Touch ID.
 
 Or, in Terminal:
 
-    xattr -dr com.apple.quarantine /Applications/SecurityX.app
+    xattr -dr com.apple.quarantine /Applications/Porchlight.app
 
 After that it opens like any other app.
 
@@ -35,12 +35,12 @@ What it needs
 Where things are kept
 ---------------------
 
-Everything SecurityX keeps (reports, history, your notes, settings) is in ~/.securityx, readable
-only by you. Its log is ~/.securityx/app.log (SecurityX → Show Log).
+Everything Porchlight keeps (reports, history, your notes, settings) is in ~/.porchlight, readable
+only by you. Its log is ~/.porchlight/app.log (Porchlight → Show Log).
 
 Optional settings, such as the folder to scan or the address of your domain monitor, go in
-~/.securityx/app.env. See:
-https://github.com/AES256Afro/SecurityX/blob/main/mac/app.env.example
+~/.porchlight/app.env. See:
+https://github.com/AES256Afro/Porchlight/blob/main/mac/app.env.example
 
 The model and the look are chosen inside the app, under Settings.
 
@@ -49,6 +49,6 @@ Licences
 --------
 
 Node.js, gitleaks and osv-scanner are included under their own licences, in
-SecurityX.app/Contents/Resources/licenses.
+Porchlight.app/Contents/Resources/licenses.
 
-Source, documentation and issues: https://github.com/AES256Afro/SecurityX
+Source, documentation and issues: https://github.com/AES256Afro/Porchlight

@@ -1,5 +1,5 @@
 // @ts-check
-// "This Mac": what SecurityX can see of the computer it runs on. The check only reads; this page
+// "This Mac": what Porchlight can see of the computer it runs on. The check only reads; this page
 // starts it, follows it, and shows what it found. Every element is built with h(): program names,
 // paths and update titles come from the system and are never treated as HTML.
 import { formatWhen, h, icon, plural, replace, severityBadge, statTile, stepNodes, toast } from "./dom.js";
@@ -45,8 +45,8 @@ export async function renderHost(view) {
 						"p",
 						{ class: "sub" },
 						mac
-							? "Checks the Mac SecurityX runs on: updates, built-in protection, what accepts connections from the network, credentials kept in files, and installed packages with known vulnerabilities."
-							: "Checks the computer SecurityX runs on: credentials kept in files and installed packages with known vulnerabilities.",
+							? "Checks the Mac Porchlight runs on: updates, built-in protection, what accepts connections from the network, credentials kept in files, and installed packages with known vulnerabilities."
+							: "Checks the computer Porchlight runs on: credentials kept in files and installed packages with known vulnerabilities.",
 					),
 				),
 			),
@@ -58,7 +58,7 @@ export async function renderHost(view) {
 						h(
 							"p",
 							null,
-							"SecurityX runs in a container here, so it would see the container, not the computer it runs on. To check a computer, run SecurityX on it: the Mac app, or securityx ui in a terminal.",
+							"Porchlight runs in a container here, so it would see the container, not the computer it runs on. To check a computer, run Porchlight on it: the Mac app, or porchlight ui in a terminal.",
 						),
 					)
 				: h(

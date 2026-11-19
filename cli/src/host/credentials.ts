@@ -90,7 +90,7 @@ const STORES: Store[] = [
 	},
 ];
 
-/** Whether a private key needs a passphrase. Null when the file is not a private key SecurityX knows. */
+/** Whether a private key needs a passphrase. Null when the file is not a private key Porchlight knows. */
 export function keyEncrypted(text: string): boolean | null {
 	const begin = /-----BEGIN ([A-Z0-9 ]*)PRIVATE KEY-----/.exec(text);
 	if (!begin) return null;
@@ -126,7 +126,7 @@ async function sshChecks(home: string): Promise<HostCheck[]> {
 		info = await stat(dir);
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
-		return [{ id: "ssh-dir", area: "credentials", title: "~/.ssh", severity: "medium", status: "unknown", detail: "SecurityX could not look into ~/.ssh." }];
+		return [{ id: "ssh-dir", area: "credentials", title: "~/.ssh", severity: "medium", status: "unknown", detail: "Porchlight could not look into ~/.ssh." }];
 	}
 	if (!info.isDirectory()) return [];
 	const checks: HostCheck[] = [];
@@ -146,7 +146,7 @@ async function sshChecks(home: string): Promise<HostCheck[]> {
 	try {
 		names = (await readdir(dir)).filter((name) => !name.endsWith(".pub")).sort();
 	} catch {
-		checks.push({ id: "ssh-keys", area: "credentials", title: "SSH keys", severity: "medium", status: "unknown", detail: "SecurityX could not list ~/.ssh." });
+		checks.push({ id: "ssh-keys", area: "credentials", title: "SSH keys", severity: "medium", status: "unknown", detail: "Porchlight could not list ~/.ssh." });
 		return checks;
 	}
 	for (const name of names) {
@@ -156,7 +156,7 @@ async function sshChecks(home: string): Promise<HostCheck[]> {
 		const file = await readSmall(join(dir, name));
 		if (file === "missing") continue;
 		if (file === "unreadable") {
-			checks.push({ id: `ssh-key:${name}`, area: "credentials", title: shown, severity: "medium", status: "unknown", detail: "SecurityX could not read it to tell whether it is a private key." });
+			checks.push({ id: `ssh-key:${name}`, area: "credentials", title: shown, severity: "medium", status: "unknown", detail: "Porchlight could not read it to tell whether it is a private key." });
 			continue;
 		}
 		const encrypted = keyEncrypted(file.text);
@@ -197,7 +197,7 @@ async function storeChecks(home: string, mac: boolean): Promise<HostCheck[]> {
 		const file = await readSmall(join(home, store.path));
 		if (file === "missing") continue;
 		if (file === "unreadable") {
-			checks.push({ id: `plaintext:${store.path}`, area: "credentials", title: shown, severity: "medium", status: "unknown", detail: "SecurityX could not read it to tell whether it holds a credential." });
+			checks.push({ id: `plaintext:${store.path}`, area: "credentials", title: shown, severity: "medium", status: "unknown", detail: "Porchlight could not read it to tell whether it holds a credential." });
 			continue;
 		}
 		// The text is only tested, never kept: nothing below refers to it.

@@ -1,5 +1,5 @@
 // @ts-check
-// Settings: the model, access from other devices, the look of the interface, and what SecurityX is connected to.
+// Settings: the model, access from other devices, the look of the interface, and what Porchlight is connected to.
 import { api } from "./api.js";
 import { h, icon, replace, toast } from "./dom.js";
 import { applyLook, currentLook } from "./appearance.js";
@@ -48,14 +48,14 @@ export async function renderSettings(view) {
 			h(
 				"section",
 				{ class: "page" },
-				h("div", { class: "page-head" }, h("div", null, h("h1", null, "Settings"), h("p", { class: "sub" }, "Which model SecurityX uses, how it looks, and what it's connected to."))),
+				h("div", { class: "page-head" }, h("div", null, h("h1", null, "Settings"), h("p", { class: "sub" }, "Which model Porchlight uses, how it looks, and what it's connected to."))),
 				model,
 				access,
 				h(
 					"fieldset",
 					{ id: "settings-appearance", tabindex: "-1", class: "card full looks" },
 					h("legend", null, h("h2", null, "Appearance")),
-					h("p", { class: "sub" }, "Saved on this computer and used every time SecurityX opens."),
+					h("p", { class: "sub" }, "Saved on this computer and used every time Porchlight opens."),
 					h(
 						"div",
 						{ class: "look-grid" },
@@ -109,7 +109,7 @@ function connections() {
 			{ class: "hint" },
 			settings.service
 				? "These are set in the service's settings."
-				: "These are set when SecurityX starts: in the Mac app, in ~/.securityx/app.env; in a terminal, with the SECURITYX_ environment variables.",
+				: "These are set when Porchlight starts: in the Mac app, in ~/.porchlight/app.env; in a terminal, with the PORCHLIGHT_ environment variables.",
 		),
 	);
 }

@@ -4,7 +4,7 @@ import { triageSecret } from "./triage.ts";
 import type { Finding } from "./types.ts";
 
 /**
- * gitleaks' built-in rules, shipped with SecurityX. Passing it with --config
+ * gitleaks' built-in rules, shipped with Porchlight. Passing it with --config
  * means a scanned repository's own .gitleaks.toml is never loaded, so a
  * repository cannot switch detection off.
  */
@@ -30,7 +30,7 @@ export async function runGitleaks(repo: string, run: Runner): Promise<Finding[]>
 		"--config",
 		GITLEAKS_CONFIG,
 		`--log-opts=${GIT_LOG_OPTIONS}`,
-		// Read .gitleaksignore from the repository only, never from the folder SecurityX runs in.
+		// Read .gitleaksignore from the repository only, never from the folder Porchlight runs in.
 		"--gitleaks-ignore-path",
 		repo,
 		"--report-format",

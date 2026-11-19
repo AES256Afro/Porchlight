@@ -16,7 +16,7 @@ export const AREA_TITLES = [
 ];
 
 /**
- * What the page and the sidebar call the computer SecurityX runs on: "This Mac" on a Mac, and
+ * What the page and the sidebar call the computer Porchlight runs on: "This Mac" on a Mac, and
  * before the server has said what it runs on; "This computer" anywhere else.
  *
  * @param {string | undefined} platform Node's name for the system, such as "darwin" or "linux"

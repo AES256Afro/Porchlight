@@ -28,11 +28,11 @@ export function formatReport(report: ScanReport): string {
 	const lines: string[] = [];
 	if (report.baseline) {
 		lines.push(
-			`SecurityX: first scan of ${report.domain}: ${report.hostCount} hosts, ${report.findings.length} findings`,
+			`Porchlight: first scan of ${report.domain}: ${report.hostCount} hosts, ${report.findings.length} findings`,
 		);
 	} else {
 		lines.push(
-			`SecurityX: ${report.domain}: ${report.changes.length} changes, ` +
+			`Porchlight: ${report.domain}: ${report.changes.length} changes, ` +
 				`${report.newFindings.length} new findings, ${report.resolvedFindings.length} resolved`,
 		);
 	}

@@ -4,11 +4,11 @@
 // anywhere else ("1.2 → 1.3") stays text. Each address is fixed here, never taken from a scan or a
 // request (invariant 8), and the text stays the same words, so the CLI and exports print it as is.
 //
-// - "page": a place in SecurityX itself (`#/…`).
+// - "page": a place in Porchlight itself (`#/…`).
 // - "web": a page on another site, opened in the browser.
 // - "mac": a pane of System Settings on this Mac (`x-apple.systempreferences:`), linked only when
 //   the page is shown on the Mac itself; from another device it would open that device's settings.
-// - "plain": a path SecurityX has no address for (BoxPilot's, another app's), shown as breadcrumbs.
+// - "plain": a path Porchlight has no address for (BoxPilot's, another app's), shown as breadcrumbs.
 
 /** @typedef {"page" | "web" | "mac" | "plain"} PathKind */
 /** @typedef {{ label: string, href: string | null }} Crumb */
@@ -27,7 +27,7 @@ const USERS = pane("com.apple.Users-Groups-Settings.extension");
 
 /** @type {[text: string, kind: PathKind, hrefs: (string | null)[]][]} */
 const LIST = [
-	// SecurityX's own Settings page, by section (see `settingsAnchor`).
+	// Porchlight's own Settings page, by section (see `settingsAnchor`).
 	["Settings → Model", "page", ["#/settings", "#/settings/model"]],
 	["Settings → Access from other devices", "page", ["#/settings", "#/settings/access"]],
 	["Settings → Appearance", "page", ["#/settings", "#/settings/appearance"]],
@@ -63,9 +63,9 @@ const LIST = [
 		[SYSTEM_SETTINGS, pane("com.apple.Lock-Screen-Settings.extension"), null],
 	],
 
-	// Places SecurityX has no address for.
-	["Apps → SecurityX → Settings", "plain", []],
-	["Apps → SecurityX", "plain", []],
+	// Places Porchlight has no address for.
+	["Apps → Porchlight → Settings", "plain", []],
+	["Apps → Porchlight", "plain", []],
 	["Settings → API in Studio", "plain", []],
 ];
 

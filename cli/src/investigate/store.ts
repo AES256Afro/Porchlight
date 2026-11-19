@@ -1,6 +1,6 @@
 /**
  * Investigation runs, kept beside the report under `investigations/` (folder 0700, files 0600):
- * every step, every piece of evidence and every finding. A run is read only by an id SecurityX
+ * every step, every piece of evidence and every finding. A run is read only by an id Porchlight
  * made, matched against a fixed pattern, never by a path from a request.
  */
 import { readdir, readFile, rm } from "node:fs/promises";
@@ -76,7 +76,7 @@ export class RunStore {
 		}
 	}
 
-	/** Every kept run, newest first. A run left "running" by a SecurityX that quit is shown as stopped. */
+	/** Every kept run, newest first. A run left "running" by a Porchlight that quit is shown as stopped. */
 	async list(): Promise<RunSummary[]> {
 		let names: string[];
 		try {
@@ -101,9 +101,9 @@ export class RunStore {
 	}
 }
 
-/** A run that was saved while running, read after SecurityX restarted: it is not running any more. */
+/** A run that was saved while running, read after Porchlight restarted: it is not running any more. */
 export function settled(run: Run): Run {
 	if (run.status !== "running" && run.status !== "waiting") return run;
 	const { pending: _pending, ...rest } = run;
-	return { ...rest, status: "stopped", ended: run.ended ?? "SecurityX stopped while this was running." };
+	return { ...rest, status: "stopped", ended: run.ended ?? "Porchlight stopped while this was running." };
 }

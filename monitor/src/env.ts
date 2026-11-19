@@ -47,7 +47,7 @@ export const liveDeps: Deps = {
 	now: () => new Date(),
 };
 
-export const USER_AGENT = "securityx-monitor (attack-surface monitor for verified domains)";
+export const USER_AGENT = "porchlight-monitor (attack-surface monitor for verified domains)";
 
 export function errorMessage(err: unknown): string {
 	return (err instanceof Error ? err.message : String(err)).slice(0, 200);

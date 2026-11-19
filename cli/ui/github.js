@@ -47,8 +47,8 @@ export function githubPanel(onChange) {
 			"p",
 			{ class: "sub" },
 			service
-				? "SecurityX copies the repositories you choose onto this server, then checks them along with anything in the server's folder."
-				: "SecurityX copies the repositories you choose onto this computer, then checks them along with the folder above.",
+				? "Porchlight copies the repositories you choose onto this server, then checks them along with anything in the server's folder."
+				: "Porchlight copies the repositories you choose onto this computer, then checks them along with the folder above.",
 		),
 		store.settings?.github?.error ? banner("warning", "The GitHub token is not being used", [store.settings.github.error]) : null,
 		hasToken
@@ -58,7 +58,7 @@ export function githubPanel(onChange) {
 					{ class: "options" },
 					h("summary", null, "Private repositories need a token. How to add one"),
 					h("ol", { class: "steps" }, ...githubTokenSteps(service).map((step) => h("li", null, ...stepNodes(step)))),
-					h("p", { class: "hint" }, "The token stays inside SecurityX. It is never sent to this page."),
+					h("p", { class: "hint" }, "The token stays inside Porchlight. It is never sent to this page."),
 				),
 		h(
 			"form",

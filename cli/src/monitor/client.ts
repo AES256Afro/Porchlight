@@ -11,19 +11,19 @@ export interface MonitorConfig {
  * in shell history or process listings.
  */
 export function monitorConfig(env: Record<string, string | undefined>): MonitorConfig {
-	const rawUrl = env.SECURITYX_MONITOR_URL;
-	const token = env.SECURITYX_ADMIN_TOKEN;
-	if (!rawUrl) throw new Error("Set SECURITYX_MONITOR_URL to the monitor's address, for example http://localhost:5173");
-	if (!token) throw new Error("Set SECURITYX_ADMIN_TOKEN to the monitor's ADMIN_TOKEN");
+	const rawUrl = env.PORCHLIGHT_MONITOR_URL;
+	const token = env.PORCHLIGHT_ADMIN_TOKEN;
+	if (!rawUrl) throw new Error("Set PORCHLIGHT_MONITOR_URL to the monitor's address, for example http://localhost:5173");
+	if (!token) throw new Error("Set PORCHLIGHT_ADMIN_TOKEN to the monitor's ADMIN_TOKEN");
 	let url: URL;
 	try {
 		url = new URL(rawUrl);
 	} catch {
-		throw new Error(`SECURITYX_MONITOR_URL is not a URL: ${rawUrl}`);
+		throw new Error(`PORCHLIGHT_MONITOR_URL is not a URL: ${rawUrl}`);
 	}
 	const local = LOCAL_HOSTS.has(url.hostname);
 	if (url.protocol !== "https:" && !(url.protocol === "http:" && local)) {
-		throw new Error("SECURITYX_MONITOR_URL must use https, so the admin token is never sent in clear text");
+		throw new Error("PORCHLIGHT_MONITOR_URL must use https, so the admin token is never sent in clear text");
 	}
 	return { url, token };
 }

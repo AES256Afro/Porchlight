@@ -92,7 +92,7 @@ export interface UiOptions {
 	githubError?: string;
 	/** Runs git when fetching. Tests pass a fake. */
 	run?: Runner;
-	/** A fixed key (SECURITYX_UI_KEY). Without one, each start makes its own. */
+	/** A fixed key (PORCHLIGHT_UI_KEY). Without one, each start makes its own. */
 	sessionKey?: string;
 	scan?: typeof scanRepos;
 	/** Used for the monitor and the local model alike. Tests pass a fake. */
@@ -101,7 +101,7 @@ export interface UiOptions {
 	tailnetAddress?: () => string | null;
 	/** The port other devices use (default 4747). Tests pass 0. */
 	accessPort?: number;
-	/** Checks the computer SecurityX runs on. Tests pass a fake. */
+	/** Checks the computer Porchlight runs on. Tests pass a fake. */
 	hostCheck?: (options: Omit<HostCheckOptions, "run">) => Promise<HostReport>;
 	/** The network "Investigate with a model" uses for HTTP and TCP. Tests pass a scripted one. */
 	investigateNet?: Net;
@@ -205,7 +205,7 @@ const SECURITY_HEADERS = {
 	"cache-control": "no-store",
 };
 
-const SESSION_HEADER = "x-securityx-session";
+const SESSION_HEADER = "x-porchlight-session";
 /** A fixed key guards a page other machines can reach; BoxPilot generates 32 characters. */
 export const MIN_KEY_LENGTH = 32;
 const KEY_PATTERN = /^[\x21-\x7e]+$/;
@@ -252,7 +252,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	const loopbackOnly = LOOPBACK_HOSTS.has(listenHost);
 	if (options.sessionKey !== undefined) checkKey(options.sessionKey);
 	if (!loopbackOnly && options.sessionKey === undefined) {
-		throw new Error(`Listening on ${listenHost} needs SECURITYX_UI_KEY: a key of at least ${MIN_KEY_LENGTH} characters`);
+		throw new Error(`Listening on ${listenHost} needs PORCHLIGHT_UI_KEY: a key of at least ${MIN_KEY_LENGTH} characters`);
 	}
 	const sessionKey = options.sessionKey ?? randomBytes(24).toString("base64url");
 	const scan = options.scan ?? scanRepos;
@@ -323,7 +323,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	async function hostRoute(res: ServerResponse, route: string, body: unknown): Promise<void> {
 		if (route === "GET /api/host") return sendJson(res, 200, { status: hostStatus, report: loopbackOnly ? await readHostReport(hostPath) : null, service: !loopbackOnly });
 		if (route !== "POST /api/host/check") throw new HttpError(404, "Not found");
-		if (!loopbackOnly) throw new HttpError(409, "SecurityX runs in a container here, so it cannot see the computer it runs on.");
+		if (!loopbackOnly) throw new HttpError(409, "Porchlight runs in a container here, so it cannot see the computer it runs on.");
 		if (hostStatus.state === "running") throw new HttpError(409, "This computer is already being checked");
 		const fields = bodyObject(body);
 		for (const name of ["askApple", "lookUpPackages"]) {
@@ -375,7 +375,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 
 	/**
 	 * "Send to a model": the roadmap or the findings, all or what the filters show, to the model the
-	 * owner picks, for a deeper analysis or a repair plan. The request names the model by SecurityX's
+	 * owner picks, for a deeper analysis or a repair plan. The request names the model by Porchlight's
 	 * own id and what to send; the data comes from this server's copy of the report (invariant 13).
 	 * The answer is text for the page to show, labelled as generated; nothing acts on it.
 	 */
@@ -549,8 +549,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		}
 		const address = findTailnet();
 		if (!address) {
-			accessStatus = { enabled: true, listening: false, error: "Tailscale is not connected on this Mac. Start Tailscale; SecurityX will keep checking." };
-			// Tailscale may come up after SecurityX does.
+			accessStatus = { enabled: true, listening: false, error: "Tailscale is not connected on this Mac. Start Tailscale; Porchlight will keep checking." };
+			// Tailscale may come up after Porchlight does.
 			accessRetry = setInterval(() => void (findTailnet() ? applyAccess() : undefined), ACCESS_RETRY_MS);
 			accessRetry.unref();
 			return;
@@ -566,7 +566,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			accessStatus = {
 				enabled: true,
 				listening: false,
-				error: code === "EADDRINUSE" ? `Port ${accessPort} on the Tailscale address is taken, perhaps by another copy of SecurityX` : `Could not listen on the Tailscale address (${String(code ?? err)})`,
+				error: code === "EADDRINUSE" ? `Port ${accessPort} on the Tailscale address is taken, perhaps by another copy of Porchlight` : `Could not listen on the Tailscale address (${String(code ?? err)})`,
 			};
 			return;
 		}
@@ -640,7 +640,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 
 	async function accessRoute(res: ServerResponse, route: string, body: unknown, gate: Gate): Promise<void> {
 		if (route === "GET /api/access") return sendJson(res, 200, accessState(gate));
-		if (gate.tailnet || !gate.loopbackOnly) throw new HttpError(403, "Access can only be changed on the Mac that runs SecurityX");
+		if (gate.tailnet || !gate.loopbackOnly) throw new HttpError(403, "Access can only be changed on the Mac that runs Porchlight");
 		if (route === "POST /api/access") {
 			const enabled = bodyObject(body).enabled;
 			if (typeof enabled !== "boolean") throw new HttpError(400, "Say whether access is on");
@@ -746,7 +746,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			if (!(INVESTIGATION_FORMATS as readonly string[]).includes(format)) throw new HttpError(400, `Choose a format: ${INVESTIGATION_FORMATS.join(" or ")}`);
 			return sendDownload(res, exportInvestigation(run, format as InvestigationFormat));
 		}
-		if (!here) throw new HttpError(403, "Investigations are run from the page on the Mac that runs SecurityX");
+		if (!here) throw new HttpError(403, "Investigations are run from the page on the Mac that runs Porchlight");
 		const fields = bodyObject(body);
 
 		if (route === "POST /api/investigate/domains") {
@@ -876,7 +876,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	}
 
 	function saveActive(run: Run): Promise<void> {
-		runSaves = runSaves.then(() => runStore.save(run)).catch((err) => console.error(`securityx ui: could not save the investigation: ${err instanceof Error ? err.message : String(err)}`));
+		runSaves = runSaves.then(() => runStore.save(run)).catch((err) => console.error(`porchlight ui: could not save the investigation: ${err instanceof Error ? err.message : String(err)}`));
 		return runSaves;
 	}
 
@@ -885,7 +885,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		handle(req, res, gate).catch((err) => {
 			// An export that cannot be made is the caller's mistake, and the message says what to change.
 			const known = err instanceof HttpError || err instanceof ExportError;
-			if (!known) console.error(`securityx ui: ${err instanceof Error ? err.message : String(err)}`);
+			if (!known) console.error(`porchlight ui: ${err instanceof Error ? err.message : String(err)}`);
 			sendJson(res, err instanceof HttpError ? err.status : known ? 400 : 500, { error: known ? err.message : "Internal error" });
 		});
 	};
@@ -933,7 +933,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				service: !loopbackOnly,
 				// Opened from another device over the tailnet, rather than on this computer.
 				remote: gate.tailnet,
-				// The computer SecurityX runs on, so the page can call it "This Mac".
+				// The computer Porchlight runs on, so the page can call it "This Mac".
 				platform: process.platform,
 				monitor: options.monitor
 					? { configured: true, host: options.monitor.url.host }
@@ -1029,7 +1029,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 						return;
 					}
 					await saveReport(options.reportPath, report);
-					await history.add(report).catch((err) => console.error(`securityx ui: could not keep the scan in history: ${err instanceof Error ? err.message : String(err)}`));
+					await history.add(report).catch((err) => console.error(`porchlight ui: could not keep the scan in history: ${err instanceof Error ? err.message : String(err)}`));
 					status = { state: "done", root, finishedAt: new Date().toISOString() };
 				})
 				.catch((err) => {
@@ -1325,7 +1325,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 /** Refuses a fixed key that is too short to guard a page, or that cannot travel in a header. */
 export function checkKey(key: string): void {
 	if (key.length < MIN_KEY_LENGTH || !KEY_PATTERN.test(key)) {
-		throw new Error(`SECURITYX_UI_KEY must be at least ${MIN_KEY_LENGTH} characters, with no spaces or control characters`);
+		throw new Error(`PORCHLIGHT_UI_KEY must be at least ${MIN_KEY_LENGTH} characters, with no spaces or control characters`);
 	}
 }
 
@@ -1381,7 +1381,7 @@ interface AccessFile {
 	key: string;
 }
 
-/** Long enough to guard a page reachable from other machines, like SECURITYX_UI_KEY. */
+/** Long enough to guard a page reachable from other machines, like PORCHLIGHT_UI_KEY. */
 function newAccessKey(): string {
 	return randomBytes(32).toString("base64url");
 }
@@ -1613,7 +1613,7 @@ async function readReport(path: string): Promise<ScanReport | null> {
 		throw new HttpError(500, `The report file is not valid JSON: ${path}`);
 	}
 	if (!Array.isArray(report?.repos) || !Array.isArray(report?.tools) || typeof report.root !== "string") {
-		throw new HttpError(500, `The report file is not a SecurityX scan report: ${path}`);
+		throw new HttpError(500, `The report file is not a Porchlight scan report: ${path}`);
 	}
 	return report;
 }

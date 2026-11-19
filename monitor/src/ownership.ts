@@ -6,14 +6,20 @@ import type { FetchFn } from "./env.ts";
  * administrator can create. Nothing is fetched from, or about, a domain until
  * this check passes, and it is repeated before every scan.
  */
-export const CHALLENGE_LABEL = "_securityx-challenge";
+export const CHALLENGE_LABEL = "_porchlight-challenge";
+/**
+ * The label and value prefix records were published under before the rename.
+ * Such a record still proves ownership, so no domain has to be verified again.
+ */
+export const OLD_CHALLENGE_LABEL = "_securityx-challenge";
+const OLD_VALUE_PREFIX = "securityx-verify=";
 
 export function challengeName(domain: string): string {
 	return `${CHALLENGE_LABEL}.${domain}`;
 }
 
 export function challengeValue(token: string): string {
-	return `securityx-verify=${token}`;
+	return `porchlight-verify=${token}`;
 }
 
 export function newChallengeToken(): string {
@@ -27,6 +33,11 @@ export async function checkOwnership(
 	token: string,
 	fetchFn: FetchFn,
 ): Promise<boolean> {
-	const answers = await resolve(challengeName(domain), "TXT", fetchFn);
-	return recordsOf(answers, "TXT").includes(challengeValue(token));
+	const values = [challengeValue(token), `${OLD_VALUE_PREFIX}${token}`];
+	// The current record first; the earlier one only when the current one does not prove it.
+	for (const label of [CHALLENGE_LABEL, OLD_CHALLENGE_LABEL]) {
+		const answers = await resolve(`${label}.${domain}`, "TXT", fetchFn);
+		if (recordsOf(answers, "TXT").some((value) => values.includes(value))) return true;
+	}
+	return false;
 }

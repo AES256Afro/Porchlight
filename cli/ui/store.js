@@ -21,11 +21,11 @@ const POLL_MS = 800;
 
 export const store = {
 	/**
-	 * `service`: SecurityX runs as a service (a container, under BoxPilot), configured where it is
+	 * `service`: Porchlight runs as a service (a container, under BoxPilot), configured where it is
 	 * managed rather than from a terminal. `monitor.unset`: neither monitor setting was given.
 	 * `assistant`: the local model behind Explain, Summarise and Ask.
 	 *
-	 * `platform`: the operating system SecurityX runs on, such as "darwin".
+	 * `platform`: the operating system Porchlight runs on, such as "darwin".
 	 *
 	 * @type {{ defaultRoot: string, reportPath: string, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean }, github: { token: boolean, error?: string }, assistant: import("./generated.js").AssistantSettings, appearance: string, remote: boolean, platform: string, sendTargets: import("./send-text.js").SendTarget[], lastView: string | null } | null}
 	 */
@@ -50,7 +50,7 @@ export const store = {
 	/** @type {{ file: string, scannedAt: string, root: string, repositories: number, findings: number, counts: Record<string, number>, newCount?: number, fixedCount?: number }[]} */
 	scans: [],
 	/**
-	 * The check of the computer SecurityX runs on. `service`: it does not run here (a container).
+	 * The check of the computer Porchlight runs on. `service`: it does not run here (a container).
 	 *
 	 * @type {{ status: HostStatus, report: HostReport | null, service: boolean }}
 	 */

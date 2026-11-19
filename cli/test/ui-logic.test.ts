@@ -83,7 +83,7 @@ test("an empty scan says where to look next, and names BoxPilot's setting only f
 	const service = { service: true, defaultRoot: "/repos" };
 
 	const [folder = "", depth = ""] = emptyScanHints(empty, service);
-	assert.match(folder, /"Repositories to scan".*Apps → SecurityX → Settings/);
+	assert.match(folder, /"Repositories to scan".*Apps → Porchlight → Settings/);
 	assert.match(depth, /3 folder levels down: raise Depth/);
 
 	// From a terminal, or a folder typed by hand, BoxPilot's setting is not what chose it.
@@ -117,9 +117,9 @@ test("a question is checked before it is sent", () => {
 	assert.equal(questionProblem("x".repeat(MAX_QUESTION + 1)), `Keep the question to ${MAX_QUESTION} characters. It has 501.`);
 });
 
-test("says how to connect a local model where SecurityX runs, quoting a setting only when it is wrong", () => {
-	const off = { configured: false, error: "Set SECURITYX_LLM_URL to Ollama's address", unset: true };
-	const wrong = { configured: false, error: "Set SECURITYX_LLM_MODEL to the model's name in Ollama", unset: false };
+test("says how to connect a local model where Porchlight runs, quoting a setting only when it is wrong", () => {
+	const off = { configured: false, error: "Set PORCHLIGHT_LLM_URL to Ollama's address", unset: true };
+	const wrong = { configured: false, error: "Set PORCHLIGHT_LLM_MODEL to the model's name in Ollama", unset: false };
 
 	const terminal = localModelSetup(off, false);
 	assert.equal(terminal.reason, null);
@@ -131,7 +131,7 @@ test("says how to connect a local model where SecurityX runs, quoting a setting 
 	assert.equal(service.commands, null);
 	assert.equal(service.reason, null);
 	assert.ok(service.steps.some((step) => step.includes(`\`${SUGGESTED_MODEL}\``) && step.includes("Models tab")));
-	assert.ok(service.steps.includes("In BoxPilot, open Apps → SecurityX → Settings and fill in Local model address and Local model."));
+	assert.ok(service.steps.includes("In BoxPilot, open Apps → Porchlight → Settings and fill in Local model address and Local model."));
 	assert.equal(localModelSetup(wrong, true).reason, wrong.error);
 	assert.equal(localModelSetup(null, true).reason, null);
 });
@@ -153,7 +153,7 @@ test("before a scan, says how many repositories it would cover, or how to get so
 	assert.match(server.lines[0] ?? "", /cannot see your laptop/);
 	assert.equal(server.steps.length, 2);
 	assert.match(server.steps[0] ?? "", /Fetch them from GitHub/);
-	assert.match(server.steps[1] ?? "", /"Repositories to scan".*Apps → SecurityX → Settings/);
+	assert.match(server.steps[1] ?? "", /"Repositories to scan".*Apps → Porchlight → Settings/);
 
 	// From a terminal the answer is another folder, or looking deeper; never BoxPilot.
 	const local = previewAdvice({ root: "/usr/share", exists: true, total: 0, repos: [], fetched: 0, depth: 3 }, { service: false });
@@ -170,7 +170,7 @@ test("setting up website checks is three steps, ending where the two values are 
 	const local = monitorSetupSteps(false);
 	assert.equal(service.length, 3);
 	assert.equal(local.length, 3);
-	assert.match(service[2] ?? "", /Apps → SecurityX → Settings.*"Monitor address".*"Monitor admin token"/);
+	assert.match(service[2] ?? "", /Apps → Porchlight → Settings.*"Monitor address".*"Monitor admin token"/);
 	assert.doesNotMatch(local[2] ?? "", /BoxPilot/);
 	assert.equal(service[0], local[0]);
 });
@@ -189,10 +189,10 @@ test("adding a GitHub token is three steps, ending where it is entered, and asks
 	const local = githubTokenSteps(false);
 	assert.equal(service.length, 3);
 	assert.match(service[1] ?? "", /"Contents" to Read-only/);
-	assert.match(service[2] ?? "", /Apps → SecurityX → Settings.*"GitHub token"/);
-	assert.match(local[2] ?? "", /SECURITYX_GITHUB_TOKEN/);
+	assert.match(service[2] ?? "", /Apps → Porchlight → Settings.*"GitHub token"/);
+	assert.match(local[2] ?? "", /PORCHLIGHT_GITHUB_TOKEN/);
 	// The Mac app reads its settings file, not the terminal's environment.
-	assert.match(local[2] ?? "", /~\/\.securityx\/app\.env/);
+	assert.match(local[2] ?? "", /~\/\.porchlight\/app\.env/);
 	assert.doesNotMatch(local[2] ?? "", /BoxPilot/);
 	// The GitHub path is one known path, every step a link to github.com.
 	const github = splitPaths(local[0] ?? "").find((part) => typeof part !== "string");
@@ -221,19 +221,19 @@ test("click paths become breadcrumbs; other arrows stay text", () => {
 
 	// Versions and other arrows are left alone.
 	assert.deepEqual(splitPaths("lodash 4.17.20 → 4.17.21"), ["lodash 4.17.20 → 4.17.21"]);
-	// SecurityX's own Settings, by section.
+	// Porchlight's own Settings, by section.
 	const model = splitPaths("Choose one in Settings → Model").at(-1);
 	assert.ok(model && typeof model !== "string");
 	assert.deepEqual(model.crumbs.map((crumb) => crumb.href), ["#/settings", "#/settings/model"]);
 	assert.equal(settingsAnchor(["settings", "model"]), "settings-model");
 	assert.equal(settingsAnchor(["settings", "nowhere"]), null);
 	assert.equal(settingsAnchor(["findings", "model"]), null);
-	// A path SecurityX has no address for is still breadcrumbs, with no links.
-	const boxpilot = splitPaths("In BoxPilot, open Apps → SecurityX → Settings.")[1];
+	// A path Porchlight has no address for is still breadcrumbs, with no links.
+	const boxpilot = splitPaths("In BoxPilot, open Apps → Porchlight → Settings.")[1];
 	assert.ok(boxpilot && typeof boxpilot !== "string");
 	assert.ok(boxpilot.crumbs.every((crumb) => crumb.href === null));
 
-	// Every address is fixed: SecurityX's own page, GitHub's settings, or a System Settings pane.
+	// Every address is fixed: Porchlight's own page, GitHub's settings, or a System Settings pane.
 	for (const known of KNOWN_PATHS) {
 		for (const crumb of known.crumbs) {
 			if (crumb.href === null) continue;

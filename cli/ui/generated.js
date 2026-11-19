@@ -52,7 +52,7 @@ export function questionProblem(question) {
 }
 
 /**
- * How to connect a model, in the terms of where SecurityX runs: on this computer, Settings → Model;
+ * How to connect a model, in the terms of where Porchlight runs: on this computer, Settings → Model;
  * as a service (a container, under BoxPilot), the app's settings.
  * Steps mark names to type with backticks, as suggested fixes do.
  *
@@ -68,7 +68,7 @@ export function localModelSetup(assistant, service) {
 			reason,
 			steps: [
 				`Install the Ollama app in BoxPilot, and add the model \`${SUGGESTED_MODEL}\` in its Models tab.`,
-				"In BoxPilot, open Apps → SecurityX → Settings and fill in Local model address and Local model.",
+				"In BoxPilot, open Apps → Porchlight → Settings and fill in Local model address and Local model.",
 			],
 			commands: null,
 		};

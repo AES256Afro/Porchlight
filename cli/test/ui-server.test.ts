@@ -22,7 +22,7 @@ async function start(t: TestContext, overrides: Partial<UiOptions> = {}): Promis
 		reportPath: join(dir, "state", "repo-scan.json"),
 		defaultRoot: dir,
 		monitor: null,
-		monitorError: "Set SECURITYX_MONITOR_URL",
+		monitorError: "Set PORCHLIGHT_MONITOR_URL",
 		...overrides,
 	});
 	t.after(() => server.close());
@@ -47,7 +47,7 @@ function send(
 	const key = options.key === undefined ? server.sessionKey : options.key;
 	const payload = options.rawBody ?? (options.body === undefined ? undefined : JSON.stringify(options.body));
 	const headers: Record<string, string> = {
-		...(key === null ? {} : { "x-securityx-session": key }),
+		...(key === null ? {} : { "x-porchlight-session": key }),
 		...(payload === undefined ? {} : { "content-type": "application/json" }),
 		...options.headers,
 	};
@@ -103,7 +103,7 @@ test("serves the page with headers that confine it to this server", async (t) =>
 	const page = await send(server, "GET", "/", { key: null });
 
 	assert.equal(page.status, 200);
-	assert.match(page.text, /<title>SecurityX<\/title>/);
+	assert.match(page.text, /<title>Porchlight<\/title>/);
 	assert.match(String(page.headers["content-security-policy"]), /default-src 'none'.*script-src 'self'.*frame-ancestors 'none'/);
 	assert.equal(page.headers["x-content-type-options"], "nosniff");
 	assert.equal(page.headers["cache-control"], "no-store");
@@ -146,7 +146,7 @@ test("requires the session key on every API call and refuses cross-site origins"
 	assert.equal(crossSite.status, 403);
 	const sameSite = await send(server, "GET", "/api/state", { headers: { origin: `http://127.0.0.1:${server.port}` } });
 	assert.equal(sameSite.status, 200);
-	assert.deepEqual(sameSite.json.monitor, { configured: false, error: "Set SECURITYX_MONITOR_URL", unset: false });
+	assert.deepEqual(sameSite.json.monitor, { configured: false, error: "Set PORCHLIGHT_MONITOR_URL", unset: false });
 	// On loopback it was started from a terminal, so the page explains setup in shell terms.
 	assert.equal(sameSite.json.service, false);
 	assert.deepEqual(sameSite.json.scan, { state: "idle" });
@@ -168,7 +168,7 @@ test("listens beyond loopback only with a fixed key long enough to guard it", as
 	const key = "k".repeat(MIN_KEY_LENGTH);
 
 	// Refused before anything listens.
-	await assert.rejects(startUiServer({ ...base, host: "0.0.0.0" }), /SECURITYX_UI_KEY/);
+	await assert.rejects(startUiServer({ ...base, host: "0.0.0.0" }), /PORCHLIGHT_UI_KEY/);
 	await assert.rejects(startUiServer({ ...base, host: "0.0.0.0", sessionKey: key.slice(1) }), /at least 32/);
 	await assert.rejects(startUiServer({ ...base, host: "0.0.0.0", sessionKey: `${key.slice(1)} ` }), /no spaces/);
 	// A key given on loopback is held to the same rule.
@@ -452,7 +452,7 @@ test("names the files that tell a scanner to leave findings out", async (t) => {
 	const reply = (await send(server, "GET", "/api/repos/report")).json;
 
 	assert.deepEqual(reply.settingNotes, [
-		"clean has .gitleaks.toml: SecurityX ignored it and used gitleaks' built-in rules.",
+		"clean has .gitleaks.toml: Porchlight ignored it and used gitleaks' built-in rules.",
 		"clean has .gitleaksignore: secrets it lists are not in this report.",
 		"clean has web/osv-scanner.toml: vulnerabilities or packages it ignores are not in this report.",
 	]);
@@ -470,7 +470,7 @@ test("shows an existing report file and says so when it is not one", async (t) =
 	await writeFile(reportPath, "{broken");
 	assert.match((await send(server, "GET", "/api/repos/report")).json.error, /not valid JSON/);
 	await writeFile(reportPath, '{"some":"other file"}');
-	assert.match((await send(server, "GET", "/api/repos/report")).json.error, /not a SecurityX scan report/);
+	assert.match((await send(server, "GET", "/api/repos/report")).json.error, /not a Porchlight scan report/);
 });
 
 test("gives every finding in the report its suggested fix", async (t) => {
@@ -498,12 +498,12 @@ test("exports the scan as a roadmap or a findings list, in each format, as a fil
 	await writeFile(join(server.dir, "state", "repo-scan.json"), JSON.stringify(sampleReport("/work")));
 
 	const expected: [string, string, RegExp][] = [
-		["", "securityx-roadmap-2026-11-17.md", /^# Repair roadmap/],
-		["?format=html", "securityx-roadmap-2026-11-17.html", /^<!doctype html>/],
-		["?format=csv", "securityx-roadmap-2026-11-17.csv", /^Phase,Priority,Place,Action/],
-		["?format=json", "securityx-roadmap-2026-11-17.json", /^\{\n\t"title": "Repair roadmap"/],
-		["?content=findings", "securityx-findings-2026-11-17.md", /^# Findings and suggested fixes/],
-		["?content=findings&format=csv", "securityx-findings-2026-11-17.csv", /^Severity,Type,Place,ID,Finding/],
+		["", "porchlight-roadmap-2026-11-17.md", /^# Repair roadmap/],
+		["?format=html", "porchlight-roadmap-2026-11-17.html", /^<!doctype html>/],
+		["?format=csv", "porchlight-roadmap-2026-11-17.csv", /^Phase,Priority,Place,Action/],
+		["?format=json", "porchlight-roadmap-2026-11-17.json", /^\{\n\t"title": "Repair roadmap"/],
+		["?content=findings", "porchlight-findings-2026-11-17.md", /^# Findings and suggested fixes/],
+		["?content=findings&format=csv", "porchlight-findings-2026-11-17.csv", /^Severity,Type,Place,ID,Finding/],
 	];
 	for (const [query, filename, start] of expected) {
 		const reply = await send(server, "GET", `/api/repos/export${query}`);
@@ -514,7 +514,7 @@ test("exports the scan as a roadmap or a findings list, in each format, as a fil
 	}
 
 	const partial = await send(server, "GET", "/api/repos/export?severity=critical&kind=vulnerability&repo=group%2Fworst&q=pkg");
-	assert.equal(partial.headers["content-disposition"], 'attachment; filename="securityx-roadmap-partial-2026-11-17.md"');
+	assert.equal(partial.headers["content-disposition"], 'attachment; filename="porchlight-roadmap-partial-2026-11-17.md"');
 	assert.match(partial.text, /\*\*Partial roadmap\.\*\* It covers only: critical severity only; vulnerabilities only; in group\/worst; matching "pkg"\./);
 	assert.match(partial.text, /1 action clears 1 finding across 1 place/);
 
@@ -558,7 +558,7 @@ test("exports a domain's roadmap, and shows each of its findings with a fix", as
 		if (url.pathname === "/domains/missing.example") return Response.json({ error: "Domain is not registered" }, { status: 404 });
 		return Response.json({ domain: { name: "example.com" }, report });
 	}) as unknown as typeof fetch;
-	const monitor = monitorConfig({ SECURITYX_MONITOR_URL: "https://monitor.example", SECURITYX_ADMIN_TOKEN: ADMIN_TOKEN });
+	const monitor = monitorConfig({ PORCHLIGHT_MONITOR_URL: "https://monitor.example", PORCHLIGHT_ADMIN_TOKEN: ADMIN_TOKEN });
 	const server = await start(t, { monitor, fetchFn });
 
 	const shown = (await send(server, "GET", "/api/domains/example.com")).json;
@@ -570,7 +570,7 @@ test("exports a domain's roadmap, and shows each of its findings with a fix", as
 	assert.equal((await send(server, "GET", "/api/domains/unscanned.example")).json.suggestions, undefined);
 
 	const file = await send(server, "GET", "/api/domains/example.com/export?format=csv");
-	assert.equal(file.headers["content-disposition"], 'attachment; filename="securityx-roadmap-example.com-2026-11-17.csv"');
+	assert.equal(file.headers["content-disposition"], 'attachment; filename="porchlight-roadmap-example.com-2026-11-17.csv"');
 	assert.match(file.text, /1\. Fix now,high,shop\.example\.com,Remove or repoint the DNS record for shop\.example\.com/);
 	assert.match((await send(server, "GET", "/api/domains/example.com/export?content=findings")).text, /^# Findings and suggested fixes for example\.com/);
 
@@ -588,7 +588,7 @@ test("says the monitor is not connected instead of failing obscurely", async (t)
 	const reply = await send(server, "GET", "/api/domains");
 
 	assert.equal(reply.status, 503);
-	assert.equal(reply.json.error, "Set SECURITYX_MONITOR_URL");
+	assert.equal(reply.json.error, "Set PORCHLIGHT_MONITOR_URL");
 });
 
 test("says when the monitor was never set up, so the page can explain setup instead of quoting an error", async (t) => {
@@ -596,7 +596,7 @@ test("says when the monitor was never set up, so the page can explain setup inst
 
 	const state = await send(server, "GET", "/api/state");
 
-	assert.deepEqual(state.json.monitor, { configured: false, error: "Set SECURITYX_MONITOR_URL", unset: true });
+	assert.deepEqual(state.json.monitor, { configured: false, error: "Set PORCHLIGHT_MONITOR_URL", unset: true });
 });
 
 test("relays domain calls to the monitor without ever exposing the admin token", async (t) => {
@@ -611,7 +611,7 @@ test("relays domain calls to the monitor without ever exposing the admin token",
 		const notFound = url.pathname.endsWith("/missing.example");
 		return Response.json(notFound ? { error: "Domain is not registered" } : { ok: url.pathname }, { status: notFound ? 404 : 200 });
 	}) as unknown as typeof fetch;
-	const monitor = monitorConfig({ SECURITYX_MONITOR_URL: "https://monitor.example", SECURITYX_ADMIN_TOKEN: ADMIN_TOKEN });
+	const monitor = monitorConfig({ PORCHLIGHT_MONITOR_URL: "https://monitor.example", PORCHLIGHT_ADMIN_TOKEN: ADMIN_TOKEN });
 	const server = await start(t, { monitor, fetchFn });
 
 	const replies = [
@@ -648,7 +648,7 @@ test("relays domain calls to the monitor without ever exposing the admin token",
 test("only relays the routes the monitor has, with a well-formed domain", async (t) => {
 	let calls = 0;
 	const fetchFn = (async () => (calls++, Response.json({}))) as unknown as typeof fetch;
-	const monitor = monitorConfig({ SECURITYX_MONITOR_URL: "https://monitor.example", SECURITYX_ADMIN_TOKEN: ADMIN_TOKEN });
+	const monitor = monitorConfig({ PORCHLIGHT_MONITOR_URL: "https://monitor.example", PORCHLIGHT_ADMIN_TOKEN: ADMIN_TOKEN });
 	const server = await start(t, { monitor, fetchFn });
 
 	const cases: [string, string, number][] = [
@@ -673,7 +673,7 @@ test("turns an unreachable monitor into a clear error", async (t) => {
 	const fetchFn = (async () => {
 		throw new Error("connect ECONNREFUSED");
 	}) as unknown as typeof fetch;
-	const monitor = monitorConfig({ SECURITYX_MONITOR_URL: "http://localhost:5173", SECURITYX_ADMIN_TOKEN: ADMIN_TOKEN });
+	const monitor = monitorConfig({ PORCHLIGHT_MONITOR_URL: "http://localhost:5173", PORCHLIGHT_ADMIN_TOKEN: ADMIN_TOKEN });
 	const server = await start(t, { monitor, fetchFn });
 
 	const reply = await send(server, "GET", "/api/domains");
@@ -705,7 +705,7 @@ test("takes the next free port when the default is taken, but not when a port wa
 // The local model
 
 const MODEL = "qwen-test:9b";
-const assistant = assistantConfig({ SECURITYX_LLM_URL: "http://ollama.test:11434", SECURITYX_LLM_MODEL: MODEL });
+const assistant = assistantConfig({ PORCHLIGHT_LLM_URL: "http://ollama.test:11434", PORCHLIGHT_LLM_MODEL: MODEL });
 
 /**
  * A scripted network: the monitor at monitor.example and Ollama at ollama.test. Records what each
@@ -740,19 +740,19 @@ const ASSIST_REQUESTS: [string, unknown][] = [
 
 test("says when the local model is off, and every assist route then answers 503", async (t) => {
 	const network = fakeNetwork();
-	const server = await start(t, { fetchFn: network.fetchFn, assistantError: "Set SECURITYX_LLM_URL to Ollama's address", assistantUnset: true });
+	const server = await start(t, { fetchFn: network.fetchFn, assistantError: "Set PORCHLIGHT_LLM_URL to Ollama's address", assistantUnset: true });
 	await withReport(server);
 
-	assert.deepEqual((await send(server, "GET", "/api/state")).json.assistant, { configured: false, error: "Set SECURITYX_LLM_URL to Ollama's address", unset: true });
+	assert.deepEqual((await send(server, "GET", "/api/state")).json.assistant, { configured: false, error: "Set PORCHLIGHT_LLM_URL to Ollama's address", unset: true });
 	for (const [path, body] of ASSIST_REQUESTS) {
 		const reply = await send(server, "POST", path, { body });
-		assert.deepEqual([reply.status, reply.json.error], [503, "Set SECURITYX_LLM_URL to Ollama's address"], path);
+		assert.deepEqual([reply.status, reply.json.error], [503, "Set PORCHLIGHT_LLM_URL to Ollama's address"], path);
 	}
 	assert.deepEqual([network.modelCalls.length, network.monitorCalls.length], [0, 0]);
 
 	// A setting given but wrong is a mistake to show, not the usual off state.
-	const wrong = await start(t, { assistantError: "Set SECURITYX_LLM_MODEL to the model's name in Ollama" });
-	assert.deepEqual((await send(wrong, "GET", "/api/state")).json.assistant, { configured: false, error: "Set SECURITYX_LLM_MODEL to the model's name in Ollama", unset: false });
+	const wrong = await start(t, { assistantError: "Set PORCHLIGHT_LLM_MODEL to the model's name in Ollama" });
+	assert.deepEqual((await send(wrong, "GET", "/api/state")).json.assistant, { configured: false, error: "Set PORCHLIGHT_LLM_MODEL to the model's name in Ollama", unset: false });
 });
 
 test("names the configured model and where it runs", async (t) => {
@@ -763,7 +763,7 @@ test("names the configured model and where it runs", async (t) => {
 
 test("refuses malformed assist requests before asking anything", async (t) => {
 	const network = fakeNetwork();
-	const monitor = monitorConfig({ SECURITYX_MONITOR_URL: "https://monitor.example", SECURITYX_ADMIN_TOKEN: ADMIN_TOKEN });
+	const monitor = monitorConfig({ PORCHLIGHT_MONITOR_URL: "https://monitor.example", PORCHLIGHT_ADMIN_TOKEN: ADMIN_TOKEN });
 	const server = await start(t, { assistant, monitor, fetchFn: network.fetchFn });
 	await withReport(server);
 
@@ -805,7 +805,7 @@ test("answers 404 when there is nothing to explain", async (t) => {
 				? Response.json({ domain: { name: "unscanned.example" }, report: null })
 				: Response.json({ error: "Domain is not registered" }, { status: 404 }),
 	});
-	const monitor = monitorConfig({ SECURITYX_MONITOR_URL: "https://monitor.example", SECURITYX_ADMIN_TOKEN: ADMIN_TOKEN });
+	const monitor = monitorConfig({ PORCHLIGHT_MONITOR_URL: "https://monitor.example", PORCHLIGHT_ADMIN_TOKEN: ADMIN_TOKEN });
 	const server = await start(t, { assistant, monitor, fetchFn: network.fetchFn });
 
 	for (const [path, body] of ASSIST_REQUESTS.filter(([path]) => !path.endsWith("/domain"))) {
@@ -931,14 +931,14 @@ test("explains a domain's latest scan from the monitor without ever exposing the
 		resolvedFindings: [],
 		findings: [{ id: "dangling-cname:shop.example.com", severity: "high", host: "shop.example.com", basis: "dns", title: "CNAME target does not resolve" }],
 	};
-	const challenge = "securityx-verify=challenge-value-for-the-owner-only";
+	const challenge = "porchlight-verify=challenge-value-for-the-owner-only";
 	const network = fakeNetwork({
 		monitor: (url) =>
 			url.pathname === "/domains/refused.example"
 				? Response.json({ error: "Unauthorized" }, { status: 401 })
-				: Response.json({ domain: { name: "example.com", challenge: { type: "TXT", name: "_securityx-challenge.example.com", value: challenge } }, report }),
+				: Response.json({ domain: { name: "example.com", challenge: { type: "TXT", name: "_porchlight-challenge.example.com", value: challenge } }, report }),
 	});
-	const monitor = monitorConfig({ SECURITYX_MONITOR_URL: "https://monitor.example", SECURITYX_ADMIN_TOKEN: ADMIN_TOKEN });
+	const monitor = monitorConfig({ PORCHLIGHT_MONITOR_URL: "https://monitor.example", PORCHLIGHT_ADMIN_TOKEN: ADMIN_TOKEN });
 	const server = await start(t, { assistant, monitor, fetchFn: network.fetchFn });
 
 	const reply = await send(server, "POST", "/api/assist/domain", { body: { domain: " Example.COM " } });
@@ -956,7 +956,7 @@ test("explains a domain's latest scan from the monitor without ever exposing the
 	assert.deepEqual([refused.status, refused.json.error], [502, "The monitor refused the request: Unauthorized"]);
 
 	const unmonitored = await start(t, { assistant, fetchFn: network.fetchFn });
-	assert.deepEqual((await send(unmonitored, "POST", "/api/assist/domain", { body: { domain: "example.com" } })).json, { error: "Set SECURITYX_MONITOR_URL" });
+	assert.deepEqual((await send(unmonitored, "POST", "/api/assist/domain", { body: { domain: "example.com" } })).json, { error: "Set PORCHLIGHT_MONITOR_URL" });
 });
 
 test("turns a model that cannot answer into a clear error, and frees it for the next request", async (t) => {
@@ -1261,7 +1261,7 @@ test("sends the roadmap or the findings to the model the owner picks, from the s
 
 	// Only the model given at start-up so far.
 	const first = (await send(server, "GET", "/api/state")).json.sendTargets;
-	assert.deepEqual(first, [{ id: "startup", label: `${MODEL} · set when SecurityX started (ollama.test:11434)`, model: MODEL, host: "ollama.test:11434", hosted: false, current: true }]);
+	assert.deepEqual(first, [{ id: "startup", label: `${MODEL} · set when Porchlight started (ollama.test:11434)`, model: MODEL, host: "ollama.test:11434", hosted: false, current: true }]);
 
 	// Every model set up in Settings stays on offer, the one in use first; keys never reach the page.
 	await send(server, "POST", "/api/model", { body: { choice: "ollama-mac", model: "qwen3:8b" } });

@@ -1,5 +1,5 @@
 // @ts-check
-// Settings → Access from other devices: open this Mac's SecurityX from another computer on the tailnet.
+// Settings → Access from other devices: open this Mac's Porchlight from another computer on the tailnet.
 // Only the Mac itself can turn it on or off, and only it is shown the key.
 import { api } from "./api.js";
 import { banner, h, icon, replace, toast } from "./dom.js";
@@ -46,10 +46,10 @@ export async function accessSection() {
 			h(
 				"p",
 				{ class: "sub" },
-				"Open this Mac's SecurityX from your other computers, such as a Windows PC, over Tailscale. They see the same scans, settings and model. Nothing is reachable from your Wi-Fi or the internet.",
+				"Open this Mac's Porchlight from your other computers, such as a Windows PC, over Tailscale. They see the same scans, settings and model. Nothing is reachable from your Wi-Fi or the internet.",
 			),
 			status(),
-			state.canChange ? controls() : h("p", { class: "hint" }, "You're on another device. Only the Mac that runs SecurityX can turn this off or change the key."),
+			state.canChange ? controls() : h("p", { class: "hint" }, "You're on another device. Only the Mac that runs Porchlight can turn this off or change the key."),
 		);
 	}
 
@@ -67,7 +67,7 @@ export async function accessSection() {
 		if (state.enabled) {
 			return h("p", { class: "model-now" }, h("span", { class: "severity status-warning" }, icon("warning"), "Waiting"), ` ${state.error ?? "Not listening yet."}`);
 		}
-		return h("p", { class: "model-now" }, h("span", { class: "severity status-pending" }, icon("pending"), "Off"), " SecurityX answers only on this Mac.");
+		return h("p", { class: "model-now" }, h("span", { class: "severity status-pending" }, icon("pending"), "Off"), " Porchlight answers only on this Mac.");
 	}
 
 	function controls() {
@@ -96,7 +96,7 @@ export async function accessSection() {
 				: null,
 			banner("warning", "Before you turn this on", [
 				"Anyone on your tailnet who has the link or the key sees your scans, including where secrets were found, and can start scans and use your model.",
-				"It works while SecurityX is open on this Mac. Closing the app's window stops it for every device.",
+				"It works while Porchlight is open on this Mac. Closing the app's window stops it for every device.",
 				"The connection is encrypted by Tailscale. Use Tailscale's access controls if others share your tailnet.",
 			]),
 			h(

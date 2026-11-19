@@ -12,7 +12,7 @@ import { lookup as dnsLookup } from "node:dns/promises";
 import { request as httpRequest, type IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { BlockList, connect, isIP, type LookupFunction } from "node:net";
-import { CHALLENGE_LABEL, RECORD_TYPES, resolveDoh, type RecordType } from "./ownership.ts";
+import { CHALLENGE_LABEL, OLD_CHALLENGE_LABEL, RECORD_TYPES, resolveDoh, type RecordType } from "./ownership.ts";
 import { Scope, ScopeError } from "./scope.ts";
 
 export const HTTP_METHODS = ["GET", "HEAD", "OPTIONS"] as const;
@@ -23,7 +23,7 @@ export type ToolName = "dns_lookup" | "http_request" | "tcp_connect";
 export const MAX_BODY = 32 * 1024;
 const MAX_URL = 2000;
 const TIMEOUT_MS = 15_000;
-export const USER_AGENT = "SecurityX-investigation (owner-verified; see _securityx-challenge TXT)";
+export const USER_AGENT = "Porchlight-investigation (owner-verified; see _porchlight-challenge TXT)";
 
 export interface ToolSpec {
 	name: ToolName;
@@ -72,7 +72,7 @@ export function toolSpec(name: string): ToolSpec | undefined {
 }
 
 /**
- * Checks a tool call as the model wrote it and returns it in SecurityX's own shape. Anything not
+ * Checks a tool call as the model wrote it and returns it in Porchlight's own shape. Anything not
  * exactly right is refused with a reason the model is shown: an unknown tool, an argument that is
  * not listed, a value of the wrong type, a target out of scope. Nothing is guessed or repaired.
  */
@@ -86,7 +86,7 @@ export function parseAction(tool: unknown, args: unknown, scope: Scope): Action 
 
 	if (name === "dns_lookup") {
 		const host = scope.check(fields.host);
-		if (host.split(".").includes(CHALLENGE_LABEL)) throw new ToolError("the ownership record is not part of the investigation");
+		if (host.split(".").some((label) => label === CHALLENGE_LABEL || label === OLD_CHALLENGE_LABEL)) throw new ToolError("the ownership record is not part of the investigation");
 		const recordType = fields.record_type ?? "A";
 		if (typeof recordType !== "string" || !(RECORD_TYPES as readonly string[]).includes(recordType.toUpperCase())) {
 			throw new ToolError(`record_type must be one of ${RECORD_TYPES.join(", ")}`);

@@ -43,10 +43,10 @@ export function renderFindings(list: FindingsList, format: Format, mural?: Mural
 	}
 }
 
-// The mural: the model's words beside figures SecurityX counted, labelled as generated.
+// The mural: the model's words beside figures Porchlight counted, labelled as generated.
 
 function muralLabel(mural: Mural): string {
-	return `Written by ${mural.model} on ${mural.generatedAt.slice(0, 10)}. This is generated text and can be wrong: check it against the figures, which SecurityX counted, and the details below.`;
+	return `Written by ${mural.model} on ${mural.generatedAt.slice(0, 10)}. This is generated text and can be wrong: check it against the figures, which Porchlight counted, and the details below.`;
 }
 
 function muralFigures(mural: Mural): [string, string][] {
@@ -92,7 +92,7 @@ ${mural.cut ? `<p class="sub">${html(`The model read part of the scan: ${mural.c
 function muralMarkdown(mural: Mural): string[] {
 	const lines = ["## Mural", "", `*${mdText(muralLabel(mural))}*`, ""];
 	if (mural.headline) lines.push(`**${mdText(mural.headline)}**`, "");
-	lines.push(`Figures counted by SecurityX: ${muralFigures(mural).map(([label, value]) => `${label} ${value}`).join(" · ")}.`, "");
+	lines.push(`Figures counted by Porchlight: ${muralFigures(mural).map(([label, value]) => `${label} ${value}`).join(" · ")}.`, "");
 	for (const [key, title] of MURAL_COLUMNS) {
 		lines.push(`### ${title}`, "", ...(mural[key].length > 0 ? mural[key].map((item) => `- ${mdText(item)}`) : ["Nothing written."]), "");
 	}
@@ -100,10 +100,10 @@ function muralMarkdown(mural: Mural): string[] {
 	return lines;
 }
 
-/** `securityx-roadmap-2026-11-17`, with a label (a domain, or "partial") in the middle. Safe as a file name. */
+/** `porchlight-roadmap-2026-11-17`, with a label (a domain, or "partial") in the middle. Safe as a file name. */
 export function fileStem(kind: "roadmap" | "findings", scannedAt: string, label?: string): string {
 	const safe = label?.toLowerCase().replace(/[^a-z0-9.-]+/g, "-").replace(/^[.-]+|[.-]+$/g, "");
-	return [`securityx-${kind}`, safe, scannedAt.slice(0, 10).replace(/[^0-9-]/g, "")].filter(Boolean).join("-");
+	return [`porchlight-${kind}`, safe, scannedAt.slice(0, 10).replace(/[^0-9-]/g, "")].filter(Boolean).join("-");
 }
 
 const number = (value: number) => value.toLocaleString("en-US");

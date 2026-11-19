@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      # BoxPilot's catalog validator checks boxpilot/securityx.yaml. If the repository is not
+      # BoxPilot's catalog validator checks boxpilot/porchlight.yaml. If the repository is not
       # reachable the step is skipped and the manifest still gets its local checks.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         continue-on-error: true
@@ -42,12 +42,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - run: docker build -t securityx:ci .
-      - run: sh scripts/container-smoke.sh securityx:ci
+      - run: docker build -t porchlight:ci .
+      - run: sh scripts/container-smoke.sh porchlight:ci
 
-  # A version tag publishes ghcr.io/aes256afro/securityx:<version>, the image BoxPilot's catalog
-  # pins by digest. The package is public, so any BoxPilot can pull it. Its SBOM and build
-  # provenance are attached by buildx and stored beside it in the registry. Unlike TheySpy's and
+  # A version tag publishes ghcr.io/aes256afro/porchlight:<version>, and the same image under the
+  # path BoxPilot's catalog pins by digest, ghcr.io/aes256afro/securityx:<version>. Both packages
+  # must be public so any BoxPilot can pull them; a new package starts private (see the README).
+  # Its SBOM and build provenance are attached by buildx and stored beside it in the registry. Unlike TheySpy's and
   # BaselineWatch's images, it is not signed with Sigstore yet.
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -57,7 +58,9 @@ jobs:
       contents: read
       packages: write
     env:
-      IMAGE: ghcr.io/aes256afro/securityx
+      IMAGE: ghcr.io/aes256afro/porchlight
+      # The path BoxPilot servers have pinned since before the rename; published alongside until they move.
+      OLD_IMAGE: ghcr.io/aes256afro/securityx
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # arm64 too: plenty of home servers are a Raspberry Pi or another ARM board.
@@ -72,7 +75,9 @@ jobs:
       - id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
-          images: ${{ env.IMAGE }}
+          images: |
+            ${{ env.IMAGE }}
+            ${{ env.OLD_IMAGE }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -90,5 +95,6 @@ jobs:
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          echo "Pin this as image.reference in boxpilot/securityx.yaml:" >> "$GITHUB_STEP_SUMMARY"
-          echo "\`${IMAGE}:${GITHUB_REF_NAME#v}@${DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Pin this as image.reference in boxpilot/porchlight.yaml:" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`${OLD_IMAGE}:${GITHUB_REF_NAME#v}@${DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "The same image: \`${IMAGE}:${GITHUB_REF_NAME#v}@${DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"

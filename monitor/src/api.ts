@@ -38,7 +38,7 @@ async function route(request: Request, env: AppEnv, deps: Deps): Promise<Respons
 	const url = new URL(request.url);
 	const segments = url.pathname.split("/").filter(Boolean);
 
-	if (segments.length === 0) return new Response("securityx-monitor\n");
+	if (segments.length === 0) return new Response("porchlight-monitor\n");
 	if (segments[0] !== "domains" || segments.length > 3) return json({ error: "Not found" }, 404);
 
 	const denied = await authorize(request, env);

@@ -2,8 +2,9 @@
  * Proof that the owner controls a domain, checked from this computer.
  *
  * It is the monitor's challenge (`monitor/src/ownership.ts`): a TXT record at
- * `_securityx-challenge.<domain>` holding `securityx-verify=<token>`. Only someone who runs the
- * domain's DNS can publish it. The check is a DNS-over-HTTPS lookup made here, so an investigation
+ * `_porchlight-challenge.<domain>` holding `porchlight-verify=<token>`. Only someone who runs the
+ * domain's DNS can publish it. A record published before the rename, under the earlier label and
+ * prefix (`OLD_CHALLENGE_LABEL`), still proves it, so nobody has to publish a domain's record again. The check is a DNS-over-HTTPS lookup made here, so an investigation
  * works whether or not the monitor is deployed. When the monitor already watches the domain, its
  * token is adopted, so one record serves both.
  *
@@ -15,7 +16,10 @@ import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { parseDomain } from "./scope.ts";
 
-export const CHALLENGE_LABEL = "_securityx-challenge";
+export const CHALLENGE_LABEL = "_porchlight-challenge";
+/** The label and value prefix records were published under before the rename. Still accepted. */
+export const OLD_CHALLENGE_LABEL = "_securityx-challenge";
+const OLD_VALUE_PREFIX = "securityx-verify=";
 const DOH_URL = "https://cloudflare-dns.com/dns-query";
 const DOH_TIMEOUT_MS = 8_000;
 const TOKEN = /^[0-9a-f]{16,128}$/;
@@ -29,7 +33,12 @@ export function challengeName(domain: string): string {
 }
 
 export function challengeValue(token: string): string {
-	return `securityx-verify=${token}`;
+	return `porchlight-verify=${token}`;
+}
+
+/** The values that prove this token, under either prefix. */
+function provingValues(token: string): string[] {
+	return [challengeValue(token), `${OLD_VALUE_PREFIX}${token}`];
 }
 
 export function newToken(): string {
@@ -93,8 +102,13 @@ export function recordsOf(answers: DnsAnswer[], type: RecordType): string[] {
  * failed is not proof either way, and the caller treats it as "not verified" (invariant 5).
  */
 export async function checkOwnership(domain: string, token: string, fetchFn: typeof fetch, signal?: AbortSignal): Promise<boolean> {
-	const { answers } = await resolveDoh(challengeName(domain), "TXT", fetchFn, signal);
-	return recordsOf(answers, "TXT").includes(challengeValue(token));
+	const values = provingValues(token);
+	// The current record first; a record published before the rename only when that one does not prove it.
+	for (const label of [CHALLENGE_LABEL, OLD_CHALLENGE_LABEL]) {
+		const { answers } = await resolveDoh(`${label}.${domain}`, "TXT", fetchFn, signal);
+		if (recordsOf(answers, "TXT").some((value) => values.includes(value))) return true;
+	}
+	return false;
 }
 
 /** A domain the owner has added for investigation, and the token its record must hold. */
@@ -131,7 +145,7 @@ export async function saveDomains(path: string, file: DomainsFile): Promise<void
 /** A token taken from the monitor's challenge value, or null when it is not one. */
 export function tokenFromChallenge(value: unknown): string | null {
 	if (typeof value !== "string") return null;
-	const match = /^securityx-verify=([0-9a-f]{16,128})$/.exec(value);
+	const match = /^(?:porchlight|securityx)-verify=([0-9a-f]{16,128})$/.exec(value);
 	return match?.[1] ?? null;
 }
 

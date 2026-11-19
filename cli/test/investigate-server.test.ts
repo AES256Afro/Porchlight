@@ -21,7 +21,7 @@ function send(server: UiServer, method: string, path: string, body?: unknown): P
 	const payload = body === undefined ? undefined : JSON.stringify(body);
 	return new Promise((resolve, reject) => {
 		const req = request(
-			{ host: "127.0.0.1", port: server.port, method, path, headers: { "x-securityx-session": server.sessionKey, ...(payload ? { "content-type": "application/json" } : {}) } },
+			{ host: "127.0.0.1", port: server.port, method, path, headers: { "x-porchlight-session": server.sessionKey, ...(payload ? { "content-type": "application/json" } : {}) } },
 			(res) => {
 				let text = "";
 				res.setEncoding("utf8");
@@ -56,7 +56,7 @@ function fakeWorld(options: { replies?: unknown[]; owned?: () => boolean; monito
 		requests.push(`${init?.method ?? "GET"} ${url.host}${url.pathname} ${url.searchParams.get("name") ?? ""}`.trim());
 		if (url.host === "cloudflare-dns.com") {
 			const name = url.searchParams.get("name") ?? "";
-			if (name.startsWith("_securityx-challenge.")) {
+			if (name.startsWith("_porchlight-challenge.")) {
 				const owned = options.owned ? options.owned() : true;
 				return Response.json({ Status: 0, Answer: owned && published ? [{ name, type: 16, data: `"${published}"` }] : [] });
 			}
@@ -70,7 +70,7 @@ function fakeWorld(options: { replies?: unknown[]; owned?: () => boolean; monito
 			return Response.json({ message: { content } });
 		}
 		if (url.pathname.startsWith("/domains/") && options.monitorToken) {
-			return Response.json({ domain: { challenge: { value: `securityx-verify=${options.monitorToken}` } } });
+			return Response.json({ domain: { challenge: { value: `porchlight-verify=${options.monitorToken}` } } });
 		}
 		return new Response("not found", { status: 404 });
 	}) as typeof fetch;
@@ -97,7 +97,7 @@ async function start(t: TestContext, world: ReturnType<typeof fakeWorld>, overri
 		reportPath: join(dir, "state", "repo-scan.json"),
 		defaultRoot: dir,
 		monitor: null,
-		assistant: assistantConfig({ SECURITYX_LLM_URL: "http://127.0.0.1:11434", SECURITYX_LLM_MODEL: "scripted-model" }),
+		assistant: assistantConfig({ PORCHLIGHT_LLM_URL: "http://127.0.0.1:11434", PORCHLIGHT_LLM_MODEL: "scripted-model" }),
 		fetchFn: world.fetchFn,
 		investigateNet: world.net,
 		investigateMinGapMs: 0,
@@ -132,7 +132,7 @@ test("investigate: a domain gets a challenge record, kept readable only by the o
 	const entry = await addAndPublish(server, world, "Example.COM");
 	assert.equal(entry.name, "example.com");
 	assert.equal(entry.challenge.name, challengeName("example.com"));
-	assert.match(entry.challenge.value, /^securityx-verify=[0-9a-f]{48}$/);
+	assert.match(entry.challenge.value, /^porchlight-verify=[0-9a-f]{48}$/);
 	assert.equal(entry.source, "local");
 	const file = await stat(join(server.dir, "state", "investigate-domains.json"));
 	assert.equal(file.mode & 0o777, 0o600);
@@ -146,7 +146,7 @@ test("investigate: the monitor's token is adopted, so one record serves both", a
 	const server = await start(t, world, { monitor: { url: new URL("https://monitor.example.net"), token: "x".repeat(40) } });
 	const added = await send(server, "POST", "/api/investigate/domains", { domain: "example.com" });
 	assert.equal(added.json.domains[0].source, "monitor");
-	assert.equal(added.json.domains[0].challenge.value, `securityx-verify=${"cd".repeat(24)}`);
+	assert.equal(added.json.domains[0].challenge.value, `porchlight-verify=${"cd".repeat(24)}`);
 });
 
 test("investigate: an unverified or unknown domain is refused, and the model is never asked", async (t) => {
@@ -164,7 +164,7 @@ test("investigate: an unverified or unknown domain is refused, and the model is 
 test("investigate: a hosted model needs the owner's yes, after being told what is sent", async (t) => {
 	const world = fakeWorld();
 	const server = await start(t, world, {
-		assistant: assistantConfig({ SECURITYX_LLM_PROVIDER: "anthropic", SECURITYX_LLM_API_KEY: "k".repeat(40) }),
+		assistant: assistantConfig({ PORCHLIGHT_LLM_PROVIDER: "anthropic", PORCHLIGHT_LLM_API_KEY: "k".repeat(40) }),
 	});
 	await addAndPublish(server, world);
 	const state = await send(server, "GET", "/api/investigate");
@@ -226,13 +226,13 @@ test("investigate: end to end with a scripted model, approval, findings, review 
 	assert.equal((await stat(join(server.dir, "state", "investigations"))).mode & 0o777, 0o700);
 	// Every action re-proved ownership first, and no prompt carried the token.
 	assert.ok(world.requests.filter((line) => line.startsWith("GET cloudflare-dns.com")).length >= 5);
-	assert.ok(world.prompts.every((prompt) => !prompt.includes("securityx-verify")));
+	assert.ok(world.prompts.every((prompt) => !prompt.includes("porchlight-verify")));
 
 	const accepted = await send(server, "POST", "/api/investigate/finding", { run: runId, finding: run.findings[0].id, status: "accepted" });
 	assert.equal(accepted.json.finding.status, "accepted");
 	const exported = await send(server, "GET", `/api/investigate/export?id=${runId}&format=md`);
 	assert.equal(exported.status, 200);
-	assert.match(String(exported.headers["content-disposition"]), /filename="securityx-investigation-\d{4}-\d{2}-\d{2}\.md"/);
+	assert.match(String(exported.headers["content-disposition"]), /filename="porchlight-investigation-\d{4}-\d{2}-\d{2}\.md"/);
 	assert.match(exported.text, /Your review: accepted by you/);
 	assert.match(exported.text, /model's judgement/);
 	assert.equal((await send(server, "GET", `/api/investigate/export?id=${runId}&format=html`)).status, 400);

@@ -12,7 +12,7 @@ export function parseScanReport(text: string, path: string): ScanReport {
 		throw new Error(`Not valid JSON: ${path}`);
 	}
 	if (!Array.isArray(report?.repos) || !Array.isArray(report?.tools) || typeof report.root !== "string") {
-		throw new Error(`Not a SecurityX scan report: ${path}`);
+		throw new Error(`Not a Porchlight scan report: ${path}`);
 	}
 	return report;
 }
@@ -92,7 +92,7 @@ export function settingNotes(report: ScanReport): string[] {
 			const base = file.split("/").at(-1);
 			const effect =
 				base === ".gitleaks.toml"
-					? "SecurityX ignored it and used gitleaks' built-in rules"
+					? "Porchlight ignored it and used gitleaks' built-in rules"
 					: base === ".gitleaksignore"
 						? "secrets it lists are not in this report"
 						: "vulnerabilities or packages it ignores are not in this report";
@@ -106,7 +106,7 @@ export function renderMarkdown(report: ScanReport): string {
 	const all = report.repos.flatMap((repo) => repo.findings);
 	const totals = countBySeverity(all);
 	const lines = [
-		"# SecurityX repository scan",
+		"# Porchlight repository scan",
 		"",
 		`Scanned ${repoCount(report)} under \`${report.root}\` on ${report.scannedAt.slice(0, 10)}: ` +
 			`${all.length === 1 ? "1 finding" : `${all.length} findings`} ` +

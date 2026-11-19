@@ -174,7 +174,7 @@ export async function listeningServices(run: Runner, firewallOn: boolean | null,
 	const base = { id: "listeners", area: "network", title: "What accepts connections from the network", severity: "medium" } as const;
 	const netstat = await output(run, "netstat", ["-anv", "-p", "tcp"]);
 	if (!netstat || netstat.code !== 0) return [unknown(base, netstat ? `netstat failed with code ${netstat.code}` : "netstat is not on this computer")];
-	if (!/Local Address/i.test(netstat.text)) return [unknown(base, "netstat gave an answer SecurityX does not recognise")];
+	if (!/Local Address/i.test(netstat.text)) return [unknown(base, "netstat gave an answer Porchlight does not recognise")];
 	const ps = await output(run, "ps", ["-axo", "pid=,comm="]);
 	const processes = ps && ps.code === 0 ? parseProcesses(ps.stdout) : new Map<number, string>();
 	return classifyListeners(parseNetstat(netstat.stdout), processes, firewallOn, mac);

@@ -41,5 +41,5 @@ test("treats the root itself as a repository when it is one", async () => {
 });
 
 test("returns nothing for a missing directory", async () => {
-	assert.deepEqual(await discoverRepos("/nonexistent/securityx", 3), []);
+	assert.deepEqual(await discoverRepos("/nonexistent/porchlight", 3), []);
 });

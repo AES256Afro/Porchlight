@@ -6,7 +6,7 @@ import { askPrompt, DATA_CAP, DATA_END, DATA_START, domainPrompt, findingPrompt,
 import type { Finding, ScanReport } from "../src/repos/types.ts";
 import type { MonitorReport } from "../src/roadmap/domains.ts";
 
-const config = assistantConfig({ SECURITYX_LLM_URL: "http://ollama.test:11434", SECURITYX_LLM_MODEL: "qwen-test:9b" });
+const config = assistantConfig({ PORCHLIGHT_LLM_URL: "http://ollama.test:11434", PORCHLIGHT_LLM_MODEL: "qwen-test:9b" });
 /** Stands in for scan data in a prompt: no error message may repeat it. */
 const PROMPT_MARKER = "prompt-text-that-must-stay-out-of-errors";
 const messages: ChatMessage[] = [
@@ -38,21 +38,21 @@ async function failure(fetchFn: typeof fetch, options: { timeoutMs?: number; sig
 }
 
 test("reads the model settings, and needs an address before anything turns on", () => {
-	assert.throws(() => assistantConfig({}), /Set SECURITYX_LLM_URL/);
+	assert.throws(() => assistantConfig({}), /Set PORCHLIGHT_LLM_URL/);
 	// BoxPilot fills in the model by default; the address alone is the switch.
-	assert.throws(() => assistantConfig({ SECURITYX_LLM_URL: "  ", SECURITYX_LLM_MODEL: "qwen" }), /Set SECURITYX_LLM_URL/);
-	assert.throws(() => assistantConfig({ SECURITYX_LLM_URL: "http://localhost:11434" }), /Set SECURITYX_LLM_MODEL/);
-	assert.throws(() => assistantConfig({ SECURITYX_LLM_URL: "http://localhost:11434", SECURITYX_LLM_MODEL: "two words" }), /not a model name/);
-	assert.throws(() => assistantConfig({ SECURITYX_LLM_URL: "not an address", SECURITYX_LLM_MODEL: "qwen" }), /not an address/);
+	assert.throws(() => assistantConfig({ PORCHLIGHT_LLM_URL: "  ", PORCHLIGHT_LLM_MODEL: "qwen" }), /Set PORCHLIGHT_LLM_URL/);
+	assert.throws(() => assistantConfig({ PORCHLIGHT_LLM_URL: "http://localhost:11434" }), /Set PORCHLIGHT_LLM_MODEL/);
+	assert.throws(() => assistantConfig({ PORCHLIGHT_LLM_URL: "http://localhost:11434", PORCHLIGHT_LLM_MODEL: "two words" }), /not a model name/);
+	assert.throws(() => assistantConfig({ PORCHLIGHT_LLM_URL: "not an address", PORCHLIGHT_LLM_MODEL: "qwen" }), /not an address/);
 	for (const url of ["localhost:11434", "ftp://ollama.test", "file:///etc/passwd"]) {
-		assert.throws(() => assistantConfig({ SECURITYX_LLM_URL: url, SECURITYX_LLM_MODEL: "qwen" }), /must start with http:\/\/ or https:\/\//, url);
+		assert.throws(() => assistantConfig({ PORCHLIGHT_LLM_URL: url, PORCHLIGHT_LLM_MODEL: "qwen" }), /must start with http:\/\/ or https:\/\//, url);
 	}
-	assert.throws(() => assistantConfig({ SECURITYX_LLM_URL: "http://user:pass@ollama.test", SECURITYX_LLM_MODEL: "qwen" }), /user name or password/);
+	assert.throws(() => assistantConfig({ PORCHLIGHT_LLM_URL: "http://user:pass@ollama.test", PORCHLIGHT_LLM_MODEL: "qwen" }), /user name or password/);
 
 	// Plain http is fine, on this machine or another: nothing secret goes to Ollama.
-	const server = assistantConfig({ SECURITYX_LLM_URL: " http://host.docker.internal:11434 ", SECURITYX_LLM_MODEL: " hf.co/org/model-9b:Q4_K_M " });
+	const server = assistantConfig({ PORCHLIGHT_LLM_URL: " http://host.docker.internal:11434 ", PORCHLIGHT_LLM_MODEL: " hf.co/org/model-9b:Q4_K_M " });
 	assert.deepEqual([server.url.href, server.model], ["http://host.docker.internal:11434/", "hf.co/org/model-9b:Q4_K_M"]);
-	assert.equal(assistantConfig({ SECURITYX_LLM_URL: "https://box.example/ollama?x=1#y", SECURITYX_LLM_MODEL: "qwen" }).url.href, "https://box.example/ollama/");
+	assert.equal(assistantConfig({ PORCHLIGHT_LLM_URL: "https://box.example/ollama?x=1#y", PORCHLIGHT_LLM_MODEL: "qwen" }).url.href, "https://box.example/ollama/");
 });
 
 test("asks Ollama's chat API for one whole answer, with thinking off and a small context", async () => {
@@ -75,7 +75,7 @@ test("asks Ollama's chat API for one whole answer, with thinking off and a small
 		options: { temperature: 0.2, num_ctx: 8192, num_predict: 500 },
 	});
 
-	const behindProxy = assistantConfig({ SECURITYX_LLM_URL: "https://box.example/ollama", SECURITYX_LLM_MODEL: "qwen" });
+	const behindProxy = assistantConfig({ PORCHLIGHT_LLM_URL: "https://box.example/ollama", PORCHLIGHT_LLM_MODEL: "qwen" });
 	await chat(behindProxy, messages, { fetchFn });
 	assert.equal(fetchFn.calls[1]!.url, "https://box.example/ollama/api/chat");
 });
@@ -112,11 +112,11 @@ test("names a model Ollama does not have, and tells that apart from an address t
 	assert.equal(other.message, "Ollama has no model qwen-test:9b: add it in Ollama first");
 
 	const notOllama = await failure(fakeFetch(() => new Response("404 page not found", { status: 404 })));
-	assert.equal(notOllama.message, "ollama.test:11434 has no Ollama API at /api/chat (HTTP 404). Check SECURITYX_LLM_URL");
+	assert.equal(notOllama.message, "ollama.test:11434 has no Ollama API at /api/chat (HTTP 404). Check PORCHLIGHT_LLM_URL");
 	const overloaded = await failure(fakeFetch(() => Response.json({ error: "model requires more system memory (9.1 GiB) than is available (6.0 GiB)" }, { status: 500 })));
 	assert.equal(overloaded.message, "The model at ollama.test:11434 failed (HTTP 500): model requires more system memory (9.1 GiB) than is available (6.0 GiB)");
 	const unreadable = await failure(fakeFetch(() => new Response("<html>hello</html>", { status: 200 })));
-	assert.equal(unreadable.message, "The answer from ollama.test:11434 is not one SecurityX can read. Is it Ollama?");
+	assert.equal(unreadable.message, "The answer from ollama.test:11434 is not one Porchlight can read. Is it Ollama?");
 });
 
 test("gives up after the time limit, and stops when the asker goes away", async () => {
@@ -323,32 +323,32 @@ test("explains a domain's latest scan: changes, then findings, with nothing but 
 const API_KEY = ["sk", "test", "k".repeat(30)].join("-");
 
 test("chooses a hosted model by provider, with its address fixed and its key required", () => {
-	const claude = assistantConfig({ SECURITYX_LLM_PROVIDER: "anthropic", SECURITYX_LLM_API_KEY: API_KEY });
+	const claude = assistantConfig({ PORCHLIGHT_LLM_PROVIDER: "anthropic", PORCHLIGHT_LLM_API_KEY: API_KEY });
 	assert.deepEqual([claude.provider, claude.url.href, claude.model], ["anthropic", "https://api.anthropic.com/v1/messages", "claude-opus-5-5"]);
 	// A local model's name left in the setting, as BoxPilot leaves it, is not this provider's.
-	assert.equal(assistantConfig({ SECURITYX_LLM_PROVIDER: "anthropic", SECURITYX_LLM_API_KEY: API_KEY, SECURITYX_LLM_MODEL: "hf.co/x/y:Q4" }).model, "claude-opus-5-5");
-	assert.equal(assistantConfig({ SECURITYX_LLM_PROVIDER: "Anthropic", SECURITYX_LLM_API_KEY: API_KEY, SECURITYX_LLM_MODEL: "claude-haiku-5-5" }).model, "claude-haiku-5-5");
+	assert.equal(assistantConfig({ PORCHLIGHT_LLM_PROVIDER: "anthropic", PORCHLIGHT_LLM_API_KEY: API_KEY, PORCHLIGHT_LLM_MODEL: "hf.co/x/y:Q4" }).model, "claude-opus-5-5");
+	assert.equal(assistantConfig({ PORCHLIGHT_LLM_PROVIDER: "Anthropic", PORCHLIGHT_LLM_API_KEY: API_KEY, PORCHLIGHT_LLM_MODEL: "claude-haiku-5-5" }).model, "claude-haiku-5-5");
 	// No setting moves a key to another address.
-	assert.equal(assistantConfig({ SECURITYX_LLM_PROVIDER: "deepseek", SECURITYX_LLM_API_KEY: API_KEY, SECURITYX_LLM_MODEL: "some-model", SECURITYX_LLM_URL: "https://evil.example" }).url.href, "https://api.deepseek.com/chat/completions");
-	assert.equal(assistantConfig({ SECURITYX_LLM_PROVIDER: "openai", SECURITYX_LLM_API_KEY: API_KEY, SECURITYX_LLM_MODEL: "some-model" }).url.host, "api.openai.com");
+	assert.equal(assistantConfig({ PORCHLIGHT_LLM_PROVIDER: "deepseek", PORCHLIGHT_LLM_API_KEY: API_KEY, PORCHLIGHT_LLM_MODEL: "some-model", PORCHLIGHT_LLM_URL: "https://evil.example" }).url.href, "https://api.deepseek.com/chat/completions");
+	assert.equal(assistantConfig({ PORCHLIGHT_LLM_PROVIDER: "openai", PORCHLIGHT_LLM_API_KEY: API_KEY, PORCHLIGHT_LLM_MODEL: "some-model" }).url.host, "api.openai.com");
 
-	assert.throws(() => assistantConfig({ SECURITYX_LLM_PROVIDER: "anthropic" }), /SECURITYX_LLM_API_KEY to your Claude API key/);
-	assert.throws(() => assistantConfig({ SECURITYX_LLM_PROVIDER: "anthropic", SECURITYX_LLM_API_KEY: "short" }), /not an API key/);
-	assert.throws(() => assistantConfig({ SECURITYX_LLM_PROVIDER: "openai", SECURITYX_LLM_API_KEY: API_KEY }), /SECURITYX_LLM_MODEL to the OpenAI model/);
-	assert.throws(() => assistantConfig({ SECURITYX_LLM_PROVIDER: "gemini", SECURITYX_LLM_API_KEY: API_KEY }), /SECURITYX_LLM_MODEL to the Gemini model/);
+	assert.throws(() => assistantConfig({ PORCHLIGHT_LLM_PROVIDER: "anthropic" }), /PORCHLIGHT_LLM_API_KEY to your Claude API key/);
+	assert.throws(() => assistantConfig({ PORCHLIGHT_LLM_PROVIDER: "anthropic", PORCHLIGHT_LLM_API_KEY: "short" }), /not an API key/);
+	assert.throws(() => assistantConfig({ PORCHLIGHT_LLM_PROVIDER: "openai", PORCHLIGHT_LLM_API_KEY: API_KEY }), /PORCHLIGHT_LLM_MODEL to the OpenAI model/);
+	assert.throws(() => assistantConfig({ PORCHLIGHT_LLM_PROVIDER: "gemini", PORCHLIGHT_LLM_API_KEY: API_KEY }), /PORCHLIGHT_LLM_MODEL to the Gemini model/);
 	assert.equal(
-		assistantConfig({ SECURITYX_LLM_PROVIDER: "gemini", SECURITYX_LLM_API_KEY: API_KEY, SECURITYX_LLM_MODEL: "gemini-x", SECURITYX_LLM_URL: "https://evil.example" }).url.href,
+		assistantConfig({ PORCHLIGHT_LLM_PROVIDER: "gemini", PORCHLIGHT_LLM_API_KEY: API_KEY, PORCHLIGHT_LLM_MODEL: "gemini-x", PORCHLIGHT_LLM_URL: "https://evil.example" }).url.href,
 		"https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
 	);
-	assert.throws(() => assistantConfig({ SECURITYX_LLM_PROVIDER: "mistral", SECURITYX_LLM_API_KEY: API_KEY }), /must be one of/);
+	assert.throws(() => assistantConfig({ PORCHLIGHT_LLM_PROVIDER: "mistral", PORCHLIGHT_LLM_API_KEY: API_KEY }), /must be one of/);
 });
 
 test("reaches a server that speaks OpenAI's format at the owner's own address, such as LM Studio", async () => {
-	const studio = assistantConfig({ SECURITYX_LLM_PROVIDER: "compatible", SECURITYX_LLM_URL: "http://my-server:1234", SECURITYX_LLM_MODEL: "qwen/qwen3-9b" });
+	const studio = assistantConfig({ PORCHLIGHT_LLM_PROVIDER: "compatible", PORCHLIGHT_LLM_URL: "http://my-server:1234", PORCHLIGHT_LLM_MODEL: "qwen/qwen3-9b" });
 	assert.equal(studio.url.href, "http://my-server:1234/v1/chat/completions");
-	assert.equal(assistantConfig({ SECURITYX_LLM_PROVIDER: "compatible", SECURITYX_LLM_URL: "http://localhost:8080/api/v1/", SECURITYX_LLM_MODEL: "m" }).url.href, "http://localhost:8080/api/v1/chat/completions");
-	assert.throws(() => assistantConfig({ SECURITYX_LLM_PROVIDER: "compatible", SECURITYX_LLM_MODEL: "m" }), /model server's address/);
-	assert.throws(() => assistantConfig({ SECURITYX_LLM_PROVIDER: "compatible", SECURITYX_LLM_URL: "http://localhost:1234/v1" }), /SECURITYX_LLM_MODEL/);
+	assert.equal(assistantConfig({ PORCHLIGHT_LLM_PROVIDER: "compatible", PORCHLIGHT_LLM_URL: "http://localhost:8080/api/v1/", PORCHLIGHT_LLM_MODEL: "m" }).url.href, "http://localhost:8080/api/v1/chat/completions");
+	assert.throws(() => assistantConfig({ PORCHLIGHT_LLM_PROVIDER: "compatible", PORCHLIGHT_LLM_MODEL: "m" }), /model server's address/);
+	assert.throws(() => assistantConfig({ PORCHLIGHT_LLM_PROVIDER: "compatible", PORCHLIGHT_LLM_URL: "http://localhost:1234/v1" }), /PORCHLIGHT_LLM_MODEL/);
 
 	const fetchFn = fakeFetch(() => Response.json({ choices: [{ message: { content: "<think>hm</think>Hello." } }] }));
 	assert.equal(await chat(studio, messages, { fetchFn }), "Hello.");
@@ -358,7 +358,7 @@ test("reaches a server that speaks OpenAI's format at the owner's own address, s
 });
 
 test("asks Claude with the key in a header only, and treats a refusal as no answer", async () => {
-	const claude = assistantConfig({ SECURITYX_LLM_PROVIDER: "anthropic", SECURITYX_LLM_API_KEY: API_KEY });
+	const claude = assistantConfig({ PORCHLIGHT_LLM_PROVIDER: "anthropic", PORCHLIGHT_LLM_API_KEY: API_KEY });
 	const fetchFn = fakeFetch(() => Response.json({ stop_reason: "end_turn", content: [{ type: "thinking", thinking: "" }, { type: "text", text: "Rotate the key." }] }));
 
 	assert.equal(await chat(claude, messages, { fetchFn }), "Rotate the key.");

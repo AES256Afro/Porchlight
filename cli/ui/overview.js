@@ -192,7 +192,7 @@ export async function renderOverview(view) {
 		const report = store.report;
 		intro.textContent = report
 			? "Where your code and your websites stand, and what to do first."
-			: "SecurityX checks two things you own: your code and your websites. Start with either one below.";
+			: "Porchlight checks two things you own: your code and your websites. Start with either one below.";
 		if (!report) return replace(summary, monitorCard(), assistantCard());
 		const rows = findingRows();
 		/** @type {Record<Severity, number>} */
@@ -366,7 +366,7 @@ function monitorCard() {
 					"p",
 					null,
 					h("span", { class: "severity status-pending" }, icon("pending"), "Not set up yet"),
-					h("span", { class: "hint block" }, why || "It needs the SecurityX monitor, a small service that runs on your Cloudflare account. Setting it up takes three steps."),
+					h("span", { class: "hint block" }, why || "It needs the Porchlight monitor, a small service that runs on your Cloudflare account. Setting it up takes three steps."),
 				),
 		h("p", { class: "card-foot" }, h("a", { class: "button", href: "#/domains" }, monitor?.configured ? "Open your websites" : "Set it up")),
 	);

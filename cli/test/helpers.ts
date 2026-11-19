@@ -8,7 +8,7 @@ import { ToolMissingError, type ExecResult, type Runner } from "../src/repos/exe
 const exec = promisify(execFile);
 
 export function tempDir(): Promise<string> {
-	return mkdtemp(join(tmpdir(), "securityx-test-"));
+	return mkdtemp(join(tmpdir(), "porchlight-test-"));
 }
 
 /** Creates files (and their directories) under `root`. A path ending in `/` makes an empty directory. */

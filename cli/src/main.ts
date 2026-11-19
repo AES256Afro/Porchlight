@@ -14,19 +14,20 @@ import { tokenProblem } from "./github/github.ts";
 import { checkHost } from "./host/check.ts";
 import { renderHostText } from "./host/render.ts";
 import { run } from "./repos/exec.ts";
+import { adoptOldSettings, dataFolder } from "./legacy.ts";
 import { startUiServer } from "./ui/server.ts";
 
-const USAGE = `SecurityX
+const USAGE = `Porchlight
 
 Usage:
-  securityx repos scan [path]      Scan git repositories under path (default: .)
+  porchlight repos scan [path]      Scan git repositories under path (default: .)
       --depth <n>                  Directory levels to search for repositories (default: 3)
       --out <file>                 Write the Markdown report to a file instead of stdout
       --json                       Print the report as JSON
       --fail-on <severity>         Exit 2 if any finding is at or above: ${SEVERITIES.join(", ")}
                                    Exit 1 if a scanner was missing or failed
 
-  securityx repos export <report>  Turn a report written with --json into a repair roadmap
+  porchlight repos export <report>  Turn a report written with --json into a repair roadmap
       --content <what>             roadmap: repairs in order (default); findings: every finding with its fix
       --format <format>            ${FORMATS.join(", ")} (default: md)
       --out <file>                 Write to a file instead of stdout
@@ -35,42 +36,44 @@ Usage:
       --match <text>               Only findings mentioning this text
       --repo <name>                Only this repository
 
-  securityx domains list           Domains registered with the monitor
-  securityx domains add <domain>   Register a domain and show its verification record
-  securityx domains verify <domain>
-  securityx domains scan <domain>  Scan now and print what changed
-  securityx domains show <domain>  Latest report
-  securityx domains remove <domain>
-  securityx domains export <domain>  Repair roadmap for a domain; takes --content, --format and --out
+  porchlight domains list           Domains registered with the monitor
+  porchlight domains add <domain>   Register a domain and show its verification record
+  porchlight domains verify <domain>
+  porchlight domains scan <domain>  Scan now and print what changed
+  porchlight domains show <domain>  Latest report
+  porchlight domains remove <domain>
+  porchlight domains export <domain>  Repair roadmap for a domain; takes --content, --format and --out
 
-  securityx host check             Check this computer: updates, built-in protection, what accepts
+  porchlight host check             Check this computer: updates, built-in protection, what accepts
                                    connections, credentials in files, installed packages. Reads only
       --json                       Print the result as JSON
       --offline                    Do not ask Apple for updates or look packages up on OSV.dev
 
-  securityx ui                     Open the local web interface for both tools
+  porchlight ui                     Open the local web interface for both tools
       --port <n>                   Port to listen on (default: 4747, or the next free port)
       --host <address>             Address to listen on (default: 127.0.0.1). Any other
-                                   address needs SECURITYX_UI_KEY, a key of 32+ characters
-      --report <file>              Scan report to show and update (default: ~/.securityx/repo-scan.json)
+                                   address needs PORCHLIGHT_UI_KEY, a key of 32+ characters
+      --report <file>              Scan report to show and update (default: ~/.porchlight/repo-scan.json)
       --root <dir>                 Folder offered in the scan form (default: .)
 
 The domains commands, and the Domains page of the interface, need
-SECURITYX_MONITOR_URL and SECURITYX_ADMIN_TOKEN.
+PORCHLIGHT_MONITOR_URL and PORCHLIGHT_ADMIN_TOKEN.
 
 The interface's Explain, Summarise and Ask buttons use a local model served by
-Ollama, named by SECURITYX_LLM_URL (its address) and SECURITYX_LLM_MODEL.
+Ollama, named by PORCHLIGHT_LLM_URL (its address) and PORCHLIGHT_LLM_MODEL.
 
-Other models, chosen with SECURITYX_LLM_PROVIDER: "compatible" for a server
-that speaks OpenAI's format at SECURITYX_LLM_URL (LM Studio, llama.cpp), or a
-hosted one ("anthropic", "openai", "deepseek") with SECURITYX_LLM_API_KEY.
+Other models, chosen with PORCHLIGHT_LLM_PROVIDER: "compatible" for a server
+that speaks OpenAI's format at PORCHLIGHT_LLM_URL (LM Studio, llama.cpp), or a
+hosted one ("anthropic", "openai", "deepseek") with PORCHLIGHT_LLM_API_KEY.
 
 The interface can fetch repositories from GitHub to scan. Public ones need
-nothing; private ones need SECURITYX_GITHUB_TOKEN, a token that can read them.
+nothing; private ones need PORCHLIGHT_GITHUB_TOKEN, a token that can read them.
 `;
 
 /** Returns the process exit code: 0 ok, 1 error or incomplete scan under --fail-on, 2 findings at or above --fail-on. */
 export async function main(argv: string[]): Promise<number> {
+	// Settings given under the earlier prefix still count (BoxPilot and older app.env files use it).
+	adoptOldSettings(process.env);
 	const [group, command, ...rest] = argv;
 	try {
 		if (group === "repos" && command === "scan") return await reposScan(rest);
@@ -80,7 +83,7 @@ export async function main(argv: string[]): Promise<number> {
 		if (group === "host" && command === "check") return await hostCheck(rest);
 		if (group === "ui") return await ui(argv.slice(1));
 	} catch (err) {
-		console.error(`securityx: ${err instanceof Error ? err.message : String(err)}`);
+		console.error(`porchlight: ${err instanceof Error ? err.message : String(err)}`);
 		return 1;
 	}
 	const asksForHelp = group === undefined || group === "help" || group === "--help" || group === "-h";
@@ -126,7 +129,7 @@ async function reposScan(args: string[]): Promise<number> {
 		process.stdout.write(rendered);
 	}
 	const code = exitCode(report, failOn as Severity | undefined);
-	if (code === 1) console.error("securityx: the scan was incomplete (see \"Not covered\"), so --fail-on cannot pass");
+	if (code === 1) console.error("porchlight: the scan was incomplete (see \"Not covered\"), so --fail-on cannot pass");
 	return code;
 }
 
@@ -157,12 +160,12 @@ async function reposExport(args: string[]): Promise<number> {
 		options: { ...EXPORT_OPTIONS, severity: { type: "string" }, kind: { type: "string" }, match: { type: "string" }, repo: { type: "string" } },
 	});
 	const [path, ...extra] = positionals;
-	if (!path || extra.length > 0) throw new Error("Usage: securityx repos export <report.json> [--content roadmap|findings] [--format md|html|csv|json]");
+	if (!path || extra.length > 0) throw new Error("Usage: porchlight repos export <report.json> [--content roadmap|findings] [--format md|html|csv|json]");
 	let text: string;
 	try {
 		text = await readFile(path, "utf8");
 	} catch {
-		throw new Error(`Cannot read ${path}. Make a report with: securityx repos scan <folder> --json --out ${path}`);
+		throw new Error(`Cannot read ${path}. Make a report with: porchlight repos scan <folder> --json --out ${path}`);
 	}
 	const filter = parseFilter({ severity: values.severity, kind: values.kind, match: values.match, repo: values.repo });
 	return deliver(exportRepos(parseScanReport(text, path), values, filter), values.out);
@@ -171,7 +174,7 @@ async function reposExport(args: string[]): Promise<number> {
 async function domainsExport(args: string[]): Promise<number> {
 	const { values, positionals } = parseArgs({ args, allowPositionals: true, options: EXPORT_OPTIONS });
 	const [domain, ...extra] = positionals;
-	if (!domain || extra.length > 0) throw new Error(`Usage: securityx domains export <domain> [--content ${CONTENTS.join("|")}] [--format ${FORMATS.join("|")}]`);
+	if (!domain || extra.length > 0) throw new Error(`Usage: porchlight domains export <domain> [--content ${CONTENTS.join("|")}] [--format ${FORMATS.join("|")}]`);
 	const { status, body } = await callMonitor(monitorConfig(process.env), "GET", `/domains/${encodeURIComponent(domain)}`);
 	if (status >= 400) throw new Error(body.error ?? `HTTP ${status}`);
 	if (!body.report) throw new Error(`${domain} has not been scanned yet, so there is nothing to export`);
@@ -208,7 +211,7 @@ async function ui(args: string[]): Promise<number> {
 	const mayMove = values.port === undefined && values.host === "127.0.0.1";
 	const candidates = mayMove ? Array.from({ length: PORT_ATTEMPTS }, (_, i) => port + i) : [port];
 	// A key from the environment is the owner's, so it is never printed.
-	const fixedKey = process.env.SECURITYX_UI_KEY || undefined;
+	const fixedKey = process.env.PORCHLIGHT_UI_KEY || undefined;
 
 	let monitor = null;
 	let monitorError: string | undefined;
@@ -225,12 +228,12 @@ async function ui(args: string[]): Promise<number> {
 		assistantError = err instanceof Error ? err.message : String(err);
 	}
 	// BoxPilot passes an optional setting left empty as an empty variable, so empty counts as not given.
-	const githubToken = process.env.SECURITYX_GITHUB_TOKEN?.trim() || undefined;
+	const githubToken = process.env.PORCHLIGHT_GITHUB_TOKEN?.trim() || undefined;
 	const githubError = githubToken ? (tokenProblem(githubToken) ?? undefined) : undefined;
-	const reportPath = resolve(values.report ?? join(homedir(), ".securityx", "repo-scan.json"));
+	const reportPath = resolve(values.report ?? join(await dataFolder(homedir()), "repo-scan.json"));
 	// The address is the switch: BoxPilot fills the model setting with a default, so a model alone turns nothing on.
 	// Off, as opposed to a setting to correct: no provider chosen and no address given.
-	const assistantUnset = !process.env.SECURITYX_LLM_PROVIDER?.trim() && !process.env.SECURITYX_LLM_URL?.trim();
+	const assistantUnset = !process.env.PORCHLIGHT_LLM_PROVIDER?.trim() && !process.env.PORCHLIGHT_LLM_URL?.trim();
 
 	const server = await listenOnFirstFree(candidates, (candidate) =>
 		startUiServer({
@@ -245,7 +248,7 @@ async function ui(args: string[]): Promise<number> {
 			monitor,
 			monitorError,
 			// BoxPilot passes an optional setting left empty as an empty variable, so empty counts as not given.
-			monitorUnset: !process.env.SECURITYX_MONITOR_URL && !process.env.SECURITYX_ADMIN_TOKEN,
+			monitorUnset: !process.env.PORCHLIGHT_MONITOR_URL && !process.env.PORCHLIGHT_ADMIN_TOKEN,
 			assistant,
 			assistantError,
 			assistantUnset,
@@ -253,9 +256,9 @@ async function ui(args: string[]): Promise<number> {
 	);
 	if (server.port !== port && port !== 0) console.log(`Port ${port} is in use, so this copy is on ${server.port}.`);
 	if (fixedKey) {
-		console.log(`SecurityX is listening on ${values.host} port ${server.port}. Sign in with the key in SECURITYX_UI_KEY.`);
+		console.log(`Porchlight is listening on ${values.host} port ${server.port}. Sign in with the key in PORCHLIGHT_UI_KEY.`);
 	} else {
-		console.log(`SecurityX is running. Open this link (it carries this session's key):\n\n  ${server.url}\n`);
+		console.log(`Porchlight is running. Open this link (it carries this session's key):\n\n  ${server.url}\n`);
 	}
 	console.log(monitor ? `Monitor: ${monitor.url.host}` : `Monitor: not connected (${monitorError})`);
 	// A model chosen in Settings → Model replaces the one given here.
@@ -263,7 +266,7 @@ async function ui(args: string[]): Promise<number> {
 	const from = inUse.source === "settings" ? ", chosen in Settings" : "";
 	if (inUse.config) console.log(`Model: ${inUse.config.model} at ${inUse.config.url.host}${from}${isHosted(inUse.config) ? " (hosted: what the pages show is sent there when you ask)" : ""}`);
 	else console.log(inUse.unset ? `Model: off${from} (choose one in Settings → Model)` : `Model: not connected${from} (${inUse.error})`);
-	console.log(githubError ? `GitHub: token not used (${githubError})` : githubToken ? "GitHub: token set, private repositories can be fetched" : "GitHub: no token, public repositories only (set SECURITYX_GITHUB_TOKEN for private ones)");
+	console.log(githubError ? `GitHub: token not used (${githubError})` : githubToken ? "GitHub: token set, private repositories can be fetched" : "GitHub: no token, public repositories only (set PORCHLIGHT_GITHUB_TOKEN for private ones)");
 	console.log("Press Ctrl+C to stop.");
 	return 0;
 }
@@ -288,7 +291,7 @@ async function domains(command: string, args: string[]): Promise<number> {
 	const config = monitorConfig(process.env);
 	const domain = args[0];
 	const needsDomain = command !== "list";
-	if (needsDomain && !domain) throw new Error(`Usage: securityx domains ${command} <domain>`);
+	if (needsDomain && !domain) throw new Error(`Usage: porchlight domains ${command} <domain>`);
 	const path = `/domains/${encodeURIComponent(domain ?? "")}`;
 
 	const requests: Record<string, () => ReturnType<typeof callMonitor>> = {
@@ -304,7 +307,7 @@ async function domains(command: string, args: string[]): Promise<number> {
 
 	const { status, body } = await request();
 	if (status >= 400) {
-		console.error(`securityx: ${body.error ?? `HTTP ${status}`}`);
+		console.error(`porchlight: ${body.error ?? `HTTP ${status}`}`);
 		if (body.challenge) console.error(describeChallenge(body.challenge));
 		return 1;
 	}
@@ -315,7 +318,7 @@ async function domains(command: string, args: string[]): Promise<number> {
 			for (const entry of body.domains) console.log(describeDomain(entry));
 			break;
 		case "add":
-			console.log(`Registered ${body.domain.name}. Publish this DNS record, then run: securityx domains verify ${body.domain.name}`);
+			console.log(`Registered ${body.domain.name}. Publish this DNS record, then run: porchlight domains verify ${body.domain.name}`);
 			console.log(describeChallenge(body.domain.challenge));
 			break;
 		case "verify":

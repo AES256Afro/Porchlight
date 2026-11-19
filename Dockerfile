@@ -1,4 +1,4 @@
-# SecurityX for BoxPilot: the web interface with both scanners. Repositories to scan are mounted
+# Porchlight for BoxPilot: the web interface with both scanners. Repositories to scan are mounted
 # read-only at /repos, or fetched from GitHub into /data/github; the latest scan report lives in /data. The attack-surface monitor itself
 # stays a Cloudflare Worker; this image only talks to it as a client.
 FROM node:24-alpine
@@ -51,5 +51,5 @@ EXPOSE 4747
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget -qO- http://127.0.0.1:4747/healthz >/dev/null || exit 1
 
-# Listening beyond loopback needs SECURITYX_UI_KEY; without it the server refuses to start.
-CMD ["node", "cli/bin/securityx.js", "ui", "--host", "0.0.0.0", "--port", "4747", "--root", "/repos", "--report", "/data/repo-scan.json"]
+# Listening beyond loopback needs PORCHLIGHT_UI_KEY; without it the server refuses to start.
+CMD ["node", "cli/bin/porchlight.js", "ui", "--host", "0.0.0.0", "--port", "4747", "--root", "/repos", "--report", "/data/repo-scan.json"]

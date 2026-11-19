@@ -207,7 +207,7 @@ export function crumbs(path) {
 	);
 }
 
-/** Whether this page is shown on the Mac SecurityX runs on, so a System Settings link opens its settings. */
+/** Whether this page is shown on the Mac Porchlight runs on, so a System Settings link opens its settings. */
 function onThisMac() {
 	return /Mac/.test(navigator.platform || navigator.userAgent) && ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
 }

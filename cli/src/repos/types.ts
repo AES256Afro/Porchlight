@@ -37,7 +37,7 @@ export interface RepoResult {
 	errors: { tool: ToolName; message: string }[];
 	/**
 	 * Files in the repository that tell a scanner to leave findings out
-	 * (.gitleaksignore, osv-scanner.toml), or that SecurityX ignored
+	 * (.gitleaksignore, osv-scanner.toml), or that Porchlight ignored
 	 * (.gitleaks.toml). Missing from older reports.
 	 */
 	settingFiles?: string[];

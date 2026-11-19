@@ -6,7 +6,7 @@ import { exportButton, openExportDialog } from "./export.js";
 import { domainFromInput, monitorSetupSteps } from "./hints.js";
 
 const WATCHES = "Watches the domains you own for new subdomains, DNS changes, expiring certificates and missing security headers. It only looks at what is public.";
-const README_MONITOR = "https://github.com/AES256Afro/SecurityX#monitor-domains";
+const README_MONITOR = "https://github.com/AES256Afro/Porchlight#monitor-domains";
 
 /**
  * @typedef {object} Domain
@@ -485,7 +485,7 @@ function notConnected(monitor, service) {
 			h(
 				"p",
 				null,
-				"Websites are checked by the SecurityX monitor: a small service that runs on your own Cloudflare account, not on this ",
+				"Websites are checked by the Porchlight monitor: a small service that runs on your own Cloudflare account, not on this ",
 				service ? "server" : "computer",
 				". That way it can check every hour and keep the history even when this page is closed. This page shows what it finds.",
 			),
@@ -501,13 +501,13 @@ function notConnected(monitor, service) {
 						...stepNodes(step),
 						index === 0 ? h("span", null, " ", h("a", { href: README_MONITOR, target: "_blank", rel: "noreferrer" }, "Open the instructions")) : null,
 						!service && index === steps.length - 1
-							? h("pre", null, h("code", null, "export SECURITYX_MONITOR_URL=<the monitor's address>\nexport SECURITYX_ADMIN_TOKEN=<its admin token>\nsecurityx ui"))
+							? h("pre", null, h("code", null, "export PORCHLIGHT_MONITOR_URL=<the monitor's address>\nexport PORCHLIGHT_ADMIN_TOKEN=<its admin token>\nporchlight ui"))
 							: null,
 					),
 				),
 			),
-			h("p", { class: "hint" }, "The token stays inside SecurityX. It is never sent to this page."),
-			service ? h("p", { class: "hint" }, "Running the image some other way? Set SECURITYX_MONITOR_URL and SECURITYX_ADMIN_TOKEN in the container's environment and restart it.") : null,
+			h("p", { class: "hint" }, "The token stays inside Porchlight. It is never sent to this page."),
+			service ? h("p", { class: "hint" }, "Running the image some other way? Set PORCHLIGHT_MONITOR_URL and PORCHLIGHT_ADMIN_TOKEN in the container's environment and restart it.") : null,
 		),
 	);
 }

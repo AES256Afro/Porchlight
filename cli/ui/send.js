@@ -1,7 +1,7 @@
 // @ts-check
 // "Send to a model": the roadmap or the findings go to a model the owner picks (one on this
 // computer, one of theirs on another, or a hosted one such as Claude), for a deeper analysis or a
-// repair plan. The page names the model by SecurityX's own id and what to send; the server builds
+// repair plan. The page names the model by Porchlight's own id and what to send; the server builds
 // the data from its own copy of the report. The answer is shown as generated text and never acted on:
 // to carry out a repair plan, the owner copies it to a coding assistant or follows it by hand.
 import { api } from "./api.js";
@@ -113,7 +113,7 @@ export function openSendDialog(target, initialContent = "roadmap") {
 					)
 				: null,
 			h("fieldset", null, h("legend", null, "Ask for"), ...choices("purpose", PURPOSES, "analyse")),
-			h("p", { class: "hint" }, "It sees what these pages show: never secret values, authors or emails. Its answer is advice to check; SecurityX changes nothing."),
+			h("p", { class: "hint" }, "It sees what these pages show: never secret values, authors or emails. Its answer is advice to check; Porchlight changes nothing."),
 			error,
 			result,
 			h("div", { class: "actions" }, h("button", { type: "button", class: "button", onclick: () => dialog.close() }, "Close"), models.length > 0 ? submit : null),

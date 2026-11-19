@@ -1,6 +1,6 @@
 /**
  * "Investigate with a model": a model plans an investigation of a website the owner has proven they
- * control, one step at a time, with SecurityX's fixed tools.
+ * control, one step at a time, with Porchlight's fixed tools.
  *
  * The model proposes; plain code decides. Each turn the model sees the goal, the scope, the tools
  * and the latest results, and answers with JSON: one action or `done`, and any findings. Before an
@@ -301,7 +301,7 @@ export async function investigate(run: Run, deps: EngineDeps, signal: AbortSigna
 /** Null while the record still proves ownership; otherwise why the run must stop. */
 async function ownershipProblem(deps: EngineDeps, signal: AbortSignal): Promise<string | null> {
 	try {
-		return (await deps.verify(signal)) ? null : "Ownership is no longer proven: the _securityx-challenge TXT record does not hold this domain's token. Nothing more was sent.";
+		return (await deps.verify(signal)) ? null : "Ownership is no longer proven: the _porchlight-challenge TXT record does not hold this domain's token. Nothing more was sent.";
 	} catch (err) {
 		// A lookup that failed proves nothing (invariant 5), so the run does not go on.
 		return `Ownership could not be checked (${err instanceof Error ? err.message : String(err)}), so nothing more was sent.`;

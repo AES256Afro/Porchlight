@@ -29,7 +29,7 @@ export async function runScan(env: AppEnv, domain: DomainRow, deps: Deps): Promi
 				await sendAlert(
 					env,
 					deps,
-					`SecurityX: ownership check failed for ${domain.name}. ` +
+					`Porchlight: ownership check failed for ${domain.name}. ` +
 						"Its verification TXT record is missing, so scanning is paused until the record is back.",
 					{ domain: domain.name, status: "unverified" },
 				);

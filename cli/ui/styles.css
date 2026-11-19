@@ -2035,7 +2035,7 @@ fieldset.looks legend {
 	--surface: #ffffff;
 }
 
-/* Roadmap first: Roadmap leads the sidebar and is where SecurityX opens. */
+/* Roadmap first: Roadmap leads the sidebar and is where Porchlight opens. */
 :root[data-look="roadmap"] {
 	--accent: #0f6e56;
 	--accent-hover: #0f6e56;
@@ -2622,7 +2622,7 @@ fieldset.looks legend {
 	font-variant-numeric: tabular-nums;
 }
 
-/* This Mac: the check of the computer SecurityX runs on */
+/* This Mac: the check of the computer Porchlight runs on */
 
 .host-progress {
 	display: grid;

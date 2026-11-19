@@ -34,7 +34,7 @@ export function unknown(base: Omit<HostCheck, "status" | "detail">, why: string)
 function couldNotRead(command: string, result: { code: number; text: string } | null): string {
 	if (!result) return `${command} is not on this computer`;
 	const reason = lastLine(result.text);
-	return result.code !== 0 ? `${command} failed${reason ? `: ${reason}` : ` with code ${result.code}`}` : `${command} gave an answer SecurityX does not recognise${reason ? `: ${reason}` : ""}`;
+	return result.code !== 0 ? `${command} failed${reason ? `: ${reason}` : ` with code ${result.code}`}` : `${command} gave an answer Porchlight does not recognise${reason ? `: ${reason}` : ""}`;
 }
 
 export function parseSwVers(text: string): { name: string; version: string; build: string } | null {

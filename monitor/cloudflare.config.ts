@@ -5,18 +5,23 @@ import * as entrypoint from "./src/index.ts" with { type: "cf-worker" };
 // needs no Cloudflare account. `npm run db:migrate:local` addresses it too.
 const LOCAL_D1_ID = "00000000-0000-4000-8000-000000000000";
 
-// The ID printed by `cf d1 create --name securityx-monitor`. Set it before
-// the first deploy; remote migrations address the database by this ID.
+// The ID printed by `cf d1 create --name porchlight-monitor`. Set it before
+// the first deploy; remote migrations address the database by this ID. The
+// database keeps its data whatever the Worker is called: it is found by ID.
 const D1_DATABASE_ID = "dea67a7e-c591-440b-a178-b6e1bb468736";
+
+// The Worker's name is part of its address. A monitor deployed before the
+// rename runs under its earlier name until it is deployed again; that deploy
+// makes a new Worker at a new address (see "Deploy" in the README).
 
 export default defineConfig(({ mode }) => ({
 	worker: {
-		name: "securityx-monitor",
+		name: "porchlight-monitor",
 		compatibilityDate: "2026-11-17",
 		entrypoint,
 		env: {
 			DB: bindings.d1({
-				name: "securityx-monitor",
+				name: "porchlight-monitor",
 				id: mode === "development" ? LOCAL_D1_ID : D1_DATABASE_ID || undefined,
 			}),
 			// Bearer token for the API. Uploaded with `cf deploy --secrets-file`; see README.

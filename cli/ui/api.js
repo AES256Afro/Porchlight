@@ -1,6 +1,6 @@
 // @ts-check
 
-const STORAGE_KEY = "securityx.session";
+const STORAGE_KEY = "porchlight.session";
 
 export class ApiError extends Error {
 	/**
@@ -16,7 +16,7 @@ export class ApiError extends Error {
 }
 
 /**
- * The link printed by `securityx ui` carries the session key after `#k=`.
+ * The link printed by `porchlight ui` carries the session key after `#k=`.
  * Keep it for this tab only and take it out of the address bar, so it is not
  * left in history or copied along with the link.
  */
@@ -56,15 +56,15 @@ function sessionKey() {
 export async function download(path) {
 	let response;
 	try {
-		response = await fetch(`/api${path}`, { headers: { "x-securityx-session": sessionKey() } });
+		response = await fetch(`/api${path}`, { headers: { "x-porchlight-session": sessionKey() } });
 	} catch {
-		throw new ApiError(0, "SecurityX is not running. Start it again with: securityx ui", {});
+		throw new ApiError(0, "Porchlight is not running. Start it again with: porchlight ui", {});
 	}
 	if (!response.ok) {
 		const data = await response.json().catch(() => ({}));
 		throw new ApiError(response.status, data.error ?? `Export failed (${response.status})`, data);
 	}
-	const filename = /filename="([^"]+)"/.exec(response.headers.get("content-disposition") ?? "")?.[1] ?? "securityx-export";
+	const filename = /filename="([^"]+)"/.exec(response.headers.get("content-disposition") ?? "")?.[1] ?? "porchlight-export";
 	const url = URL.createObjectURL(await response.blob());
 	const link = document.createElement("a");
 	link.href = url;
@@ -90,13 +90,13 @@ export async function api(method, path, body) {
 		response = await fetch(`/api${path}`, {
 			method,
 			headers: {
-				"x-securityx-session": sessionKey(),
+				"x-porchlight-session": sessionKey(),
 				...(body === undefined ? {} : { "content-type": "application/json" }),
 			},
 			body: body === undefined ? undefined : JSON.stringify(body),
 		});
 	} catch {
-		throw new ApiError(0, "SecurityX is not running. Start it again with: securityx ui", {});
+		throw new ApiError(0, "Porchlight is not running. Start it again with: porchlight ui", {});
 	}
 	/** @type {Record<string, any>} */
 	let data = {};

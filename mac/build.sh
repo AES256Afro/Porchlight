@@ -1,10 +1,10 @@
 #!/bin/sh
-# Builds SecurityX.app, a Mac window around `securityx ui`.
+# Builds Porchlight.app, a Mac window around `porchlight ui`.
 #
-#   sh mac/build.sh             build into mac/build/SecurityX.app, for this machine
+#   sh mac/build.sh             build into mac/build/Porchlight.app, for this machine
 #   sh mac/build.sh --install   also copy it to ~/Applications
 #   sh mac/build.sh --dmg       build a self-contained app for any Apple silicon Mac and pack it
-#                               into mac/build/SecurityX-<version>-arm64.dmg
+#                               into mac/build/Porchlight-<version>-arm64.dmg
 #
 # This machine's app runs this checkout's CLI with the node, gitleaks and osv-scanner found on PATH
 # now. Rebuild it if you move the checkout or change Node.
@@ -13,7 +13,7 @@
 # changes), and of the node, gitleaks and osv-scanner on PATH now, with their licences. It holds no
 # path, name or setting of this machine; everything is found from where the app is at each start.
 #
-# Either reads its settings at each start from ~/.securityx/app.env (see app.env.example).
+# Either reads its settings at each start from ~/.porchlight/app.env (see app.env.example).
 set -eu
 
 mode=${1:-}
@@ -25,9 +25,9 @@ esac
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/.." && pwd)
 build="$here/build"
-app="$build/SecurityX.app"
+app="$build/Porchlight.app"
 resources="$app/Contents/Resources"
-cache="${TMPDIR:-/tmp}/securityx-swift-cache"
+cache="${TMPDIR:-/tmp}/porchlight-swift-cache"
 
 node=$(command -v node) || { echo "node is not on PATH" >&2; exit 1; }
 for tool in gitleaks osv-scanner; do
@@ -52,27 +52,31 @@ mkdir -p "$app/Contents/MacOS" "$resources" "$cache"
 
 echo "Compiling…"
 # The source's path would otherwise be written into the binary.
-swiftc -O -module-cache-path "$cache" -file-prefix-map "$here=mac" -o "$app/Contents/MacOS/SecurityX" "$here/SecurityX.swift"
+swiftc -O -module-cache-path "$cache" -file-prefix-map "$here=mac" -o "$app/Contents/MacOS/Porchlight" "$here/Porchlight.swift"
 swiftc -O -module-cache-path "$cache" -o "$build/icon" "$here/icon.swift"
-rm -rf "$build/SecurityX.iconset"
-"$build/icon" "$repo/cli/ui/favicon.svg" "$build/SecurityX.iconset"
-iconutil -c icns -o "$resources/SecurityX.icns" "$build/SecurityX.iconset"
+rm -rf "$build/Porchlight.iconset"
+"$build/icon" "$repo/cli/ui/favicon.svg" "$build/Porchlight.iconset"
+iconutil -c icns -o "$resources/Porchlight.icns" "$build/Porchlight.iconset"
 
-# Reads ~/.securityx/app.env: plain KEY=value lines only, nothing in the file is run.
-read_settings='settings="$HOME/.securityx/app.env"
+# Reads ~/.porchlight/app.env: plain KEY=value lines only, nothing in the file is run. Settings
+# written before the rename (in ~/.securityx, with the prefix SECURITYX_) are read too.
+read_settings='settings="$HOME/.porchlight/app.env"
+[ -f "$settings" ] || settings="$HOME/.securityx/app.env"
 if [ -f "$settings" ]; then
 	while IFS= read -r line || [ -n "$line" ]; do
 		case "$line" in
+			PORCHLIGHT_ROOT=*) root=${line#PORCHLIGHT_ROOT=} ;;
 			SECURITYX_ROOT=*) root=${line#SECURITYX_ROOT=} ;;
-			SECURITYX_[A-Z_]*=*) export "$line" ;;
+			PORCHLIGHT_[A-Z_]*=*) export "$line" ;;
+			SECURITYX_[A-Z_]*=*) export "PORCHLIGHT_${line#SECURITYX_}" ;;
 		esac
 	done < "$settings"
 fi'
 
 if [ "$mode" = --dmg ]; then
 	# The CLI as committed, with only what it runs: no tests, no development files.
-	mkdir -p "$resources/securityx" "$resources/bin" "$resources/licenses"
-	git -C "$repo" archive --format=tar HEAD cli/bin cli/src cli/ui cli/package.json | tar -x -C "$resources/securityx"
+	mkdir -p "$resources/porchlight" "$resources/bin" "$resources/licenses"
+	git -C "$repo" archive --format=tar HEAD cli/bin cli/src cli/ui cli/package.json | tar -x -C "$resources/porchlight"
 
 	# Node and the scanners: their release builds, which link only to the system's own libraries.
 	licence() { # program, its licence file
@@ -96,11 +100,11 @@ if [ "$mode" = --dmg ]; then
 			exit 1
 		fi
 	done
-	"$resources/bin/node" -e 'const [a, b] = process.versions.node.split(".").map(Number); if (a < 22 || (a === 22 && b < 18)) { console.error(`Node ${process.versions.node} is too old: SecurityX needs 22.18 or later`); process.exit(1); }'
+	"$resources/bin/node" -e 'const [a, b] = process.versions.node.split(".").map(Number); if (a < 22 || (a === 22 && b < 18)) { console.error(`Node ${process.versions.node} is too old: Porchlight needs 22.18 or later`); process.exit(1); }'
 
 	cat > "$resources/launch.sh" <<'EOF'
 #!/bin/sh
-# Written by mac/build.sh --dmg. Starts `securityx ui` from the copy inside SecurityX.app.
+# Written by mac/build.sh --dmg. Starts `porchlight ui` from the copy inside Porchlight.app.
 here=$(cd "$(dirname "$0")" && pwd)
 # Scanners installed with Homebrew come first, so updating them there is enough. The app's own
 # copies are the fallback. git comes from macOS's command line tools.
@@ -111,14 +115,14 @@ EOF
 	printf '%s\n' "$read_settings" >> "$resources/launch.sh"
 	cat >> "$resources/launch.sh" <<'EOF'
 export NODE_NO_WARNINGS=1
-exec "$here/bin/node" "$here/securityx/cli/bin/securityx.js" ui --root "$root"
+exec "$here/bin/node" "$here/porchlight/cli/bin/porchlight.js" ui --root "$root"
 EOF
 else
 	# The launcher for this machine. Values are fixed now, quoted for sh.
 	quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 	cat > "$resources/launch.sh" <<EOF
 #!/bin/sh
-# Written by mac/build.sh. Starts \`securityx ui\` for SecurityX.app.
+# Written by mac/build.sh. Starts \`porchlight ui\` for Porchlight.app.
 export PATH=$(quote "$PATH")
 repo=$(quote "$repo")
 node=$(quote "$node")
@@ -127,12 +131,12 @@ EOF
 	printf '%s\n' "$read_settings" >> "$resources/launch.sh"
 	cat >> "$resources/launch.sh" <<'EOF'
 # The deployed monitor's token, if the monitor is set and no token was given.
-if [ -n "${SECURITYX_MONITOR_URL:-}" ] && [ -z "${SECURITYX_ADMIN_TOKEN:-}" ] && [ -f "$repo/monitor/.secrets.production" ]; then
-	SECURITYX_ADMIN_TOKEN=$(sed -n 's/^ADMIN_TOKEN=//p' "$repo/monitor/.secrets.production")
-	export SECURITYX_ADMIN_TOKEN
+if [ -n "${PORCHLIGHT_MONITOR_URL:-}" ] && [ -z "${PORCHLIGHT_ADMIN_TOKEN:-}" ] && [ -f "$repo/monitor/.secrets.production" ]; then
+	PORCHLIGHT_ADMIN_TOKEN=$(sed -n 's/^ADMIN_TOKEN=//p' "$repo/monitor/.secrets.production")
+	export PORCHLIGHT_ADMIN_TOKEN
 fi
 export NODE_NO_WARNINGS=1
-exec "$node" "$repo/cli/bin/securityx.js" ui --root "$root"
+exec "$node" "$repo/cli/bin/porchlight.js" ui --root "$root"
 EOF
 fi
 
@@ -141,11 +145,11 @@ cat > "$app/Contents/Info.plist" <<EOF
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleName</key><string>SecurityX</string>
-	<key>CFBundleDisplayName</key><string>SecurityX</string>
-	<key>CFBundleIdentifier</key><string>local.securityx.app</string>
-	<key>CFBundleExecutable</key><string>SecurityX</string>
-	<key>CFBundleIconFile</key><string>SecurityX</string>
+	<key>CFBundleName</key><string>Porchlight</string>
+	<key>CFBundleDisplayName</key><string>Porchlight</string>
+	<key>CFBundleIdentifier</key><string>local.porchlight.app</string>
+	<key>CFBundleExecutable</key><string>Porchlight</string>
+	<key>CFBundleIconFile</key><string>Porchlight</string>
 	<key>CFBundlePackageType</key><string>APPL</string>
 	<key>CFBundleShortVersionString</key><string>$version</string>
 	<key>CFBundleVersion</key><string>$version</string>
@@ -161,26 +165,32 @@ xattr -cr "$app"
 codesign --force --sign - "$app" >/dev/null
 echo "Built $app"
 
-if [ ! -f "$HOME/.securityx/app.env" ]; then
-	echo "No settings yet: copy mac/app.env.example to ~/.securityx/app.env to connect the monitor or a model."
+if [ ! -f "$HOME/.porchlight/app.env" ]; then
+	echo "No settings yet: copy mac/app.env.example to ~/.porchlight/app.env to connect the monitor or a model."
 fi
 
 if [ "$mode" = --install ]; then
 	mkdir -p "$HOME/Applications"
-	rm -rf "$HOME/Applications/SecurityX.app"
-	cp -R "$app" "$HOME/Applications/SecurityX.app"
-	echo "Installed ~/Applications/SecurityX.app"
+	# The same app under its earlier name, built by this script: Porchlight.app replaces it.
+	old="$HOME/Applications/SecurityX.app"
+	if [ -d "$old" ] && [ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$old/Contents/Info.plist" 2>/dev/null)" = local.securityx.app ]; then
+		rm -rf "$old"
+		echo "Removed the app's copy under its earlier name"
+	fi
+	rm -rf "$HOME/Applications/Porchlight.app"
+	cp -R "$app" "$HOME/Applications/Porchlight.app"
+	echo "Installed ~/Applications/Porchlight.app"
 fi
 
 if [ "$mode" = --dmg ]; then
-	dmg="$build/SecurityX-$version-arm64.dmg"
+	dmg="$build/Porchlight-$version-arm64.dmg"
 	stage="$build/dmg"
 	rm -rf "$stage" "$dmg"
 	mkdir -p "$stage"
-	ditto --noextattr --noqtn "$app" "$stage/SecurityX.app"
+	ditto --noextattr --noqtn "$app" "$stage/Porchlight.app"
 	ln -s /Applications "$stage/Applications"
 	cp "$here/dmg-readme.txt" "$stage/Read me first.txt"
-	hdiutil create -quiet -volname "SecurityX $version" -srcfolder "$stage" -fs HFS+ -format ULFO -ov "$dmg"
+	hdiutil create -quiet -volname "Porchlight $version" -srcfolder "$stage" -fs HFS+ -format ULFO -ov "$dmg"
 	rm -rf "$stage"
 	echo "Built $dmg"
 	shasum -a 256 "$dmg"

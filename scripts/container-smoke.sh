@@ -1,6 +1,7 @@
 #!/bin/sh
-# Checks a built SecurityX image the way BoxPilot runs it: usage: sh scripts/container-smoke.sh <image>
-#  1. Without SECURITYX_UI_KEY it refuses to start, because it listens beyond loopback.
+# Checks a built Porchlight image the way BoxPilot runs it: usage: sh scripts/container-smoke.sh <image>
+#  1. Without a key it refuses to start, because it listens beyond loopback, and names PORCHLIGHT_UI_KEY.
+#     BoxPilot passes the key under its installed name, SECURITYX_UI_KEY, which the app also reads.
 #  2. With a key it answers /healthz, refuses the API without the key and serves it with the key.
 #  3. The real scanners, run as the image's user against a read-only repository owned by someone
 #     else, find a secret in history and never print it.
@@ -10,7 +11,7 @@ set -eu
 
 image="${1:?usage: container-smoke.sh <image>}"
 work="$(mktemp -d)"
-name="securityx-smoke-$$"
+name="porchlight-smoke-$$"
 cleanup() {
 	docker rm -f "$name" >/dev/null 2>&1 || true
 	rm -rf "$work"
@@ -22,8 +23,8 @@ fail() {
 }
 
 echo "1. no key, no start"
-if docker run --rm "$image" >"$work/nokey.log" 2>&1; then fail "started without SECURITYX_UI_KEY"; fi
-grep -q SECURITYX_UI_KEY "$work/nokey.log" || fail "refused without naming SECURITYX_UI_KEY: $(cat "$work/nokey.log")"
+if docker run --rm "$image" >"$work/nokey.log" 2>&1; then fail "started without a key"; fi
+grep -q PORCHLIGHT_UI_KEY "$work/nokey.log" || fail "refused without naming PORCHLIGHT_UI_KEY: $(cat "$work/nokey.log")"
 
 echo "2. health and the key"
 key="$(head -c 24 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n')"
@@ -36,7 +37,7 @@ curl -fsS http://127.0.0.1:4747/healthz >/dev/null || { docker logs "$name"; fai
 status="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4747/api/state)"
 [ "$status" = 401 ] || fail "/api/state without the key answered $status, expected 401"
 # Any address people use reaches it (a Tailscale name, a LAN address); the key is what guards it.
-status="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: box.example.ts.net' -H "x-securityx-session: $key" http://127.0.0.1:4747/api/state)"
+status="$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: box.example.ts.net' -H "x-porchlight-session: $key" http://127.0.0.1:4747/api/state)"
 [ "$status" = 200 ] || fail "/api/state with the key answered $status, expected 200"
 docker logs "$name" 2>&1 | grep -qF "$key" && fail "the key appears in the container log"
 docker rm -f "$name" >/dev/null
@@ -61,7 +62,7 @@ chmod -R a+rX "$work/repos"
 
 code=0
 docker run --rm -v "$work/repos:/repos:ro" "$image" \
-	node cli/bin/securityx.js repos scan /repos --json --fail-on high >"$work/report.json" 2>"$work/scan.err" || code=$?
+	node cli/bin/porchlight.js repos scan /repos --json --fail-on high >"$work/report.json" 2>"$work/scan.err" || code=$?
 [ "$code" = 2 ] || fail "scan exited $code, expected 2 (a high finding): $(cat "$work/scan.err")"
 grep -qF "$secret" "$work/report.json" "$work/scan.err" && fail "the secret value appears in the scan output"
 node -e '
@@ -96,7 +97,7 @@ cd - >/dev/null
 chmod -R a+rX "$work/hostile"
 
 docker run --rm -v "$work/hostile:/repos:ro" "$image" sh -c \
-	'node cli/bin/securityx.js repos scan /repos --json >/tmp/report.json 2>/dev/null; if [ -e /tmp/hostile-ran ]; then echo RAN; else cat /tmp/report.json; fi' \
+	'node cli/bin/porchlight.js repos scan /repos --json >/tmp/report.json 2>/dev/null; if [ -e /tmp/hostile-ran ]; then echo RAN; else cat /tmp/report.json; fi' \
 	>"$work/hostile.json"
 grep -qx RAN "$work/hostile.json" && fail "a program from the repository's .git/config ran during the scan"
 node -e '

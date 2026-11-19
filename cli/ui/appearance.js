@@ -12,7 +12,7 @@ export function currentLook() {
 	return isLook(id) ? /** @type {string} */ (id) : DEFAULT_LOOK;
 }
 
-const REMEMBERED = "securityx-look";
+const REMEMBERED = "porchlight-look";
 
 /**
  * Shows a look. It is also remembered in this browser, only so the next load

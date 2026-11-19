@@ -220,7 +220,7 @@ async function brewCheck(run: Runner): Promise<HostCheck | null> {
 export async function packageChecksFor(options: PackageOptions): Promise<HostCheck[]> {
 	const checks: HostCheck[] = [];
 	const base = { id: "packages", area: "packages", title: "Installed npm and Python packages", severity: "high" } as const;
-	const dir = await mkdtemp(join(tmpdir(), "securityx-host-"));
+	const dir = await mkdtemp(join(tmpdir(), "porchlight-host-"));
 	try {
 		const npm = await collectNpm(options.run, dir);
 		const python = await collectPython(options.run, dir, options.pathEnv, options.mac);

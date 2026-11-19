@@ -1,6 +1,6 @@
 // @ts-check
 // Settings → Model: where the model behind Explain, Summarise, Ask and Deeper analysis runs.
-// Keys are typed here and sent to SecurityX's own server once; the server never sends one back.
+// Keys are typed here and sent to Porchlight's own server once; the server never sends one back.
 import { api } from "./api.js";
 import { banner, h, icon, replace, stepNodes, toast } from "./dom.js";
 import { MODEL_CHOICES, modelChoice } from "./models.js";
@@ -126,7 +126,7 @@ export async function modelSection() {
 			form = fromState(state);
 			found = [];
 			setAssistant(state.assistant);
-			toast("Using the model SecurityX was started with");
+			toast("Using the model Porchlight was started with");
 		});
 
 	draw();
@@ -196,7 +196,7 @@ export async function modelSection() {
 		const from =
 			state.source === "settings"
 				? "Chosen here."
-				: "Given when SecurityX started (in the Mac app, ~/.securityx/app.env). Saving a choice here replaces it.";
+				: "Given when Porchlight started (in the Mac app, ~/.porchlight/app.env). Saving a choice here replaces it.";
 		if (assistant.configured) {
 			return h(
 				"p",
