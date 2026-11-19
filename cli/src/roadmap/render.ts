@@ -1,3 +1,4 @@
+import { MURAL_COLUMNS, type Mural } from "../assist/mural.ts";
 import { SEVERITIES } from "../repos/types.ts";
 import { csvRow, html, mdCode, mdText } from "./escape.ts";
 import { emptyCounts, phaseTitle, sumCounts, totalOf, type Action, type Counts, type FindingRow, type FindingsList, type Phase, type Roadmap } from "./types.ts";
@@ -15,30 +16,82 @@ export function isFormat(value: string): value is Format {
 	return (FORMATS as readonly string[]).includes(value);
 }
 
-export function renderRoadmap(roadmap: Roadmap, format: Format): Rendered {
+/** `mural`: a model-written board, added in its own labelled section (not to CSV, which has no room for one). */
+export function renderRoadmap(roadmap: Roadmap, format: Format, mural?: Mural): Rendered {
 	switch (format) {
 		case "md":
-			return { body: markdown(roadmap), contentType: "text/markdown; charset=utf-8", extension: "md" };
+			return { body: markdown(roadmap, mural), contentType: "text/markdown; charset=utf-8", extension: "md" };
 		case "html":
-			return { body: page(roadmap), contentType: "text/html; charset=utf-8", extension: "html" };
+			return { body: page(roadmap, mural), contentType: "text/html; charset=utf-8", extension: "html" };
 		case "csv":
 			return { body: csv(roadmap), contentType: "text/csv; charset=utf-8", extension: "csv" };
 		case "json":
-			return { body: `${JSON.stringify(roadmap, null, "\t")}\n`, contentType: "application/json; charset=utf-8", extension: "json" };
+			return { body: `${JSON.stringify(mural ? { ...roadmap, mural } : roadmap, null, "\t")}\n`, contentType: "application/json; charset=utf-8", extension: "json" };
 	}
 }
 
-export function renderFindings(list: FindingsList, format: Format): Rendered {
+export function renderFindings(list: FindingsList, format: Format, mural?: Mural): Rendered {
 	switch (format) {
 		case "md":
-			return { body: findingsMarkdown(list), contentType: "text/markdown; charset=utf-8", extension: "md" };
+			return { body: findingsMarkdown(list, mural), contentType: "text/markdown; charset=utf-8", extension: "md" };
 		case "html":
-			return { body: findingsPage(list), contentType: "text/html; charset=utf-8", extension: "html" };
+			return { body: findingsPage(list, mural), contentType: "text/html; charset=utf-8", extension: "html" };
 		case "csv":
 			return { body: findingsCsv(list), contentType: "text/csv; charset=utf-8", extension: "csv" };
 		case "json":
-			return { body: `${JSON.stringify(list, null, "\t")}\n`, contentType: "application/json; charset=utf-8", extension: "json" };
+			return { body: `${JSON.stringify(mural ? { ...list, mural } : list, null, "\t")}\n`, contentType: "application/json; charset=utf-8", extension: "json" };
 	}
+}
+
+// The mural: the model's words beside figures SecurityX counted, labelled as generated.
+
+function muralLabel(mural: Mural): string {
+	return `Written by ${mural.model} on ${mural.generatedAt.slice(0, 10)}. This is generated text and can be wrong: check it against the figures, which SecurityX counted, and the details below.`;
+}
+
+function muralFigures(mural: Mural): [string, string][] {
+	const { findings, analysis } = mural.facts;
+	const now = mural.facts.actions[0];
+	return [
+		["Findings", number(findings.total)],
+		["Critical", number(findings.critical)],
+		["High", number(findings.high)],
+		["Medium", number(findings.medium)],
+		["Low", number(findings.low)],
+		["Repositories affected", `${number(mural.facts.repositoriesAffected)} of ${number(mural.facts.repositories)}`],
+		[now ? `Actions: ${now.phase}` : "Actions", number(now?.actions ?? 0)],
+		["Judged by a model", `${number(analysis.judged)} of ${number(analysis.items)}`],
+	];
+}
+
+function muralSection(mural: Mural): string {
+	const columns = MURAL_COLUMNS.map(
+		([key, title]) =>
+			`<div class="column column-${key}"><h3>${html(title)}</h3>${mural[key].length > 0 ? `<ul>${mural[key].map((item) => `<li>${html(item)}</li>`).join("")}</ul>` : `<p class="sub">Nothing written.</p>`}</div>`,
+	).join("\n");
+	const figures = muralFigures(mural)
+		.map(([label, value]) => `<div class="figure"><span>${html(label)}</span><strong>${html(value)}</strong></div>`)
+		.join("");
+	return `<section class="mural" aria-label="Mural">
+<p class="generated">${html(muralLabel(mural))}</p>
+${mural.headline ? `<p class="headline">${html(mural.headline)}</p>` : ""}
+<div class="figures">${figures}</div>
+<div class="board">
+${columns}
+</div>
+${mural.cut ? `<p class="sub">${html(`The model read part of the scan: ${mural.cut}`)}</p>` : ""}
+</section>`;
+}
+
+function muralMarkdown(mural: Mural): string[] {
+	const lines = ["## Mural", "", `*${mdText(muralLabel(mural))}*`, ""];
+	if (mural.headline) lines.push(`**${mdText(mural.headline)}**`, "");
+	lines.push(`Figures counted by SecurityX: ${muralFigures(mural).map(([label, value]) => `${label} ${value}`).join(" · ")}.`, "");
+	for (const [key, title] of MURAL_COLUMNS) {
+		lines.push(`### ${title}`, "", ...(mural[key].length > 0 ? mural[key].map((item) => `- ${mdText(item)}`) : ["Nothing written."]), "");
+	}
+	if (mural.cut) lines.push(mdText(`The model read part of the scan: ${mural.cut}`), "");
+	return lines;
 }
 
 /** `securityx-roadmap-2026-11-17`, with a label (a domain, or "partial") in the middle. Safe as a file name. */
@@ -74,7 +127,7 @@ function phaseCounts(phase: Phase): { actions: number; findings: number } {
 
 // Markdown: a checklist that can be pasted into an issue or kept in a repository.
 
-function markdown(roadmap: Roadmap): string {
+function markdown(roadmap: Roadmap, mural?: Mural): string {
 	const lines = [
 		`# ${mdText(roadmap.title)}`,
 		"",
@@ -87,6 +140,7 @@ function markdown(roadmap: Roadmap): string {
 	if (roadmap.caveats.length > 0) {
 		lines.push("**The scan was incomplete, so this roadmap is too.** Not covered:", "", ...roadmap.caveats.map((caveat) => `- ${mdText(caveat)}`), "");
 	}
+	if (mural) lines.push(...muralMarkdown(mural), "## The roadmap", "");
 
 	lines.push("| Phase | Actions | Findings cleared |", "| --- | ---: | ---: |");
 	roadmap.phases.forEach((phase, index) => {
@@ -149,7 +203,7 @@ function csv(roadmap: Roadmap): string {
 
 // HTML: one self-contained file, with no script and nothing loaded from anywhere, that prints cleanly.
 
-function page(roadmap: Roadmap): string {
+function page(roadmap: Roadmap, mural?: Mural): string {
 	const phases = roadmap.phases.map((phase, index) => phaseSection(phase, index)).join("\n");
 	const summaryRows = roadmap.phases
 		.map((phase, index) => {
@@ -180,6 +234,7 @@ function page(roadmap: Roadmap): string {
 <p class="sub">Source: <code>${html(roadmap.source)}</code>, scanned ${html(roadmap.scannedAt.slice(0, 10))}.</p>
 <p>${html(intro(roadmap))}</p>
 ${notices}
+${mural ? muralSection(mural) : ""}
 <table class="summary">
 <thead><tr><th scope="col">Phase</th><th scope="col">What is in it</th><th scope="col" class="num">Actions</th><th scope="col" class="num">Findings cleared</th></tr></thead>
 <tbody>
@@ -245,12 +300,13 @@ function findingLabel(row: FindingRow): string {
 	return `${row.id}: ${row.title}${row.detail ? ` (${row.detail})` : ""}`;
 }
 
-function findingsMarkdown(list: FindingsList): string {
+function findingsMarkdown(list: FindingsList, mural?: Mural): string {
 	const lines = [`# ${mdText(list.title)}`, "", `Source: ${mdCode(list.source)}, scanned ${list.scannedAt.slice(0, 10)}.`, "", findingsIntro(list), ""];
 	if (list.scope) lines.push(`**Partial list.** It covers only: ${mdText(list.scope)}.`, "");
 	if (list.caveats.length > 0) {
 		lines.push("**The scan was incomplete, so this list is too.** Not covered:", "", ...list.caveats.map((caveat) => `- ${mdText(caveat)}`), "");
 	}
+	if (mural) lines.push(...muralMarkdown(mural), "## The findings", "");
 	for (const [place, rows] of byPlace(list.rows)) {
 		lines.push(`## ${mdText(place)}`, "", "| Severity | Finding | Where | Suggested fix | When |", "| --- | --- | --- | --- | --- |");
 		for (const row of rows) {
@@ -272,7 +328,7 @@ function findingsCsv(list: FindingsList): string {
 	return `${rows.join("\r\n")}\r\n`;
 }
 
-function findingsPage(list: FindingsList): string {
+function findingsPage(list: FindingsList, mural?: Mural): string {
 	const notices = [
 		list.scope ? `<p class="notice"><strong>Partial list.</strong> It covers only: ${html(list.scope)}.</p>` : "",
 		list.caveats.length > 0
@@ -307,6 +363,7 @@ function findingsPage(list: FindingsList): string {
 <p class="sub">Source: <code>${html(list.source)}</code>, scanned ${html(list.scannedAt.slice(0, 10))}.</p>
 <p>${html(findingsIntro(list))}</p>
 ${notices}
+${mural ? muralSection(mural) : ""}
 ${sections}
 </main>
 </body>
@@ -345,11 +402,27 @@ dd ol { margin: 0; padding-left: 18px; }
 .mark.critical { border-left-color: var(--critical); }
 .mark.high { border-left-color: var(--serious); }
 .mark.medium { border-left-color: var(--warning); }
+.mural { margin: 22px 0 28px; padding: 20px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; break-inside: avoid; }
+.mural .generated { margin: 0 0 10px; padding-left: 10px; border-left: 3px solid #7f77dd; color: var(--ink-2); font-size: 12.5px; }
+.mural .headline { margin: 0 0 14px; font-size: 20px; font-weight: 600; line-height: 1.3; }
+.figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 8px; margin-bottom: 16px; }
+.figure { display: grid; gap: 2px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--page); }
+.figure span { color: var(--ink-2); font-size: 12px; }
+.figure strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+.board { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.board .column { padding: 12px 14px; border: 1px solid var(--line); border-top: 5px solid var(--muted); border-radius: 10px; background: var(--page); }
+.board .column-found { border-top-color: var(--critical); }
+.board .column-decided { border-top-color: var(--warning); }
+.board .column-done { border-top-color: #1d9e75; }
+.board .column-next { border-top-color: #378add; }
+.board h3 { margin: 0 0 8px; font-size: 14px; }
+.board ul { margin: 0; padding-left: 18px; }
+.board li { margin: 0 0 6px; overflow-wrap: anywhere; }
 table.findings { table-layout: fixed; }
 table.findings th:nth-child(1) { width: 92px; }
 table.findings th:nth-child(3) { width: 24%; }
 table.findings th:nth-child(4) { width: 30%; }
 table.findings td { overflow-wrap: anywhere; }
 table.findings tr { break-inside: avoid; }
-@media print { body { background: #fff; color: #000; font-size: 11pt; } main { max-width: none; padding: 0; } .action, table.summary, .notice, code { background: #fff; } h2 { break-after: avoid; } h3 { break-after: avoid; } }
+@media print { body { background: #fff; color: #000; font-size: 11pt; } main { max-width: none; padding: 0; } .action, table.summary, .notice, code, .mural, .figure, .board .column { background: #fff; } h2 { break-after: avoid; } h3 { break-after: avoid; } }
 `;

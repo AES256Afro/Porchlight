@@ -1,7 +1,7 @@
 /** Who answers: Ollama on the owner's own machine or server, or a hosted model reached with the owner's API key. */
 /** `compatible`: any server that speaks OpenAI's chat format at an address the owner gives, such as LM Studio or a llama.cpp server. */
-export type Provider = "ollama" | "anthropic" | "openai" | "deepseek" | "compatible";
-type HostedProvider = "anthropic" | "openai" | "deepseek";
+export type Provider = "ollama" | "anthropic" | "openai" | "gemini" | "deepseek" | "compatible";
+export type HostedProvider = "anthropic" | "openai" | "gemini" | "deepseek";
 
 /** Where the model is and which one to use. Read from the environment, never from the command line. */
 export interface AssistantConfig {
@@ -18,10 +18,16 @@ export interface AssistantConfig {
  * The hosted providers. Each address is fixed here, so a key can only ever be sent to the provider
  * it belongs to: no setting moves it.
  */
-export const HOSTED: Record<HostedProvider, { name: string; url: string; defaultModel?: string }> = {
-	anthropic: { name: "Claude", url: "https://api.anthropic.com/v1/messages", defaultModel: "claude-opus-5-5" },
-	openai: { name: "OpenAI", url: "https://api.openai.com/v1/chat/completions" },
-	deepseek: { name: "DeepSeek", url: "https://api.deepseek.com/chat/completions" },
+export const HOSTED: Record<HostedProvider, { name: string; url: string; modelsUrl: string; defaultModel?: string }> = {
+	anthropic: { name: "Claude", url: "https://api.anthropic.com/v1/messages", modelsUrl: "https://api.anthropic.com/v1/models", defaultModel: "claude-opus-5-5" },
+	openai: { name: "OpenAI", url: "https://api.openai.com/v1/chat/completions", modelsUrl: "https://api.openai.com/v1/models" },
+	// Gemini's OpenAI-compatible endpoint: the same request and answer as OpenAI's, under Google's address.
+	gemini: {
+		name: "Gemini",
+		url: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+		modelsUrl: "https://generativelanguage.googleapis.com/v1beta/openai/models",
+	},
+	deepseek: { name: "DeepSeek", url: "https://api.deepseek.com/chat/completions", modelsUrl: "https://api.deepseek.com/models" },
 };
 
 /** Whether what is sent leaves the owner's own machines. */
@@ -40,6 +46,8 @@ export interface ChatOptions {
 	timeoutMs?: number;
 	/** Aborts the request, for example when the page that asked has gone. */
 	signal?: AbortSignal;
+	/** The longest answer, in tokens, for a local model; longer than usual for a mural. */
+	maxTokens?: number;
 }
 
 /** A failure talking to the model, in words for the page. `status` is the HTTP status to answer with. */
@@ -71,17 +79,18 @@ const FALLBACK_BETA = "server-side-fallback-2026-07-01";
  * that apart from a mistake by checking whether SECURITYX_LLM_URL was given at all. Plain http is
  * allowed: Ollama runs on this machine or this server, and nothing secret is sent to it.
  */
-export function assistantConfig(env: Record<string, string | undefined>): AssistantConfig {
+export function assistantConfig(env: Record<string, string | undefined>, options: { exactModel?: boolean } = {}): AssistantConfig {
 	const provider = (env.SECURITYX_LLM_PROVIDER?.trim().toLowerCase() || "ollama") as Provider;
 	const model = env.SECURITYX_LLM_MODEL?.trim();
 	if (provider !== "ollama" && provider !== "compatible") {
 		const hosted = HOSTED[provider];
-		if (!hosted) throw new Error("SECURITYX_LLM_PROVIDER must be one of: ollama, compatible, anthropic, openai, deepseek");
+		if (!hosted) throw new Error("SECURITYX_LLM_PROVIDER must be one of: ollama, compatible, anthropic, openai, gemini, deepseek");
 		const apiKey = env.SECURITYX_LLM_API_KEY?.trim();
 		if (!apiKey) throw new Error(`Set SECURITYX_LLM_API_KEY to your ${hosted.name} API key`);
 		if (!API_KEY.test(apiKey)) throw new Error("SECURITYX_LLM_API_KEY is not an API key: expected 20 or more characters with no spaces");
 		// A name shaped like Ollama's (`hf.co/…:Q4`) is a setting left over from a local model, not this provider's.
-		const named = model && !/[/:]/.test(model) ? model : undefined;
+		// A name chosen for this provider in Settings is taken as it is.
+		const named = model && (options.exactModel || !/[/:]/.test(model)) ? model : undefined;
 		if (named && !MODEL_NAME.test(named)) throw new Error("SECURITYX_LLM_MODEL is not a model name");
 		const chosen = named ?? hosted.defaultModel;
 		if (!chosen) throw new Error(`Set SECURITYX_LLM_MODEL to the ${hosted.name} model to use, as ${hosted.name} names it`);
@@ -142,7 +151,8 @@ export async function chat(config: AssistantConfig, messages: ChatMessage[], opt
 		if (timeout.aborted) return new AssistantError(504, `The model took longer than ${timeoutMs / 1000} seconds. Try again, or use a smaller model`);
 		if (options.signal?.aborted) return new AssistantError(499, "The request was cancelled");
 		const code = (err as { cause?: { code?: unknown } })?.cause?.code;
-		return new AssistantError(502, `Could not reach the model at ${host}${typeof code === "string" ? ` (${code})` : ""}. Is Ollama running there?`);
+		const where = config.provider === undefined || config.provider === "ollama" ? "Is Ollama running there?" : config.provider === "compatible" ? "Is the model server running there?" : "Is this computer online?";
+		return new AssistantError(502, `Could not reach the model at ${host}${typeof code === "string" ? ` (${code})` : ""}. ${where}`);
 	};
 
 	if (config.provider !== undefined && config.provider !== "ollama") return hostedChat(config, messages, fetchFn, signal, failed);
@@ -153,7 +163,7 @@ export async function chat(config: AssistantConfig, messages: ChatMessage[], opt
 		response = await fetchFn(new URL("api/chat", config.url), {
 			method: "POST",
 			headers: { "content-type": "application/json" },
-			body: JSON.stringify({ model: config.model, messages, stream: false, think: false, options: MODEL_OPTIONS }),
+			body: JSON.stringify({ model: config.model, messages, stream: false, think: false, options: options.maxTokens ? { ...MODEL_OPTIONS, num_predict: options.maxTokens } : MODEL_OPTIONS }),
 			redirect: "error",
 			signal,
 		});
@@ -222,8 +232,8 @@ async function hostedChat(config: AssistantConfig, messages: ChatMessage[], fetc
 	if (!response.ok) {
 		const detail = (answer?.error as { message?: unknown } | undefined)?.message;
 		const why = typeof detail === "string" ? `: ${scrub(detail, config.apiKey).slice(0, 200)}` : "";
-		if (response.status === 401 || response.status === 403) throw new AssistantError(502, `${name} refused the API key. Check SECURITYX_LLM_API_KEY`);
-		if (response.status === 404) throw new AssistantError(502, `${name} has no model ${config.model}. Check SECURITYX_LLM_MODEL`);
+		if (response.status === 401 || response.status === 403) throw new AssistantError(502, `${name} refused the API key. Check the key in Settings → Model`);
+		if (response.status === 404) throw new AssistantError(502, `${name} has no model ${config.model}. Choose one with Find models in Settings → Model`);
 		if (response.status === 429) throw new AssistantError(502, `${name} is limiting requests, or the account is out of credit. Try again later${why}`);
 		throw new AssistantError(502, `${name} failed (HTTP ${response.status})${why}`);
 	}
@@ -239,6 +249,57 @@ async function hostedChat(config: AssistantConfig, messages: ChatMessage[], fetc
 	const cleaned = withoutThinking(content);
 	if (cleaned === "") throw new AssistantError(502, `${name} gave an empty answer. Try again`);
 	return cleaned;
+}
+
+/** Model names a server or an account offers, for choosing one in Settings. */
+const NOT_FOR_CHAT = /embed|whisper|tts|dall-e|moderation|transcribe|audio|image|realtime|search|computer-use|davinci|babbage/i;
+const MAX_LISTED = 300;
+const LIST_TIMEOUT_MS = 15_000;
+
+/**
+ * Lists the models where `config` points, by name. Asks the same address chat requests go to (for a
+ * hosted provider its fixed models address), with the same key in the same header, and nothing else.
+ */
+export async function listModels(config: Omit<AssistantConfig, "model">, options: { fetchFn?: typeof fetch } = {}): Promise<string[]> {
+	const fetchFn = options.fetchFn ?? fetch;
+	const provider = config.provider ?? "ollama";
+	const hosted = provider !== "ollama" && provider !== "compatible" ? HOSTED[provider] : null;
+	const url =
+		provider === "ollama" ? new URL("api/tags", config.url) : hosted ? new URL(hosted.modelsUrl) : new URL("../models", config.url);
+	const name = hosted ? hosted.name : `The model server at ${config.url.host}`;
+	const headers: Record<string, string> =
+		provider === "anthropic"
+			? { "x-api-key": config.apiKey ?? "", "anthropic-version": ANTHROPIC_VERSION }
+			: config.apiKey
+				? { authorization: `Bearer ${config.apiKey}` }
+				: {};
+	let response: Response;
+	let text: string;
+	try {
+		response = await fetchFn(url, { headers, redirect: "error", signal: AbortSignal.timeout(LIST_TIMEOUT_MS) });
+		text = await response.text();
+	} catch (err) {
+		const code = (err as { cause?: { code?: unknown } })?.cause?.code;
+		throw new AssistantError(502, `Could not reach ${url.host}${typeof code === "string" ? ` (${code})` : ""}. Check the address, and that it is running`);
+	}
+	if (response.status === 401 || response.status === 403) throw new AssistantError(502, `${name} refused the API key`);
+	if (!response.ok) throw new AssistantError(502, `${name} did not list its models (HTTP ${response.status}). Check the address`);
+	let body: { models?: { name?: unknown }[]; data?: { id?: unknown }[] } | null = null;
+	try {
+		body = JSON.parse(text);
+	} catch {
+		// Handled below.
+	}
+	const names =
+		provider === "ollama"
+			? (body?.models ?? []).map((model) => model?.name)
+			: (body?.data ?? []).map((model) => (typeof model?.id === "string" ? model.id.replace(/^models\//, "") : undefined));
+	const usable = names.filter((model): model is string => typeof model === "string" && MODEL_NAME.test(model));
+	if (usable.length === 0 && !Array.isArray(provider === "ollama" ? body?.models : body?.data)) {
+		throw new AssistantError(502, `The answer from ${url.host} is not a list of models. Check the address`);
+	}
+	const chat = hosted ? usable.filter((model) => !NOT_FOR_CHAT.test(model)) : usable;
+	return [...new Set(chat)].sort().slice(0, MAX_LISTED);
 }
 
 /** An error message from a provider, with the key taken out in case it was echoed back. */

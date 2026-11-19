@@ -179,16 +179,17 @@ export function localModelCard(assistant, service) {
 	return h(
 		"div",
 		{ class: "card full" },
-		h("h2", null, "Local model"),
+		h("h2", null, "Model"),
 		h(
 			"p",
 			null,
 			h("span", { class: "severity status-pending" }, icon("pending"), "Not connected"),
-			h("span", { class: "hint block" }, "A local model, served by Ollama, can explain a finding, summarise the roadmap, explain a domain's changes and answer questions about a scan."),
+			h("span", { class: "hint block" }, "A model, on this Mac, on a server of yours or through an API, can explain a finding, summarise the roadmap, analyse findings against your code and answer questions about a scan."),
 		),
 		setup.reason ? h("p", null, ...stepNodes(setup.reason), ".") : null,
 		...setup.steps.map((step) => h("p", null, ...stepNodes(step))),
 		setup.commands ? h("pre", null, h("code", null, setup.commands)) : null,
+		service ? null : h("p", null, h("a", { class: "button primary", href: "#/settings" }, "Choose a model")),
 		h("p", { class: "hint" }, "It only ever sees what these pages show: never secret values, authors or emails."),
 	);
 }

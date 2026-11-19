@@ -1,9 +1,11 @@
 // @ts-check
-// Settings: the look of the interface, and what SecurityX is connected to.
+// Settings: the model, access from other devices, the look of the interface, and what SecurityX is connected to.
 import { api } from "./api.js";
 import { h, icon, replace, toast } from "./dom.js";
 import { applyLook, currentLook } from "./appearance.js";
 import { LOOKS } from "./looks.js";
+import { accessSection } from "./access-settings.js";
+import { modelSection } from "./model-settings.js";
 import { load, store } from "./store.js";
 
 /**
@@ -12,6 +14,9 @@ import { load, store } from "./store.js";
  */
 export async function renderSettings(view) {
 	await load();
+	// Kept across redraws, so changing the look leaves a half-filled model form as it is.
+	const model = store.settings?.service ? null : await modelSection();
+	const access = store.settings?.service ? null : await accessSection();
 	let saving = Promise.resolve();
 
 	/** @param {string} id */
@@ -43,7 +48,9 @@ export async function renderSettings(view) {
 			h(
 				"section",
 				{ class: "page" },
-				h("div", { class: "page-head" }, h("div", null, h("h1", null, "Settings"), h("p", { class: "sub" }, "How SecurityX looks, and what it's connected to."))),
+				h("div", { class: "page-head" }, h("div", null, h("h1", null, "Settings"), h("p", { class: "sub" }, "Which model SecurityX uses, how it looks, and what it's connected to."))),
+				model,
+				access,
 				h(
 					"fieldset",
 					{ class: "card full looks" },

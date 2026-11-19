@@ -180,15 +180,15 @@ test("listens beyond loopback only with a fixed key long enough to guard it", as
 	assert.equal((await send(server, "GET", "/api/state", { key: null })).status, 401);
 });
 
-test("a refused key says whether this is a service, and nothing more", async (t) => {
+test("a refused key says whether this is a service or another device, and nothing more", async (t) => {
 	const local = await start(t);
-	assert.deepEqual((await send(local, "GET", "/api/state", { key: null })).json, { error: "Session key required", service: false });
+	assert.deepEqual((await send(local, "GET", "/api/state", { key: null })).json, { error: "Session key required", service: false, tailnet: false });
 
 	// A second loopback address stands in for "beyond loopback" without opening a port to the network.
 	// macOS has none by default, so there the flag is covered by the expression alone.
 	const service = await start(t, { host: "127.0.0.2", sessionKey: "k".repeat(MIN_KEY_LENGTH) }).catch(() => null);
 	if (service) {
-		assert.deepEqual((await send(service, "GET", "/api/state", { key: null, host: "127.0.0.2" })).json, { error: "Session key required", service: true });
+		assert.deepEqual((await send(service, "GET", "/api/state", { key: null, host: "127.0.0.2" })).json, { error: "Session key required", service: true, tailnet: false });
 	}
 });
 
@@ -1025,4 +1025,288 @@ test("serves every look's script, and offers twelve looks", async (t) => {
 	const { LOOKS } = await import("../ui/looks.js");
 	assert.equal(LOOKS.length, 12);
 	assert.equal(new Set(LOOKS.map((look) => look.id)).size, 12);
+});
+
+/** Records every request a model setting makes: where it went and what authorised it. */
+function modelNetwork(answer: (url: URL) => Response = () => Response.json({ choices: [{ message: { content: "ready" } }] })) {
+	const calls: { url: string; headers: Record<string, string> }[] = [];
+	const fetchFn = (async (input: URL | string, init: RequestInit = {}) => {
+		const url = new URL(String(input));
+		calls.push({ url: url.href, headers: Object.fromEntries(Object.entries((init.headers ?? {}) as Record<string, string>).map(([k, v]) => [k.toLowerCase(), v])) });
+		return answer(url);
+	}) as unknown as typeof fetch;
+	return { calls, fetchFn };
+}
+
+const CLAUDE_KEY = ["sk", "ant", "test", "c".repeat(30)].join("-");
+const SERVER_KEY = ["sk", "unsloth", "s".repeat(24)].join("-");
+
+test("a model chosen in Settings is used at once, kept beside the report, and its key is never sent back", async (t) => {
+	const network = modelNetwork((url) =>
+		url.hostname === "api.anthropic.com" ? Response.json({ content: [{ type: "text", text: "ready" }], stop_reason: "end_turn" }) : Response.json({}),
+	);
+	const server = await start(t, { fetchFn: network.fetchFn, assistantUnset: true });
+	const before = (await send(server, "GET", "/api/model")).json;
+	assert.deepEqual([before.source, before.choice, before.assistant.configured], ["startup", "off", false]);
+
+	const saved = await send(server, "POST", "/api/model", { body: { choice: "anthropic", apiKey: CLAUDE_KEY } });
+	assert.equal(saved.status, 200);
+	assert.deepEqual([saved.json.source, saved.json.choice, saved.json.model, saved.json.keys.anthropic], ["settings", "anthropic", "", true]);
+	assert.deepEqual(saved.json.assistant, { configured: true, model: "claude-opus-5-5", host: "api.anthropic.com", hosted: true });
+	for (const reply of [saved, await send(server, "GET", "/api/model"), await send(server, "GET", "/api/state")]) {
+		assert.ok(!reply.text.includes(CLAUDE_KEY), "the page is never sent a key");
+	}
+
+	const file = join(server.dir, "state", "model-settings.json");
+	assert.equal((await stat(file)).mode & 0o777, 0o600);
+	assert.ok((await readFile(file, "utf8")).includes(CLAUDE_KEY));
+
+	const tested = await send(server, "POST", "/api/model/test", { body: { choice: "anthropic" } });
+	assert.deepEqual([tested.status, tested.json.text, tested.json.model], [200, "ready", "claude-opus-5-5"]);
+	assert.deepEqual(network.calls.map((call) => [call.url, call.headers["x-api-key"] === CLAUDE_KEY]), [["https://api.anthropic.com/v1/messages", true]]);
+
+	// A copy started later uses the same choice, whatever it was started with.
+	const again = await start(t, { reportPath: join(server.dir, "state", "repo-scan.json"), assistant });
+	assert.deepEqual((await send(again, "GET", "/api/state")).json.assistant.model, "claude-opus-5-5");
+	assert.equal(again.model().source, "settings");
+});
+
+test("a key goes only to the provider or the server address it was saved for", async (t) => {
+	const network = modelNetwork((url) =>
+		url.pathname.endsWith("/models") ? Response.json({ data: [{ id: "models/gemini-test-pro" }, { id: "models/text-embedding-9" }] }) : Response.json({ choices: [{ message: { content: "ready" } }] }),
+	);
+	const server = await start(t, { fetchFn: network.fetchFn });
+	await send(server, "POST", "/api/model", { body: { choice: "anthropic", apiKey: CLAUDE_KEY } });
+
+	// Another choice never gets Claude's key, even pointed at any address.
+	await send(server, "POST", "/api/model/test", { body: { choice: "openai-server", url: "http://elsewhere.test/v1", model: "m" } });
+	assert.equal(network.calls.at(-1)!.url, "http://elsewhere.test/v1/chat/completions");
+	assert.ok(!JSON.stringify(network.calls).includes(CLAUDE_KEY));
+
+	// A server's key is tied to its address.
+	const own = await send(server, "POST", "/api/model", { body: { choice: "unsloth-mac", model: "local-model", apiKey: SERVER_KEY } });
+	assert.deepEqual([own.status, own.json.keys.servers], [200, ["http://localhost:8888/v1"]]);
+	await send(server, "POST", "/api/model/test", { body: { choice: "unsloth-mac", model: "local-model" } });
+	assert.deepEqual([network.calls.at(-1)!.url, network.calls.at(-1)!.headers.authorization], ["http://localhost:8888/v1/chat/completions", `Bearer ${SERVER_KEY}`]);
+	await send(server, "POST", "/api/model/test", { body: { choice: "openai-server", url: "http://other.test/v1", model: "m" } });
+	assert.equal(network.calls.at(-1)!.headers.authorization, undefined);
+
+	// Gemini: Google's fixed address, its own key, and model names a person would type.
+	const geminiKey = ["AIza", "g".repeat(35)].join("");
+	const listed = await send(server, "POST", "/api/model/models", { body: { choice: "gemini", apiKey: geminiKey } });
+	assert.deepEqual(listed.json.models, ["gemini-test-pro"]);
+	assert.deepEqual([network.calls.at(-1)!.url, network.calls.at(-1)!.headers.authorization], ["https://generativelanguage.googleapis.com/v1beta/openai/models", `Bearer ${geminiKey}`]);
+	assert.ok(!listed.text.includes(geminiKey));
+});
+
+test("a setting to correct never replaces a working model, and the start-up model can be restored", async (t) => {
+	const network = modelNetwork((url) => (url.pathname === "/api/tags" ? Response.json({ models: [{ name: MODEL }, { name: "other:7b" }] }) : Response.json({})));
+	const server = await start(t, { assistant, fetchFn: network.fetchFn });
+	const startup = (await send(server, "GET", "/api/model")).json;
+	assert.deepEqual([startup.source, startup.choice, startup.url, startup.model], ["startup", "ollama-server", "http://ollama.test:11434", MODEL]);
+
+	for (const [body, error] of [
+		[{ choice: "anthropic" }, "Enter your Claude API key"],
+		[{ choice: "openai", apiKey: "short" }, "That is not an API key: it should be 20 or more characters with no spaces"],
+		[{ choice: "ollama-mac", url: "ftp://x", model: "m" }, "The address must start with http:// or https://"],
+		[{ choice: "ollama-mac" }, "Choose a model: Find models lists the ones Ollama has"],
+		[{ choice: "made-up" }, "Choose where the model runs"],
+	] as const) {
+		const refused = await send(server, "POST", "/api/model", { body });
+		assert.deepEqual([refused.status, refused.json.error], [400, error]);
+	}
+	assert.equal((await send(server, "GET", "/api/state")).json.assistant.model, MODEL);
+
+	const listed = await send(server, "POST", "/api/model/models", { body: { choice: "ollama-server", url: "http://ollama.test:11434" } });
+	assert.deepEqual(listed.json.models, ["other:7b", MODEL]);
+
+	const off = await send(server, "POST", "/api/model", { body: { choice: "off" } });
+	assert.deepEqual(off.json.assistant, { configured: false, error: "No model is connected", unset: true });
+	assert.equal((await send(server, "POST", "/api/assist/roadmap")).status, 503);
+
+	const back = await send(server, "POST", "/api/model/startup");
+	assert.deepEqual([back.json.source, back.json.assistant.model], ["startup", MODEL]);
+	await assert.rejects(stat(join(server.dir, "state", "model-settings.json")));
+	assert.equal((await send(server, "POST", "/api/model", { key: null, body: { choice: "off" } })).status, 401);
+});
+
+test("other devices get in only on the tailnet address, only with the access key, and cannot change access", async (t) => {
+	const server = await start(t, { tailnetAddress: () => "127.0.0.1", accessPort: 0 });
+	const off = await send(server, "GET", "/api/access");
+	assert.deepEqual([off.json.enabled, off.json.listening, off.json.canChange, off.json.link], [false, false, true, undefined]);
+
+	const on = await send(server, "POST", "/api/access", { body: { enabled: true } });
+	assert.deepEqual([on.status, on.json.listening], [200, true]);
+	const link = new URL(on.json.link);
+	const key = link.hash.slice("#k=".length);
+	assert.ok(key.length >= MIN_KEY_LENGTH && key !== server.sessionKey);
+	const file = join(server.dir, "state", "access.json");
+	assert.equal((await stat(file)).mode & 0o777, 0o600);
+
+	const tailnetPort = Number(link.port);
+	const device = (sessionKey: string | null) => ({ ...server, port: tailnetPort, sessionKey: sessionKey ?? "" }) as UiServer;
+	const viaName = { headers: { host: `mac.tail-example.ts.net:${tailnetPort}` } };
+	// The page loads by any tailnet name; its data needs the access key, and only that key.
+	assert.equal((await send(device(null), "GET", "/", { key: null, ...viaName })).status, 200);
+	const noKey = await send(device(null), "GET", "/api/state", { key: null, ...viaName });
+	assert.deepEqual([noKey.status, noKey.json.tailnet, noKey.json.service], [401, true, false]);
+	assert.equal((await send(device(server.sessionKey), "GET", "/api/state", viaName)).status, 401);
+	const state = await send(device(key), "GET", "/api/state", viaName);
+	assert.deepEqual([state.status, state.json.remote], [200, true]);
+	assert.equal((await send(server, "GET", "/api/state", { key })).status, 401, "this computer's page takes only its own session key");
+	assert.equal(
+		(await send(device(key), "GET", "/api/state", { headers: { host: `mac.tail-example.ts.net:${tailnetPort}`, origin: "https://evil.example" } })).status,
+		403,
+	);
+
+	// A device sees whether access is on, never the key, and cannot change it.
+	const seen = await send(device(key), "GET", "/api/access", viaName);
+	assert.deepEqual([seen.json.canChange, seen.json.link], [false, undefined]);
+	assert.ok(!seen.text.includes(key));
+	assert.equal((await send(device(key), "POST", "/api/access", { ...viaName, body: { enabled: false } })).status, 403);
+	assert.equal((await send(device(key), "POST", "/api/access/key", viaName)).status, 403);
+
+	// A new key turns the old one away.
+	const renewed = await send(server, "POST", "/api/access/key");
+	const newKey = new URL(renewed.json.link).hash.slice("#k=".length);
+	const newPort = Number(new URL(renewed.json.link).port);
+	assert.notEqual(newKey, key);
+	assert.equal((await send({ ...server, port: newPort, sessionKey: key } as UiServer, "GET", "/api/state")).status, 401);
+	assert.equal((await send({ ...server, port: newPort, sessionKey: newKey } as UiServer, "GET", "/api/state")).status, 200);
+
+	// A copy started later listens again by itself.
+	await server.close();
+	const again = await start(t, { reportPath: join(server.dir, "state", "repo-scan.json"), tailnetAddress: () => "127.0.0.1", accessPort: 0 });
+	assert.equal(again.access().listening, true);
+	const againPort = Number(new URL(again.access().url!).port);
+	assert.equal((await send({ ...again, port: againPort, sessionKey: newKey } as UiServer, "GET", "/api/state")).status, 200, "the saved key still works");
+
+	const stopped = await send(again, "POST", "/api/access", { body: { enabled: false } });
+	assert.deepEqual([stopped.json.enabled, stopped.json.listening], [false, false]);
+	await assert.rejects(send({ ...again, port: againPort, sessionKey: newKey } as UiServer, "GET", "/api/state"), "nothing listens on the tailnet once access is off");
+});
+
+test("access waits for Tailscale, and a service never opens a second listener", async (t) => {
+	const server = await start(t, { tailnetAddress: () => null, accessPort: 0 });
+	const waiting = await send(server, "POST", "/api/access", { body: { enabled: true } });
+	assert.deepEqual([waiting.json.enabled, waiting.json.listening], [true, false]);
+	assert.match(waiting.json.error, /Tailscale is not connected/);
+
+	const key = "k".repeat(MIN_KEY_LENGTH);
+	const service = await start(t, { host: "0.0.0.0", sessionKey: key, tailnetAddress: () => "127.0.0.1", accessPort: 0 });
+	const refused = await send(service, "POST", "/api/access", { key, body: { enabled: true } });
+	assert.equal(refused.status, 403);
+	assert.equal(service.access().listening, false);
+});
+
+test("a mural is written in the background for one scan and its filters, and an export carries it only when asked", async (t) => {
+	let answer = JSON.stringify({ headline: "Where things stand", found: ["Four problems"], decided: ["Rotate the key first"], done: ["Scanned three repositories"], next: ["Upgrade"] });
+	const fetchFn = (async () => Response.json({ message: { content: answer } })) as unknown as typeof fetch;
+	const server = await start(t, { assistant, fetchFn });
+	await withReport(server);
+	const settle = async (query = "") => {
+		for (let i = 0; i < 100; i++) {
+			const job = (await send(server, "GET", `/api/repos/mural${query}`)).json;
+			if (job.state !== "running") return job;
+			await new Promise((resolve) => setTimeout(resolve, 5));
+		}
+		throw new Error("the mural never finished");
+	};
+
+	assert.equal((await send(server, "GET", "/api/repos/export?format=html&mural=1")).status, 409, "no mural has been written yet");
+	assert.equal((await send(server, "POST", "/api/repos/mural")).status, 202);
+	const done = await settle();
+	assert.deepEqual([done.state, done.current, done.headline, done.model], ["done", true, "Where things stand", MODEL]);
+	assert.equal((await stat(join(server.dir, "state", "repo-mural.json"))).mode & 0o777, 0o600);
+
+	const page = await send(server, "GET", "/api/repos/export?format=html&mural=1");
+	assert.equal(page.status, 200);
+	assert.match(page.text, /Where things stand/);
+	assert.match(page.text, /Written by qwen-test:9b/);
+	assert.ok(!(await send(server, "GET", "/api/repos/export?format=html")).text.includes("Where things stand"), "not unless asked for");
+
+	// Other filters describe a different part of the scan, so they need their own mural.
+	assert.equal((await send(server, "GET", "/api/repos/export?format=html&mural=1&severity=high")).status, 409);
+	assert.equal((await send(server, "GET", "/api/repos/mural?severity=high")).json.current, false);
+
+	// An answer that is not a mural is an error, never a mural.
+	answer = "I could not do that.";
+	await send(server, "POST", "/api/repos/mural?severity=high");
+	const failed = await settle("?severity=high");
+	assert.deepEqual([failed.state, failed.current], ["failed", true]);
+	assert.match(failed.error, /did not answer with the mural/);
+
+	const without = await start(t);
+	await withReport(without);
+	assert.equal((await send(without, "POST", "/api/repos/mural")).status, 503);
+});
+
+// Send to a model
+
+test("sends the roadmap or the findings to the model the owner picks, from the stored report only", async (t) => {
+	const calls: { host: string; key?: string; body: Record<string, any> }[] = [];
+	const fetchFn = (async (input: URL | string, init: RequestInit = {}) => {
+		const url = new URL(String(input));
+		const headers = (init.headers ?? {}) as Record<string, string>;
+		calls.push({ host: url.host, key: headers["x-api-key"], body: JSON.parse(String(init.body)) });
+		if (url.hostname === "api.anthropic.com") return Response.json({ content: [{ type: "text", text: "Overall risk: one critical package." }], stop_reason: "end_turn" });
+		return Response.json({ message: { role: "assistant", content: "Repair 1: upgrade pkg." } });
+	}) as unknown as typeof fetch;
+	const server = await start(t, { assistant, fetchFn });
+	await withReport(server);
+
+	// Only the model given at start-up so far.
+	const first = (await send(server, "GET", "/api/state")).json.sendTargets;
+	assert.deepEqual(first, [{ id: "startup", label: `${MODEL} · set when SecurityX started (ollama.test:11434)`, model: MODEL, host: "ollama.test:11434", hosted: false, current: true }]);
+
+	// Every model set up in Settings stays on offer, the one in use first; keys never reach the page.
+	await send(server, "POST", "/api/model", { body: { choice: "ollama-mac", model: "qwen3:8b" } });
+	await send(server, "POST", "/api/model", { body: { choice: "anthropic", apiKey: CLAUDE_KEY } });
+	const state = await send(server, "GET", "/api/state");
+	assert.ok(!state.text.includes(CLAUDE_KEY));
+	assert.deepEqual(
+		state.json.sendTargets.map((target: { id: string; hosted: boolean; current: boolean }) => [target.id, target.hosted, target.current]),
+		[
+			["anthropic", true, true],
+			["ollama-mac", false, false],
+			["startup", false, false],
+		],
+	);
+
+	// A repair plan of the whole roadmap from the local model, with room for a longer answer.
+	const planned = await send(server, "POST", "/api/repos/send", { body: { target: "startup", content: "roadmap", purpose: "repair" } });
+	assert.deepEqual([planned.status, planned.json.text, planned.json.model, planned.json.hosted], [200, "Repair 1: upgrade pkg.", MODEL, false]);
+	const local = calls.at(-1)!;
+	assert.equal(local.host, "ollama.test:11434");
+	assert.equal(local.body.options.num_predict, 3000);
+	assert.match(local.body.messages[1].content, /remediation plan/);
+	assert.match(local.body.messages[1].content, /"actions":\[\{"phase":"Fix now"/);
+
+	// The critical findings only, analysed by Claude: its fixed address, its key, and the model told it sees part of the scan.
+	const analysed = await send(server, "POST", "/api/repos/send", { body: { target: "anthropic", content: "findings", purpose: "analyse", severity: "critical" } });
+	assert.deepEqual([analysed.status, analysed.json.text, analysed.json.hosted, analysed.json.partial], [200, "Overall risk: one critical package.", true, "critical severity only"]);
+	const hosted = calls.at(-1)!;
+	assert.deepEqual([hosted.host, hosted.key === CLAUDE_KEY], ["api.anthropic.com", true]);
+	const content = hosted.body.messages[0].content as string;
+	assert.match(content, /"filtered":"critical severity only"/);
+	assert.match(content, /A critical problem/);
+	assert.ok(!content.includes("A high problem"), "only what the filter leaves");
+
+	// Only the models on offer, and only the choices there are; nothing is asked otherwise.
+	const before = calls.length;
+	for (const body of [
+		{ target: "http://evil.test", content: "roadmap", purpose: "analyse" },
+		{ target: "startup", content: "secrets", purpose: "analyse" },
+		{ target: "startup", content: "roadmap", purpose: "deploy" },
+		{ target: "startup", content: "roadmap", purpose: "analyse", severity: "urgent" },
+	]) {
+		assert.equal((await send(server, "POST", "/api/repos/send", { body })).status, 400, JSON.stringify(body));
+	}
+	assert.equal(calls.length, before);
+});
+
+test("sending needs a scan to send", async (t) => {
+	const server = await start(t, { assistant });
+	const reply = await send(server, "POST", "/api/repos/send", { body: { target: "startup", content: "roadmap", purpose: "analyse" } });
+	assert.equal(reply.status, 404);
 });

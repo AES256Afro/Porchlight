@@ -122,7 +122,8 @@ test("says how to connect a local model where SecurityX runs, quoting a setting 
 
 	const terminal = localModelSetup(off, false);
 	assert.equal(terminal.reason, null);
-	assert.match(terminal.commands ?? "", /^export SECURITYX_LLM_URL=http:\/\/localhost:11434\nexport SECURITYX_LLM_MODEL=hf\.co\/hauhaucs\/.*\nsecurityx ui$/);
+	assert.equal(terminal.commands, null);
+	assert.ok(terminal.steps.some((step) => step.includes("Settings → Model") && step.includes("Gemini")));
 	assert.equal(localModelSetup(wrong, false).reason, wrong.error);
 
 	const service = localModelSetup(off, true);

@@ -52,8 +52,8 @@ export function questionProblem(question) {
 }
 
 /**
- * How to connect a local model, in the terms of where SecurityX runs: from a terminal, two
- * environment variables; as a service (a container, under BoxPilot), the app's settings.
+ * How to connect a model, in the terms of where SecurityX runs: on this computer, Settings → Model;
+ * as a service (a container, under BoxPilot), the app's settings.
  * Steps mark names to type with backticks, as suggested fixes do.
  *
  * @param {AssistantSettings | null | undefined} assistant
@@ -75,8 +75,10 @@ export function localModelSetup(assistant, service) {
 	}
 	return {
 		reason,
-		steps: ["Start Ollama and add a model to it. Then stop SecurityX and start it again with the model's address and name:"],
-		commands: `export SECURITYX_LLM_URL=http://localhost:11434\nexport SECURITYX_LLM_MODEL=${SUGGESTED_MODEL}\nsecurityx ui`,
+		steps: [
+			"Open Settings → Model and choose where your model runs: Ollama, Unsloth Studio or LM Studio on this Mac, a model server of your own, or the Claude, ChatGPT, Gemini or DeepSeek API.",
+		],
+		commands: null,
 	};
 }
 

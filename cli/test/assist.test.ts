@@ -335,7 +335,12 @@ test("chooses a hosted model by provider, with its address fixed and its key req
 	assert.throws(() => assistantConfig({ SECURITYX_LLM_PROVIDER: "anthropic" }), /SECURITYX_LLM_API_KEY to your Claude API key/);
 	assert.throws(() => assistantConfig({ SECURITYX_LLM_PROVIDER: "anthropic", SECURITYX_LLM_API_KEY: "short" }), /not an API key/);
 	assert.throws(() => assistantConfig({ SECURITYX_LLM_PROVIDER: "openai", SECURITYX_LLM_API_KEY: API_KEY }), /SECURITYX_LLM_MODEL to the OpenAI model/);
-	assert.throws(() => assistantConfig({ SECURITYX_LLM_PROVIDER: "gemini", SECURITYX_LLM_API_KEY: API_KEY }), /must be one of/);
+	assert.throws(() => assistantConfig({ SECURITYX_LLM_PROVIDER: "gemini", SECURITYX_LLM_API_KEY: API_KEY }), /SECURITYX_LLM_MODEL to the Gemini model/);
+	assert.equal(
+		assistantConfig({ SECURITYX_LLM_PROVIDER: "gemini", SECURITYX_LLM_API_KEY: API_KEY, SECURITYX_LLM_MODEL: "gemini-x", SECURITYX_LLM_URL: "https://evil.example" }).url.href,
+		"https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+	);
+	assert.throws(() => assistantConfig({ SECURITYX_LLM_PROVIDER: "mistral", SECURITYX_LLM_API_KEY: API_KEY }), /must be one of/);
 });
 
 test("reaches a server that speaks OpenAI's format at the owner's own address, such as LM Studio", async () => {
@@ -380,4 +385,31 @@ test("asks Claude with the key in a header only, and treats a refusal as no answ
 		assert.ok(!error.message.includes(API_KEY), "no error repeats the key");
 		assert.ok(!error.message.includes(PROMPT_MARKER));
 	}
+});
+
+test("a send carries the task asked for, says when it is partial, and fits its cap", async () => {
+	const { sendPrompt, HOSTED_DATA_CAP } = await import("../src/assist/prompts.ts");
+	const { noFilter } = await import("../ui/filter.js");
+	const report = {
+		root: "/work",
+		scannedAt: "2026-11-19T00:00:00.000Z",
+		tools: [],
+		repos: Array.from({ length: 60 }, (_, i) => ({
+			path: `/work/repo-${i}`,
+			errors: [],
+			findings: Array.from({ length: 20 }, (_, j) => ({ tool: "osv-scanner" as const, kind: "vulnerability" as const, severity: "high" as const, ruleId: `GHSA-${i}-${j}`, title: `Problem ${i}-${j} ${"x".repeat(80)}`, location: "package-lock.json", detail: `pkg${j}@1.0.0`, fixedIn: "2.0.0" })),
+		})),
+	};
+	const block = (prompt: { messages: { content: string }[] }) => prompt.messages[1]!.content.split(DATA_START)[1]!.split(DATA_END)[0]!;
+	const local = sendPrompt(report, { content: "findings", purpose: "analyse" });
+	assert.ok(block(local).length <= DATA_CAP + 50);
+	assert.ok(local.cut, "a small model is told what was left out");
+	assert.match(local.messages[1]!.content, /Overall risk:/);
+	const hosted = sendPrompt(report, { content: "findings", purpose: "repair", cap: HOSTED_DATA_CAP });
+	assert.ok(block(hosted).length > block(local).length * 5, "a hosted model is sent far more");
+	assert.match(hosted.messages[1]!.content, /Never write, guess or ask for a secret's value/);
+	const filter = { ...noFilter(), repo: "repo-3" };
+	const one = sendPrompt(report, { content: "roadmap", purpose: "analyse", filter });
+	assert.match(block(one), /^\n\{"filtered":"in repo-3"/);
+	assert.ok(!block(one).includes("repo-4"));
 });

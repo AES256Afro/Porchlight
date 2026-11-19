@@ -1,4 +1,5 @@
 import { ALL_SEVERITIES, isFiltering, noFilter, type FindingFilter } from "../../ui/filter.js";
+import type { Mural } from "../assist/mural.ts";
 import type { ScanReport } from "../repos/types.ts";
 import { buildDomainRoadmap, listDomainFindings, type MonitorReport } from "./domains.ts";
 import { fileStem, FORMATS, isFormat, renderFindings, renderRoadmap, type Format, type Rendered } from "./render.ts";
@@ -52,11 +53,15 @@ export interface ExportChoice {
 	format?: string;
 }
 
-/** A repository scan as a file: the roadmap by default, as a Markdown checklist by default. */
-export function exportRepos(report: ScanReport, choice: ExportChoice = {}, filter: FindingFilter = noFilter()): ExportFile {
+/**
+ * A repository scan as a file: the roadmap by default, as a Markdown checklist by default. `mural`, a
+ * board a model wrote, is added in its own labelled section; CSV has no room for one.
+ */
+export function exportRepos(report: ScanReport, choice: ExportChoice = {}, filter: FindingFilter = noFilter(), mural?: Mural): ExportFile {
 	const content = checkContent(choice.content ?? "roadmap");
 	const format = checkFormat(choice.format ?? "md");
-	const rendered = content === "roadmap" ? renderRoadmap(buildRepoRoadmap(report, filter), format) : renderFindings(listRepoFindings(report, filter), format);
+	if (mural && format === "csv") throw new ExportError("A mural cannot go in a spreadsheet. Choose HTML, Markdown or JSON");
+	const rendered = content === "roadmap" ? renderRoadmap(buildRepoRoadmap(report, filter), format, mural) : renderFindings(listRepoFindings(report, filter), format, mural);
 	const partial = isFiltering(filter);
 	return { ...rendered, filename: `${fileStem(content, report.scannedAt, partial ? "partial" : undefined)}.${rendered.extension}` };
 }

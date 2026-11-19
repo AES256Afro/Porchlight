@@ -41,7 +41,7 @@ It prints a link. Open it to get both tools in the browser:
 
 Every page with findings has an **Export** button; see [Export a repair roadmap](#export-a-repair-roadmap).
 
-With a local model connected, findings, the roadmap and domains also get **Explain** and **Summarise** buttons, and the Overview takes questions; see [Local model](#local-model).
+With a model connected (Settings → Model), findings, the roadmap and domains also get **Explain** and **Summarise** buttons, and the Overview takes questions; see [Model](#model).
 
 | Option | Effect |
 | --- | --- |
@@ -72,6 +72,22 @@ sh mac/build.sh --install
 This puts `SecurityX.app` in `~/Applications`. Opening it starts `securityx ui` from this checkout, shows the page in its own window, and stops it when the window closes. Exports are saved to Downloads, and links to advisories open in your browser. It needs the Xcode command line tools (`xcode-select --install`), and it's built for this machine: it runs the `node`, gitleaks and osv-scanner that were on your PATH when you built it, so rebuild after moving the checkout or changing Node.
 
 Settings are read from `~/.securityx/app.env` each time it starts (copy `mac/app.env.example`): the folder to offer, the monitor's address, a model, a GitHub token. With only the monitor's address set, the admin token is read from `monitor/.secrets.production`. The interface's own log is in `~/.securityx/app.log` (SecurityX → Show Log).
+
+## Open it from other devices
+
+SecurityX on your Mac can also be opened from your other computers, such as a Windows PC, over [Tailscale](https://tailscale.com). They use the same running copy: the same scans, settings and model.
+
+1. On the Mac, open **Settings → Access from other devices** and choose **Turn on**.
+2. Copy the link it shows. It looks like `http://your-mac.your-tailnet.ts.net:4747/#k=…` and carries the access key.
+3. Open that link on the other device. Bookmark it to skip pasting the key in each new tab.
+
+How it is protected:
+
+- SecurityX listens on the Mac's Tailscale address only, on port 4747. Your Wi-Fi network and the internet get no answer.
+- Other devices need the access key: 43 random characters, kept in `access.json` beside the report and readable only by you. It is a different key from the one the Mac's own page uses.
+- Only the Mac can turn access on or off, see the key, or **Make a new key**, which signs every device out.
+- Tailscale encrypts the connection. If other people share your tailnet, limit who can reach the Mac with Tailscale's access controls.
+- It works while SecurityX is running on the Mac. Closing the Mac app's window stops it for every device. If Tailscale isn't connected yet, SecurityX keeps checking every 30 seconds.
 
 ## Run on BoxPilot
 
@@ -106,16 +122,40 @@ Releasing:
 
 `boxpilot/securityx.yaml` is the source of truth for BoxPilot's `catalog/securityx.yaml`. `npm run check` validates it with BoxPilot's own schema when a BoxPilot checkout is at `../BoxPilot` or `BOXPILOT_DIR`.
 
-## Local model
+## Model
 
-A local model can explain what a scan found, in the web interface. It is optional: without one, these buttons are not shown.
+A model can explain what a scan found, in the web interface. It is optional: without one, these buttons are not shown. Use any model you like, and switch whenever you want.
 
 - **Explain** on a finding (Findings, and By repository): what it is, how it could be abused, and how to fix it.
 - **Summarise** on the Roadmap: a short "fix this first, and why". It covers the whole roadmap, whatever the filters show.
 - **Explain changes** on a domain: the monitor's latest report for it (hosts added or gone, DNS changes, certificates, missing headers, findings) as a short summary.
 - **Ask about this scan** on the Overview: questions answered from the stored report only.
 
-The model is served by [Ollama](https://ollama.com), on the same machine or server. Two settings, read from the environment when `securityx ui` starts and never from the command line:
+### Choose it in Settings
+
+Open **Settings → Model** and pick where it runs:
+
+| Choice | Address offered | Key |
+| --- | --- | --- |
+| Ollama on this Mac | `http://localhost:11434` | none |
+| Unsloth Studio on this Mac | `http://localhost:8888/v1` | if Studio asks for one (Settings → API in Studio) |
+| LM Studio on this Mac | `http://localhost:1234/v1` | if set |
+| Ollama on another computer | `http://bigbox:11434`, or any address | none |
+| Other model server | any address that speaks OpenAI's format (llama.cpp, vLLM, OpenRouter) | if it asks for one |
+| Claude, ChatGPT, Gemini, DeepSeek | fixed in the code | your API key |
+| No model | | |
+
+**Find models** lists what that server or account offers. **Send a test message** checks the whole connection. **Save and use** switches at once, with no restart.
+
+- The choice is kept in `model-settings.json` beside the report (`~/.securityx/` by default), readable only by you. It replaces whatever SecurityX was started with; **Use the start-up model** goes back to that.
+- An API key is typed into Settings once and kept in that file. The page is never sent it back, and it never appears in a log or a report.
+- Each hosted provider's key is kept for that provider only, so switching from Claude to a local model never sends Claude's key anywhere. A key for your own server is tied to the address it was saved with.
+- A ChatGPT or Claude subscription is not an API key. These need a key from the provider's developer console, billed per request.
+- Before you choose a hosted provider, the page says what would be sent there. Saving the choice sends nothing.
+
+### Or set it when SecurityX starts
+
+The model can also be given in the environment when `securityx ui` starts, never on the command line. A choice saved in Settings takes precedence. For Ollama, two settings:
 
 | Setting | Meaning |
 | --- | --- |
@@ -199,7 +239,7 @@ With a model connected, the Overview page has a **Deeper analysis** card. It has
 - A verdict is advice. It never changes a severity, a count, the roadmap or an export, and never hides a finding.
 - For a leaked secret, no file content is sent: the lines around a secret may hold it. Secret values are never sent.
 
-Which model, chosen with `SECURITYX_LLM_PROVIDER`:
+Which model, chosen in Settings → Model or with `SECURITYX_LLM_PROVIDER` at start-up:
 
 | Provider | Settings | Where your data goes |
 | --- | --- | --- |
@@ -207,6 +247,7 @@ Which model, chosen with `SECURITYX_LLM_PROVIDER`:
 | `compatible` | `SECURITYX_LLM_URL` (such as `http://localhost:1234/v1`), `SECURITYX_LLM_MODEL`, optional `SECURITYX_LLM_API_KEY` | Your own server that speaks OpenAI's format: LM Studio, llama.cpp |
 | `anthropic` | `SECURITYX_LLM_API_KEY`; model defaults to `claude-opus-5-5` | Anthropic |
 | `openai` | `SECURITYX_LLM_API_KEY`, `SECURITYX_LLM_MODEL` | OpenAI |
+| `gemini` | `SECURITYX_LLM_API_KEY`, `SECURITYX_LLM_MODEL` | Google (its OpenAI-compatible endpoint) |
 | `deepseek` | `SECURITYX_LLM_API_KEY`, `SECURITYX_LLM_MODEL` | DeepSeek |
 
 A hosted provider is sent what the pages show, plus the import lines above, and bills each request to your key. Its address is fixed in the code, so the key cannot be sent anywhere else. A local model on a processor takes about a minute an item; a hosted one, seconds.
@@ -262,6 +303,21 @@ Formats (`--format`):
 `--severity`, `--kind`, `--match` and `--repo` narrow a repository export to part of the scan. A narrowed export says at the top that it is partial, and one made from an incomplete scan says what the scan did not cover.
 
 Text from repositories and DNS records is escaped for each format, so a hostile file name or package name cannot become markup in the page, a link in the Markdown or a formula in the spreadsheet.
+
+### A mural for the export
+
+With a model connected, the Export dialog for a repository scan offers **Add a mural written by** your model. It is a one-page board at the top of the export, for knowing where to go next and for showing other people:
+
+- a headline on where things stand;
+- **What was found**, **What to fix, and in what order**, **What has been done** and **What to do next**;
+- beside them, figures SecurityX counts itself: findings by severity, repositories affected, actions to do now, and how many items the Deeper analysis has judged.
+
+It is written when you press Export, after any Deeper analysis has finished, and describes exactly what the file covers, filters included. A model on a processor takes a few minutes; Unsloth Studio's 4B model on a Mac took about 10 seconds. It goes in HTML (a board that prints well), Markdown (a section) and JSON (a `mural` field), not CSV.
+
+- The model reads the counts, the roadmap's actions and the findings it judged real: never a secret value, a reason or evidence it wrote, an author or an email. Like every model answer, it is data to the model, not instructions.
+- The mural is labelled with the model's name as generated text, and escaped like everything else in the export. It never changes the export's findings, counts or roadmap.
+- SecurityX never changes your code, so "What has been done" covers what was checked and judged. Fixes made since the last scan will need scan history (plan item M6.1).
+- The last mural is kept in `repo-mural.json` beside the report, for one scan and one set of filters.
 
 ## Monitor domains
 

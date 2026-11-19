@@ -3,6 +3,7 @@ import { judgementBlock, verdictMark } from "./analysis.js";
 import { assistAction } from "./assist.js";
 import { banner, emptyState, formatWhen, h, icon, pager, PHASE_TITLES, plural, replace, select, severityBadge, statTile, stepNodes } from "./dom.js";
 import { exportButton, openExportDialog } from "./export.js";
+import { openSendDialog, sendButton } from "./send.js";
 import { ALL_SEVERITIES, isFiltering, matchesFilter } from "./filter.js";
 import { debounce, filterFromParams, paginate, paramsFromFilter, sortFindings } from "./list.js";
 import { currentLook } from "./appearance.js";
@@ -259,6 +260,12 @@ export function findingsHeader(mode, filter) {
 				h("a", { href: "#/findings", "aria-current": mode === "all" ? "page" : null }, "All findings"),
 				h("a", { href: "#/findings/by-repo", "aria-current": mode === "by-repo" ? "page" : null }, "By repository"),
 			),
+			filter && report
+				? sendButton(() => {
+						const shown = findingRows().filter((row) => matchesFilter(row, row.repo, filter)).length;
+						openSendDialog({ filter, shown, total: findingRows().length }, "findings");
+					}, findingRows().length === 0)
+				: null,
 			filter && report
 				? exportButton(() => {
 						const shown = findingRows().filter((row) => matchesFilter(row, row.repo, filter)).length;

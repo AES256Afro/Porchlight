@@ -1,11 +1,41 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { homedir } from "node:os";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { homedir, hostname, networkInterfaces } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { judge, readAnalysis, saveAnalysis, unitKey, unitsOf, VERDICTS, type AnalysisFile } from "../analysis/analyse.ts";
-import { AssistantError, chat, isHosted, type AssistantConfig } from "../assist/ollama.ts";
-import { askPrompt, domainPrompt, findingPrompt, locateFinding, roadmapPrompt, type Prompt } from "../assist/prompts.ts";
+import { AssistantError, chat, HOSTED, isHosted, listModels, type AssistantConfig, type HostedProvider } from "../assist/ollama.ts";
+import {
+	addressFromConfig,
+	choiceFromConfig,
+	configFor,
+	forgetModel,
+	ModelSettingError,
+	nextSaved,
+	readSavedModel,
+	saveModel,
+	sendTargets,
+	type ModelRequest,
+	type SavedModel,
+} from "../assist/settings.ts";
+import { judgedHighlights, muralFacts, MuralError, parseMural, type Mural } from "../assist/mural.ts";
+import {
+	askPrompt,
+	DATA_CAP,
+	domainPrompt,
+	findingPrompt,
+	HOSTED_DATA_CAP,
+	locateFinding,
+	muralPrompt,
+	roadmapPrompt,
+	SEND_CONTENTS,
+	SEND_PURPOSES,
+	sendPrompt,
+	type Prompt,
+	type SendContent,
+	type SendPurpose,
+} from "../assist/prompts.ts";
+import { describeFilter } from "../../ui/filter.js";
 import { MAX_QUESTION } from "../../ui/generated.js";
 import { DEFAULT_LOOK, isLook } from "../../ui/looks.js";
 import { fetchedRepos, fetchRepo, GithubError, listRepos, parseRepoName, removeFetched, validOwner, type GithubConfig } from "../github/github.ts";
@@ -17,7 +47,7 @@ import { scanRepos } from "../repos/scan.ts";
 import { SEVERITIES, type ScanReport, type Severity } from "../repos/types.ts";
 import { domainSuggestions, type MonitorReport } from "../roadmap/domains.ts";
 import { exportDomain, exportRepos, ExportError, parseFilter, type ExportFile } from "../roadmap/export.ts";
-import { buildRepoRoadmap, suggestionsFor } from "../roadmap/repos.ts";
+import { buildRepoRoadmap, listRepoFindings, suggestionsFor } from "../roadmap/repos.ts";
 
 export interface UiOptions {
 	/** 0 picks a free port. */
@@ -36,7 +66,10 @@ export interface UiOptions {
 	monitorError?: string;
 	/** `monitor` is null because neither its address nor its token was given at all. */
 	monitorUnset?: boolean;
-	/** The local model (Ollama) behind Explain, Summarise and Ask. Null or absent turns them off. */
+	/**
+	 * The model behind Explain, Summarise, Ask and Deeper analysis, as given at start-up. Null or
+	 * absent turns them off. A choice saved under Settings → Model replaces it.
+	 */
 	assistant?: AssistantConfig | null;
 	/** Why `assistant` is null, shown in the UI. */
 	assistantError?: string;
@@ -53,14 +86,50 @@ export interface UiOptions {
 	scan?: typeof scanRepos;
 	/** Used for the monitor and the local model alike. Tests pass a fake. */
 	fetchFn?: typeof fetch;
+	/** This machine's Tailscale address, for "Access from other devices". Tests pass their own. */
+	tailnetAddress?: () => string | null;
+	/** The port other devices use (default 4747). Tests pass 0. */
+	accessPort?: number;
+}
+
+/** The model in use: chosen in Settings, or given at start-up. */
+export interface ModelInUse {
+	config: AssistantConfig | null;
+	error?: string;
+	/** No model was asked for: the features are simply off. */
+	unset: boolean;
+	source: "settings" | "startup";
 }
 
 export interface UiServer {
 	port: number;
 	sessionKey: string;
+	/** The model in use now. Settings can change it while the server runs. */
+	model(): ModelInUse;
+	/** Whether other devices on the tailnet can open the page, and where. Never the key. */
+	access(): AccessStatus;
 	/** Address to open, carrying the session key in the fragment so it is never sent to a server or logged. */
 	url: string;
 	close(): Promise<void>;
+}
+
+export interface AccessStatus {
+	enabled: boolean;
+	listening: boolean;
+	/** The address other devices open, once listening. */
+	url?: string;
+	error?: string;
+}
+
+/**
+ * Who a request came in through. The page on this computer uses the per-run session key on loopback;
+ * other devices use the access key on the tailnet address alone. Each listener takes only its own key.
+ */
+interface Gate {
+	loopbackOnly: boolean;
+	key: () => string;
+	port: () => number;
+	tailnet: boolean;
 }
 
 export type ScanStatus =
@@ -92,7 +161,7 @@ export type AnalysisStatus =
 
 const UI_DIR = join(import.meta.dirname, "../../ui");
 /** The page's own modules. Nothing else in the folder is served. */
-const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings"];
+const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text"];
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
 	"/": { file: "index.html", type: "text/html; charset=utf-8" },
 	"/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
@@ -174,19 +243,321 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	let port = options.port;
 	/** Ollama on a small server answers one request at a time, so this asks it one at a time. */
 	let modelBusy = false;
+	/** Sends to a model still waiting for an answer, hosted ones included, so quitting can warn about them. */
+	let sending = 0;
+	const modelPath = join(dirname(options.reportPath), "model-settings.json");
+	// The mural for an export, written in the background: a model on a processor takes minutes.
+	const muralPath = join(dirname(options.reportPath), "repo-mural.json");
+	let muralJob: MuralJob = (await readMural(muralPath)) ?? { state: "idle" };
+	const startup: ModelInUse = { config: options.assistant ?? null, error: options.assistantError, unset: options.assistantUnset ?? false, source: "startup" };
+	/** A key given at start-up for a hosted provider, used for that provider when Settings has none. */
+	const startupKeys: Partial<Record<HostedProvider, string>> =
+		startup.config && isHosted(startup.config) && startup.config.apiKey ? { [startup.config.provider as HostedProvider]: startup.config.apiKey } : {};
+	let savedModel = await readSavedModel(modelPath);
+	let model: ModelInUse = savedModel ? inUse(savedModel) : startup;
 
-	const server = createServer((req, res) => {
-		handle(req, res).catch((err) => {
+	function inUse(saved: SavedModel): ModelInUse {
+		try {
+			const config = configFor(saved, { fallbackKeys: startupKeys });
+			return { config, unset: config === null, source: "settings" };
+		} catch (err) {
+			return { config: null, error: err instanceof Error ? err.message : String(err), unset: false, source: "settings" };
+		}
+	}
+
+	function targets() {
+		return sendTargets(savedModel, startup.config, startupKeys);
+	}
+
+	/**
+	 * "Send to a model": the roadmap or the findings, all or what the filters show, to the model the
+	 * owner picks, for a deeper analysis or a repair plan. The request names the model by SecurityX's
+	 * own id and what to send; the data comes from this server's copy of the report (invariant 13).
+	 * The answer is text for the page to show, labelled as generated; nothing acts on it.
+	 */
+	async function sendRoute(res: ServerResponse, body: unknown): Promise<void> {
+		const fields = bodyObject(body);
+		const target = targets().find((candidate) => candidate.id === fields.target);
+		if (!target) throw new HttpError(400, "Choose one of the models offered. Set one up under Settings → Model");
+		if (!(SEND_CONTENTS as readonly unknown[]).includes(fields.content)) throw new HttpError(400, `Choose what to send: ${SEND_CONTENTS.join(" or ")}`);
+		if (!(SEND_PURPOSES as readonly unknown[]).includes(fields.purpose)) throw new HttpError(400, `Choose what to ask for: ${SEND_PURPOSES.join(" or ")}`);
+		const text = (name: string) => (typeof fields[name] === "string" ? (fields[name] as string) : null);
+		const filter = parseFilter({ severity: text("severity"), kind: text("kind"), match: text("q"), repo: text("repo") });
+		const report = await storedReport();
+		const prompt = sendPrompt(report, {
+			content: fields.content as SendContent,
+			purpose: fields.purpose as SendPurpose,
+			filter,
+			cap: target.hosted ? HOSTED_DATA_CAP : DATA_CAP,
+		});
+
+		// A hosted provider answers many requests at once; the owner's own model one at a time.
+		const local = !target.hosted;
+		if (local && modelBusy) throw new HttpError(409, "The local model is still answering another request. Try again when it has finished, or send to a hosted model.");
+		if (local) modelBusy = true;
+		sending += 1;
+		const cancel = new AbortController();
+		const onClose = () => {
+			if (!res.writableFinished) cancel.abort();
+		};
+		res.once("close", onClose);
+		try {
+			const answer = await chat(target.config, prompt.messages, { fetchFn: options.fetchFn, signal: cancel.signal, timeoutMs: SEND_TIMEOUT_MS, maxTokens: SEND_TOKENS });
+			const partial = describeFilter(filter);
+			sendJson(res, 200, {
+				text: answer,
+				model: target.config.model,
+				label: target.label,
+				hosted: target.hosted,
+				...(prompt.cut ? { cut: prompt.cut } : {}),
+				...(partial ? { partial } : {}),
+			});
+		} catch (err) {
+			if (err instanceof AssistantError) throw new HttpError(err.status, err.message);
+			throw err;
+		} finally {
+			res.off("close", onClose);
+			sending -= 1;
+			if (local) modelBusy = false;
+		}
+	}
+
+	/** What Settings shows: the choice, its address and model, and which keys are saved. Never a key. */
+	function modelState() {
+		const saved = savedModel;
+		return {
+			source: model.source,
+			choice: saved?.choice ?? choiceFromConfig(startup.config),
+			url: saved ? (saved.url ?? "") : addressFromConfig(startup.config),
+			model: saved ? (saved.model ?? "") : (startup.config?.model ?? ""),
+			keys: {
+				...Object.fromEntries((Object.keys(HOSTED) as HostedProvider[]).map((provider) => [provider, Boolean(saved?.keys?.[provider] ?? startupKeys[provider])])),
+				// Which of the owner's own server addresses have a key saved.
+				servers: Object.keys(saved?.keys?.servers ?? {}),
+			},
+			startup: startup.config ? { choice: choiceFromConfig(startup.config), model: startup.config.model, host: startup.config.url.host } : null,
+			assistant: assistantSummary(),
+		};
+	}
+
+	function assistantSummary() {
+		const config = model.config;
+		return config
+			? { configured: true, model: config.model, host: config.url.host, hosted: isHosted(config) }
+			: {
+					configured: false,
+					error: model.error ?? "No model is connected",
+					// No model asked for: the features are off, the usual state rather than a value to correct.
+					unset: model.unset,
+				};
+	}
+
+	/** A request from Settings, checked, as the connection it describes. The saved copy is not changed. */
+	function requestedConfig(body: unknown, requireModel: boolean): AssistantConfig | null {
+		return configFor(nextSaved(savedModel, modelRequest(body)), { fallbackKeys: startupKeys, requireModel });
+	}
+
+	function modelRequest(body: unknown): ModelRequest {
+		const fields = bodyObject(body);
+		return {
+			choice: String(fields.choice ?? ""),
+			...(typeof fields.url === "string" ? { url: fields.url } : {}),
+			...(typeof fields.model === "string" ? { model: fields.model } : {}),
+			...(typeof fields.apiKey === "string" ? { apiKey: fields.apiKey } : {}),
+			removeKey: fields.removeKey === true,
+		};
+	}
+
+	async function modelRoute(res: ServerResponse, route: string, body: unknown): Promise<void> {
+		try {
+			if (route === "GET /api/model") return sendJson(res, 200, modelState());
+			if (route === "POST /api/model") {
+				const next = nextSaved(savedModel, modelRequest(body));
+				// Checked before it is saved, so a mistake never replaces a working choice.
+				configFor(next, { fallbackKeys: startupKeys });
+				await saveModel(modelPath, next);
+				savedModel = next;
+				model = inUse(next);
+				return sendJson(res, 200, modelState());
+			}
+			if (route === "POST /api/model/startup") {
+				await forgetModel(modelPath);
+				savedModel = null;
+				model = startup;
+				return sendJson(res, 200, modelState());
+			}
+			if (route === "POST /api/model/models") {
+				const config = requestedConfig(body, false);
+				if (!config) return sendJson(res, 200, { models: [] });
+				return sendJson(res, 200, { models: await listModels(config, { fetchFn: options.fetchFn }) });
+			}
+			if (route === "POST /api/model/test") {
+				const config = requestedConfig(body, true);
+				if (!config) throw new ModelSettingError("Choose a model first");
+				const started = Date.now();
+				const text = await chat(config, [{ role: "user", content: "Reply with the single word: ready" }], { fetchFn: options.fetchFn, timeoutMs: 120_000 });
+				return sendJson(res, 200, { text: text.slice(0, 200), model: config.model, seconds: Math.round((Date.now() - started) / 100) / 10 });
+			}
+			throw new HttpError(404, "Not found");
+		} catch (err) {
+			if (err instanceof ModelSettingError) throw new HttpError(400, err.message);
+			if (err instanceof AssistantError) throw new HttpError(err.status, err.message);
+			throw err;
+		}
+	}
+
+	// Access from other devices: a second listener on this machine's Tailscale address only.
+	const accessPath = join(dirname(options.reportPath), "access.json");
+	const accessPort = options.accessPort ?? DEFAULT_ACCESS_PORT;
+	const findTailnet = options.tailnetAddress ?? tailnetAddress;
+	let access: AccessFile = (await readAccess(accessPath)) ?? { enabled: false, key: "" };
+	let tailnetServer: Server | null = null;
+	let accessStatus: AccessStatus = { enabled: access.enabled, listening: false };
+	let accessRetry: ReturnType<typeof setInterval> | undefined;
+	const tailnetGate: Gate = {
+		loopbackOnly: false,
+		key: () => access.key,
+		port: () => {
+			const bound = tailnetServer?.address();
+			return bound && typeof bound === "object" ? bound.port : accessPort;
+		},
+		tailnet: true,
+	};
+
+	async function stopAccess(): Promise<void> {
+		const closing = tailnetServer;
+		tailnetServer = null;
+		if (!closing) return;
+		await new Promise<void>((done) => {
+			closing.close(() => done());
+			closing.closeAllConnections();
+		});
+	}
+
+	/** Listens on the tailnet when access is on, and stops when it is off. Safe to call again to retry. */
+	async function applyAccess(): Promise<void> {
+		await stopAccess();
+		clearInterval(accessRetry);
+		accessRetry = undefined;
+		if (!access.enabled) {
+			accessStatus = { enabled: false, listening: false };
+			return;
+		}
+		const address = findTailnet();
+		if (!address) {
+			accessStatus = { enabled: true, listening: false, error: "Tailscale is not connected on this Mac. Start Tailscale; SecurityX will keep checking." };
+			// Tailscale may come up after SecurityX does.
+			accessRetry = setInterval(() => void (findTailnet() ? applyAccess() : undefined), ACCESS_RETRY_MS);
+			accessRetry.unref();
+			return;
+		}
+		const listener = createServer(respond(tailnetGate));
+		try {
+			await new Promise<void>((resolveListen, reject) => {
+				listener.once("error", reject);
+				listener.listen(accessPort, address, resolveListen);
+			});
+		} catch (err) {
+			const code = (err as { code?: unknown }).code;
+			accessStatus = {
+				enabled: true,
+				listening: false,
+				error: code === "EADDRINUSE" ? `Port ${accessPort} on the Tailscale address is taken, perhaps by another copy of SecurityX` : `Could not listen on the Tailscale address (${String(code ?? err)})`,
+			};
+			return;
+		}
+		tailnetServer = listener;
+		const bound = listener.address();
+		const boundPort = bound && typeof bound === "object" ? bound.port : accessPort;
+		const name = hostname().toLowerCase().endsWith(".ts.net") ? hostname().toLowerCase() : address;
+		accessStatus = { enabled: true, listening: true, url: `http://${name}:${boundPort}` };
+	}
+
+	/** On this computer: the status, the address and the key to give another device. Elsewhere: the status alone. */
+	function accessState(gate: Gate) {
+		const here = !gate.tailnet && gate.loopbackOnly;
+		return {
+			...accessStatus,
+			// Only this computer can change who gets in, and only it is shown the key.
+			canChange: here,
+			...(here && accessStatus.listening && accessStatus.url ? { link: `${accessStatus.url}/#k=${access.key}` } : {}),
+		};
+	}
+
+	/** The mural for this scan and these filters: its state, or a request to write it. */
+	async function muralRoute(res: ServerResponse, route: string, report: ScanReport, filter: ReturnType<typeof parseFilter>, key: string): Promise<void> {
+		const describe = () =>
+			muralJob.state === "done"
+				? { state: "done", current: muralJob.key === key, model: muralJob.mural.model, generatedAt: muralJob.mural.generatedAt, headline: muralJob.mural.headline }
+				: muralJob.state === "failed"
+					? { state: "failed", current: muralJob.key === key, error: muralJob.error }
+					: { state: muralJob.state, current: muralJob.state === "running" && muralJob.key === key };
+		if (route === "GET /api/repos/mural") return sendJson(res, 200, describe());
+		if (route !== "POST /api/repos/mural") throw new HttpError(404, "Not found");
+		const config = model.config;
+		if (!config) throw new HttpError(503, "Choose a model in Settings → Model to write a mural");
+		if (muralJob.state === "running") throw new HttpError(409, "A mural is already being written");
+		if (analysing.state === "running") throw new HttpError(409, "Deeper analysis is running. Write the mural when it has finished, so it can include it");
+		if (modelBusy) throw new HttpError(409, "The model is still answering another request. Try again when it has finished.");
+
+		const roadmap = buildRepoRoadmap(report, filter);
+		const analysis = await readAnalysis(analysisPath, report);
+		const facts = muralFacts(report, roadmap, listRepoFindings(report, filter), analysis);
+		const prompt = muralPrompt(facts, roadmap, judgedHighlights(report, analysis).slice(0, MURAL_HIGHLIGHTS));
+		muralJob = { state: "running", key, startedAt: new Date().toISOString() };
+		modelBusy = true;
+		void (async () => {
+			try {
+				const text = await chat(config, prompt.messages, { fetchFn: options.fetchFn, timeoutMs: MURAL_TIMEOUT_MS, maxTokens: MURAL_TOKENS });
+				const mural: Mural = { ...parseMural(text), model: config.model, generatedAt: new Date().toISOString(), facts, cut: prompt.cut };
+				// Kept beside the report, so a later export can use it without writing it again.
+				await saveMural(muralPath, { key, mural }).catch(() => {});
+				muralJob = { state: "done", key, mural };
+			} catch (err) {
+				const known = err instanceof AssistantError || err instanceof MuralError;
+				muralJob = { state: "failed", key, error: known ? err.message : "The mural could not be written" };
+			} finally {
+				modelBusy = false;
+			}
+		})();
+		return sendJson(res, 202, describe());
+	}
+
+	async function accessRoute(res: ServerResponse, route: string, body: unknown, gate: Gate): Promise<void> {
+		if (route === "GET /api/access") return sendJson(res, 200, accessState(gate));
+		if (gate.tailnet || !gate.loopbackOnly) throw new HttpError(403, "Access can only be changed on the Mac that runs SecurityX");
+		if (route === "POST /api/access") {
+			const enabled = bodyObject(body).enabled;
+			if (typeof enabled !== "boolean") throw new HttpError(400, "Say whether access is on");
+			access = { enabled, key: access.key || newAccessKey() };
+			await saveAccess(accessPath, access);
+			await applyAccess();
+			return sendJson(res, 200, accessState(gate));
+		}
+		if (route === "POST /api/access/key") {
+			// A new key turns away every device that had the old one, including open pages.
+			access = { ...access, key: newAccessKey() };
+			await saveAccess(accessPath, access);
+			await applyAccess();
+			return sendJson(res, 200, accessState(gate));
+		}
+		throw new HttpError(404, "Not found");
+	}
+
+	const localGate: Gate = { loopbackOnly, key: () => sessionKey, port: () => port, tailnet: false };
+	const respond = (gate: Gate) => (req: IncomingMessage, res: ServerResponse) => {
+		handle(req, res, gate).catch((err) => {
 			// An export that cannot be made is the caller's mistake, and the message says what to change.
 			const known = err instanceof HttpError || err instanceof ExportError;
 			if (!known) console.error(`securityx ui: ${err instanceof Error ? err.message : String(err)}`);
 			sendJson(res, err instanceof HttpError ? err.status : known ? 400 : 500, { error: known ? err.message : "Internal error" });
 		});
-	});
+	};
+	const server = createServer(respond(localGate));
 
-	async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+	async function handle(req: IncomingMessage, res: ServerResponse, gate: Gate): Promise<void> {
 		const host = req.headers.host ?? "";
-		if (!hostAllowed(host, port, loopbackOnly)) throw new HttpError(403, "Forbidden host");
+		if (!hostAllowed(host, gate.port(), gate.loopbackOnly)) throw new HttpError(403, "Forbidden host");
 		const url = new URL(req.url ?? "/", `http://${host}`);
 
 		// For container health checks: says only that the server is up.
@@ -206,9 +577,11 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			return;
 		}
 
-		if (!originAllowed(req.headers.origin, host, loopbackOnly)) throw new HttpError(403, "Cross-site request refused");
-		// Says whether this is a service, so the page can tell the reader where their key is kept.
-		if (!sessionMatches(req.headers[SESSION_HEADER], sessionKey)) return sendJson(res, 401, { error: "Session key required", service: !loopbackOnly });
+		if (!originAllowed(req.headers.origin, host, gate.loopbackOnly)) throw new HttpError(403, "Cross-site request refused");
+		// Says where the reader's key is kept: a service's settings, or the Mac's Settings for another device.
+		if (!sessionMatches(req.headers[SESSION_HEADER], gate.key())) {
+			return sendJson(res, 401, { error: "Session key required", service: !gate.loopbackOnly && !gate.tailnet, tailnet: gate.tailnet });
+		}
 
 		const body = req.method === "POST" ? await readJsonBody(req) : undefined;
 		const route = `${req.method} ${url.pathname}`;
@@ -222,6 +595,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				// A service (a container, under BoxPilot) is configured where it is managed, not from a shell,
 				// so the page explains connecting the monitor in those terms.
 				service: !loopbackOnly,
+				// Opened from another device over the tailnet, rather than on this computer.
+				remote: gate.tailnet,
 				monitor: options.monitor
 					? { configured: true, host: options.monitor.url.host }
 					: {
@@ -232,32 +607,37 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 						},
 				// Whether a token is set, never the token.
 				github: { token: github.token !== undefined, ...(options.githubError ? { error: options.githubError } : {}) },
-				assistant: options.assistant
-					? { configured: true, model: options.assistant.model, host: options.assistant.url.host, hosted: isHosted(options.assistant) }
-					: {
-							configured: false,
-							error: options.assistantError ?? "The local model is not configured",
-							// No model address: the features are off, the usual state rather than a value to correct.
-							unset: options.assistantUnset ?? false,
-						},
+				assistant: assistantSummary(),
+				// What "Send to a model" offers. Never a key: only where each one runs and which model.
+				sendTargets: targets().map((target) => ({ id: target.id, label: target.label, model: target.config.model, host: target.config.url.host, hosted: target.hosted, current: target.current })),
 			});
 		}
+		if (route === "POST /api/repos/send") return sendRoute(res, body);
 		if (route === "POST /api/settings") {
 			const appearance = (body as { appearance?: unknown } | undefined)?.appearance;
 			if (!isLook(appearance)) throw new HttpError(400, "Unknown appearance");
 			await saveAppearance(settingsPath, appearance as string);
 			return sendJson(res, 200, { appearance });
 		}
+		if (url.pathname === "/api/model" || url.pathname.startsWith("/api/model/")) return modelRoute(res, route, body);
+		if (url.pathname === "/api/access" || url.pathname.startsWith("/api/access/")) return accessRoute(res, route, body, gate);
 		if (url.pathname.startsWith("/api/assist/")) return assist(req, res, url.pathname.slice("/api/assist/".length), body);
 		if (route === "GET /api/repos/report") return sendJson(res, 200, await loadReport(options.reportPath, analysisPath));
 		if (url.pathname === "/api/analysis" || url.pathname === "/api/analysis/stop") return analysisRoute(res, route, body);
-		if (route === "GET /api/repos/roadmap" || route === "GET /api/repos/export") {
+		if (route === "GET /api/repos/roadmap" || route === "GET /api/repos/export" || url.pathname === "/api/repos/mural") {
 			const report = await readReport(options.reportPath);
 			if (!report) throw new HttpError(404, "There is no scan yet. Scan a folder first.");
 			const query = url.searchParams;
 			const filter = parseFilter({ severity: query.get("severity"), kind: query.get("kind"), match: query.get("q"), repo: query.get("repo") });
 			if (route === "GET /api/repos/roadmap") return sendJson(res, 200, { roadmap: buildRepoRoadmap(report, filter) });
-			return sendDownload(res, exportRepos(report, exportChoice(query), filter));
+			const key = muralKey(report, filter);
+			if (url.pathname === "/api/repos/mural") return muralRoute(res, route, report, filter, key);
+			let mural: Mural | undefined;
+			if (query.get("mural") === "1") {
+				if (muralJob.state !== "done" || muralJob.key !== key) throw new HttpError(409, "Write the mural first: it is made for this scan and these filters");
+				mural = muralJob.mural;
+			}
+			return sendDownload(res, exportRepos(report, exportChoice(query), filter, mural));
 		}
 		if (route === "GET /api/repos/scan") return sendJson(res, 200, { scan: status });
 		if (route === "GET /api/repos/preview") {
@@ -345,8 +725,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		}
 		if (route !== "POST /api/analysis") throw new HttpError(404, "Not found");
 
-		const assistant = options.assistant;
-		if (!assistant) throw new HttpError(503, options.assistantError ?? "No model is connected");
+		const assistant = model.config;
+		if (!assistant) throw new HttpError(503, model.error ?? "No model is connected. Choose one in Settings → Model");
 		if (analysing.state === "running") throw new HttpError(409, "The analysis is already running");
 		if (status.state === "running") throw new HttpError(409, "A scan is running. Analyse when it has finished.");
 		const fields = bodyObject(body);
@@ -458,8 +838,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	async function assist(req: IncomingMessage, res: ServerResponse, kind: string, body: unknown): Promise<void> {
 		if (!ASSIST_ROUTES.includes(kind)) throw new HttpError(404, "Not found");
 		if (req.method !== "POST") throw new HttpError(405, "Method not allowed");
-		const assistant = options.assistant;
-		if (!assistant) throw new HttpError(503, options.assistantError ?? "The local model is not configured");
+		const assistant = model.config;
+		if (!assistant) throw new HttpError(503, model.error ?? "No model is connected. Choose one in Settings → Model");
 		const fields = bodyObject(body);
 
 		let prompt: Prompt;
@@ -564,16 +944,24 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	const address = server.address();
 	if (address === null || typeof address === "string") throw new Error("Could not determine the server port");
 	port = address.port;
+	// Only beside a page on this computer: a service is reached however it is deployed.
+	if (loopbackOnly) await applyAccess();
+	else access = { enabled: false, key: "" };
 
 	return {
 		port,
 		sessionKey,
+		model: () => model,
+		access: () => accessStatus,
 		url: `http://127.0.0.1:${port}/#k=${sessionKey}`,
-		close: () =>
-			new Promise((resolveClose) => {
+		close: async () => {
+			clearInterval(accessRetry);
+			await stopAccess();
+			await new Promise<void>((resolveClose) => {
 				server.close(() => resolveClose());
 				server.closeAllConnections();
-			}),
+			});
+		},
 	};
 }
 
@@ -582,6 +970,90 @@ export function checkKey(key: string): void {
 	if (key.length < MIN_KEY_LENGTH || !KEY_PATTERN.test(key)) {
 		throw new Error(`SECURITYX_UI_KEY must be at least ${MIN_KEY_LENGTH} characters, with no spaces or control characters`);
 	}
+}
+
+/** A mural reads at most this many findings the model judged real, most severe first. */
+const MURAL_HIGHLIGHTS = 40;
+/** Room for about 20 short points as JSON. */
+const MURAL_TOKENS = 1_500;
+/** A repair plan is longer than an explanation; this is what a local model may write for one. */
+const SEND_TOKENS = 3_000;
+/** A model on a processor writing 3 000 tokens at a few a second takes many minutes. */
+const SEND_TIMEOUT_MS = 1_200_000;
+/** A 9B model on a processor reads the prompt and writes the mural in a few minutes. */
+const MURAL_TIMEOUT_MS = 900_000;
+
+type MuralJob =
+	| { state: "idle" }
+	| { state: "running"; key: string; startedAt: string }
+	| { state: "done"; key: string; mural: Mural }
+	| { state: "failed"; key: string; error: string };
+
+/** A mural is for one scan and one filter; a new scan or other filters need a new one. */
+function muralKey(report: ScanReport, filter: ReturnType<typeof parseFilter>): string {
+	return `${report.scannedAt}\n${JSON.stringify(filter)}`;
+}
+
+async function readMural(path: string): Promise<MuralJob | null> {
+	try {
+		const saved = JSON.parse(await readFile(path, "utf8")) as { key?: unknown; mural?: Mural };
+		return typeof saved.key === "string" && saved.mural ? { state: "done", key: saved.key, mural: saved.mural } : null;
+	} catch {
+		return null;
+	}
+}
+
+/** It names repositories and findings, like the report, so only its owner can read it. */
+async function saveMural(path: string, job: { key: string; mural: Mural }): Promise<void> {
+	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+	const temporary = `${path}.${process.pid}.tmp`;
+	await writeFile(temporary, `${JSON.stringify({ key: job.key, mural: job.mural }, null, "\t")}\n`, { mode: 0o600 });
+	await rename(temporary, path);
+}
+
+const DEFAULT_ACCESS_PORT = 4747;
+const ACCESS_RETRY_MS = 30_000;
+
+interface AccessFile {
+	enabled: boolean;
+	key: string;
+}
+
+/** Long enough to guard a page reachable from other machines, like SECURITYX_UI_KEY. */
+function newAccessKey(): string {
+	return randomBytes(32).toString("base64url");
+}
+
+async function readAccess(path: string): Promise<AccessFile | null> {
+	try {
+		const saved = JSON.parse(await readFile(path, "utf8")) as Partial<AccessFile>;
+		if (typeof saved.enabled !== "boolean" || typeof saved.key !== "string") return null;
+		// A key too short to guard the page is replaced, never used.
+		return { enabled: saved.enabled, key: saved.key.length >= MIN_KEY_LENGTH && KEY_PATTERN.test(saved.key) ? saved.key : newAccessKey() };
+	} catch {
+		return null;
+	}
+}
+
+/** Holds the access key, so only its owner can read it. */
+async function saveAccess(path: string, access: AccessFile): Promise<void> {
+	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+	const temporary = `${path}.${process.pid}.tmp`;
+	await writeFile(temporary, `${JSON.stringify(access, null, "\t")}\n`, { mode: 0o600 });
+	await chmod(temporary, 0o600);
+	await rename(temporary, path);
+}
+
+/** This machine's Tailscale IPv4 address (100.64.0.0/10), or null when Tailscale is not up. */
+export function tailnetAddress(): string | null {
+	for (const addresses of Object.values(networkInterfaces())) {
+		for (const entry of addresses ?? []) {
+			if (entry.family !== "IPv4" || entry.internal) continue;
+			const [a, b] = entry.address.split(".").map(Number);
+			if (a === 100 && b !== undefined && b >= 64 && b <= 127) return entry.address;
+		}
+	}
+	return null;
 }
 
 /**
@@ -635,7 +1107,8 @@ function safeDecode(segment: string): string {
 }
 
 function sessionMatches(presented: string | string[] | undefined, expected: string): boolean {
-	if (typeof presented !== "string") return false;
+	// No key set means nobody gets in, never that anybody does.
+	if (typeof presented !== "string" || expected === "") return false;
 	const a = Buffer.from(presented);
 	const b = Buffer.from(expected);
 	return a.length === b.length && timingSafeEqual(a, b);

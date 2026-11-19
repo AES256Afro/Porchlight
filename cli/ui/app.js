@@ -101,7 +101,7 @@ async function route() {
 		firstRoute = false;
 	} catch (err) {
 		if (current !== navigation) return;
-		if (err instanceof ApiError && err.status === 401) return askForKey(err.body.service === true);
+		if (err instanceof ApiError && err.status === 401) return askForKey(err.body.tailnet === true ? "tailnet" : err.body.service === true ? "service" : "local");
 		replace(
 			view,
 			h(
@@ -164,12 +164,13 @@ function drawScanStatus() {
 }
 
 /**
- * Shown when the page has no key: opened without the link `securityx ui` printed, or, as a service,
- * before the access key has been pasted in this tab.
+ * Shown when the page has no key: opened without the link `securityx ui` printed, or, as a service
+ * or from another device, before the access key has been pasted in this tab.
  *
- * @param {boolean} service
+ * @param {"local" | "service" | "tailnet"} where
  */
-function askForKey(service) {
+function askForKey(where) {
+	const service = where !== "local";
 	const input = /** @type {HTMLInputElement} */ (
 		h("input", { type: "password", name: "key", autocomplete: "off", required: true, "aria-label": service ? "Access key" : "Session key" })
 	);
@@ -191,7 +192,13 @@ function askForKey(service) {
 					},
 				},
 				h("h2", null, service ? "Paste your access key" : "Session key needed"),
-				service
+				where === "tailnet"
+					? h(
+							"p",
+							null,
+							"This is SecurityX on your Mac, opened from another device. On the Mac, open Settings → Access from other devices and copy the link or the key, then paste it here. This tab remembers it until you close it.",
+						)
+					: service
 					? h(
 							"p",
 							null,

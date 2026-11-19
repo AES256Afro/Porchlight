@@ -235,8 +235,11 @@ async function ui(args: string[]): Promise<number> {
 		console.log(`SecurityX is running. Open this link (it carries this session's key):\n\n  ${server.url}\n`);
 	}
 	console.log(monitor ? `Monitor: ${monitor.url.host}` : `Monitor: not connected (${monitorError})`);
-	if (assistant) console.log(`Model: ${assistant.model} at ${assistant.url.host}${isHosted(assistant) ? " (hosted: what the pages show is sent there when you ask)" : ""}`);
-	else console.log(assistantUnset ? "Model: off (set SECURITYX_LLM_URL and SECURITYX_LLM_MODEL for a local one, or SECURITYX_LLM_PROVIDER and SECURITYX_LLM_API_KEY for a hosted one)" : `Model: not connected (${assistantError})`);
+	// A model chosen in Settings → Model replaces the one given here.
+	const inUse = server.model();
+	const from = inUse.source === "settings" ? ", chosen in Settings" : "";
+	if (inUse.config) console.log(`Model: ${inUse.config.model} at ${inUse.config.url.host}${from}${isHosted(inUse.config) ? " (hosted: what the pages show is sent there when you ask)" : ""}`);
+	else console.log(inUse.unset ? `Model: off${from} (choose one in Settings → Model)` : `Model: not connected${from} (${inUse.error})`);
 	console.log(githubError ? `GitHub: token not used (${githubError})` : githubToken ? "GitHub: token set, private repositories can be fetched" : "GitHub: no token, public repositories only (set SECURITYX_GITHUB_TOKEN for private ones)");
 	console.log("Press Ctrl+C to stop.");
 	return 0;

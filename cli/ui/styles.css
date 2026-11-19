@@ -2408,3 +2408,145 @@ fieldset.looks legend {
 [data-look="compact"] h1 {
 	font-size: 18px;
 }
+
+/* Settings → Model */
+
+.visually-hidden {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
+}
+
+.model-settings > * + * {
+	margin-top: 12px;
+}
+
+.model-now {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px;
+}
+
+.model-choices {
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+.model-group h3 {
+	margin: 14px 0 6px;
+}
+
+.choice-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+	gap: 8px;
+}
+
+.choice-option {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 9px 10px;
+	border: 1px solid var(--hairline);
+	border-radius: 8px;
+	cursor: pointer;
+}
+
+.choice-option:has(input:checked) {
+	border-color: var(--accent);
+	box-shadow: 0 0 0 1px var(--accent);
+}
+
+.choice-option:has(input:focus-visible) {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
+.chip-note {
+	color: var(--ink-2);
+	font-size: 12px;
+}
+
+.model-help {
+	color: var(--ink-2);
+}
+
+.model-fields {
+	display: grid;
+	gap: 12px;
+	max-width: 640px;
+}
+
+.model-fields .field {
+	display: grid;
+	gap: 4px;
+}
+
+.model-fields .inline-form input {
+	flex: 1;
+	min-width: 0;
+}
+
+.check-line {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 13px;
+}
+
+.model-result {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+}
+
+.model-result.error {
+	color: var(--critical-ink);
+}
+
+/* Settings → Access from other devices */
+
+.access-settings > * + *,
+.access-controls > * + * {
+	margin-top: 12px;
+}
+
+.access-controls .field {
+	display: grid;
+	gap: 4px;
+	max-width: 760px;
+}
+
+.access-controls .inline-form input {
+	flex: 1;
+	min-width: 0;
+}
+
+/* Send to a model */
+
+.dialog.send {
+	max-height: calc(100dvh - 32px);
+	overflow-y: auto;
+}
+
+.dialog .actions .push-left {
+	margin-right: auto;
+}
+
+.dialog .send-result {
+	margin-top: 16px;
+	max-height: 50vh;
+	overflow: auto;
+}
+
+.dialog .send-result .actions {
+	margin-top: 10px;
+}

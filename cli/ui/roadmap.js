@@ -3,6 +3,7 @@ import { api } from "./api.js";
 import { assistAction } from "./assist.js";
 import { banner, emptyState, h, PHASE_TITLES, plural, replace, select, severityBadge, stepNodes } from "./dom.js";
 import { exportButton, openExportDialog } from "./export.js";
+import { openSendDialog, sendButton } from "./send.js";
 import { noScanYet } from "./findings.js";
 import { matchesFilter } from "./filter.js";
 import { debounce, filterFromParams, paramsFromFilter } from "./list.js";
@@ -83,6 +84,10 @@ export async function renderRoadmap(view, route) {
 						"div",
 						{ class: "actions" },
 						summary?.button,
+						sendButton(() => {
+							const shown = findingRows().filter((row) => matchesFilter(row, row.repo, filter)).length;
+							openSendDialog({ filter, shown, total: findingRows().length }, "roadmap");
+						}, findingRows().length === 0),
 						exportButton(() => {
 							const shown = findingRows().filter((row) => matchesFilter(row, row.repo, filter)).length;
 							openExportDialog({ filter, shown, total: findingRows().length }, "roadmap");

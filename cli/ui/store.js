@@ -22,7 +22,7 @@ export const store = {
 	 * managed rather than from a terminal. `monitor.unset`: neither monitor setting was given.
 	 * `assistant`: the local model behind Explain, Summarise and Ask.
 	 *
-	 * @type {{ defaultRoot: string, reportPath: string, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean }, github: { token: boolean, error?: string }, assistant: import("./generated.js").AssistantSettings, appearance: string } | null}
+	 * @type {{ defaultRoot: string, reportPath: string, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean }, github: { token: boolean, error?: string }, assistant: import("./generated.js").AssistantSettings, appearance: string, remote: boolean, sendTargets: import("./send-text.js").SendTarget[] } | null}
 	 */
 	settings: null,
 	/** @type {ScanReport | null} */
@@ -72,6 +72,8 @@ export function load() {
 			github: state.github ?? { token: false },
 			assistant: state.assistant ?? { configured: false },
 			appearance: state.appearance ?? "today",
+			remote: state.remote === true,
+			sendTargets: Array.isArray(state.sendTargets) ? state.sendTargets : [],
 		};
 		emit("settings");
 		store.scan = state.scan;
@@ -82,6 +84,25 @@ export function load() {
 		throw err;
 	});
 	return loading;
+}
+
+/**
+ * The model changed in Settings: every page's Explain, Summarise and Ask follow it.
+ *
+ * @param {import("./generated.js").AssistantSettings} assistant
+ */
+export function setAssistant(assistant) {
+	if (!store.settings) return;
+	store.settings.assistant = assistant;
+	emit("settings");
+	// The models "Send to a model" offers follow Settings too: one set up there is offered at once.
+	void api("GET", "/state")
+		.then((state) => {
+			if (!store.settings || !Array.isArray(state.sendTargets)) return;
+			store.settings.sendTargets = state.sendTargets;
+			emit("settings");
+		})
+		.catch(() => {});
 }
 
 /** Forgets everything, so the next `load` starts again. Used after the session key changes. */
