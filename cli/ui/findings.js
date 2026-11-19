@@ -4,6 +4,7 @@ import { assistAction } from "./assist.js";
 import { banner, emptyState, formatWhen, h, icon, pager, PHASE_TITLES, plural, replace, select, severityBadge, statTile, stepNodes } from "./dom.js";
 import { exportButton, openExportDialog } from "./export.js";
 import { openSendDialog, sendButton } from "./send.js";
+import { noteEditor, trackingMarks } from "./finding-notes.js";
 import { ALL_SEVERITIES, isFiltering, matchesFilter } from "./filter.js";
 import { debounce, filterFromParams, paginate, paramsFromFilter, sortFindings } from "./list.js";
 import { currentLook } from "./appearance.js";
@@ -42,7 +43,7 @@ export async function renderFindings(view, route) {
 	const results = h("div");
 	draw();
 	return subscribe((change) => {
-		if (change === "report") draw();
+		if (change === "report" || change === "notes") draw();
 	});
 
 	function draw() {
@@ -158,6 +159,7 @@ export async function renderFindings(view, route) {
 					),
 					row.suggestion ? h("div", { class: "fix" }, h("span", { class: "fix-label" }, "Fix"), row.suggestion.title) : null,
 					verdictMark(row),
+					trackingMarks(row.repo, row),
 				),
 				h("td", { class: "wrap" }, row.repo),
 				h("td", { class: "mono wrap col-where" }, row.location),
@@ -224,6 +226,7 @@ export function findingDetail(finding, repo) {
 			: null,
 		judgementBlock(finding),
 		explain ? h("div", { class: "assist-block" }, explain.button, explain.panel) : null,
+		noteEditor(repo, finding),
 	);
 }
 

@@ -39,7 +39,9 @@ It prints a link. Open it to get both tools in the browser:
 - **Domains**: add a website by its domain name, prove it is yours with one DNS record, scan, and read what changed, with a suggested fix for each finding. Until the monitor is connected the page walks through setting it up. It needs `SECURITYX_MONITOR_URL` and `SECURITYX_ADMIN_TOKEN` set when you start the interface (see [Monitor domains](#monitor-domains)).
 - **Settings**: pick one of twelve looks under **Appearance** (Standard, Light, Severity dashboard, Top tabs, Split view, Roadmap first, Terminal, Native Mac, Repository cards, Model plan view, High contrast, Compact). The choice is saved beside the report (`ui-settings.json`) and used every time SecurityX opens. It also lists what SecurityX is connected to.
 
-Every page with findings has an **Export** button; see [Export a repair roadmap](#export-a-repair-roadmap).
+Every page with findings has an **Export** button; see [Export a repair roadmap](#export-a-repair-roadmap). Beside it, **Send to model** sends the roadmap or the findings to a model you choose; see [Send to a model](#send-to-a-model).
+
+SecurityX keeps every scan, and the Overview's **Since the last scan** card says what is new and what was fixed; see [History, status and notes](#history-status-and-notes). You can give each finding a status and a note, and the page opens where you left it.
 
 With a model connected (Settings → Model), findings, the roadmap and domains also get **Explain** and **Summarise** buttons, and the Overview takes questions; see [Model](#model).
 
@@ -69,7 +71,7 @@ To open SecurityX like any other app, with no terminal, build a window around th
 sh mac/build.sh --install
 ```
 
-This puts `SecurityX.app` in `~/Applications`. Opening it starts `securityx ui` from this checkout, shows the page in its own window, and stops it when the window closes. Exports are saved to Downloads, and links to advisories open in your browser. It needs the Xcode command line tools (`xcode-select --install`), and it's built for this machine: it runs the `node`, gitleaks and osv-scanner that were on your PATH when you built it, so rebuild after moving the checkout or changing Node.
+This puts `SecurityX.app` in `~/Applications`. Opening it starts `securityx ui` from this checkout, shows the page in its own window, and stops it when the window closes. If a scan, an analysis or a model's answer is still running when you close the window or quit, it asks first (**Keep Working** or **Quit Anyway**); everything else is saved as it changes, and it opens on the page you left. Exports are saved to Downloads, and links to advisories open in your browser. It needs the Xcode command line tools (`xcode-select --install`), and it's built for this machine: it runs the `node`, gitleaks and osv-scanner that were on your PATH when you built it, so rebuild after moving the checkout or changing Node.
 
 Settings are read from `~/.securityx/app.env` each time it starts (copy `mac/app.env.example`): the folder to offer, the monitor's address, a model, a GitHub token. With only the monitor's address set, the admin token is read from `monitor/.secrets.production`. The interface's own log is in `~/.securityx/app.log` (SecurityX → Show Log).
 
@@ -318,6 +320,21 @@ It is written when you press Export, after any Deeper analysis has finished, and
 - The mural is labelled with the model's name as generated text, and escaped like everything else in the export. It never changes the export's findings, counts or roadmap.
 - SecurityX never changes your code, so "What has been done" covers what was checked and judged. Fixes made since the last scan will need scan history (plan item M6.1).
 - The last mural is kept in `repo-mural.json` beside the report, for one scan and one set of filters.
+
+## Send to a model
+
+**Send to model**, on the Findings and Roadmap pages and as **Send to a model instead…** in the Export dialog, sends the roadmap or the findings (all of them, or what the filters show) to a model you pick, and asks for one of:
+
+- **Deeper analysis**: overall risk, patterns across repositories, what looks real and what looks like noise, and what to do first.
+- **Repair plan**: for each repair, the file, the command or the edit, what could break and how to check it. Copy it into a coding assistant such as Claude Code to carry it out, or work through it by hand.
+
+Every model you have set up under Settings → Model is offered, so you can send to your own model one time and to Claude the next; the dialog says for each whether what is sent leaves your computer. A hosted model is sent far more of the scan than a small local one, and either is told when part had to be left out. The answer is shown as generated text with **Copy** and **Save as text**. As everywhere else, the model sees only what the pages show, never secret values, and SecurityX never acts on what it writes.
+
+## History, status and notes
+
+Each finished scan is kept beside the report (`history/`, the last 50). The Overview's **Since the last scan** card counts what is new and what was fixed against the scan before, names the fixed findings, and lists past scans; new findings are marked **New** on the Findings page. A finding is the same finding across scans when its repository, advisory or rule, file and detail match, so upgrading a package counts its old findings as fixed.
+
+Open a finding to give it a status (Open, In progress, Fixed, Accepted risk, False positive) and a note. They are kept in `finding-notes.json` beside the report and stay with the finding in later scans. They never change a severity, a count, the roadmap or an export.
 
 ## Monitor domains
 

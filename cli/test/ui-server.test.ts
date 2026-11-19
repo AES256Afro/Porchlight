@@ -362,7 +362,7 @@ test("runs one scan at a time, reports progress, and stores the result privately
 	await makeTree(server.dir, { "projects/": "" });
 	const root = join(server.dir, "projects");
 
-	assert.deepEqual((await send(server, "GET", "/api/repos/report")).json, { report: null, notes: [], settingNotes: [] });
+	assert.deepEqual((await send(server, "GET", "/api/repos/report")).json, { report: null, notes: [], settingNotes: [], findingNotes: {} });
 
 	const started = await send(server, "POST", "/api/repos/scan", { body: { root, depth: 2 } });
 	assert.equal(started.status, 202);
@@ -1309,4 +1309,80 @@ test("sending needs a scan to send", async (t) => {
 	const server = await start(t, { assistant });
 	const reply = await send(server, "POST", "/api/repos/send", { body: { target: "startup", content: "roadmap", purpose: "analyse" } });
 	assert.equal(reply.status, 404);
+});
+
+// History, the owner's notes, and what quitting would lose
+
+test("keeps every scan, and says what is new and what was fixed since the one before", async (t) => {
+	let next = sampleReport("/work");
+	const scan = (async () => next) as unknown as UiOptions["scan"];
+	const server = await start(t, { scan });
+	await withReport(server);
+
+	// A report from before history was kept starts it once the server reads it again.
+	const restarted = await start(t, { reportPath: join(server.dir, "state", "repo-scan.json"), scan });
+	const first = (await send(restarted, "GET", "/api/repos/history")).json;
+	assert.deepEqual([first.scans.length, first.change], [1, null]);
+
+	// The next scan: the critical finding upgraded away, a new one in "mild".
+	next = sampleReport("/work");
+	next.scannedAt = "2026-11-19T12:00:00.000Z";
+	next.repos[2]!.findings = [next.repos[2]!.findings[0]!];
+	next.repos[1]!.findings.push({ ...next.repos[1]!.findings[0]!, ruleId: "rule-brand-new", title: "A brand new problem" });
+	assert.equal((await send(restarted, "POST", "/api/repos/scan", { body: { root: server.dir, depth: 1 } })).status, 202);
+	for (let i = 0; i < 50 && (await send(restarted, "GET", "/api/repos/scan")).json.scan.state === "running"; i++) await new Promise((r) => setTimeout(r, 20));
+
+	const after = (await send(restarted, "GET", "/api/repos/history")).json;
+	assert.deepEqual(after.scans.map((entry: { scannedAt: string; newCount?: number; fixedCount?: number }) => [entry.scannedAt, entry.newCount, entry.fixedCount]), [
+		["2026-11-19T12:00:00.000Z", 1, 1],
+		["2026-11-17T12:00:00.000Z", undefined, undefined],
+	]);
+	assert.equal(after.change.previousScannedAt, "2026-11-17T12:00:00.000Z");
+	assert.deepEqual(after.change.newKeys, ["mild\nrule-brand-new\npackage-lock.json\npkg@1.0.0"]);
+	assert.deepEqual(after.change.fixed.map((item: { title: string; repo: string }) => [item.title, item.repo]), [["A critical problem", "group/worst"]]);
+	const kept = join(server.dir, "state", "history");
+	assert.equal((await stat(join(kept, after.scans[0].file))).mode & 0o777, 0o600);
+});
+
+test("keeps the owner's status and note for a finding of the latest scan, privately, without changing it", async (t) => {
+	const server = await start(t);
+	await withReport(server);
+	const finding = { repo: "group/worst", ruleId: "rule-high", location: "package-lock.json", detail: "pkg@1.0.0" };
+
+	const saved = await send(server, "POST", "/api/findings/note", { body: { ...finding, status: "accepted", note: "Test data only; ticket SEC-12" } });
+	assert.equal(saved.status, 200);
+	assert.deepEqual([saved.json.note.status, saved.json.note.note], ["accepted", "Test data only; ticket SEC-12"]);
+	const report = (await send(server, "GET", "/api/repos/report")).json;
+	assert.equal(report.findingNotes[saved.json.key].note, "Test data only; ticket SEC-12");
+	assert.equal(report.report.repos[0].findings.find((f: { ruleId: string }) => f.ruleId === "rule-high").severity, "high", "the finding itself is unchanged");
+	assert.equal((await stat(join(server.dir, "state", "finding-notes.json"))).mode & 0o777, 0o600);
+
+	// Back to open with no note leaves nothing behind.
+	const cleared = await send(server, "POST", "/api/findings/note", { body: { ...finding, status: "open", note: "  " } });
+	assert.deepEqual([cleared.status, cleared.json.note], [200, null]);
+
+	for (const [body, status] of [
+		[{ ...finding, status: "ignored" }, 400],
+		[{ ...finding, status: "fixed", note: "x".repeat(2001) }, 400],
+		[{ ...finding, ruleId: "rule-nowhere", status: "fixed" }, 404],
+	] as const) {
+		assert.equal((await send(server, "POST", "/api/findings/note", { body })).status, status, JSON.stringify(body).slice(0, 80));
+	}
+});
+
+test("says what is still running, and remembers the place in the page but never the key", async (t) => {
+	let release = () => {};
+	const scan = (() => new Promise((resolve) => (release = () => resolve(sampleReport("/work"))))) as unknown as UiOptions["scan"];
+	const server = await start(t, { scan });
+	assert.deepEqual((await send(server, "GET", "/api/busy")).json.busy, []);
+	await send(server, "POST", "/api/repos/scan", { body: { root: server.dir, depth: 1 } });
+	assert.deepEqual((await send(server, "GET", "/api/busy")).json.busy, ["A scan is running"]);
+	release();
+
+	assert.equal((await send(server, "GET", "/api/state")).json.lastView, null);
+	assert.equal((await send(server, "POST", "/api/view", { body: { view: "#/findings?severity=critical" } })).status, 200);
+	assert.equal((await send(server, "GET", "/api/state")).json.lastView, "#/findings?severity=critical");
+	for (const view of ["#k=secret", "#/overview&k=abc", "https://evil.test/#/x", "#/a b"]) {
+		assert.equal((await send(server, "POST", "/api/view", { body: { view } })).status, 400, view);
+	}
 });

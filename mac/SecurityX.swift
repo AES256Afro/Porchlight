@@ -8,7 +8,7 @@
 import AppKit
 import WebKit
 
-final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
 	private var window: NSWindow!
 	private var webView: WKWebView!
 	private var status: NSTextField!
@@ -16,6 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 	private var origin: URL?
 	private var output = ""
 	private var quitting = false
+	/** Set once quitting needs no more questions: nothing was running, the owner said so, or the system asked. */
+	private var quitConfirmed = false
 	private var savedTo: [ObjectIdentifier: URL] = [:]
 	private let logURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".securityx/app.log")
 
@@ -26,7 +28,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 		for sig in [SIGTERM, SIGINT, SIGHUP] {
 			signal(sig, SIG_IGN)
 			let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
-			source.setEventHandler { NSApp.terminate(nil) }
+			source.setEventHandler { [weak self] in
+				self?.quitConfirmed = true
+				NSApp.terminate(nil)
+			}
 			source.resume()
 			signalSources.append(source)
 		}
@@ -37,6 +42,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 	}
 
 	func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+	// MARK: Quitting while something is running
+
+	/// Closing the window quits the app, so it asks the same question first, while the window is still there.
+	func windowShouldClose(_ sender: NSWindow) -> Bool {
+		if quitConfirmed { return true }
+		NSApp.terminate(nil)
+		return false
+	}
+
+	/// Everything SecurityX keeps (the report, history, statuses and notes, settings, the page you were on)
+	/// is saved as it changes. What a quit loses is work still running: a scan, an analysis, a model's
+	/// answer. The page says what is running; if anything is, the owner chooses.
+	func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+		guard !quitConfirmed, origin != nil, let webView, !webView.isHidden else { return .terminateNow }
+		var answered = false
+		let finish: (Bool) -> Void = { [weak self] quit in
+			if answered { return }
+			answered = true
+			if quit { self?.quitConfirmed = true }
+			NSApp.reply(toApplicationShouldTerminate: quit)
+		}
+		// A page that does not answer never keeps the app open.
+		DispatchQueue.main.asyncAfter(deadline: .now() + 3) { finish(true) }
+		webView.callAsyncJavaScript("return window.securityxBusy ? await window.securityxBusy() : ''", arguments: [:], in: nil, in: .page) { [weak self] result in
+			let busy = ((try? result.get()) as? String) ?? ""
+			if busy.isEmpty || answered { return finish(true) }
+			answered = true
+			let alert = NSAlert()
+			alert.messageText = "SecurityX is still working"
+			alert.informativeText = "\(busy).\n\nQuitting stops it, and what it has not finished is lost. Your report, history, statuses and notes are already saved."
+			alert.addButton(withTitle: "Keep Working")
+			alert.addButton(withTitle: "Quit Anyway")
+			let quit = alert.runModal() == .alertSecondButtonReturn
+			if quit { self?.quitConfirmed = true }
+			NSApp.reply(toApplicationShouldTerminate: quit)
+		}
+		return .terminateLater
+	}
 
 	func applicationWillTerminate(_ notification: Notification) {
 		quitting = true
@@ -85,6 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 		window.contentView = content
 		window.center()
 		window.setFrameAutosaveName("SecurityXMain")
+		window.delegate = self
 		window.makeKeyAndOrderFront(nil)
 	}
 

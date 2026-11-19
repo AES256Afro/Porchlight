@@ -1,5 +1,5 @@
 // @ts-check
-import { adoptSessionKey, ApiError, setSessionKey } from "./api.js";
+import { adoptSessionKey, api, ApiError, setSessionKey } from "./api.js";
 import { emptyState, formatWhen, h, icon, plural, replace, severityBadge, toast } from "./dom.js";
 import { renderDomains } from "./domains.js";
 import { renderFindings } from "./findings.js";
@@ -53,9 +53,35 @@ subscribe((change) => {
 	drawScanStatus();
 });
 // The chosen look applies on every page, including the first one opened.
+// Opened fresh (from the app or the printed link, not a reload or a shared address): go back to where the owner left off.
+const freshStart = location.hash === "" || location.hash === "#" || /^#k=/.test(location.hash);
 // The key comes first: a load started without it would fail for every page waiting on it.
 adoptSessionKey();
-void load().catch(() => {});
+void load()
+	.then(() => {
+		const last = store.settings?.lastView;
+		if (freshStart && last && last !== location.hash && (location.hash === "" || location.hash === "#/overview")) location.replace(last);
+	})
+	.catch(() => {});
+
+/** Where the owner is, kept by the server as they move, so closing the app at any moment loses nothing. */
+let viewTimer = /** @type {ReturnType<typeof setTimeout> | undefined} */ (undefined);
+function rememberView() {
+	clearTimeout(viewTimer);
+	viewTimer = setTimeout(() => {
+		if (location.hash.startsWith("#/")) void api("POST", "/view", { view: location.hash }).catch(() => {});
+	}, 600);
+}
+
+/** For the Mac app, before it quits: what would be lost, one item a line, or "" when nothing would. */
+/** @type {any} */ (window).securityxBusy = async () => {
+	try {
+		const { busy } = await api("GET", "/busy");
+		return Array.isArray(busy) ? busy.join("\n") : "";
+	} catch {
+		return "";
+	}
+};
 window.addEventListener("hashchange", route);
 void route();
 
@@ -85,7 +111,9 @@ async function route() {
 		params,
 		// Filters are written into the address without adding a history entry for every keystroke.
 		replace: (settings) => {
-			if (current === navigation) history.replaceState(null, "", buildHash(path, settings));
+			if (current !== navigation) return;
+			history.replaceState(null, "", buildHash(path, settings));
+			rememberView();
 		},
 	};
 	try {
@@ -93,6 +121,7 @@ async function route() {
 		if (current !== navigation) return cleanup();
 		leave = cleanup;
 		drawScanStatus();
+		rememberView();
 		// A new page starts at its top, with keyboard and screen-reader focus on it. The first load is left alone.
 		if (!firstRoute) {
 			window.scrollTo(0, 0);

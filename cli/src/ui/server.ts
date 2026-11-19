@@ -43,7 +43,9 @@ import { callMonitor, type MonitorConfig } from "../monitor/client.ts";
 import { discoverRepos } from "../repos/discover.ts";
 import type { Runner } from "../repos/exec.ts";
 import { coverageNotes, nameUnder, rank, rankRepos, repoName, settingNotes } from "../repos/report.ts";
+import { History, readNotes, setNote } from "../repos/history.ts";
 import { scanRepos } from "../repos/scan.ts";
+import { findingKey, isStatus, MAX_NOTE } from "../../ui/tracking.js";
 import { SEVERITIES, type ScanReport, type Severity } from "../repos/types.ts";
 import { domainSuggestions, type MonitorReport } from "../roadmap/domains.ts";
 import { exportDomain, exportRepos, ExportError, parseFilter, type ExportFile } from "../roadmap/export.ts";
@@ -161,7 +163,7 @@ export type AnalysisStatus =
 
 const UI_DIR = join(import.meta.dirname, "../../ui");
 /** The page's own modules. Nothing else in the folder is served. */
-const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text"];
+const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes"];
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
 	"/": { file: "index.html", type: "text/html; charset=utf-8" },
 	"/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
@@ -238,6 +240,15 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	const analysisPath = join(dirname(options.reportPath), "repo-analysis.json");
 	/** The interface's own preferences (the chosen look), kept beside the report. */
 	const settingsPath = join(dirname(options.reportPath), "ui-settings.json");
+	// Every finished scan is kept, so the page can say what is new and what was fixed since the last one.
+	const history = new History(dirname(options.reportPath));
+	const notesPath = join(dirname(options.reportPath), "finding-notes.json");
+	// Where the owner was, so the app opens there again however it was closed.
+	const viewPath = join(dirname(options.reportPath), "ui-view.json");
+	// A report from before history was kept starts it, so the next scan has something to compare with.
+	await readReport(options.reportPath)
+		.then((report) => (report ? history.add(report) : null))
+		.catch(() => {});
 	let analysing: AnalysisStatus = { state: "idle" };
 	let stopAnalysis: AbortController | null = null;
 	let port = options.port;
@@ -263,6 +274,39 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		} catch (err) {
 			return { config: null, error: err instanceof Error ? err.message : String(err), unset: false, source: "settings" };
 		}
+	}
+
+	/** What would be lost by quitting now, in words, so the app can ask first. Empty when nothing is. */
+	function busyWork(): string[] {
+		const busy: string[] = [];
+		if (status.state === "running") busy.push("A scan is running");
+		if (fetching.state === "running") busy.push("Repositories are being fetched from GitHub");
+		if (analysing.state === "running") busy.push("Deeper analysis is running");
+		if (muralJob.state === "running") busy.push("A mural is being written");
+		if (sending > 0) busy.push("A model is answering what you sent it");
+		else if (modelBusy && muralJob.state !== "running" && analysing.state !== "running") busy.push("The model is answering");
+		return busy;
+	}
+
+	/**
+	 * The owner's status and note for one finding of the latest scan. Kept by the finding's identity,
+	 * so they carry over to later scans; they never change the finding itself.
+	 */
+	async function noteRoute(res: ServerResponse, body: unknown): Promise<void> {
+		const fields = bodyObject(body);
+		const target = {
+			repo: textField(fields, "repo", 1000),
+			ruleId: textField(fields, "ruleId", 500),
+			location: textField(fields, "location", 2000),
+			detail: textField(fields, "detail", 2000),
+		};
+		if (!isStatus(fields.status)) throw new HttpError(400, "Choose a status");
+		const note = fields.note ?? "";
+		if (typeof note !== "string" || note.length > MAX_NOTE) throw new HttpError(400, `Keep the note to ${MAX_NOTE} characters`);
+		const report = await storedReport();
+		if (!locateFinding(report, target)) throw new HttpError(404, "That finding is not in the latest scan. Reload the page to see the current one.");
+		const key = findingKey(target.repo, target);
+		return sendJson(res, 200, { key, note: await setNote(notesPath, key, fields.status, note) });
 	}
 
 	function targets() {
@@ -608,11 +652,26 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				// Whether a token is set, never the token.
 				github: { token: github.token !== undefined, ...(options.githubError ? { error: options.githubError } : {}) },
 				assistant: assistantSummary(),
+				lastView: await readView(viewPath),
 				// What "Send to a model" offers. Never a key: only where each one runs and which model.
 				sendTargets: targets().map((target) => ({ id: target.id, label: target.label, model: target.config.model, host: target.config.url.host, hosted: target.hosted, current: target.current })),
 			});
 		}
 		if (route === "POST /api/repos/send") return sendRoute(res, body);
+		if (route === "GET /api/repos/history") {
+			const report = await readReport(options.reportPath);
+			const scans = (await history.list()).reverse();
+			return sendJson(res, 200, { scans, change: report ? await history.latestChange(report) : null });
+		}
+		if (route === "POST /api/findings/note") return noteRoute(res, body);
+		if (route === "GET /api/busy") return sendJson(res, 200, { busy: busyWork() });
+		if (route === "POST /api/view") {
+			const view = bodyObject(body).view;
+			// A place in the page, with its filters; never the session key, which lives only in the fragment it came in.
+			if (typeof view !== "string" || !/^#\/[^\s]{0,1000}$/.test(view) || /(?:^|[#&?])k=/.test(view)) throw new HttpError(400, "Not a place in the page");
+			await saveView(viewPath, view);
+			return sendJson(res, 200, { view });
+		}
 		if (route === "POST /api/settings") {
 			const appearance = (body as { appearance?: unknown } | undefined)?.appearance;
 			if (!isLook(appearance)) throw new HttpError(400, "Unknown appearance");
@@ -622,7 +681,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		if (url.pathname === "/api/model" || url.pathname.startsWith("/api/model/")) return modelRoute(res, route, body);
 		if (url.pathname === "/api/access" || url.pathname.startsWith("/api/access/")) return accessRoute(res, route, body, gate);
 		if (url.pathname.startsWith("/api/assist/")) return assist(req, res, url.pathname.slice("/api/assist/".length), body);
-		if (route === "GET /api/repos/report") return sendJson(res, 200, await loadReport(options.reportPath, analysisPath));
+		if (route === "GET /api/repos/report") return sendJson(res, 200, { ...(await loadReport(options.reportPath, analysisPath)), findingNotes: await readNotes(notesPath) });
 		if (url.pathname === "/api/analysis" || url.pathname === "/api/analysis/stop") return analysisRoute(res, route, body);
 		if (route === "GET /api/repos/roadmap" || route === "GET /api/repos/export" || url.pathname === "/api/repos/mural") {
 			const report = await readReport(options.reportPath);
@@ -674,6 +733,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 						return;
 					}
 					await saveReport(options.reportPath, report);
+					await history.add(report).catch((err) => console.error(`securityx ui: could not keep the scan in history: ${err instanceof Error ? err.message : String(err)}`));
 					status = { state: "done", root, finishedAt: new Date().toISOString() };
 				})
 				.catch((err) => {
@@ -1263,6 +1323,23 @@ async function saveAppearance(path: string, appearance: string): Promise<void> {
 	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
 	const temporary = `${path}.${process.pid}.tmp`;
 	await writeFile(temporary, `${JSON.stringify({ appearance }, null, "\t")}\n`, { mode: 0o600 });
+	await rename(temporary, path);
+}
+
+/** The place in the page the owner was last at, or null. */
+async function readView(path: string): Promise<string | null> {
+	try {
+		const view = (JSON.parse(await readFile(path, "utf8")) as { view?: unknown }).view;
+		return typeof view === "string" && view.startsWith("#/") ? view : null;
+	} catch {
+		return null;
+	}
+}
+
+async function saveView(path: string, view: string): Promise<void> {
+	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+	const temporary = `${path}.${process.pid}.tmp`;
+	await writeFile(temporary, `${JSON.stringify({ view }, null, "\t")}\n`, { mode: 0o600 });
 	await rename(temporary, path);
 }
 

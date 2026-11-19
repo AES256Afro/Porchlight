@@ -3,6 +3,7 @@
 // the state of a running scan. Pages read from here and are told when it
 // changes, so a scan started on one page updates all of them.
 import { api, ApiError } from "./api.js";
+import { findingKey } from "./tracking.js";
 
 /** @typedef {import("../src/repos/types.ts").Finding} Finding */
 /** @typedef {{ title: string, how: string[], phase: "now" | "next" | "schedule" | "later" }} Suggestion */
@@ -12,7 +13,7 @@ import { api, ApiError } from "./api.js";
 /** @typedef {Omit<import("../src/repos/types.ts").ScanReport, "repos"> & { repos: Repo[] }} ScanReport */
 /** @typedef {import("../src/ui/server.ts").ScanStatus} ScanStatus */
 /** @typedef {SuggestedFinding & { repo: string }} FindingRow */
-/** @typedef {"report" | "scan" | "settings"} Change */
+/** @typedef {"report" | "scan" | "settings" | "notes"} Change */
 
 const POLL_MS = 800;
 
@@ -22,7 +23,7 @@ export const store = {
 	 * managed rather than from a terminal. `monitor.unset`: neither monitor setting was given.
 	 * `assistant`: the local model behind Explain, Summarise and Ask.
 	 *
-	 * @type {{ defaultRoot: string, reportPath: string, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean }, github: { token: boolean, error?: string }, assistant: import("./generated.js").AssistantSettings, appearance: string, remote: boolean, sendTargets: import("./send-text.js").SendTarget[] } | null}
+	 * @type {{ defaultRoot: string, reportPath: string, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean }, github: { token: boolean, error?: string }, assistant: import("./generated.js").AssistantSettings, appearance: string, remote: boolean, sendTargets: import("./send-text.js").SendTarget[], lastView: string | null } | null}
 	 */
 	settings: null,
 	/** @type {ScanReport | null} */
@@ -35,7 +36,19 @@ export const store = {
 	settingNotes: [],
 	/** @type {ScanStatus} */
 	scan: { state: "idle" },
+	/** The owner's status and note for findings, by `findingKey`. They carry over to later scans. */
+	/** @type {Record<string, import("./tracking.js").FindingNote>} */
+	findingNotes: {},
+	/** The latest scan against the one before it; null until there are two. */
+	/** @type {{ previousScannedAt: string, newCount: number, fixedCount: number, newKeys: string[], fixed: { repo: string, severity: import("./filter.js").Severity, kind: string, ruleId: string, title: string, location: string, detail: string }[] } | null} */
+	change: null,
+	/** Every kept scan, newest first. */
+	/** @type {{ file: string, scannedAt: string, root: string, repositories: number, findings: number, counts: Record<string, number>, newCount?: number, fixedCount?: number }[]} */
+	scans: [],
 };
+
+/** @type {Set<string>} */
+let newKeys = new Set();
 
 /** @type {Set<(change: Change) => void>} */
 const listeners = new Set();
@@ -74,6 +87,7 @@ export function load() {
 			appearance: state.appearance ?? "today",
 			remote: state.remote === true,
 			sendTargets: Array.isArray(state.sendTargets) ? state.sendTargets : [],
+			lastView: typeof state.lastView === "string" ? state.lastView : null,
 		};
 		emit("settings");
 		store.scan = state.scan;
@@ -121,8 +135,54 @@ export async function loadReport() {
 	store.report = /** @type {ScanReport | null} */ (data.report);
 	store.notes = data.notes;
 	store.settingNotes = data.settingNotes ?? [];
+	store.findingNotes = data.findingNotes ?? {};
 	rows = null;
+	// History is extra: a page still shows the scan if it cannot be read.
+	try {
+		const history = await api("GET", "/repos/history");
+		store.change = history.change ?? null;
+		store.scans = Array.isArray(history.scans) ? history.scans : [];
+	} catch {
+		store.change = null;
+		store.scans = [];
+	}
+	newKeys = new Set(store.change?.newKeys ?? []);
 	emit("report");
+}
+
+/**
+ * Whether a finding is new since the previous scan.
+ *
+ * @param {string} repo
+ * @param {{ ruleId: string, location: string, detail: string }} finding
+ */
+export function isNew(repo, finding) {
+	return newKeys.has(findingKey(repo, finding));
+}
+
+/**
+ * The owner's status and note for a finding, or null when it has none.
+ *
+ * @param {string} repo
+ * @param {{ ruleId: string, location: string, detail: string }} finding
+ */
+export function noteFor(repo, finding) {
+	return store.findingNotes[findingKey(repo, finding)] ?? null;
+}
+
+/**
+ * Saves the owner's status and note for a finding of the latest scan.
+ *
+ * @param {string} repo
+ * @param {{ ruleId: string, location: string, detail: string }} finding
+ * @param {string} status
+ * @param {string} note
+ */
+export async function saveFindingNote(repo, finding, status, note) {
+	const answer = await api("POST", "/findings/note", { repo, ruleId: finding.ruleId, location: finding.location, detail: finding.detail, status, note });
+	if (answer.note) store.findingNotes[answer.key] = answer.note;
+	else delete store.findingNotes[answer.key];
+	emit("notes");
 }
 
 /**

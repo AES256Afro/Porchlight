@@ -17,3 +17,12 @@ test("heads copied or saved text with what wrote it, and names files from a fixe
 	assert.equal(sendFilename("repair", "2026-11-19T07:00:00Z"), "securityx-repair-plan-2026-11-19.txt");
 	assert.equal(sendFilename("analyse", "../../etc"), "securityx-analysis-undated.txt");
 });
+
+test("names a finding the same way across scans, and words a change and a status", async () => {
+	const { changeSummary, findingKey, isStatus, statusLabel } = await import("../ui/tracking.js");
+	assert.equal(findingKey("repo", { ruleId: "GHSA-1", location: "go.mod", detail: "x@1" }), "repo\nGHSA-1\ngo.mod\nx@1");
+	assert.equal(changeSummary(null), null);
+	assert.equal(changeSummary({ previousScannedAt: "", newCount: 0, fixedCount: 0 }), "Nothing new and nothing fixed since the previous scan.");
+	assert.equal(changeSummary({ previousScannedAt: "", newCount: 2, fixedCount: 1200 }), "2 new, 1,200 fixed since the previous scan.");
+	assert.deepEqual([isStatus("accepted"), isStatus("ignored"), statusLabel("false-positive")], [true, false, "False positive"]);
+});

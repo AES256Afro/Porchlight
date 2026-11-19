@@ -8,6 +8,7 @@ import { githubPanel } from "./github.js";
 import { emptyScanHints, previewAdvice } from "./hints.js";
 import { buildHash } from "./list.js";
 import { findingRows, load, startScan, store, subscribe } from "./store.js";
+import { changeSummary } from "./tracking.js";
 
 /** @typedef {import("../src/roadmap/types.ts").Roadmap} Roadmap */
 /** @typedef {import("./filter.js").Severity} Severity */
@@ -246,6 +247,7 @@ export async function renderOverview(view) {
 				),
 			),
 			analysis?.node,
+			historyCard(),
 			monitorCard(),
 			assistantCard(),
 		);
@@ -298,6 +300,51 @@ export async function renderOverview(view) {
  * Questions about the scan when a local model is connected and there is a scan to ask about; how to
  * connect one when there is not.
  */
+/** What changed since the previous scan, and the scans kept before it. */
+function historyCard() {
+	const change = store.change;
+	const scans = store.scans.slice(0, 10);
+	const fixedShown = change?.fixed.slice(0, 8) ?? [];
+	return h(
+		"div",
+		{ class: "card full" },
+		h("h2", null, "Since the last scan"),
+		h("p", { class: "sub" }, changeSummary(change) ?? "This is the first scan kept. The next scan shows what is new and what was fixed since this one."),
+		fixedShown.length > 0
+			? h(
+					"ul",
+					{ class: "link-list" },
+					...fixedShown.map((item) => h("li", null, severityBadge(item.severity), " ", h("span", { class: "wrap" }, item.title), h("span", { class: "hint" }, ` · ${item.repo}`))),
+				)
+			: null,
+		change && change.fixedCount > fixedShown.length ? h("p", { class: "hint" }, `And ${(change.fixedCount - fixedShown.length).toLocaleString()} more fixed.`) : null,
+		change && change.newCount > 0 ? h("p", { class: "hint" }, "New findings are marked New on the Findings page.") : null,
+		scans.length > 1
+			? h(
+					"table",
+					{ class: "history-table" },
+					h("thead", null, h("tr", null, h("th", null, "Scanned"), h("th", { class: "num" }, "Findings"), h("th", { class: "num" }, "Critical"), h("th", { class: "num" }, "High"), h("th", { class: "num" }, "New"), h("th", { class: "num" }, "Fixed"))),
+					h(
+						"tbody",
+						null,
+						...scans.map((scan) =>
+							h(
+								"tr",
+								null,
+								h("td", null, formatWhen(scan.scannedAt)),
+								h("td", { class: "num" }, scan.findings.toLocaleString()),
+								h("td", { class: "num" }, (scan.counts.critical ?? 0).toLocaleString()),
+								h("td", { class: "num" }, (scan.counts.high ?? 0).toLocaleString()),
+								h("td", { class: "num" }, scan.newCount === undefined ? "–" : scan.newCount.toLocaleString()),
+								h("td", { class: "num" }, scan.fixedCount === undefined ? "–" : scan.fixedCount.toLocaleString()),
+							),
+						),
+					),
+				)
+			: null,
+	);
+}
+
 function assistantCard() {
 	const assistant = store.settings?.assistant;
 	if (!assistant?.configured) return localModelCard(assistant, store.settings?.service === true);
