@@ -80,6 +80,7 @@ export async function softwareUpdates(run: Runner, askApple: boolean): Promise<H
 		detail: `${count === 1 ? "1 update is" : `${count} updates are`} waiting to be installed. ${when}`,
 		items: parsed.titles,
 		fix: ["Install them in System Settings → General → Software Update.", "Or in Terminal: `softwareupdate --install --all`"],
+		commands: [{ kind: "line", line: "softwareupdate --install --all" }],
 	};
 }
 
@@ -167,6 +168,7 @@ export async function gatekeeper(run: Runner): Promise<HostCheck> {
 		status: "failed",
 		detail: "Off: any downloaded app opens without a check.",
 		fix: ["Turn it back on in Terminal: `sudo spctl --global-enable`, then choose who apps may come from in System Settings → Privacy & Security."],
+		commands: [{ kind: "line", line: "sudo spctl --global-enable" }],
 	};
 }
 
@@ -195,7 +197,8 @@ export async function firewall(run: Runner): Promise<{ checks: HostCheck[]; on: 
 			...base,
 			status: "failed",
 			detail: "Off: any app can accept connections from every network this Mac joins.",
-			fix: ["Turn it on in System Settings → Network → Firewall."],
+			fix: ["Turn it on in System Settings → Network → Firewall.", `Or in Terminal: \`sudo ${FIREWALL} --setglobalstate on\``],
+			commands: [{ kind: "line", line: `sudo ${FIREWALL} --setglobalstate on` }],
 		});
 
 	const stealthBase = { id: "stealth", area: "protection", title: "Firewall stealth mode", severity: "low" } as const;
@@ -208,7 +211,8 @@ export async function firewall(run: Runner): Promise<{ checks: HostCheck[]; on: 
 			...stealthBase,
 			status: "failed",
 			detail: "Off: this Mac answers pings and probes, which tells others on the network it is there.",
-			fix: ["Turn it on in System Settings → Network → Firewall → Options → Enable stealth mode."],
+			fix: ["Turn it on in System Settings → Network → Firewall → Options → Enable stealth mode.", `Or in Terminal: \`sudo ${FIREWALL} --setstealthmode on\``],
+			commands: [{ kind: "line", line: `sudo ${FIREWALL} --setstealthmode on` }],
 		});
 	return { checks, on: state === null ? null : state === "on" };
 }
@@ -241,6 +245,7 @@ export async function guestAccount(run: Runner): Promise<HostCheck> {
 			status: "failed",
 			detail: "On: anyone can log in to this Mac as a guest without a password.",
 			fix: ["Turn it off in System Settings → Users & Groups → Guest User."],
+			commands: [{ kind: "line", line: `sudo defaults write ${LOGIN_WINDOW_PREFS} GuestEnabled -bool false` }],
 		};
 	return unknown(base, couldNotRead("defaults", result));
 }

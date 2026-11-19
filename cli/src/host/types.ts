@@ -25,7 +25,19 @@ export interface HostCheck {
 	fix?: string[];
 	/** A list the detail refers to, such as pending updates or advisories. */
 	items?: string[];
+	/**
+	 * Commands that repair it and are safe to run without a decision first, for the combined list
+	 * at the bottom of the page. A step that needs one (turning off a Sharing service someone may
+	 * use, adding a passphrase to a key a script may use) stays in `fix` only.
+	 */
+	commands?: HostCommand[];
 }
+
+/**
+ * A repair command. Packages of one kind are combined into one command (`npm install -g a b`);
+ * a `line` is a whole command, already quoted for a shell.
+ */
+export type HostCommand = { kind: "npm-global"; spec: string } | { kind: "pip"; spec: string } | { kind: "line"; line: string };
 
 export interface HostReport {
 	checkedAt: string;

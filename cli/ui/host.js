@@ -3,7 +3,7 @@
 // starts it, follows it, and shows what it found. Every element is built with h(): program names,
 // paths and update titles come from the system and are never treated as HTML.
 import { formatWhen, h, icon, plural, replace, severityBadge, statTile, stepNodes, toast } from "./dom.js";
-import { AREA_TITLES, hostName as nameFor, splitChecks } from "./host-areas.js";
+import { AREA_TITLES, combinedCommands, hostName as nameFor, splitChecks } from "./host-areas.js";
 import { load, loadHost, startHostCheck, store, subscribe } from "./store.js";
 
 /** @typedef {import("../src/host/types.ts").HostCheck} HostCheck */
@@ -184,7 +184,44 @@ function drawReport(report) {
 			h("p", { class: "sub" }, "A clean result here does not mean these are safe:"),
 			h("ul", { class: "host-not-covered" }, ...report.notCovered.map((line) => h("li", null, line))),
 		),
-	];
+		commandsCard(combinedCommands(report.checks)),
+	].filter((node) => node !== null);
+}
+
+/**
+ * Every repair command from the checks above, combined, to paste into a terminal in one go.
+ *
+ * @param {string[]} commands
+ */
+function commandsCard(commands) {
+	if (commands.length === 0) return null;
+	const text = `${commands.join("\n")}\n`;
+	const block = h("pre", { class: "host-commands", tabindex: "0", "aria-label": "Commands to fix these" }, h("code", null, text));
+	const copy = async () => {
+		try {
+			await navigator.clipboard.writeText(text);
+			toast(commands.length === 1 ? "Command copied" : `${commands.length} commands copied`);
+		} catch {
+			// Clipboard access can be refused: select the block so ⌘C copies it.
+			const range = document.createRange();
+			range.selectNodeContents(block);
+			const selection = window.getSelection();
+			selection?.removeAllRanges();
+			selection?.addRange(range);
+			toast("Copy the selected commands with ⌘C");
+		}
+	};
+	return h(
+		"div",
+		{ class: "card full" },
+		h("div", { class: "host-commands-head" }, h("h2", null, "Commands to fix these"), h("button", { type: "button", class: "button", onclick: () => void copy() }, icon("copy"), "Copy all")),
+		h(
+			"p",
+			{ class: "sub" },
+			"The repairs above that need no decision first, in one place, to paste into Terminal. Read each line before you run it: lines with sudo ask for your password, and updates can take a while. Steps that need a decision, such as turning off a Sharing service or adding a passphrase to an SSH key, stay with their checks.",
+		),
+		block,
+	);
 }
 
 /** @param {HostCheck} check */

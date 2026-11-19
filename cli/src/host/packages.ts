@@ -158,6 +158,7 @@ export function packageChecks(findings: Finding[], npmEntries: NpmEntry[], pytho
 						"If that does not bring a fixed version, the package's maintainers have not released one yet.",
 					]
 			: [`\`python3 -m pip install --upgrade "${name}${fixedIn ? `>=${fixedIn}` : ""}"\``];
+		const specs = npm ? (direct ? [`${name}@${fixedIn ?? "latest"}`] : owners.map((owner) => `${owner}@latest`)) : [fixedIn ? `${name}>=${fixedIn}` : name];
 		checks.push({
 			id: `package:${npm ? "npm" : "python"}:${name}`,
 			area: "packages",
@@ -167,6 +168,7 @@ export function packageChecks(findings: Finding[], npmEntries: NpmEntry[], pytho
 			detail: `${group.length === 1 ? "1 known vulnerability" : `${group.length} known vulnerabilities`}${fixedIn ? `, fixed in ${fixedIn}` : ", with no fixed version named yet"}.`,
 			items: group.map((finding) => `${finding.ruleId}: ${finding.title}`),
 			fix,
+			commands: specs.map((spec) => ({ kind: npm ? ("npm-global" as const) : ("pip" as const), spec })),
 		});
 	}
 	return checks.sort((a, b) => severityRank(a.severity) - severityRank(b.severity) || a.title.localeCompare(b.title));
@@ -211,6 +213,7 @@ async function brewCheck(run: Runner): Promise<HostCheck | null> {
 		detail: `${outdated.length === 1 ? "1 package has" : `${outdated.length} packages have`} a newer version. ${note}`,
 		items: outdated.length > MAX_LISTED ? [...outdated.slice(0, MAX_LISTED), `and ${outdated.length - MAX_LISTED} more`] : outdated,
 		fix: ["`brew update && brew upgrade`"],
+		commands: [{ kind: "line", line: "brew update && brew upgrade" }],
 	};
 }
 

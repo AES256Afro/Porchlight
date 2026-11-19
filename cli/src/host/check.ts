@@ -64,7 +64,7 @@ export async function checkHost(options: HostCheckOptions): Promise<HostReport> 
 	];
 	const steps: Step[] = [
 		...(mac ? macSteps : []),
-		{ label: "Credentials in files", area: "credentials", run: () => credentialChecks(home) },
+		{ label: "Credentials in files", area: "credentials", run: () => credentialChecks(home, mac) },
 		{ label: "Installed packages", area: "packages", run: () => packageChecksFor({ run, lookUp, pathEnv: options.pathEnv ?? process.env.PATH, mac }) },
 	];
 

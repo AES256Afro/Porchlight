@@ -6,6 +6,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { Severity } from "../repos/types.ts";
+import { shellWord } from "../../ui/host-areas.js";
 import type { HostCheck } from "./types.ts";
 
 /** Larger files are not credential stores; they are not read. */
@@ -25,6 +26,8 @@ interface Store {
 	kind: string;
 	holds: (text: string) => boolean;
 	fix: string;
+	/** On a Mac: a command that moves the credential somewhere safer, when there is one. */
+	macCommand?: string;
 }
 
 /** Files that tools write credentials into, and how to tell one holds a credential. */
@@ -40,6 +43,7 @@ const STORES: Store[] = [
 		kind: "git passwords or tokens",
 		holds: (text) => /^\s*\w[\w+.-]*:\/\/[^\s@]+@/m.test(text),
 		fix: "Keep them in the keychain instead: `git config --global credential.helper osxkeychain`, then delete ~/.git-credentials.",
+		macCommand: "git config --global credential.helper osxkeychain",
 	},
 	{
 		path: ".netrc",
@@ -135,6 +139,7 @@ async function sshChecks(home: string): Promise<HostCheck[]> {
 			status: "failed",
 			detail: `Its permissions are ${octal(info.mode)}: other users of this computer can look into it.`,
 			fix: ["`chmod 700 ~/.ssh`"],
+			commands: [{ kind: "line", line: "chmod 700 ~/.ssh" }],
 		});
 	}
 	let names: string[] = [];
@@ -146,6 +151,8 @@ async function sshChecks(home: string): Promise<HostCheck[]> {
 	}
 	for (const name of names) {
 		const shown = `~/.ssh/${name}`;
+		// The name as a shell would need it, in commands: a file can be called anything.
+		const path = `~/.ssh/${shellWord(name)}`;
 		const file = await readSmall(join(dir, name));
 		if (file === "missing") continue;
 		if (file === "unreadable") {
@@ -161,7 +168,8 @@ async function sshChecks(home: string): Promise<HostCheck[]> {
 				severity: "high",
 				status: "failed",
 				detail: `Its permissions are ${octal(file.mode)}: other users of this computer can read this private key.`,
-				fix: [`\`chmod 600 ${shown}\``, "If anyone else uses this computer, replace the key: they may have copied it."],
+				fix: [`\`chmod 600 ${path}\``, "If anyone else uses this computer, replace the key: they may have copied it."],
+				commands: [{ kind: "line", line: `chmod 600 ${path}` }],
 			});
 		} else if (!encrypted) {
 			checks.push({
@@ -169,7 +177,11 @@ async function sshChecks(home: string): Promise<HostCheck[]> {
 				severity: "medium",
 				status: "failed",
 				detail: "It has no passphrase: anyone or any program that copies the file can use it.",
-				fix: [`Add one: \`ssh-keygen -p -f ${shown}\``, `Keep the passphrase in the keychain so you are not asked each time: \`ssh-add --apple-use-keychain ${shown}\``],
+				// Not in the combined commands: a script that uses this key would stop working.
+				fix: [
+					`Add one: \`ssh-keygen -p -f ${path}\`. If a script or a server uses this key unattended, give it its own key instead.`,
+					`Keep the passphrase in the keychain so you are not asked each time: \`ssh-add --apple-use-keychain ${path}\``,
+				],
 			});
 		} else {
 			checks.push({ ...base, severity: "medium", status: "passed", detail: "It has a passphrase, and only you can read it." });
@@ -178,7 +190,7 @@ async function sshChecks(home: string): Promise<HostCheck[]> {
 	return checks;
 }
 
-async function storeChecks(home: string): Promise<HostCheck[]> {
+async function storeChecks(home: string, mac: boolean): Promise<HostCheck[]> {
 	const checks: HostCheck[] = [];
 	for (const store of STORES) {
 		const shown = `~/${store.path}`;
@@ -201,7 +213,8 @@ async function storeChecks(home: string): Promise<HostCheck[]> {
 			detail: open
 				? `In plain text, and its permissions are ${octal(file.mode)}: other users of this computer can read it.`
 				: "In plain text. Only you can read the file, but so can every program you run, and every backup that copies it.",
-			fix: [...(open ? [`\`chmod 600 ${shown}\``] : []), store.fix],
+			fix: [...(open ? [`\`chmod 600 ${shown}\``] : []), mac || !store.macCommand ? store.fix : "Use a credential helper that encrypts them, such as Git Credential Manager, then delete the file."],
+			commands: [...(open ? [{ kind: "line" as const, line: `chmod 600 ${shown}` }] : []), ...(mac && store.macCommand ? [{ kind: "line" as const, line: store.macCommand }] : [])],
 		});
 	}
 	// Only when every file could be read and none holds one: a file that could not be read is no pass.
@@ -218,8 +231,8 @@ async function storeChecks(home: string): Promise<HostCheck[]> {
 	return checks;
 }
 
-export async function credentialChecks(home: string): Promise<HostCheck[]> {
-	return [...(await sshChecks(home)), ...(await storeChecks(home))];
+export async function credentialChecks(home: string, mac = true): Promise<HostCheck[]> {
+	return [...(await sshChecks(home)), ...(await storeChecks(home, mac))];
 }
 
 /** The files the credential check looks at, for the page and the README. */

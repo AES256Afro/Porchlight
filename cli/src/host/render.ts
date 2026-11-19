@@ -1,5 +1,5 @@
 /** The host check as text for a terminal. */
-import { AREA_TITLES } from "../../ui/host-areas.js";
+import { AREA_TITLES, combinedCommands } from "../../ui/host-areas.js";
 import type { HostReport } from "./types.ts";
 import { hostCounts } from "./check.ts";
 
@@ -30,5 +30,10 @@ export function renderHostText(report: HostReport): string {
 		lines.push("");
 	}
 	lines.push("## Not covered", ...report.notCovered.map((line) => `- ${line}`), "");
+	const commands = combinedCommands(report.checks);
+	if (commands.length > 0) {
+		lines.push("## Commands to fix these", "Read each line before you run it. Steps that need a decision first stay with their checks above.", "");
+		lines.push(...commands.map(plain), "");
+	}
 	return lines.join("\n");
 }

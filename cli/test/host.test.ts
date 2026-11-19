@@ -25,7 +25,7 @@ import { flattenNpm, npmLockfile, packageChecks, packageChecksFor, parseBrewOutd
 import { renderHostText } from "../src/host/render.ts";
 import type { HostCheck } from "../src/host/types.ts";
 import type { Finding } from "../src/repos/types.ts";
-import { AREA_TITLES, hostName, splitChecks } from "../ui/host-areas.js";
+import { AREA_TITLES, combinedCommands, hostName, shellWord, splitChecks } from "../ui/host-areas.js";
 import { HOST_AREAS } from "../src/host/types.ts";
 import { fakeAwsKeyId, fakeRunner, makeTree, tempDir } from "./helpers.ts";
 
@@ -272,6 +272,51 @@ test("installed packages become lockfiles osv-scanner can read, and one check pe
 	assert.equal(byId["package:npm:lodash"]!.items!.length, 2);
 	assert.match(byId["package:python:requests"]!.fix![0]!, /pip install --upgrade "requests>=2\.31\.0"/);
 	assert.match(byId["package:python:requests"]!.title, /Python \(\/usr\/local\/bin\/python3\)/);
+	assert.deepEqual(
+		checks.map((check) => check.commands),
+		[[{ kind: "npm-global", spec: "old-cli@latest" }], [{ kind: "npm-global", spec: "lodash@4.17.21" }], [{ kind: "pip", spec: "requests>=2.31.0" }]],
+	);
+});
+
+test("the repair commands are combined into lines a terminal can take in one paste", () => {
+	const check = (id: string, status: HostCheck["status"], commands: HostCheck["commands"]): HostCheck => ({ id, area: "packages", title: id, status, severity: "high", detail: "", commands });
+	const lines = combinedCommands([
+		check("updates", "failed", [{ kind: "line", line: "softwareupdate --install --all" }]),
+		check("a", "failed", [{ kind: "npm-global", spec: "lodash@4.17.21" }]),
+		check("b", "failed", [{ kind: "npm-global", spec: "cf@latest" }]),
+		check("c", "failed", [{ kind: "npm-global", spec: "cf@latest" }]),
+		check("evil", "failed", [{ kind: "npm-global", spec: "x@1;rm -rf ~" }, { kind: "pip", spec: "y>=1 && curl evil" }]),
+		check("d", "failed", [{ kind: "pip", spec: "requests>=2.31.0" }]),
+		check("e", "failed", [{ kind: "pip", spec: "diskcache" }]),
+		check("ok", "passed", [{ kind: "line", line: "never shown" }]),
+		check("brew", "failed", [{ kind: "line", line: "brew update && brew upgrade" }]),
+		check("brew again", "failed", [{ kind: "line", line: "brew update && brew upgrade" }]),
+	]);
+	assert.deepEqual(lines, [
+		"softwareupdate --install --all",
+		"npm install -g lodash@4.17.21 cf@latest",
+		'python3 -m pip install --upgrade "requests>=2.31.0" "diskcache"',
+		"brew update && brew upgrade",
+	]);
+	assert.deepEqual(combinedCommands([check("ok", "passed", [{ kind: "npm-global", spec: "a@1" }])]), []);
+	assert.deepEqual([shellWord("id_ed25519"), shellWord("my key"), shellWord("it's"), shellWord("$(boom)")], ["id_ed25519", "'my key'", "'it'\\''s'", "'$(boom)'"]);
+});
+
+test("credential repairs quote file names, and leave out what needs a decision", async () => {
+	const home = await tempDir();
+	await makeTree(home, { ".ssh/my key": opensshKey("aes256-ctr"), ".ssh/deploy": opensshKey("none"), ".git-credentials": `https://someone:${fakeSecret()}@example.com\n` });
+	await chmod(join(home, ".ssh"), 0o700);
+	await chmod(join(home, ".ssh", "my key"), 0o644);
+	await chmod(join(home, ".ssh", "deploy"), 0o600);
+	await chmod(join(home, ".git-credentials"), 0o600);
+	const mac = Object.fromEntries((await credentialChecks(home, true)).map((check) => [check.id, check]));
+	assert.deepEqual(mac["ssh-key:my key"]!.commands, [{ kind: "line", line: "chmod 600 ~/.ssh/'my key'" }]);
+	// Adding a passphrase would stop a script that uses the key, so it is a step, not a command to paste.
+	assert.equal(mac["ssh-key:deploy"]!.commands, undefined);
+	assert.deepEqual(mac["plaintext:.git-credentials"]!.commands, [{ kind: "line", line: "git config --global credential.helper osxkeychain" }]);
+	const linux = Object.fromEntries((await credentialChecks(home, false)).map((check) => [check.id, check]));
+	assert.deepEqual(linux["plaintext:.git-credentials"]!.commands, []);
+	assert.doesNotMatch(linux["plaintext:.git-credentials"]!.fix!.join(" "), /osxkeychain/);
 });
 
 test("packages are looked up with osv-scanner only when asked, and a missing scanner is no pass", async () => {
@@ -322,6 +367,9 @@ test("off a Mac only credentials and packages are checked, and the rest is named
 	assert.ok(!run.calls.some((call) => ["softwareupdate", "fdesetup", "netstat", "sudo"].includes(call[0]!)));
 	assert.deepEqual(notCovered(true, false, false).slice(0, 2), ["Apple was not asked for updates: the list is from macOS's own last check.", "Installed npm and Python packages were not looked up on OSV.dev."]);
 	assert.match(renderHostText(report), /## Not covered/);
+	assert.doesNotMatch(renderHostText(report), /## Commands to fix these/);
+	const withCommands = { ...report, checks: [{ id: "brew", area: "packages" as const, title: "Homebrew packages", status: "failed" as const, severity: "low" as const, detail: "", commands: [{ kind: "line" as const, line: "brew update && brew upgrade" }] }] };
+	assert.match(renderHostText(withCommands), /## Commands to fix these\n.*\n\nbrew update && brew upgrade\n/);
 });
 
 test("nothing the check runs asks for privileges or changes a setting", async () => {
