@@ -46,6 +46,7 @@ Do not weaken these without the owner asking for it.
 - `cli/ui/filter.js` decides what a filter matches, for the page and for the server alike, so "export what the filters show" exports exactly that. Do not filter anywhere else.
 - A page's filters, order and page number live in the address (`cli/ui/list.js`), written with `history.replaceState`, so reload, back and shared links restore the view.
 - Pages read shared data from `cli/ui/store.js` and subscribe to it; they do not fetch the report themselves. Long lists are paged, not rendered whole.
+- A click path in the page's words ("Settings → Model", "System Settings → Network → Firewall", GitHub's settings) is written the same in every string and listed in `cli/ui/paths.js`, which `stepNodes` turns into breadcrumbs, linking each step that has a fixed address of its own (SecurityX's own page, github.com, or a System Settings pane, the last only when the page is shown on the Mac itself). A test fails on any path the page or the host check writes that is not listed. The Mac app opens only http(s) and `x-apple.systempreferences:` links outside its window.
 - Browser code is typed with JSDoc and checked by `npm run typecheck`. It imports its data types from the TypeScript sources.
 
 ## Testing

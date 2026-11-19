@@ -251,6 +251,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
 	// MARK: Navigation: the window shows only its own page
 
+	/// Where a link may lead outside the window: a web page in the default browser, or a pane of
+	/// System Settings (the page's "System Settings → …" steps). Nothing else is opened.
+	private func openOutside(_ url: URL?) {
+		guard let url, let scheme = url.scheme?.lowercased() else { return }
+		if scheme == "https" || scheme == "http" || scheme == "x-apple.systempreferences" { NSWorkspace.shared.open(url) }
+	}
+
 	private func isOwnPage(_ url: URL?) -> Bool {
 		guard let url, let origin else { return false }
 		if url.scheme == "blob" || url.scheme == "about" { return true }
@@ -261,7 +268,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 	             decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
 		if action.shouldPerformDownload { decisionHandler(.download, preferences); return }
 		if isOwnPage(action.request.url) { decisionHandler(.allow, preferences); return }
-		if let url = action.request.url, url.scheme == "https" || url.scheme == "http" { NSWorkspace.shared.open(url) }
+		openOutside(action.request.url)
 		decisionHandler(.cancel, preferences)
 	}
 
@@ -273,7 +280,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 	// Links that open a new tab (advisories, instructions) go to the default browser.
 	func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
 	             for action: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-		if let url = action.request.url, url.scheme == "https" || url.scheme == "http" { NSWorkspace.shared.open(url) }
+		openOutside(action.request.url)
 		return nil
 	}
 

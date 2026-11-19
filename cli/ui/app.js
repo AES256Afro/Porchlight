@@ -1,11 +1,12 @@
 // @ts-check
 import { adoptSessionKey, api, ApiError, setSessionKey } from "./api.js";
-import { emptyState, formatWhen, h, icon, plural, replace, severityBadge, toast } from "./dom.js";
+import { emptyState, formatWhen, h, icon, plural, replace, severityBadge, stepNodes, toast } from "./dom.js";
 import { renderDomains } from "./domains.js";
 import { renderFindings } from "./findings.js";
 import { hostName, renderHost } from "./host.js";
 import { applyLook, homeSection, rememberedLook } from "./appearance.js";
 import { buildHash, parseHash } from "./list.js";
+import { settingsAnchor } from "./paths.js";
 import { renderOverview } from "./overview.js";
 import { renderByRepo } from "./repos.js";
 import { renderRoadmap } from "./roadmap.js";
@@ -135,6 +136,13 @@ async function route() {
 			view.focus({ preventScroll: true });
 		}
 		firstRoute = false;
+		// "#/settings/model" and the like: the part of the page a link named.
+		const anchor = settingsAnchor(path);
+		const target = anchor ? document.getElementById(anchor) : null;
+		if (target) {
+			target.scrollIntoView({ block: "start" });
+			target.focus({ preventScroll: true });
+		}
 	} catch (err) {
 		if (current !== navigation) return;
 		if (err instanceof ApiError && err.status === 401) return askForKey(err.body.tailnet === true ? "tailnet" : err.body.service === true ? "service" : "local");
@@ -239,7 +247,7 @@ function askForKey(where) {
 					? h(
 							"p",
 							null,
-							"Scan results name the files where secrets were found, so this page is locked. In BoxPilot, open Apps → SecurityX and copy the ",
+							...stepNodes("Scan results name the files where secrets were found, so this page is locked. In BoxPilot, open Apps → SecurityX and copy the "),
 							h("strong", null, "Access key"),
 							" from its sign-in details, then paste it here. This tab remembers it until you close it.",
 						)

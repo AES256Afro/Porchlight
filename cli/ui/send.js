@@ -6,7 +6,7 @@
 // to carry out a repair plan, the owner copies it to a coding assistant or follows it by hand.
 import { api } from "./api.js";
 import { generatedText } from "./assist.js";
-import { banner, h, icon, replace, toast } from "./dom.js";
+import { banner, h, icon, replace, stepNodes, toast } from "./dom.js";
 import { isFiltering } from "./filter.js";
 import { paramsFromFilter } from "./list.js";
 import { sendFilename, sendTargetNote, sendText } from "./send-text.js";
@@ -81,7 +81,7 @@ export function openSendDialog(target, initialContent = "roadmap") {
 			{ method: "dialog", onsubmit: send },
 			h("h2", { id: "send-title" }, "Send to a model"),
 			models.length === 0
-				? h("p", null, "No model is set up yet. Choose one under Settings → Model; every model you set up there is offered here.")
+				? h("p", null, ...stepNodes("No model is set up yet. Choose one under Settings → Model; every model you set up there is offered here."))
 				: h(
 						"fieldset",
 						null,
@@ -94,7 +94,7 @@ export function openSendDialog(target, initialContent = "roadmap") {
 								h("span", null, h("strong", null, model.label), h("span", { class: "hint" }, sendTargetNote(model))),
 							),
 						),
-						h("p", { class: "hint" }, "Every model you set up under Settings → Model is offered here."),
+						h("p", { class: "hint" }, ...stepNodes("Every model you set up under Settings → Model is offered here.")),
 					),
 			h("fieldset", null, h("legend", null, "What to send"), ...choices("content", CONTENTS, initialContent)),
 			filtering
@@ -119,7 +119,12 @@ export function openSendDialog(target, initialContent = "roadmap") {
 			h("div", { class: "actions" }, h("button", { type: "button", class: "button", onclick: () => dialog.close() }, "Close"), models.length > 0 ? submit : null),
 		)
 	);
-	const dialog = /** @type {HTMLDialogElement} */ (h("dialog", { class: "dialog wide send", "aria-labelledby": "send-title", onclose: () => dialog.remove() }, form));
+	const dialog = /** @type {HTMLDialogElement} */ (h("dialog", { class: "dialog wide send", "aria-labelledby": "send-title", onclose: () => dialog.remove(),
+			// A link to Settings leaves the dialog for that page.
+			onclick: (/** @type {MouseEvent} */ event) => {
+				if (event.target instanceof Element && event.target.closest("a.crumb[href^='#']")) dialog.close();
+			},
+		}, form));
 
 	/** @param {SubmitEvent} event */
 	async function send(event) {

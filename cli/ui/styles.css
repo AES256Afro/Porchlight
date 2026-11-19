@@ -2712,3 +2712,29 @@ fieldset.looks legend {
 	white-space: pre;
 }
 
+
+/* Click paths as breadcrumbs (cli/ui/paths.js): each step with a place of its own is a link. */
+.crumbs .crumb {
+	font-weight: 600;
+}
+
+.crumbs a.crumb {
+	text-decoration: underline;
+	text-decoration-thickness: 1px;
+	text-underline-offset: 3px;
+}
+
+.crumbs a.crumb:hover {
+	text-decoration-thickness: 2px;
+}
+
+.crumbs .crumb-sep {
+	color: var(--muted);
+}
+
+/* A Settings section an address jumped to takes focus without a ring around the whole card. */
+#settings-model:focus,
+#settings-access:focus,
+#settings-appearance:focus {
+	outline: none;
+}

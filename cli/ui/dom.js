@@ -1,4 +1,5 @@
 // @ts-check
+import { splitPaths } from "./paths.js";
 
 /**
  * Builds an element. Text is always set as text, never parsed as HTML: what
@@ -169,7 +170,42 @@ export function toast(message, kind = "info") {
  * @returns {(Node | string)[]}
  */
 export function stepNodes(step) {
-	return step.split("`").map((part, index) => (index % 2 === 1 ? h("code", null, part) : part));
+	return step.split("`").flatMap((part, index) => (index % 2 === 1 ? [h("code", null, part)] : splitPaths(part).map((piece) => (typeof piece === "string" ? piece : crumbs(piece)))));
+}
+
+/**
+ * A known click path as breadcrumbs: each step with a place of its own is a link to it. The arrows
+ * and words are the same as the text's, so it reads, copies and is read aloud the same.
+ *
+ * @param {import("./paths.js").KnownPath} path
+ */
+export function crumbs(path) {
+	const linked = path.kind !== "mac" || onThisMac();
+	return h(
+		"span",
+		{ class: "crumbs" },
+		...path.crumbs.flatMap((crumb, index) => [
+			index > 0 ? h("span", { class: "crumb-sep" }, " → ") : null,
+			crumb.href && linked
+				? h(
+						"a",
+						{
+							class: "crumb",
+							href: crumb.href,
+							target: path.kind === "web" ? "_blank" : null,
+							rel: path.kind === "web" ? "noopener noreferrer" : null,
+							title: path.kind === "web" ? `Opens ${new URL(crumb.href).host} in your browser` : path.kind === "mac" ? "Opens System Settings" : null,
+						},
+						crumb.label,
+					)
+				: h("span", { class: "crumb" }, crumb.label),
+		]),
+	);
+}
+
+/** Whether this page is shown on the Mac SecurityX runs on, so a System Settings link opens its settings. */
+function onThisMac() {
+	return /Mac/.test(navigator.platform || navigator.userAgent) && ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
 }
 
 /**

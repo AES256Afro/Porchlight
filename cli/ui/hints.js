@@ -78,11 +78,11 @@ export function previewAdvice(preview, settings) {
  */
 export function githubTokenSteps(service) {
 	return [
-		"On GitHub, open Settings → Developer settings → Personal access tokens → Fine-grained tokens, and generate a new token.",
-		'Give it access to the repositories you want checked, and under Repository permissions set "Contents" to Read-only. It needs nothing else.',
+		"On GitHub, open Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token.",
+		'Give it access to the repositories you want checked, and under Repository permissions set "Contents" to Read-only. It needs nothing else. For an organisation\'s repositories, choose the organisation as Resource owner; it may have to approve the token.',
 		service
 			? 'Copy the token. In BoxPilot, open Apps → SecurityX → Settings, paste it into "GitHub token" and confirm. SecurityX restarts with it.'
-			: "Copy the token. Stop SecurityX, run `export SECURITYX_GITHUB_TOKEN=<the token>`, and start it again.",
+			: "Copy the token. In the Mac app, add the line `SECURITYX_GITHUB_TOKEN=<the token>` to `~/.securityx/app.env`, then quit SecurityX and open it again. If you start it in a terminal with `securityx ui`, run `export SECURITYX_GITHUB_TOKEN=<the token>` before starting it instead.",
 	];
 }
 

@@ -4,6 +4,7 @@ import { describeFilter, isFiltering, matchesFilter, noFilter } from "../ui/filt
 import { generatedLabel, localModelSetup, MAX_QUESTION, paragraphs, questionProblem, SUGGESTED_MODEL, waitingLabel } from "../ui/generated.js";
 import { domainFromInput, emptyScanHints, fetchByDefault, githubTokenSteps, monitorSetupSteps, previewAdvice } from "../ui/hints.js";
 import { buildHash, filterFromParams, paginate, paramsFromFilter, parseHash, sortFindings } from "../ui/list.js";
+import { KNOWN_PATHS, settingsAnchor, splitPaths } from "../ui/paths.js";
 
 const finding = { severity: "high", kind: "vulnerability", ruleId: "GHSA-x", location: "web/package-lock.json", detail: "pillow@12.3.0", title: "Heap overflow" };
 
@@ -190,9 +191,83 @@ test("adding a GitHub token is three steps, ending where it is entered, and asks
 	assert.match(service[1] ?? "", /"Contents" to Read-only/);
 	assert.match(service[2] ?? "", /Apps → SecurityX → Settings.*"GitHub token"/);
 	assert.match(local[2] ?? "", /SECURITYX_GITHUB_TOKEN/);
+	// The Mac app reads its settings file, not the terminal's environment.
+	assert.match(local[2] ?? "", /~\/\.securityx\/app\.env/);
 	assert.doesNotMatch(local[2] ?? "", /BoxPilot/);
+	// The GitHub path is one known path, every step a link to github.com.
+	const github = splitPaths(local[0] ?? "").find((part) => typeof part !== "string");
+	assert.ok(github && typeof github !== "string");
+	assert.equal(github.kind, "web");
+	assert.ok(github.crumbs.every((crumb) => crumb.href?.startsWith("https://github.com/settings/")));
 
 	assert.equal(fetchByDefault({ fork: false, archived: false }), true);
 	assert.equal(fetchByDefault({ fork: true, archived: false }), false);
 	assert.equal(fetchByDefault({ fork: false, archived: true }), false);
+});
+
+test("click paths become breadcrumbs; other arrows stay text", () => {
+	const parts = splitPaths("Turn it on in System Settings → Network → Firewall → Options → Enable stealth mode.");
+	assert.equal(parts.length, 3);
+	assert.equal(parts[0], "Turn it on in ");
+	const path = parts[1];
+	assert.ok(path && typeof path !== "string");
+	assert.equal(path.text, "System Settings → Network → Firewall → Options → Enable stealth mode");
+	assert.equal(path.kind, "mac");
+	assert.deepEqual(
+		path.crumbs.map((crumb) => crumb.href !== null),
+		[true, true, false, false, false],
+	);
+	assert.equal(parts[2], ".");
+
+	// Versions and other arrows are left alone.
+	assert.deepEqual(splitPaths("lodash 4.17.20 → 4.17.21"), ["lodash 4.17.20 → 4.17.21"]);
+	// SecurityX's own Settings, by section.
+	const model = splitPaths("Choose one in Settings → Model").at(-1);
+	assert.ok(model && typeof model !== "string");
+	assert.deepEqual(model.crumbs.map((crumb) => crumb.href), ["#/settings", "#/settings/model"]);
+	assert.equal(settingsAnchor(["settings", "model"]), "settings-model");
+	assert.equal(settingsAnchor(["settings", "nowhere"]), null);
+	assert.equal(settingsAnchor(["findings", "model"]), null);
+	// A path SecurityX has no address for is still breadcrumbs, with no links.
+	const boxpilot = splitPaths("In BoxPilot, open Apps → SecurityX → Settings.")[1];
+	assert.ok(boxpilot && typeof boxpilot !== "string");
+	assert.ok(boxpilot.crumbs.every((crumb) => crumb.href === null));
+
+	// Every address is fixed: SecurityX's own page, GitHub's settings, or a System Settings pane.
+	for (const known of KNOWN_PATHS) {
+		for (const crumb of known.crumbs) {
+			if (crumb.href === null) continue;
+			const allowed = { page: /^#\/settings(\/[a-z]+)?$/, web: /^https:\/\/github\.com\/settings\//, mac: /^x-apple\.systempreferences:(com\.apple\.[\w.-]+)?$/, plain: /^$/ }[known.kind];
+			assert.match(crumb.href, allowed, `${known.text}: ${crumb.href}`);
+		}
+	}
+});
+
+test("every click path the page or the host check writes is a known path", async () => {
+	const { readFile, readdir } = await import("node:fs/promises");
+	const files = [
+		...(await readdir(new URL("../ui/", import.meta.url))).filter((name) => name.endsWith(".js") && name !== "paths.js").map((name) => new URL(`../ui/${name}`, import.meta.url)),
+		...(await readdir(new URL("../src/host/", import.meta.url))).filter((name) => name.endsWith(".ts")).map((name) => new URL(`../src/host/${name}`, import.meta.url)),
+	];
+	const starts = /(?:System Settings|Settings|Apps) → /g;
+	for (const file of files) {
+		const text = await readFile(file, "utf8");
+		for (const line of text.split("\n")) {
+			if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+			for (const match of line.matchAll(starts)) {
+				const rest = line.slice(match.index);
+				if (/^(System )?Settings → \$\{/.test(rest)) continue; // filled in below
+				if (match[0] === "Settings → " && line.slice(0, match.index).endsWith("System ")) continue;
+				assert.ok(
+					KNOWN_PATHS.some((known) => rest.startsWith(known.text)),
+					`${file.pathname.split("/").slice(-2).join("/")}: no known path for "${rest.slice(0, 80)}"`,
+				);
+			}
+		}
+		// The Sharing services in network.ts are named as "System Settings → <setting>".
+		for (const [, setting] of text.matchAll(/setting: "([^"]+)"/g)) {
+			const parts = splitPaths(`System Settings → ${setting}.`);
+			assert.ok(typeof parts[0] !== "string", `no known path for System Settings → ${setting}`);
+		}
+	}
 });

@@ -10,7 +10,7 @@ import { banner, h, icon, replace, toast } from "./dom.js";
 
 /** @returns {Promise<HTMLElement>} */
 export async function accessSection() {
-	const section = h("section", { class: "card full access-settings", "aria-labelledby": "access-title" });
+	const section = h("section", { id: "settings-access", tabindex: "-1", class: "card full access-settings", "aria-labelledby": "access-title" });
 	/** @type {AccessState} */
 	let state = /** @type {AccessState} */ (await api("GET", "/access"));
 	let busy = false;

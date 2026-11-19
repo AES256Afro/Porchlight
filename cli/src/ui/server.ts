@@ -175,7 +175,7 @@ export type AnalysisStatus =
 
 const UI_DIR = join(import.meta.dirname, "../../ui");
 /** The page's own modules. Nothing else in the folder is served. */
-const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas"];
+const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths"];
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
 	"/": { file: "index.html", type: "text/html; charset=utf-8" },
 	"/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },

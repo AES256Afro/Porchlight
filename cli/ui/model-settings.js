@@ -37,7 +37,7 @@ function serverKey(/** @type {string} */ url) {
 
 /** @returns {Promise<HTMLElement>} */
 export async function modelSection() {
-	const section = h("section", { class: "card full model-settings", "aria-labelledby": "model-title" });
+	const section = h("section", { id: "settings-model", tabindex: "-1", class: "card full model-settings", "aria-labelledby": "model-title" });
 	/** @type {ModelState} */
 	let state = /** @type {ModelState} */ (await api("GET", "/model"));
 	let form = fromState(state);

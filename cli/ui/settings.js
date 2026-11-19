@@ -53,7 +53,7 @@ export async function renderSettings(view) {
 				access,
 				h(
 					"fieldset",
-					{ class: "card full looks" },
+					{ id: "settings-appearance", tabindex: "-1", class: "card full looks" },
 					h("legend", null, h("h2", null, "Appearance")),
 					h("p", { class: "sub" }, "Saved on this computer and used every time SecurityX opens."),
 					h(
