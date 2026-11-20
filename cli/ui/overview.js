@@ -27,8 +27,9 @@ const CHIPS = 14;
  */
 export async function renderOverview(view) {
 	await load();
-	// The Cloudflare card needs the latest audit; the page is shown without it if that cannot be read.
-	await loadCloudflare().catch(() => {});
+	// The Cloudflare card needs the latest audit. It is fetched without holding the page up, and the
+	// card is drawn again when it arrives: a page that waits here can draw itself over a later one.
+	void loadCloudflare().catch(() => {});
 	let left = false;
 	const service = store.settings?.service === true;
 	/** The answer to the latest "what is in this folder" question; an earlier one arriving late is dropped. */
