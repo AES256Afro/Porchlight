@@ -54,7 +54,7 @@ import { SEVERITIES, type ScanReport, type Severity } from "../repos/types.ts";
 import { domainSuggestions, type MonitorReport } from "../roadmap/domains.ts";
 import { exportDomain, exportRepos, ExportError, parseFilter, type ExportFile } from "../roadmap/export.ts";
 import { buildRepoRoadmap, listRepoFindings, suggestionsFor } from "../roadmap/repos.ts";
-import { DEFAULT_GOAL, DEFAULT_MAX_TURNS, DEFAULT_MIN_GAP_MS, investigate, MAX_GOAL, MAX_TURNS_LIMIT, newRun, type Run } from "../investigate/engine.ts";
+import { DEFAULT_GOAL, DEFAULT_MAX_TURNS, DEFAULT_MIN_GAP_MS, investigate, MAX_GOAL, MAX_TURNS_LIMIT, newRun, type ApprovalAnswer, type Run } from "../investigate/engine.ts";
 import { exportInvestigation, INVESTIGATION_FORMATS, type InvestigationFormat } from "../investigate/export.ts";
 import { challengeName, challengeValue, checkOwnership, newToken, readDomains, saveDomains, tokenFromChallenge } from "../investigate/ownership.ts";
 import { abortableSleep, parseDomain, RateLimiter } from "../investigate/scope.ts";
@@ -1167,10 +1167,15 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				throw new HttpError(409, "That action is no longer waiting for approval");
 			}
 			if (typeof fields.approve !== "boolean") throw new HttpError(400, "Say whether to approve");
+			// "rest": this action and every later one of this run. It can only go with a yes.
+			if (fields.rest !== undefined && typeof fields.rest !== "boolean") throw new HttpError(400, "Say whether to approve the rest of the run");
+			const rest = fields.rest === true;
+			if (rest && !fields.approve) throw new HttpError(400, "The rest of a run can be approved, not denied. Use Stop to end it");
 			const { resolve: answer } = active.approval;
 			active.approval = null;
-			answer(fields.approve);
-			return sendJson(res, 200, { approved: fields.approve });
+			answer(rest ? "rest" : fields.approve);
+			if (rest) log(`Investigation of ${active.run.domain}: you approved the rest of its requests at turn ${active.run.turns}`);
+			return sendJson(res, 200, { approved: fields.approve, rest });
 		}
 		if (route === "POST /api/investigate/finding") {
 			if (!isRunId(fields.run)) throw new HttpError(400, "Name the investigation");
@@ -1194,6 +1199,9 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		if (typeof goal !== "string" || goal.trim() === "" || goal.length > MAX_GOAL) throw new HttpError(400, `Write a goal of 1 to ${MAX_GOAL} characters`);
 		const maxTurns = fields.maxTurns ?? DEFAULT_MAX_TURNS;
 		if (typeof maxTurns !== "number" || !Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > MAX_TURNS_LIMIT) throw new HttpError(400, `Choose 1 to ${MAX_TURNS_LIMIT} turns`);
+		// Approving every request of the run at its start is the owner's choice, said plainly or not at all.
+		if (fields.approveAll !== undefined && typeof fields.approveAll !== "boolean") throw new HttpError(400, "Say whether to approve the run's requests now");
+		const approveAll = fields.approveAll === true;
 		const hosted = isHosted(config);
 		// The page shows what will be sent; a hosted model is used only once the owner has said yes to it.
 		if (hosted && fields.sendsToHosted !== true) throw new HttpError(409, investigationDisclosure(config));
@@ -1201,11 +1209,14 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			throw new HttpError(409, `The TXT record ${challengeName(name)} does not hold ${challengeValue(token)} yet. Publish it, wait a few minutes, and check again`);
 		}
 
-		const run = newRun({ domain: name, goal: goal.trim(), model: config.model, modelHost: config.url.host, hosted, maxTurns, minGapMs: options.investigateMinGapMs ?? DEFAULT_MIN_GAP_MS });
+		const run = newRun({ domain: name, goal: goal.trim(), model: config.model, modelHost: config.url.host, hosted, maxTurns, minGapMs: options.investigateMinGapMs ?? DEFAULT_MIN_GAP_MS, approveAll });
 		const stop = new AbortController();
 		const active: InvestigationJob = { run, stop, approval: null };
 		investigation = active;
 		await saveActive(run);
+		// The log goes to the project in use now, also for the line written when the run ends.
+		const logTo = await projects.current();
+		log(`Investigation of ${name} started: ${modelWords(config)}, at most ${maxTurns} turns, ${approveAll ? "every request approved at the start" : "each request waits for your approval"}`, logTo);
 		// Not awaited: the run outlives this request and the page polls for progress.
 		void investigate(run, {
 			ask: async (system, user, signal) => {
@@ -1226,11 +1237,11 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				return entry !== undefined && entry.token === token && (await checkOwnership(name, token, options.fetchFn ?? fetch, signal));
 			},
 			approve: (request, signal) =>
-				new Promise<boolean>((resolveApproval) => {
-					const done = (approved: boolean) => {
+				new Promise<ApprovalAnswer>((resolveApproval) => {
+					const done = (answer: ApprovalAnswer) => {
 						signal.removeEventListener("abort", abort);
 						if (active.approval?.stepId === request.stepId) active.approval = null;
-						resolveApproval(approved);
+						resolveApproval(answer);
 					};
 					const abort = () => done(false);
 					if (signal.aborted) return done(false);
@@ -1244,6 +1255,9 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			.finally(async () => {
 				await runSaves;
 				if (investigation === active) investigation = null;
+				const actions = run.evidence.length;
+				const found = run.findings.length;
+				log(`Investigation of ${name} ${RUN_ENDINGS[run.status] ?? "ended"}: ${actions} ${actions === 1 ? "action" : "actions"} run, ${found} ${found === 1 ? "finding" : "findings"} from the model`, logTo);
 				await runStore.prune().catch(() => {});
 			});
 		return sendJson(res, 202, { run });
@@ -2101,11 +2115,14 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 }
 
 /** Sends a file to save. Its name is built from a fixed stem and a date, never from request input. */
+/** How a run ended, in the project log's words. */
+const RUN_ENDINGS: Partial<Record<Run["status"], string>> = { done: "finished", stopped: "stopped", failed: "failed" };
+
 interface InvestigationJob {
 	run: Run;
 	stop: AbortController;
 	/** The action waiting for the owner, and how to answer it. */
-	approval: { stepId: string; resolve: (approved: boolean) => void } | null;
+	approval: { stepId: string; resolve: (answer: ApprovalAnswer) => void } | null;
 }
 
 function sendDownload(res: ServerResponse, file: Pick<ExportFile, "contentType" | "filename" | "body">): void {

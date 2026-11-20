@@ -26,6 +26,14 @@ export function exportInvestigation(run: Run, format: InvestigationFormat): Inve
 	return { filename: `${stem}.md`, contentType: "text/markdown; charset=utf-8", body: markdown(run) };
 }
 
+/** How the run's HTTP requests and TCP connections were approved, in words: Porchlight's own, from its own record. */
+export function approvalWords(run: Pick<Run, "approvedRest">): string {
+	if (!run.approvedRest) return "you approved each HTTP request and TCP connection before it was sent";
+	return run.approvedRest.turn === 0
+		? "you approved every HTTP request and TCP connection when the run started"
+		: `you approved each HTTP request and TCP connection up to turn ${run.approvedRest.turn}, and at that turn every later one`;
+}
+
 function markdown(run: Run): string {
 	const out: string[] = [];
 	out.push(`# Investigation of ${mdText(run.domain)}`, "");
@@ -34,6 +42,7 @@ function markdown(run: Run): string {
 	out.push(`- Started: ${mdText(run.startedAt)}${run.finishedAt ? `, ended ${mdText(run.finishedAt)}` : ""}`);
 	out.push(`- Status: ${mdText(run.status)}${run.ended ? `. ${mdText(run.ended)}` : ""}`);
 	out.push(`- Turns: ${run.turns} of ${run.maxTurns}; actions run: ${run.evidence.length}`);
+	out.push(`- Approval: ${approvalWords(run)}`);
 	if (run.status === "running" || run.status === "waiting") out.push("- **This investigation had not finished when it was exported.**");
 	out.push("");
 	out.push(
@@ -58,7 +67,8 @@ function markdown(run: Run): string {
 	out.push("## Steps", "");
 	for (const step of run.steps) {
 		const what = step.description ? mdCode(step.description) : step.tool ? mdCode(`${step.tool} ${JSON.stringify(step.args ?? {})}`) : mdText(step.outcome);
-		out.push(`${step.turn}. ${what}: ${mdText(step.outcome)}${step.reason ? `. ${mdText(step.reason)}` : ""}${step.evidenceId ? ` (evidence ${mdCode(step.evidenceId)})` : ""}`);
+		const approved = step.approvedBy === "run" ? ", under your approval of the whole run" : step.approvedBy === "owner" ? ", approved by you" : "";
+		out.push(`${step.turn}. ${what}: ${mdText(step.outcome)}${approved}${step.reason ? `. ${mdText(step.reason)}` : ""}${step.evidenceId ? ` (evidence ${mdCode(step.evidenceId)})` : ""}`);
 		if (step.thought) out.push(`   - Model's reasoning: ${mdText(step.thought)}`);
 	}
 	out.push("");

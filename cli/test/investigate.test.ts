@@ -8,6 +8,7 @@ import {
 	parsePlan,
 	SYSTEM_PROMPT,
 	withoutCookieValues,
+	type ApprovalAnswer,
 	type ApprovalRequest,
 	type EngineDeps,
 	type Run,
@@ -78,7 +79,9 @@ interface Harness {
 async function runWith(
 	replies: Parameters<typeof scriptedModel>[0],
 	options: {
-		approve?: (request: ApprovalRequest) => boolean;
+		approve?: (request: ApprovalRequest) => ApprovalAnswer;
+		/** The owner approved every request of the run when it started. */
+		approveAll?: boolean;
 		verify?: (count: number) => boolean;
 		maxTurns?: number;
 		body?: string;
@@ -89,7 +92,14 @@ async function runWith(
 ): Promise<Harness> {
 	const model = scriptedModel(replies);
 	const { net, calls } = scriptedNet({ body: options.body, addresses: options.addresses });
-	const harness: Harness = { run: newRun({ domain: "example.com", goal: "Find problems", model: "scripted", modelHost: "localhost", hosted: false, maxTurns: options.maxTurns ?? 10, minGapMs: 0 }), model, calls, approvals: [], verifications: 0, saves: 0 };
+	const harness: Harness = {
+		run: newRun({ domain: "example.com", goal: "Find problems", model: "scripted", modelHost: "localhost", hosted: false, maxTurns: options.maxTurns ?? 10, minGapMs: 0, approveAll: options.approveAll }),
+		model,
+		calls,
+		approvals: [],
+		verifications: 0,
+		saves: 0,
+	};
 	await investigate(
 		harness.run,
 		{
@@ -294,6 +304,84 @@ test("a denied action does not run, and the model is told to try something else"
 	assert.match(model.prompts[1]!, /DENIED by the owner/);
 });
 
+test("a run approved at its start asks nothing more, and every other check still runs", async () => {
+	const { run, calls, approvals, verifications } = await runWith(
+		[
+			act("dns_lookup", { host: "example.com", record_type: "A" }),
+			act("http_request", { url: "https://www.example.com/", method: "GET" }),
+			act("http_request", { url: "https://evil.example.net/", method: "GET" }),
+			act("http_request", { url: "https://example.com/", method: "POST" }),
+			act("tcp_connect", { host: "example.com", port: 22 }),
+			{ done: true, summary: "finished" },
+		],
+		{ approveAll: true },
+	);
+	assert.deepEqual(approvals, [], "nothing waited for the owner");
+	assert.deepEqual(run.approvedRest, { at: run.startedAt, turn: 0 });
+	// Out of scope and a method that is not allowed are still refused, and never reach the network.
+	assert.deepEqual(calls, ["doh A example.com", "lookup www.example.com", "http GET https://www.example.com/ @93.184.215.14", "lookup example.com", "tcp example.com:22"]);
+	assert.deepEqual(
+		run.steps.map((step) => [step.outcome, step.approvedBy]),
+		[
+			["ran", undefined],
+			["ran", "run"],
+			["refused", undefined],
+			["refused", undefined],
+			["ran", "run"],
+		],
+	);
+	// Ownership: once before the run, and again before each of the three actions that ran.
+	assert.equal(verifications, 4);
+	assert.equal(run.status, "done");
+});
+
+test("a run approved at its start still stops when ownership is lost, and still refuses a private address", async () => {
+	const lost = await runWith([act("http_request", { url: "https://example.com/", method: "GET" }), act("http_request", { url: "https://example.com/next", method: "GET" })], { approveAll: true, verify: (count) => count < 3 });
+	assert.equal(lost.run.status, "stopped");
+	assert.match(lost.run.ended ?? "", /Ownership is no longer proven/);
+	assert.deepEqual(lost.calls, ["lookup example.com", "http GET https://example.com/ @93.184.215.14"]);
+
+	const inside = await runWith([act("http_request", { url: "https://intranet.example.com/", method: "GET" }), { done: true }], { approveAll: true, addresses: ["10.0.0.5"] });
+	assert.deepEqual(inside.calls, ["lookup intranet.example.com"]);
+	assert.equal(inside.run.steps[0]!.outcome, "refused");
+});
+
+test("approving the rest at one request ends the asking from there on, for that run only", async () => {
+	const replies = () => [
+		act("http_request", { url: "https://example.com/a", method: "GET" }),
+		act("http_request", { url: "https://example.com/b", method: "GET" }),
+		act("tcp_connect", { host: "example.com", port: 443 }),
+		act("http_request", { url: "https://example.com/c", method: "HEAD" }),
+		{ done: true },
+	];
+	// Yes to the first, yes to the rest at the second: the third and fourth are not put to the owner.
+	const { run, approvals, calls } = await runWith(replies(), { approve: (request) => (request.description.endsWith("/b") ? "rest" : true) });
+	assert.deepEqual(
+		approvals.map((request) => request.description),
+		["http_request GET https://example.com/a", "http_request GET https://example.com/b"],
+	);
+	assert.deepEqual(
+		run.steps.map((step) => step.approvedBy),
+		["owner", "owner", "run", "run"],
+	);
+	assert.equal(run.approvedRest?.turn, 2);
+	assert.equal(calls.filter((call) => call.startsWith("http ") || call.startsWith("tcp ")).length, 4);
+
+	// A new run starts by asking again: the approval belonged to the other run.
+	const next = await runWith(replies());
+	assert.equal(next.approvals.length, 4);
+	assert.equal(next.run.approvedRest, undefined);
+});
+
+test("an answer that is neither yes nor yes-to-the-rest is a denial", async () => {
+	for (const answer of ["all", 1, null, undefined, {}] as unknown[]) {
+		const { run, calls } = await runWith([act("http_request", { url: "https://example.com/", method: "GET" }), { done: true }], { approve: () => answer as ApprovalAnswer });
+		assert.deepEqual(calls, [], String(answer));
+		assert.equal(run.steps[0]!.outcome, "denied", String(answer));
+		assert.equal(run.approvedRest, undefined, String(answer));
+	}
+});
+
 test("a host that resolves to a private address is refused after approval, before connecting", async () => {
 	const { run, calls } = await runWith([act("http_request", { url: "https://intranet.example.com/", method: "GET" }), { done: true }], { addresses: ["192.168.1.10"] });
 	assert.deepEqual(calls, ["lookup intranet.example.com"]);
@@ -419,4 +507,18 @@ test("export: escaped for Markdown, cookie values left out, findings labelled as
 	const json = exportInvestigation(run, "json");
 	assert.doesNotMatch(json.body, /s3cr3t-value/);
 	assert.equal(withoutCookieValues("set-cookie: a=b; Path=/"), "set-cookie: a=[value not sent]; Path=/");
+});
+
+test("export: says how the run's requests were approved, in Porchlight's own words", async () => {
+	const replies = () => [act("http_request", { url: "https://example.com/", method: "GET" }), act("tcp_connect", { host: "example.com", port: 443 }), { done: true }];
+	const each = exportInvestigation((await runWith(replies())).run, "md").body;
+	assert.match(each, /- Approval: you approved each HTTP request and TCP connection before it was sent/);
+	assert.match(each, /1\. `http_request GET https:\/\/example\.com\/`: ran, approved by you/);
+
+	const atStart = exportInvestigation((await runWith(replies(), { approveAll: true })).run, "md").body;
+	assert.match(atStart, /- Approval: you approved every HTTP request and TCP connection when the run started/);
+	assert.match(atStart, /2\. `tcp_connect example\.com:443`: ran, under your approval of the whole run/);
+
+	const later = exportInvestigation((await runWith(replies(), { approve: () => "rest" })).run, "md").body;
+	assert.match(later, /- Approval: you approved each HTTP request and TCP connection up to turn 1, and at that turn every later one/);
 });

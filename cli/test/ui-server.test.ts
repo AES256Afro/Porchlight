@@ -1389,6 +1389,12 @@ test("other devices get in only on the tailnet address, only with the access key
 	assert.equal((await send(device(key), "POST", "/api/projects", { ...viaName, body: { name: "x", folder: join(server.dir, "x") } })).status, 403);
 	assert.equal((await send(device(key), "POST", "/api/projects/use", { ...viaName, body: { id: null } })).status, 200);
 
+	// A device can watch an investigation and stop one, but never start one or approve a request, let alone a whole run.
+	assert.equal((await send(device(key), "GET", "/api/investigate", viaName)).json.canChange, false);
+	assert.equal((await send(device(key), "POST", "/api/investigate/start", { ...viaName, body: { domain: "example.com", approveAll: true } })).status, 403);
+	assert.equal((await send(device(key), "POST", "/api/investigate/approve", { ...viaName, body: { run: "inv_0000000000000000", step: "step_000000000000", approve: true, rest: true } })).status, 403);
+	assert.equal((await send(device(key), "POST", "/api/investigate/stop", viaName)).status, 200);
+
 	// A new key turns the old one away.
 	const renewed = await send(server, "POST", "/api/access/key");
 	const newKey = new URL(renewed.json.link).hash.slice("#k=".length);

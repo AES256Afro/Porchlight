@@ -89,6 +89,8 @@ async function renderList(view, context) {
 						{ class: "sub" },
 						"Every answer a model gave on these pages, kept on this computer so you can read it again and ask follow-up questions. A discussion never changes a finding.",
 					),
+					// An investigation is a model's work too, but it is a run with steps and evidence, kept where it ran.
+					h("p", { class: "hint" }, "An investigation a model ran is not listed here. It is kept with its steps and evidence on the ", h("a", { href: "#/investigate" }, "Investigate"), " page, under Earlier investigations."),
 				),
 			),
 			all.length > 0 ? h("div", { class: "filters" }, h("div", { class: "field grow" }, search), kinds, projects) : null,
@@ -104,7 +106,7 @@ async function renderList(view, context) {
 				results,
 				emptyState(
 					"No discussions yet",
-					"Ask a model to explain a finding, summarise the roadmap or answer a question about a scan. Its answer is kept here, and you can ask follow-up questions under it.",
+					"Ask a model to explain a finding, summarise the roadmap, answer a question about a scan or analyse a Cloudflare audit. Its answer is kept here, and you can ask follow-up questions under it.",
 					h("a", { class: "button primary", href: "#/findings" }, "Go to the findings"),
 				),
 			);

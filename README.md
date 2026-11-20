@@ -19,7 +19,7 @@ Find the keys and passwords committed to your code and the packages with known s
 - **Exports** in Markdown, HTML, CSV or JSON. HTML, Markdown and JSON exports can include a mural written by a model: what was found, what to fix and in what order, what has been done, and what to do next.
 - **Fetch repositories from GitHub**, public or private, and scan them along with the ones on disk.
 - **Watch your websites.** A Cloudflare Worker checks the domains you own every hour for new hostnames, DNS changes, expiring certificates and missing security headers. It scans a domain only after you prove it is yours with a DNS record.
-- **Investigate with a model.** On a website you have proven is yours, a model plans an investigation step by step: DNS lookups, single HTTP requests, TCP connections. Each HTTP request and connection waits for your approval, ownership is checked again before every step, and every finding has to cite the request and response it rests on. See [Investigate with a model](#investigate-with-a-model).
+- **Investigate with a model.** On a website you have proven is yours, a model plans an investigation step by step: DNS lookups, single HTTP requests, TCP connections. HTTP requests and connections need your approval, one at a time or once for a whole run, ownership is checked again before every step, and every finding has to cite the request and response it rests on. See [Investigate with a model](#investigate-with-a-model).
 - **Audit your Cloudflare account.** Connect a read-only API token and Porchlight checks every domain in the account against built-in rules, no model needed: SSL/TLS mode, HTTPS, TLS versions, HSTS, certificates, DNSSEC, CAA, SPF, DKIM and DMARC, DNS records that expose your server or point at services that are gone, WAF managed rules, bot protection, members without two-factor authentication and API tokens with broad rights. The rules know each domain's plan. Porchlight can add its ownership record or fix a setting, but only once you approve the exact request. See [Audit your Cloudflare account](#audit-your-cloudflare-account).
 - **Check this Mac.** A read-only check of the computer Porchlight runs on: pending updates, FileVault, the firewall and macOS's other protections, what accepts connections from the network, credentials kept in plain-text files, and installed npm and Python packages with known vulnerabilities.
 - **A Mac app, twelve looks, and access from your other devices** over Tailscale.
@@ -445,7 +445,7 @@ Porchlight writes only inside a `Porchlight` folder within the one you chose:
 
 - **Exports.** With a project in use, the Export dialog saves the file into `Exports/` (**Download** is still there), and the message that follows offers **Show in Finder** in the Mac app, or **Copy path** in a browser. The Cloudflare audit's export and an investigation's report can be saved there too.
 - **Discussions.** A discussion begun while a project is in use is saved into `Discussions/` as Markdown, and written again after every follow-up. An older one can be added with **Save in** on its page.
-- **Log.** One plain-text file a day: projects started, scans started and finished with their counts, exports saved or downloaded, models asked (which model, whether it runs outside your machines, what kind of question, how long the answer took), Deeper analysis, Cloudflare audits with their counts, and Cloudflare changes you approved. It never holds a key, a token, a secret value, an email, your questions or a model's words.
+- **Log.** One plain-text file a day: projects started, scans started and finished with their counts, exports saved or downloaded, models asked (which model, whether it runs outside your machines, what kind of question, how long the answer took), Deeper analysis, investigations started and ended (the domain, the model, how its requests were approved, and how many actions and findings), Cloudflare audits with their counts, and Cloudflare changes you approved. It never holds a key, a token, a secret value, an email, your questions or a model's words.
 - **Names you can read, and only Porchlight's.** Every file is named with the date, the time and a title from Porchlight's own short list, such as "Repair roadmap" or "Explain a finding". Which repository or domain it covers is written inside. Nothing from a scan or a model's answer names a file, a file already there is never written over (a second in the same minute gets " 2"), and Porchlight never writes through a symbolic link. Its folders are readable only by you (0700, files 0600).
 - **Removing** a project takes it off the list; its folder and files stay as they are. If you move or delete the folder, Porchlight says so instead of making it again.
 - **Who can change them.** Only the page on the Mac that runs Porchlight adds or removes a project; another device over Tailscale can move between them. Under BoxPilot, project folders are kept in a `projects` folder inside Porchlight's data folder.
@@ -460,7 +460,7 @@ Open a finding to give it a status (Open, In progress, Fixed, Accepted risk, Fal
 
 ## Investigate with a model
 
-**Investigate** (under "Your websites" in the sidebar) lets a model plan an investigation of a website you own: give it a goal, such as "can anyone reach an admin page on example.com?", and it chooses one step at a time, reads what came back, and decides the next, until it has an answer or runs out of turns. Unlike the monitor, which only looks, this sends requests the model chose to your site, so it is limited to domains you have proven are yours and every request waits for you.
+**Investigate** (under "Your websites" in the sidebar) lets a model plan an investigation of a website you own: give it a goal, such as "can anyone reach an admin page on example.com?", and it chooses one step at a time, reads what came back, and decides the next, until it has an answer or runs out of turns. Unlike the monitor, which only looks, this sends requests the model chose to your site, so it is limited to domains you have proven are yours and every request needs your approval.
 
 **Prove the domain is yours.** Add it on the page. Porchlight makes a random token and shows a DNS record to publish:
 
@@ -482,6 +482,13 @@ The record is looked up from this computer over DNS-over-HTTPS (Cloudflare's res
 
 The approval shows the exact tool and arguments, and the model's reason, before anything is sent. **Deny** tells the model to try something else; **Stop** ends the run at once, whatever it is waiting for.
 
+**Approving a whole run.** Answering every request gets tiring on a long run, so you can approve the rest at once, in two places:
+
+- On the start form, under "Requests to your site", choose **Approve them all for this run** instead of **Ask me before each one**.
+- At any request, press **Approve all the rest**.
+
+Either way the page first lists what the run may send. The model chooses each step as it goes, so this is not a list of requests: it is the limits every request is held to (which kinds, only to your domain and its subdomains, how many turns, how fast). Approving the run lifts the wait and nothing else. Scope, the ownership check before every action, the argument checks, the pace and the turn budget all still apply, and Stop still ends it. Each step records whether you approved it yourself or it ran under the run's approval, and the export says the same. The approval is for that run only: the next one asks again unless you choose otherwise. Without it, asking before each request stays the default.
+
 How it is kept safe:
 
 - **Scope.** Only the verified domain and its subdomains. Another domain, an IP address, a URL with a user name, an argument the tool does not take or a value of the wrong type is refused before it runs, and the model is told why. Nothing is guessed or repaired.
@@ -493,7 +500,7 @@ How it is kept safe:
 
 Runs, with every step, piece of evidence and finding, are kept in `investigations/` beside the report (the last 50), readable only by you. **Export as Markdown** or **Export as JSON** saves one; Set-Cookie values are left out of both, and everything taken from your site or the model is escaped for the format.
 
-Investigations are run from the page on the Mac that runs Porchlight. Opened from another device, the page shows them and its **Stop** button works, but nothing can be added, started or approved there.
+Investigations are run from the page on the Mac that runs Porchlight. Opened from another device, the page shows them and its **Stop** button works, but nothing can be added, started or approved there, neither one request nor a whole run.
 
 ## Check this Mac
 

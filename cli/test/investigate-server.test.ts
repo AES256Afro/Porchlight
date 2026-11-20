@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { stat } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -237,6 +237,89 @@ test("investigate: end to end with a scripted model, approval, findings, review 
 	assert.match(exported.text, /model's judgement/);
 	assert.equal((await send(server, "GET", `/api/investigate/export?id=${runId}&format=html`)).status, 400);
 	assert.equal((await send(server, "GET", "/api/investigate/run?id=../../etc/passwd")).status, 404);
+});
+
+test("investigate: a run approved at its start sends its requests without waiting, and the project's log says so", async (t) => {
+	const world = fakeWorld({
+		replies: [act("http_request", { url: "https://example.com/", method: "GET" }), act("tcp_connect", { host: "example.com", port: 22 }), act("http_request", { url: "https://other.example.net/", method: "GET" }), { done: true, summary: "Done." }],
+	});
+	const server = await start(t, world);
+	await addAndPublish(server, world);
+	const folder = join(server.dir, "audit");
+	assert.equal((await send(server, "POST", "/api/projects", { name: "audit", folder })).status, 200);
+
+	// Said plainly or not at all: anything but true or false is refused, and nothing starts.
+	for (const approveAll of ["yes", 1, null]) {
+		assert.equal((await send(server, "POST", "/api/investigate/start", { domain: "example.com", approveAll })).status, 400, String(approveAll));
+	}
+	assert.equal((await send(server, "GET", "/api/investigate")).json.active, null);
+
+	const started = await send(server, "POST", "/api/investigate/start", { domain: "example.com", maxTurns: 10, approveAll: true });
+	assert.equal(started.status, 202);
+	assert.equal(started.json.run.approvedRest.turn, 0);
+	const read = () => send(server, "GET", "/api/investigate").then((reply) => reply.json);
+	const state = await until(read, (value) => value.active === null);
+	// What the page lists before the owner approves a run comes from the server's own tools.
+	assert.deepEqual(
+		state.tools.filter((tool: { needsApproval: boolean }) => tool.needsApproval).map((tool: { name: string }) => tool.name),
+		["http_request", "tcp_connect"],
+	);
+
+	const run = (await send(server, "GET", `/api/investigate/run?id=${started.json.run.id}`)).json.run;
+	assert.equal(run.status, "done");
+	assert.deepEqual(world.netCalls, ["GET https://example.com/", "tcp example.com:22"], "the request outside the domain was still refused");
+	assert.deepEqual(
+		run.steps.map((step: { outcome: string; approvedBy?: string }) => [step.outcome, step.approvedBy]),
+		[
+			["ran", "run"],
+			["ran", "run"],
+			["refused", undefined],
+		],
+	);
+	// Ownership was proven for the start request, for the run, and again before each action that ran.
+	assert.ok(world.requests.filter((line) => line.includes("_porchlight-challenge.example.com")).length >= 4);
+
+	const logs = join(folder, "Porchlight", "Log");
+	const lines = await until(
+		async () => (await readFile(join(logs, (await readdir(logs))[0]!), "utf8")).split("\n"),
+		(value) => value.some((line) => /Investigation of example\.com finished/.test(line)),
+	);
+	assert.ok(lines.some((line) => /Investigation of example\.com started: scripted-model at 127\.0\.0\.1:11434, at most 10 turns, every request approved at the start$/.test(line)));
+	assert.ok(lines.some((line) => /Investigation of example\.com finished: 2 actions run, 0 findings from the model$/.test(line)));
+});
+
+test("investigate: the rest of a run can be approved at any request, only with a yes", async (t) => {
+	const world = fakeWorld({
+		replies: [act("http_request", { url: "https://example.com/a", method: "GET" }), act("http_request", { url: "https://example.com/b", method: "GET" }), act("tcp_connect", { host: "example.com", port: 443 }), { done: true }],
+	});
+	const server = await start(t, world);
+	await addAndPublish(server, world);
+	const started = await send(server, "POST", "/api/investigate/start", { domain: "example.com" });
+	const runId = started.json.run.id;
+	assert.equal(started.json.run.approvedRest, undefined, "a run asks before each request unless told otherwise");
+	const read = () => send(server, "GET", "/api/investigate").then((reply) => reply.json);
+	let state = await until(read, (value) => value.active?.pending !== undefined);
+	const step = state.active.pending.stepId;
+
+	// A denial of the rest, or anything but true or false, is refused; the request goes on waiting.
+	assert.equal((await send(server, "POST", "/api/investigate/approve", { run: runId, step, approve: false, rest: true })).status, 400);
+	assert.equal((await send(server, "POST", "/api/investigate/approve", { run: runId, step, approve: true, rest: "yes" })).status, 400);
+	state = await read();
+	assert.equal(state.active.pending.stepId, step);
+	assert.deepEqual(world.netCalls, []);
+
+	const answered = await send(server, "POST", "/api/investigate/approve", { run: runId, step, approve: true, rest: true });
+	assert.deepEqual([answered.status, answered.json.rest], [200, true]);
+	await until(read, (value) => value.active === null);
+	const run = (await send(server, "GET", `/api/investigate/run?id=${runId}`)).json.run;
+	assert.deepEqual(world.netCalls, ["GET https://example.com/a", "GET https://example.com/b", "tcp example.com:443"]);
+	assert.deepEqual(
+		run.steps.map((item: { approvedBy?: string }) => item.approvedBy),
+		["owner", "run", "run"],
+	);
+	assert.equal(run.approvedRest.turn, 1);
+	const exported = await send(server, "GET", `/api/investigate/export?id=${runId}&format=md`);
+	assert.match(exported.text, /- Approval: you approved each HTTP request and TCP connection up to turn 1, and at that turn every later one/);
 });
 
 test("investigate: ownership lost mid-run stops it; Stop ends a run waiting for approval", async (t) => {

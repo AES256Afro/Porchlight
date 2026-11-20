@@ -112,6 +112,36 @@ export function monitorSetupSteps(service) {
 }
 
 /**
+ * What an investigation may send to the owner's site, as a list to read before approving a whole
+ * run at once. The model chooses each step as it goes, so no list of requests exists in advance:
+ * these are the limits every step is held to, and the tools come from the server's own list.
+ *
+ * @param {{ tools: readonly { description: string, needsApproval: boolean, args: Record<string, string> }[], domain: string, maxTurns: number, minGapMs: number, turnsLeft?: number }} run
+ * @returns {string[]}
+ */
+export function runLimits({ tools, domain, maxTurns, minGapMs, turnsLeft }) {
+	const pace = minGapMs === 1000 ? "one action a second" : `one action every ${(minGapMs / 1000).toLocaleString()} seconds`;
+	const turns = turnsLeft === undefined ? `At most ${maxTurns} ${maxTurns === 1 ? "turn" : "turns"}` : `At most ${turnsLeft} more ${turnsLeft === 1 ? "turn" : "turns"} (${maxTurns} in all)`;
+	return [
+		...tools.filter((tool) => tool.needsApproval).map((tool) => (tool.args.method ? `${tool.description} Methods: ${tool.args.method.split("|").join(", ")}.` : tool.description)),
+		`Only to ${domain} and its subdomains. Any other host is refused, and so is a private or internal address.`,
+		`${turns}, and ${pace} for each host.`,
+		"The ownership record is checked before every action. If it is gone or cannot be checked, the run stops.",
+		"Every action is listed with what was sent and what came back. Stop ends the run at once.",
+	];
+}
+
+/**
+ * How a run's HTTP requests and TCP connections are approved, in one line for the page.
+ *
+ * @param {{ approvedRest?: { turn: number } }} run
+ */
+export function approvalLine(run) {
+	if (!run.approvedRest) return "Each HTTP request and TCP connection waits for your approval.";
+	return run.approvedRest.turn === 0 ? "You approved every request of this run when it started." : `You approved every request of this run from turn ${run.approvedRest.turn} on.`;
+}
+
+/**
  * What someone typed for a website, reduced to the domain name the monitor wants: no scheme, path,
  * port or surrounding space. `https://Example.com/shop` becomes `example.com`.
  *

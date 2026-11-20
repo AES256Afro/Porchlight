@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { describeFilter, isFiltering, matchesFilter, noFilter } from "../ui/filter.js";
 import { generatedLabel, localModelSetup, MAX_QUESTION, paragraphs, questionProblem, SUGGESTED_MODEL, waitingLabel } from "../ui/generated.js";
-import { domainFromInput, emptyScanHints, fetchByDefault, githubTokenSteps, monitorSetupSteps, previewAdvice } from "../ui/hints.js";
+import { approvalLine, domainFromInput, emptyScanHints, fetchByDefault, githubTokenSteps, monitorSetupSteps, previewAdvice, runLimits } from "../ui/hints.js";
 import { buildHash, filterFromParams, paginate, paramsFromFilter, parseHash, sortFindings } from "../ui/list.js";
 import { KNOWN_PATHS, settingsAnchor, splitPaths } from "../ui/paths.js";
 
@@ -173,6 +173,26 @@ test("setting up website checks is three steps, ending where the two values are 
 	assert.match(service[2] ?? "", /Apps → Porchlight → Settings.*"Monitor address".*"Monitor admin token"/);
 	assert.doesNotMatch(local[2] ?? "", /BoxPilot/);
 	assert.equal(service[0], local[0]);
+});
+
+test("what a run may send is listed from the server's tools, with its limits", async () => {
+	const { TOOLS } = await import("../src/investigate/tools.ts");
+	const lines = runLimits({ tools: TOOLS, domain: "example.com", maxTurns: 25, minGapMs: 1000 });
+	// Only the tools that touch the site: a DNS lookup never needed approval.
+	assert.equal(lines.length, 6);
+	assert.match(lines[0] ?? "", /^Send one HTTP request .* Methods: GET, HEAD, OPTIONS\.$/);
+	assert.match(lines[1] ?? "", /^Check whether one TCP port/);
+	assert.ok(!lines.some((line) => /DNS-over-HTTPS/.test(line)));
+	assert.match(lines[2] ?? "", /^Only to example\.com and its subdomains\./);
+	assert.equal(lines[3], "At most 25 turns, and one action a second for each host.");
+	assert.match(lines[4] ?? "", /ownership record is checked before every action/);
+	assert.match(lines[5] ?? "", /Stop ends the run at once/);
+	// Part-way through a run, what is left is what is said.
+	assert.equal(runLimits({ tools: TOOLS, domain: "example.com", maxTurns: 25, minGapMs: 2500, turnsLeft: 1 })[3], "At most 1 more turn (25 in all), and one action every 2.5 seconds for each host.");
+
+	assert.equal(approvalLine({}), "Each HTTP request and TCP connection waits for your approval.");
+	assert.equal(approvalLine({ approvedRest: { turn: 0 } }), "You approved every request of this run when it started.");
+	assert.equal(approvalLine({ approvedRest: { turn: 7 } }), "You approved every request of this run from turn 7 on.");
 });
 
 test("a pasted web address is reduced to its domain name", () => {
