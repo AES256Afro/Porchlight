@@ -1,12 +1,42 @@
 # Porchlight
 
 <picture>
-  <img alt="Porchlight: a lantern beside a front door throws a hard beam across the wall, the door and the steps. Nothing left out in the open. Your repos, your servers, your computer." src="docs/brand/hero.png">
+  <img alt="Porchlight: a lantern on a wall bracket throws a hard beam across a wall, a red front door and its steps." src="docs/brand/hero.png">
 </picture>
 
-Find the keys and passwords committed to your code and the packages with known security holes, across every repository you have, and see what to fix first. Keep an eye on the websites you own as well. Porchlight runs on your own machine, as a page in your browser or as a Mac app.
+Porchlight is a security inspection tool that runs on its operator's own computer. It inspects four things:
 
-## Quick start
+1. **Code.** Every git repository under a folder, including its full commit history, for committed credentials (gitleaks) and dependencies with published advisories (osv-scanner).
+2. **Websites.** Domains the operator has proven to own with a DNS record, scanned daily by a Cloudflare Worker for new hostnames, DNS changes, certificate expiry and missing security headers.
+3. **The Cloudflare account.** Every zone's TLS, DNS, email, firewall and bot settings, the account's members and its API tokens, checked against fixed rules that take each zone's plan into account.
+4. **The computer Porchlight runs on.** Pending updates, built-in protections, programs that accept network connections, credentials stored in plain-text files, and outdated packages.
+
+Findings are ranked by severity and grouped into an ordered repair plan. A language model can be attached to explain findings, analyse them against the code and answer questions. It is optional, it sees only what the page shows, and nothing it writes changes a finding, a count or the plan.
+
+| | |
+| --- | --- |
+| Interfaces | macOS app, web interface on 127.0.0.1, command line, container image |
+| Platforms | macOS (the app needs macOS 13.5 or later on Apple silicon). Linux for the command line and the container |
+| Requires | Node.js 22.18 or later, git, gitleaks, osv-scanner. The Mac app carries its own Node.js, gitleaks and osv-scanner |
+| Runtime dependencies | None. Node runs the TypeScript directly; the web interface is plain JavaScript with no build step |
+| Monitor | A Cloudflare Worker with a D1 database, deployed to the operator's own Cloudflare account. Optional |
+| Stored data | `~/.porchlight/`: reports, history, settings, keys and results, written readable only by the operator (0600) |
+
+## Contents
+
+1. [Quick start](#1-quick-start)
+2. [System overview](#2-system-overview)
+3. [Subsystems](#3-subsystems)
+4. [Operating modes](#4-operating-modes)
+5. [Data that leaves the computer](#5-data-that-leaves-the-computer)
+6. [Design constraints and their verification](#6-design-constraints-and-their-verification)
+7. [Failure behaviour](#7-failure-behaviour)
+8. [Limits](#8-limits)
+9. [Interface](#9-interface)
+
+Reference: [Setup](#setup) · [Web interface](#web-interface) · [Mac app](#mac-app) · [Open it from other devices](#open-it-from-other-devices) · [Run on BoxPilot](#run-on-boxpilot) · [Model](#model) · [Scan repositories](#scan-repositories) · [Deeper analysis](#deeper-analysis-with-a-model) · [Fetch from GitHub](#fetch-repositories-from-github) · [Export](#export-a-repair-roadmap) · [Send to a model](#send-to-a-model) · [Discussions](#discussions) · [Projects](#projects) · [History](#history-status-and-notes) · [Investigate](#investigate-with-a-model) · [Check this Mac](#check-this-mac) · [Cloudflare audit](#audit-your-cloudflare-account) · [Monitor domains](#monitor-domains) · [Development](#development)
+
+## 1. Quick start
 
 ```bash
 brew install node gitleaks osv-scanner
@@ -16,60 +46,176 @@ npm run setup
 node cli/bin/porchlight.js ui --root ~/Projects
 ```
 
-Open the link it prints, then choose **Check your code**. If something is missing, `node cli/bin/porchlight.js doctor` says what, and how to get it.
+Open the link it prints and choose **Check your code**. `node cli/bin/porchlight.js doctor` lists anything missing and the command that installs it.
 
-On a Mac with Apple silicon you can skip all of that: download `Porchlight-<version>-arm64.dmg` from the [latest release](https://github.com/AES256Afro/Porchlight/releases/latest) and see [Mac app](#mac-app).
+On a Mac with Apple silicon, the alternative is `Porchlight-<version>-arm64.dmg` from the [latest release](https://github.com/AES256Afro/Porchlight/releases/latest); see [Mac app](#mac-app).
+
+## 2. System overview
+
+```mermaid
+flowchart LR
+  subgraph local["Operator's computer"]
+    page["Browser page or Mac app"]
+    core["Porchlight process<br/>127.0.0.1:4747"]
+    scanners["gitleaks, osv-scanner"]
+    tools["System tools, read-only"]
+    repos[("Git repositories")]
+    store[("~/.porchlight, mode 0600")]
+    localmodel["Local model, optional<br/>Ollama, LM Studio, Unsloth Studio"]
+  end
+  page -- "session key on every request" --> core
+  core --> scanners --> repos
+  core --> tools
+  core --> store
+  core --> localmodel
+  scanners -- "package names and versions" --> osv["OSV.dev"]
+  core -- "API token, header only" --> cfapi["Cloudflare API"]
+  core -- "admin token, header only" --> worker["Monitor<br/>Cloudflare Worker and D1"]
+  worker --> sources["crt.sh, DNS over HTTPS"]
+  worker -- "one GET / per host" --> domains["Proven domains"]
+  core -. "approved requests only" .-> domains
+  core -. "opt-in" .-> hosted["Hosted model API"]
+  core -. "opt-in" .-> github["GitHub"]
+```
+
+Porchlight is one Node.js process. The browser page and the Mac app are clients of the server it runs on 127.0.0.1. The page is never sent the monitor's admin token, a model's API key, the GitHub token or the Cloudflare token; the server adds them to its own requests. The scanners and the system tools run as child processes, with arguments passed as an array (no shell) and a time limit on each. The domain monitor is a separate deployment in the operator's Cloudflare account, and Porchlight reaches it with an admin token.
+
+## 3. Subsystems
+
+| Subsystem | Input | Method | Output | Source |
+| --- | --- | --- | --- | --- |
+| Repository scanner | Git repositories under a folder (3 levels by default, at most 6) and repositories fetched from GitHub | gitleaks over the full history, always with `--redact`; osv-scanner over lockfiles; secrets re-ranked one step per weak signal (generic rule, test or example path) | Findings ranked critical, high, medium, low; a "Not covered" list for anything not scanned | `cli/src/repos/` |
+| Repair roadmap | A scan | Findings grouped into actions: one per package to upgrade, credential to rotate, or batch of doubtful matches. The upgrade target is the lowest version that clears every advisory against the package | Four phases: Fix now, Fix next, Schedule, When convenient | `cli/src/roadmap/` |
+| Scan history | Each finished scan | Findings matched across scans by repository, rule or advisory, file and detail | New, fixed, and "could not be checked again" | `cli/src/repos/history.ts` |
+| Domain monitor | Domains whose `_porchlight-challenge` TXT record holds their token | Certificate Transparency logs, DNS over HTTPS, one `GET /` per host without following redirects | Changes since the previous scan, findings, webhook alerts | `monitor/` |
+| Cloudflare audit | Every zone in the account | Fixed rules, no model. A feature the zone's plan lacks is reported as unavailable, not as a fault | Problems per zone; 11 fixed change templates, sent only after approval | `cli/src/cloudflare/` |
+| Host check | The computer Porchlight runs on | macOS's own tools, read-only, each with a time limit | Results in five areas, and the repair commands that need no decision gathered into one block | `cli/src/host/` |
+| Investigation | One proven domain and its subdomains | A model proposes one action per turn from three tools (DNS lookup, one HTTP request, one TCP connect); code checks each action and asks for approval | Findings that cite evidence captured in the same run | `cli/src/investigate/` |
+| Model assistance | What the page shows | Explain, Summarise, Ask, Deeper analysis, Send to a model, an export mural | Labelled text beside findings, kept as discussions | `cli/src/assist/`, `cli/src/analysis/`, `cli/src/discussions/` |
+| Exports | A scan, an audit or an investigation | Markdown, HTML (no script), CSV, JSON; every value escaped for its format | Files under fixed names; optionally a project folder | `cli/src/roadmap/escape.ts`, `cli/src/projects/` |
+| Web interface | The above | 10 pages, 12 looks, a status and note per finding; filters, order and page number kept in the address | | `cli/ui/` |
+
+## 4. Operating modes
+
+| Mode | Started with | Listens on | Notes |
+| --- | --- | --- | --- |
+| Mac app | `Porchlight.app` from the DMG, or `sh mac/build.sh --install` | 127.0.0.1 | Starts and stops the web interface with its window. Not notarized |
+| Web interface | `porchlight ui` | 127.0.0.1:4747, or the next free port | Session key generated per run, carried in the address fragment |
+| Command line | `porchlight repos scan`, `domains`, `host check`, `cloudflare audit`, `doctor` | | `repos scan --fail-on <severity>` exits 2 on a finding at or above it, and 1 if the scan was incomplete |
+| Container | `ghcr.io/aes256afro/porchlight`, or BoxPilot's catalog | 0.0.0.0:4747 inside the container | Refuses to start without `PORCHLIGHT_UI_KEY` of 32 characters or more. The host check is off; Cloudflare changes cannot be approved |
+| Other devices | Settings → Access from other devices | The Tailscale address only (100.64.0.0/10) | A separate 43-character access key. Only the page on the computer itself can turn it on or off |
+| Monitor | `npx cf deploy` in `monitor/` | Cloudflare Workers | Every `/domains` route answers 503 while `ADMIN_TOKEN` is missing or shorter than 32 characters |
+
+## 5. Data that leaves the computer
+
+| Destination | What is sent | When |
+| --- | --- | --- |
+| OSV.dev | Names and versions of the packages in the repositories' lockfiles. With the host check, names and versions of installed npm and Python packages | Every repository scan. The host check's lookup can be turned off |
+| Apple | macOS's own software update query | Host check, unless turned off |
+| Cloudflare API (`api.cloudflare.com`) | Read requests with the operator's token as a header; a change only after the operator approves that exact request | Cloudflare audit |
+| Cloudflare DNS over HTTPS | `_porchlight-challenge` lookups; an investigation's DNS lookups; the targets of a proven zone's CNAME records | Investigation; Cloudflare audit |
+| The operator's monitor | Domain names and commands, with the admin token as a header | Domains page and `porchlight domains` |
+| crt.sh, DNS over HTTPS, the domain itself (from the Worker) | Domain names; one `GET /` per host | Scheduled scans of verified domains |
+| A proven domain (from this computer) | DNS lookups, and each HTTP request and TCP connection the operator approved | Investigation |
+| A hosted model (Anthropic, OpenAI, Google, DeepSeek) | The fields the page displays for the item asked about | Only when a hosted model is selected and asked. The page names the destination before anything is sent |
+| A model server of the operator's | The same fields | When it is the selected model |
+| Hugging Face | The search words and filters | Model search in Settings |
+| GitHub | API requests and `git clone` over https, with the operator's token if given | Fetching repositories |
+| Devices on the operator's tailnet | The web interface | Only while Access from other devices is on |
+
+Never sent anywhere: secret values (reports do not hold them), commit author names and emails, the monitor's admin token, a domain's challenge value, and Set-Cookie values from investigated sites.
+
+## 6. Design constraints and their verification
+
+These hold for every release. `CLAUDE.md` lists all of them with the implementation details; the table names the test that checks each one. `npm test` runs both packages' tests, and CI runs them on every push.
+
+| # | Constraint | Verified by |
+| --- | --- | --- |
+| C1 | No request is made about a domain (certificate log, DNS other than the challenge record, HTTPS) until its ownership record has been confirmed in the same scan. | `monitor/test/scan.test.ts`, "ownership gate": asserts the exact list of requests |
+| C2 | The monitor only looks: one `GET /` per host, no redirects followed, no port scanning, no guessing of subdomains or paths. | `monitor/test/scan.test.ts`, "probes at most MAX_HOSTS hosts, lists the rest, and stays within its request budget" |
+| C3 | Secret values never leave the scanner. gitleaks always runs with `--redact`; reports carry no secret values, matches, author names or emails. | `cli/test/scan.test.ts`, "end to end: the real gitleaks finds a secret in history and the report never contains it" |
+| C4 | A scanned repository is untrusted input: its `.gitleaks.toml` cannot change the rules and its `.git/config` cannot run a program. | `cli/test/scan.test.ts`, "end to end: a hostile repository can neither run a program nor switch gitleaks' rules off"; step 4 of `scripts/container-smoke.sh` |
+| C5 | An incomplete scan is never a clean result: a missing scanner, or one that could not read a repository, is reported as not covered. | `cli/test/scan.test.ts`, "an unreachable vulnerability database is a failure, not a clean result" and "gitleaks reporting nothing because git could not read the history is a failure, not a clean result" |
+| C6 | A failed lookup is not an empty answer. It is never reported as a change and never clears a finding. | `monitor/test/findings.test.ts`, "stays silent about anything a failed lookup could not observe" |
+| C7 | The monitor's API fails closed: without an `ADMIN_TOKEN` of 32 characters or more, every `/domains` route answers 503. | `monitor/test/api.test.ts`, "refuses to run with no token, or a weak one, configured" |
+| C8 | The web interface answers only its own page: another Host name, a cross-site Origin, or a request without the session key is refused. | `cli/test/ui-server.test.ts`, "refuses requests addressed to any other host name" and "requires the session key on every API call and refuses cross-site origins" |
+| C9 | No HTML is built from scanned data. The page builds every element with `h()` (`cli/ui/dom.js`), never with `innerHTML`, and its Content-Security-Policy allows no inline script or style. | Test: `cli/test/ui-server.test.ts`, "serves the page with headers that confine it to this server". Inspection: no `innerHTML` in `cli/ui/` |
+| C10 | Exports are escaped for their format: HTML entities, a leading apostrophe before spreadsheet formula characters in CSV, escaped text in Markdown. | `cli/test/roadmap.test.ts`, "hostile text in a scan cannot become markup, a link or a formula in any format" |
+| C11 | Triage re-ranks secrets and never drops one. | `cli/test/triage.test.ts`, "each signal lowers the rank one step and says why" |
+| C12 | A model sees only what the page shows, framed as data. Its answer is shown as text, labelled with the model's name, and never acted on. An answer that is not the requested JSON becomes "unclear". | `cli/test/assist.test.ts`, "explains one finding from what the page shows, framed as data"; `cli/test/analysis.test.ts`, "turns the model's answer into a judgement, and anything else into 'unclear'" |
+| C13 | An investigation stays inside the proven domain and its subdomains, re-checks ownership before every action, refuses private, loopback, link-local and CGNAT addresses, and keeps a finding only if it cites evidence from the same run. | `cli/test/investigate.test.ts`, "scope: the verified domain and its subdomains, nothing else", "ownership lost mid-run stops the run before the next action", "a host that resolves to a private address is refused after approval, before connecting", "findings are kept only with evidence this run captured" |
+| C14 | The Cloudflare token is sent only to `api.cloudflare.com`, as a header. A change is one of the fixed templates, offered only for a problem the latest audit found, and sent once after approval. | `cli/test/cloudflare.test.ts`, "every request goes to Cloudflare's API with the token as a header only, and only reads"; `cli/test/cloudflare-server.test.ts`, "a change is sent only after the owner approves the exact request, once, and is recorded" |
+| C15 | The host check only reads. A check that could not run, or whose answer is not recognised, is "Could not check", never passed. | `cli/test/host.test.ts`, "an answer that is not understood, a failure or a missing tool is never a pass" |
+| C16 | The GitHub token reaches only GitHub, as a header or through git's environment; never an argument, an address, a report or the page. | `cli/test/github.test.ts`, "clones with git settings that run nothing a repository carries, and keeps the token out of every argument" |
+
+## 7. Failure behaviour
+
+| Condition | Behaviour |
+| --- | --- |
+| gitleaks or osv-scanner missing, or failing on a repository | That repository is listed under "Not covered". `--fail-on` exits 1. The other repositories are still scanned |
+| osv-scanner cannot reach its database (exit 127, empty report) | Treated as a failure. Only exit codes 0, 1 and 128 count as a result |
+| A scan is stopped | Nothing is saved. The previous scan stays as it was |
+| One repository is scanned again and a scanner fails that time | The findings that scanner reported before are kept |
+| A monitor DNS lookup fails | The value is stored as not observed. No change is reported and no finding is cleared |
+| The certificate log is unavailable | The host list is kept and the report says so |
+| A domain's challenge record disappears | Scanning stops and one alert is sent |
+| A monitor scan fails | Retried after 1 hour, then every 2 hours. One alert after 3 failures in a row, and one when scans work again |
+| The monitor's database lacks a migration | The API answers "The database is missing a migration" |
+| The Cloudflare token may not read a setting | The check shows "Could not check" and names the permission to add |
+| A batch of Cloudflare changes meets a permission the token lacks | The first refusal is recorded and the remaining changes that need it are not sent |
+| An ownership lookup fails during an investigation | The run stops. A failed lookup never counts as proof |
+| A host-check command does not answer | It is stopped at its time limit and its check shows "Could not check" |
+| A model's answer is not the JSON asked for | The verdict is "unclear" |
+
+## 8. Limits
+
+| Parameter | Value | Where it is set |
+| --- | --- | --- |
+| Repository search depth | 3 levels (0 to 6) | `--depth`, `PORCHLIGHT_SCAN_DEPTH` |
+| Scans kept in history | 50 | `cli/src/repos/history.ts` |
+| Discussions kept | 200, each up to 20 answers | `cli/src/discussions/discussions.ts` |
+| Earlier answers sent to a local model in a follow-up | 6,000 characters, oldest dropped first | `cli/src/discussions/discussions.ts` |
+| Wait for a model's answer | 5 minutes | `cli/src/assist/ollama.ts` |
+| Deeper analysis per run | 25 items by default, at most 500 | Overview page |
+| Investigation turns | 25 by default, at most 60 | Investigate page |
+| Gap between investigation actions on one host | 1 second | `cli/src/investigate/engine.ts` |
+| Investigation HTTP request | Body read up to 32 KiB, 15-second time limit | `cli/src/investigate/tools.ts` |
+| Investigations kept | 50 | `cli/src/investigate/store.ts` |
+| Time to approve a Cloudflare change | 10 minutes | `cli/src/cloudflare/apply.ts` |
+| Host-check command time limit | 2 minutes; 5 for `softwareupdate` when it asks Apple | `cli/src/host/` |
+| Activity view | Last 400 lines, in memory only | `cli/src/ui/server.ts` |
+| `PORCHLIGHT_UI_KEY`, the monitor's `ADMIN_TOKEN` | At least 32 characters | `cli/src/ui/server.ts`, `monitor/src/api.ts` |
+| Scanner time limit | 10 minutes per command | `cli/src/repos/exec.ts` |
+| Monitor schedule | Every 10 minutes, one domain whose last scan is over 24 hours old | `monitor/cloudflare.config.ts` |
+| Hosts probed per monitor scan | 12 (`MAX_HOSTS`), keeping a scan under the Workers Free plan's 50 outbound requests | `monitor/cloudflare.config.ts` |
+| Certificate expiry warning | 14 days, at most a fifth of the certificate's lifetime | `monitor/cloudflare.config.ts` |
+| Monitor scans kept per domain | 30 | `monitor/cloudflare.config.ts` |
+
+## 9. Interface
+
+The figures show made-up repositories checked by the real gitleaks and osv-scanner, a model running in LM Studio on the same computer, and stand-in data for the Cloudflare account, the monitor and the computer check.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/overview-dark.png">
-  <img alt="The Overview: counts by severity, what to repair first, the most affected repositories, credentials that look live, and what was fixed since the last scan" src="docs/screenshots/overview.png">
+  <img alt="The Overview: counts by severity, the four repair phases, the most affected repositories, the model's analysis and what changed since the previous scan" src="docs/screenshots/overview.png">
 </picture>
 
-## Features
-
-- **Every repository at once.** Scans every git repository under a folder for committed secrets, old commits included ([gitleaks](https://github.com/gitleaks/gitleaks)), and for vulnerable dependencies ([osv-scanner](https://github.com/google/osv-scanner)). Everything lands in one list, most severe first. A key in a test file or an example is ranked lower, never hidden.
-- **A repair roadmap.** Findings become actions in four steps: Fix now, Fix next, Schedule, When convenient. One package upgrade can clear dozens of advisories, and the version to upgrade to is worked out from the whole repository, so following it clears every advisory against that package.
-- **Since the last scan.** Every scan is kept. The Overview says what is new and what was fixed. A finding counts as fixed only if the next scan really looked for it again; one that could not be checked is never shown as fixed.
-- **Your own status and note on each finding**: Open, In progress, Fixed, Accepted risk or False positive.
-- **Any model, or none.** A model can explain a finding, summarise the roadmap, answer questions about a scan, or judge each finding against your code. Run one on your Mac (Ollama, Unsloth Studio, LM Studio), on another computer, or use Claude, ChatGPT, Gemini or DeepSeek through their APIs; choose it in Settings. What a model says is shown as advice beside a finding. It never changes a severity, a count or the roadmap.
-- **Discussions.** Every answer a model gives is kept on your computer. Ask follow-up questions under it, and find it again on the Discussions page after Porchlight closes. See [Discussions](#discussions).
-- **Project folders.** Choose a folder for an audit or a scan, and the exports you save, the discussions and a daily log of what Porchlight did go into it, under names that say what each file is. See [Projects](#projects).
-- **Exports** in Markdown, HTML, CSV or JSON. HTML, Markdown and JSON exports can include a mural written by a model: what was found, what to fix and in what order, what has been done, and what to do next.
-- **Fetch repositories from GitHub**, public or private, and scan them along with the ones on disk.
-- **Watch your websites.** A Cloudflare Worker checks the domains you own every day for new hostnames, DNS changes, expiring certificates and missing security headers. It scans a domain only after you prove it is yours with a DNS record.
-- **Investigate with a model.** On a website you have proven is yours, a model plans an investigation step by step: DNS lookups, single HTTP requests, TCP connections. HTTP requests and connections need your approval, one at a time or once for a whole run, ownership is checked again before every step, and every finding has to cite the request and response it rests on. See [Investigate with a model](#investigate-with-a-model).
-- **Audit your Cloudflare account.** Connect a read-only API token and Porchlight checks every domain in the account against built-in rules, no model needed: SSL/TLS mode, HTTPS, TLS versions, HSTS, certificates, DNSSEC, CAA, SPF, DKIM and DMARC, DNS records that expose your server or point at services that are gone, WAF managed rules, bot protection, members without two-factor authentication and API tokens with broad rights. The rules know each domain's plan. Porchlight can add its ownership record or fix a setting, but only once you approve the exact request. See [Audit your Cloudflare account](#audit-your-cloudflare-account).
-- **Check this Mac.** A read-only check of the computer Porchlight runs on: pending updates, FileVault, the firewall and macOS's other protections, what accepts connections from the network, credentials kept in plain-text files, and installed npm and Python packages with known vulnerabilities.
-- **A Mac app, twelve looks, and access from your other devices** over Tailscale.
+*Figure 1. Overview: counts by severity, the four repair phases, the most affected repositories, the model's analysis, and the changes since the previous scan.*
 
 | | |
 | --- | --- |
-| ![Findings in the Split view look: the list on the left, the chosen finding's advisory, fix and your note on the right](docs/screenshots/split-view.png) | ![The Roadmap: four steps, each action with where it is, what it clears and how to do it](docs/screenshots/roadmap.png) |
-| **Findings**, in the Split view look | **Roadmap**: what to fix, in order |
-| ![Findings by repository in the Severity dashboard look, with counts by severity in the sidebar](docs/screenshots/dashboard.png) | ![Settings → Model: models on this Mac, on another computer, or through an API](docs/screenshots/settings-model.png) |
-| **By repository**, in the Severity dashboard look | **Settings → Model**: any model, or none |
-| ![Settings → Appearance: twelve looks with previews](docs/screenshots/settings-appearance.png) | ![The Roadmap in the Terminal look: monospace, green on black](docs/screenshots/terminal.png) |
-| **Settings → Appearance**: twelve looks | The **Terminal** look |
-
-The screenshots show made-up repositories, checked by the real scanners.
-
-### What leaves your machine
-
-- **To [OSV.dev](https://osv.dev)**: the names and versions of the packages your repositories use, so osv-scanner can look up their advisories. Never your code. **This Mac** sends the names and versions of the npm and Python packages installed on the computer, unless you turn that off.
-- **To Apple**: when **This Mac** checks for updates, macOS asks Apple's update servers, as it does on its own. You can turn that off and use macOS's last check instead.
-- **To a hosted model, if you choose one**: only what the page shows about the findings you ask about. Never a secret's value, a commit author or an email address. The page warns you before anything is sent.
-- **To your own websites, and to the model you choose, if you investigate one**: the DNS lookups, HTTP requests and TCP connections you approve go from this computer to the domain you verified and its subdomains. The model is sent the domain, your goal, the tool list and the results (your site's DNS records and HTTP responses, Set-Cookie values left out). DNS lookups and the ownership check go to Cloudflare's DNS-over-HTTPS resolver. The page says this before a run starts, and with a hosted model the start button names it, so pressing it is your yes. See [Investigate with a model](#investigate-with-a-model).
-- **To GitHub**, only if you fetch repositories from it.
-- **To your own Cloudflare account**, if you deploy the monitor, or connect a token for the Cloudflare audit. The token goes only to Cloudflare's API. A change is sent only when you approve the exact request.
-
-Everything else, including the reports, stays on your machine, readable only by you.
-
-## How it is built
-
-Two security tools behind one command line:
-
-- **Repository scanner** (`cli/`): scans every git repository under a folder for committed secrets and vulnerable dependencies, and merges the results into one ranked report. It has no runtime dependencies: Node runs its TypeScript directly, and the web interface is plain JavaScript with no build step.
-- **Attack-surface monitor** (`monitor/`): a scheduled Cloudflare Worker that watches domains you own for new hostnames, DNS changes, expiring certificates and missing security headers, and alerts on what changed since the last scan.
+| ![Findings in the Split view look: the list on the left; the selected finding's advisory, repair and the model's verdict on the right](docs/screenshots/split-view.png) | ![The Roadmap: four phases, each action with its location, what it clears and how to do it](docs/screenshots/roadmap.png) |
+| *Figure 2. Findings in the Split view look, ordered by the model's verdict* | *Figure 3. Roadmap* |
+| ![A finding with the model's explanation open in the answers panel on the right](docs/screenshots/explain.png) | ![Discussions: every answer a model gave, kept with its follow-up questions](docs/screenshots/discussions.png) |
+| *Figure 4. Explain, answered in the panel on the right* | *Figure 5. Discussions* |
+| ![The Cloudflare audit: counts, the changes Porchlight can make after approval, and each kind of problem with its fix](docs/screenshots/cloudflare.png) | ![Domains: the monitor's latest report for one domain, with changes since the previous scan and findings](docs/screenshots/domains.png) |
+| *Figure 6. Cloudflare audit* | *Figure 7. Domains, from the monitor* |
+| ![Investigate: a proven domain with its ownership record, and the form that starts a run](docs/screenshots/investigate.png) | ![This Mac: updates, built-in protection, network listeners, credentials in files and packages, each with its repair](docs/screenshots/host.png) |
+| *Figure 8. Investigate* | *Figure 9. The computer check* |
+| ![Findings by repository in the Severity dashboard look, with counts by severity in the sidebar](docs/screenshots/dashboard.png) | ![The Roadmap in the Terminal look: monospace, green on black](docs/screenshots/terminal.png) |
+| *Figure 10. By repository, in the Severity dashboard look* | *Figure 11. Roadmap, in the Terminal look* |
+| ![Settings → Model: a model on this computer, on another computer, or through an API](docs/screenshots/settings-model.png) | ![Settings → Appearance: twelve looks with previews](docs/screenshots/settings-appearance.png) |
+| *Figure 12. Settings → Model* | *Figure 13. Settings → Appearance* |
 
 ## Setup
 
