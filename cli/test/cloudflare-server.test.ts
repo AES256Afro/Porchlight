@@ -4,7 +4,8 @@ import { request } from "node:http";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { assistantConfig } from "../src/assist/ollama.ts";
-import { startUiServer, type UiOptions, type UiServer } from "../src/ui/server.ts";
+import { APPROVAL_WINDOW_MS } from "../src/cloudflare/apply.ts";
+import { MIN_KEY_LENGTH, startUiServer, type UiOptions, type UiServer } from "../src/ui/server.ts";
 import { fakeCloudflare, fakeCloudflareToken, FREE_ZONE, OWNERSHIP_TOKEN, PRO_ZONE } from "./cloudflare-fake.ts";
 import { tempDir } from "./helpers.ts";
 
@@ -173,6 +174,98 @@ test("removing the token forgets it and any change waiting for an answer", async
 	assert.equal(removed.json.token.configured, false);
 	await assert.rejects(stat(join(state, "cloudflare-settings.json")));
 	assert.equal((await send(server, "POST", "/api/cloudflare/changes/approve", { id: pending.id, approve: true })).status, 409);
+});
+
+test("another device on the tailnet reads the audit, but only the page on this Mac saves a token, asks for a change or approves one", async (t) => {
+	const { server, world, state } = await start(t, { tailnetAddress: () => "127.0.0.1", accessPort: 0 });
+	await send(server, "POST", "/api/cloudflare/token", { token: fakeCloudflareToken() });
+	await send(server, "POST", "/api/cloudflare/audit", { lookups: false });
+	await until(() => send(server, "GET", "/api/cloudflare"), (reply) => reply.json.status.state === "done");
+	const writes = () => world.sent.filter((sent) => sent.method !== "GET");
+	const verifies = () => world.sent.filter((sent) => sent.path.endsWith("/tokens/verify")).length;
+
+	// The device comes in through the tailnet listener, with its own access key.
+	const link = new URL((await send(server, "POST", "/api/access", { enabled: true })).json.link);
+	const device = { ...server, port: Number(link.port), sessionKey: link.hash.slice("#k=".length) } as UiServer;
+	const seen = await send(device, "GET", "/api/cloudflare");
+	assert.deepEqual([seen.status, seen.json.canChange], [200, false]);
+	assert.ok(seen.json.report, "the audit is there to read");
+	assert.ok(!seen.text.includes(fakeCloudflareToken()));
+	assert.equal((await send(device, "GET", "/api/cloudflare/token")).json.canChange, false);
+
+	const checked = verifies();
+	assert.equal((await send(device, "POST", "/api/cloudflare/token", { token: fakeCloudflareToken() })).status, 403);
+	assert.equal((await send(device, "POST", "/api/cloudflare/token/remove")).status, 403);
+	assert.equal((await send(device, "POST", "/api/cloudflare/changes/preview", { zone: FREE_ZONE, change: "min-tls-1.2" })).status, 403);
+	assert.equal(verifies(), checked, "a token sent from another device is never even checked with Cloudflare");
+	await stat(join(state, "cloudflare-settings.json"));
+	assert.equal((await send(server, "GET", "/api/cloudflare")).json.token.configured, true, "and the saved token is not forgotten");
+
+	// A request shown on this Mac cannot be approved from the device, and the refusal does not use it up.
+	const pending = (await send(server, "POST", "/api/cloudflare/changes/preview", { zone: FREE_ZONE, change: "min-tls-1.2" })).json.pending;
+	assert.equal((await send(device, "POST", "/api/cloudflare/changes/approve", { id: pending.id, approve: true })).status, 403);
+	assert.equal((await send(device, "POST", "/api/cloudflare/changes/approve", { id: pending.id, approve: false })).status, 403, "nor can it be cancelled from there");
+	assert.equal(writes().length, 0);
+	await assert.rejects(stat(join(state, "cloudflare-changes.json")), "nothing is recorded as sent");
+	const applied = await send(server, "POST", "/api/cloudflare/changes/approve", { id: pending.id, approve: true });
+	assert.deepEqual([applied.json.applied, applied.json.ok], [true, true]);
+	assert.equal(writes().length, 1);
+});
+
+test("run as a service, Porchlight audits with the token it was given but never saves one or sends a change", async (t) => {
+	const { server, world, state } = await start(t, { host: "0.0.0.0", sessionKey: "k".repeat(MIN_KEY_LENGTH), cloudflareToken: fakeCloudflareToken() });
+	await send(server, "POST", "/api/cloudflare/audit", { lookups: false });
+	const page = await until(() => send(server, "GET", "/api/cloudflare"), (reply) => reply.json.status.state === "done");
+	assert.deepEqual([page.json.canChange, page.json.service], [false, true]);
+
+	assert.equal((await send(server, "POST", "/api/cloudflare/token", { token: fakeCloudflareToken() })).status, 403);
+	assert.equal((await send(server, "POST", "/api/cloudflare/token/remove")).status, 403);
+	assert.equal((await send(server, "POST", "/api/cloudflare/changes/preview", { zone: FREE_ZONE, change: "min-tls-1.2" })).status, 403);
+	assert.equal((await send(server, "POST", "/api/cloudflare/changes/approve", { id: "0".repeat(24), approve: true })).status, 403);
+	assert.equal(world.sent.filter((sent) => sent.method !== "GET").length, 0);
+	await assert.rejects(stat(join(state, "cloudflare-settings.json")));
+	await assert.rejects(stat(join(state, "cloudflare-changes.json")));
+});
+
+test("a change waits ten minutes for an answer, then has to be asked for again", async (t) => {
+	const { server, world, state } = await start(t);
+	await send(server, "POST", "/api/cloudflare/token", { token: fakeCloudflareToken() });
+	await send(server, "POST", "/api/cloudflare/audit", { lookups: false });
+	await until(() => send(server, "GET", "/api/cloudflare"), (reply) => reply.json.status.state === "done");
+	const writes = () => world.sent.filter((sent) => sent.method !== "GET").map((sent) => sent.path);
+	const ask = (change: string) => send(server, "POST", "/api/cloudflare/changes/preview", { zone: FREE_ZONE, change });
+	const approve = (id: string) => send(server, "POST", "/api/cloudflare/changes/approve", { id, approve: true });
+
+	// Only the clock is mocked: the server's sockets and timers run as usual.
+	t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+	const early = (await ask("min-tls-1.2")).json.pending;
+	const late = (await ask("always-use-https")).json.pending;
+	assert.equal(early.expiresAt, new Date(Date.now() + APPROVAL_WINDOW_MS).toISOString(), "the page is told when the request lapses");
+
+	// Answered just inside the window, it is sent.
+	t.mock.timers.tick(APPROVAL_WINDOW_MS - 1);
+	assert.equal((await approve(early.id)).json.ok, true);
+	// Just past it, it is refused, nothing is sent, and it stays refused.
+	t.mock.timers.tick(2);
+	assert.equal((await approve(late.id)).status, 409);
+	assert.equal((await approve(late.id)).status, 409);
+	assert.equal((await send(server, "POST", "/api/cloudflare/changes/approve", { id: late.id, approve: false })).status, 409, "a lapsed request cannot be answered either way");
+	assert.deepEqual(writes(), [`/client/v4/zones/${FREE_ZONE}/settings/min_tls_version`]);
+
+	// Asking again shows a new request with a new window.
+	const fresh = (await ask("always-use-https")).json.pending;
+	assert.notEqual(fresh.id, late.id);
+	assert.equal(fresh.expiresAt, new Date(Date.now() + APPROVAL_WINDOW_MS).toISOString());
+	assert.equal((await approve(fresh.id)).json.ok, true);
+	assert.deepEqual(writes(), [`/client/v4/zones/${FREE_ZONE}/settings/min_tls_version`, `/client/v4/zones/${FREE_ZONE}/settings/always_use_https`]);
+	const log = JSON.parse(await readFile(join(state, "cloudflare-changes.json"), "utf8")).changes;
+	assert.deepEqual(log.map((change: { change: string }) => change.change), ["min-tls-1.2", "always-use-https"], "the lapsed request is not recorded as sent");
+
+	// Lapsed requests stop counting towards the twenty that may wait at once.
+	for (let i = 0; i < 20; i++) assert.equal((await ask("min-tls-1.2")).status, 200);
+	assert.equal((await ask("min-tls-1.2")).status, 409);
+	t.mock.timers.tick(APPROVAL_WINDOW_MS + 1);
+	assert.equal((await ask("min-tls-1.2")).status, 200);
 });
 
 test("a token given at start-up is used, and the model analysis needs a model", async (t) => {
