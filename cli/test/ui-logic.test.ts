@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { describeFilter, isFiltering, matchesFilter, noFilter } from "../ui/filter.js";
 import { generatedLabel, localModelSetup, MAX_QUESTION, paragraphs, questionProblem, SUGGESTED_MODEL, waitingLabel } from "../ui/generated.js";
+import { fixBrief, fixGroups } from "../ui/hints.js";
 import { approvalLine, domainFromInput, emptyScanHints, fetchByDefault, githubTokenSteps, monitorSetupSteps, ownershipSteps, permissionWords, previewAdvice, runLimits, tokenFixSteps } from "../ui/hints.js";
 import { buildHash, filterFromParams, paginate, paramsFromFilter, parseHash, sortFindings } from "../ui/list.js";
 import { KNOWN_PATHS, settingsAnchor, splitPaths } from "../ui/paths.js";
@@ -235,6 +236,30 @@ test("a refused permission comes with where to add it, in Cloudflare's own words
 	assert.match(here[1] ?? "", /Cloudflare → DNS → Records.*Fix these includes the record once your token has DNS Edit/);
 	assert.match(here[2] ?? "", /Check DNS record/);
 	assert.doesNotMatch(ownershipSteps({ domain: "example.com", onCloudflare: false })[1] ?? "", /Cloudflare/);
+});
+
+test("what is left is gathered by fix, worst and most widespread first, and the brief carries only what the page shows", () => {
+	const check = (id: string, severity: string, status = "failed", change?: string) => ({ id, title: `Title of ${id}`, severity, status, why: `Why ${id}`, fix: [`Do ${id}`], api: `PATCH ${id}`, ...(change ? { change } : {}) });
+	const groups = fixGroups([
+		{ name: "a.example", checks: [check("hsts", "medium"), check("spf", "low"), check("tls", "medium", "passed")] },
+		{ name: "b.example", checks: [check("hsts", "medium"), check("origin", "high"), check("https", "medium", "failed", "always-use-https")] },
+		{ name: "c.example", checks: [check("spf", "high"), check("waf", "low", "unknown")] },
+	]);
+	// A kind of problem is as bad as its worst case; passed and unknown checks are not problems.
+	assert.deepEqual(
+		groups.map((group) => [group.id, group.severity, group.zones, group.fixable]),
+		[
+			["spf", "high", ["a.example", "c.example"], 0],
+			["origin", "high", ["b.example"], 0],
+			["hsts", "medium", ["a.example", "b.example"], 0],
+			["https", "medium", ["b.example"], 1],
+		],
+	);
+	const brief = fixBrief(groups, "Nov 20, 2026");
+	assert.match(brief, /^These are the problems Porchlight's audit of my Cloudflare account found/);
+	assert.match(brief, /Before each change, tell me the exact change and wait for my yes/);
+	assert.match(brief, /1\. Title of spf \(high\), 2 domains\n {3}Domains: a\.example, c\.example\n {3}Why it matters: Why spf\n {3}Fix: Do spf\n {3}Cloudflare API: PATCH spf/);
+	assert.deepEqual(fixGroups([]), []);
 });
 
 test("a pasted web address is reduced to its domain name", () => {

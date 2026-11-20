@@ -162,6 +162,61 @@ export function downloadLine(download) {
 }
 
 /**
+ * @typedef {{ id: string, title: string, severity: string, why: string, fix: string[], api?: string, zones: string[], fixable: number }} FixGroup
+ */
+
+const SEVERITY_ORDER = ["critical", "high", "medium", "low"];
+
+/**
+ * The audit's problems gathered by what fixes them: one entry per kind of problem, with the domains
+ * it affects, worst and most widespread first. `fixable`: how many of them Porchlight can change itself.
+ *
+ * @param {readonly { name: string, checks: readonly { id: string, title: string, severity: string, status: string, why: string, fix?: string[], api?: string, change?: string }[] }[]} zones
+ * @returns {FixGroup[]}
+ */
+export function fixGroups(zones) {
+	/** @type {Map<string, FixGroup>} */
+	const groups = new Map();
+	for (const zone of zones) {
+		for (const check of zone.checks) {
+			if (check.status !== "failed") continue;
+			const group = groups.get(check.id) ?? { id: check.id, title: check.title, severity: check.severity, why: check.why, fix: check.fix ?? [], ...(check.api ? { api: check.api } : {}), zones: [], fixable: 0 };
+			// A kind of problem is as bad as its worst case.
+			if (SEVERITY_ORDER.indexOf(check.severity) < SEVERITY_ORDER.indexOf(group.severity)) group.severity = check.severity;
+			group.zones.push(zone.name);
+			if (check.change) group.fixable += 1;
+			groups.set(check.id, group);
+		}
+	}
+	return [...groups.values()].sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity) || b.zones.length - a.zones.length || a.title.localeCompare(b.title));
+}
+
+/**
+ * The problems that are left, as plain text to paste into a model that can act on the account: what
+ * is wrong, on which domains, and the fix. Only what the page shows about zones: no token, no member,
+ * no record value. It asks to be shown each change before it is made.
+ *
+ * @param {FixGroup[]} groups
+ * @param {string} checkedAt when the audit was made, as the page words it
+ */
+export function fixBrief(groups, checkedAt) {
+	const lines = [
+		"These are the problems Porchlight's audit of my Cloudflare account found and could not fix itself.",
+		`The audit was made ${checkedAt}. Work through them worst first. Before each change, tell me the exact change and wait for my yes. Some need work on my servers, not only in Cloudflare: say so instead of guessing.`,
+		"",
+	];
+	groups.forEach((group, index) => {
+		lines.push(`${index + 1}. ${group.title} (${group.severity}), ${group.zones.length} ${group.zones.length === 1 ? "domain" : "domains"}`);
+		lines.push(`   Domains: ${group.zones.join(", ")}`);
+		lines.push(`   Why it matters: ${group.why}`);
+		group.fix.forEach((step) => lines.push(`   Fix: ${step}`));
+		if (group.api) lines.push(`   Cloudflare API: ${group.api}`);
+		lines.push("");
+	});
+	return lines.join("\n");
+}
+
+/**
  * A Cloudflare permission as its token page words it: where it is, what it is called, and the level.
  * "Zone Settings Write" on a zone is "Zone, Zone Settings, Edit".
  *

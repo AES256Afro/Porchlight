@@ -8,7 +8,7 @@ import { activityList } from "./activity.js";
 import { api, ApiError, download } from "./api.js";
 import { assistAction } from "./assist.js";
 import { banner, formatWhen, h, icon, plural, replace, select, severityBadge, statTile, stepNodes, toast } from "./dom.js";
-import { tokenFixSteps } from "./hints.js";
+import { fixBrief, fixGroups, tokenFixSteps } from "./hints.js";
 import { announceSaved } from "./projects.js";
 import { currentProject, load, loadCloudflare, startCloudflareAudit, store, subscribe, updateCloudflare } from "./store.js";
 
@@ -377,6 +377,7 @@ export async function renderCloudflare(view) {
 						store.cloudflare.batch.state === "idle" ? permissionHelp("The last change was refused because of the token's permissions") : null,
 					)
 				: null,
+			remainingCard(report),
 			...report.zones.map((zone) => zoneCard(zone)),
 			...report.accounts.map((account) => groupCard(`Account: ${account.name}`, null, account.checks, null)),
 			report.userChecks.length > 0 ? groupCard("Your user", null, report.userChecks, null) : null,
@@ -390,6 +391,59 @@ export async function renderCloudflare(view) {
 			exportCard(),
 			analysisCard(report),
 		].filter((node) => node !== null);
+	}
+
+	/**
+	 * What is left, by fix: each kind of problem once, with the domains it affects, so the same repair
+	 * is read once and not twenty times. The whole list can be copied as a brief for a model.
+	 *
+	 * @param {CfReport} report
+	 */
+	function remainingCard(report) {
+		const groups = fixGroups(report.zones);
+		if (groups.length === 0) return null;
+		const mine = groups.reduce((count, group) => count + group.fixable, 0);
+		const applied = store.cloudflare.changes.filter((change) => change.ok).length;
+		const copy = async () => {
+			try {
+				await navigator.clipboard.writeText(fixBrief(groups, formatWhen(report.checkedAt)));
+				toast("Copied. Paste it into Claude, or any model that can act on your Cloudflare account.");
+			} catch {
+				toast("Could not copy. Use Export below instead.", "error");
+			}
+		};
+		return h(
+			"div",
+			{ class: "card full" },
+			h("h2", null, "What is left, by fix"),
+			h(
+				"p",
+				{ class: "sub" },
+				mine > 0
+					? `${plural(groups.length, "kind of problem", "kinds of problem")}. Porchlight can make ${plural(mine, "of these changes", "of these changes")} itself: use Fix these above. The rest need a decision from you or work on your server.`
+					: `${plural(groups.length, "kind of problem", "kinds of problem")}.${applied > 0 ? ` Porchlight has made every change it can make itself (${applied} so far), so there is no Fix these button now.` : ""} What is left needs a decision from you or work on your server, so Porchlight does not do it for you.`,
+			),
+			h(
+				"div",
+				{ class: "actions" },
+				h("button", { type: "button", class: "button primary", onclick: () => void copy() }, icon("copy"), "Copy all as a brief for a model"),
+				h("span", { class: "hint" }, "Plain text: each problem, its domains and its fix. No token, member or record value. Paste it where your model can reach Cloudflare."),
+			),
+			h(
+				"div",
+				{ class: "host-list" },
+				...groups.map((group) =>
+					h(
+						"div",
+						{ class: "host-check host-failed" },
+						h("div", { class: "host-check-head" }, severityBadge(/** @type {any} */ (group.severity)), h("strong", null, group.title), h("span", { class: "hint" }, plural(group.zones.length, "domain", "domains"))),
+						h("p", { class: "hint" }, group.why),
+						h("details", { class: "fix-details" }, h("summary", null, "Which domains"), h("ul", null, ...group.zones.map((name) => h("li", null, h("code", null, name))))),
+						group.fix.length > 0 ? h("ol", { class: "host-fix" }, ...group.fix.map((step) => h("li", null, ...stepNodes(step)))) : null,
+					),
+				),
+			),
+		);
 	}
 
 	/** @param {CfZoneReport} zone */
