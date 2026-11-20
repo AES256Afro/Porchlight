@@ -3,7 +3,9 @@
 import { api } from "./api.js";
 import { h, icon, replace, toast } from "./dom.js";
 import { applyLook, currentLook } from "./appearance.js";
-import { LOOKS } from "./looks.js";
+import { redrawAnswers } from "./assist.js";
+import { ANSWER_PLACES, DEFAULT_ANSWER_PLACE, LOOKS } from "./looks.js";
+import { answersPlaceChanged } from "./panel.js";
 import { accessSection } from "./access-settings.js";
 import { modelSection } from "./model-settings.js";
 import { load, store } from "./store.js";
@@ -38,11 +40,35 @@ export async function renderSettings(view) {
 		});
 	};
 
+	/** @param {string} id */
+	const placeAnswers = (id) => {
+		const before = store.settings?.answers ?? DEFAULT_ANSWER_PLACE;
+		if (id === before || !store.settings) return;
+		const settings = store.settings;
+		const move = (/** @type {string} */ place) => {
+			settings.answers = place;
+			answersPlaceChanged();
+			redrawAnswers();
+		};
+		move(id);
+		saving = saving.then(async () => {
+			try {
+				await api("POST", "/settings", { answers: id });
+				toast(`Answers: ${ANSWER_PLACES.find((place) => place.id === id)?.name}`);
+			} catch (err) {
+				move(before);
+				draw();
+				toast(`Not saved: ${err instanceof Error ? err.message : String(err)}`, "error");
+			}
+		});
+	};
+
 	draw();
 	return () => {};
 
 	function draw() {
 		const chosen = currentLook();
+		const chosenPlace = store.settings?.answers ?? DEFAULT_ANSWER_PLACE;
 		replace(
 			view,
 			h(
@@ -76,6 +102,20 @@ export async function renderSettings(view) {
 								h("span", { class: "look-text" }, look.description),
 							);
 						}),
+					),
+				),
+				h(
+					"fieldset",
+					{ id: "settings-answers", tabindex: "-1", class: "card full answer-places" },
+					h("legend", null, h("h2", null, "Where answers appear")),
+					h("p", { class: "sub" }, "Where a model's answers, and your follow-up questions, show. Saved on this computer. Every answer is also kept under Discussions."),
+					...ANSWER_PLACES.map((place) =>
+						h(
+							"label",
+							{ class: "choice" },
+							h("input", { type: "radio", name: "answers", value: place.id, checked: place.id === chosenPlace, onchange: () => placeAnswers(place.id) }),
+							h("span", null, h("strong", null, place.name), h("span", { class: "hint" }, place.description)),
+						),
 					),
 				),
 				connections(),

@@ -37,7 +37,7 @@ import {
 } from "../assist/prompts.ts";
 import { describeFilter } from "../../ui/filter.js";
 import { MAX_QUESTION } from "../../ui/generated.js";
-import { DEFAULT_LOOK, isLook } from "../../ui/looks.js";
+import { DEFAULT_ANSWER_PLACE, DEFAULT_LOOK, isAnswerPlace, isLook } from "../../ui/looks.js";
 import { fetchedRepos, fetchRepo, GithubError, listRepos, parseRepoName, removeFetched, validOwner, type GithubConfig } from "../github/github.ts";
 import { callMonitor, type MonitorConfig } from "../monitor/client.ts";
 import { discoverRepos } from "../repos/discover.ts";
@@ -203,7 +203,7 @@ export type AnalysisStatus =
 
 const UI_DIR = join(import.meta.dirname, "../../ui");
 /** The page's own modules. Nothing else in the folder is served. */
-const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths", "investigate", "discussions", "discussion", "discussion-links"];
+const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths", "investigate", "discussions", "discussion", "discussion-links", "panel"];
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
 	"/": { file: "index.html", type: "text/html; charset=utf-8" },
 	"/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
@@ -407,13 +407,13 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		targetId: string | null,
 		cut: string | null,
 		first: DiscussionTurn,
-	): Promise<string | undefined> {
+	): Promise<{ id: string; title: string } | undefined> {
 		try {
 			const target = targetId ?? targets().find((candidate) => fingerprintOf(candidate.config) === fingerprintOf(config))?.id ?? "";
 			const discussion = newDiscussion({ kind, about, config, hosted: isHosted(config), target, cut, first });
 			await discussionStore.save(discussion);
 			await discussionStore.prune().catch(() => {});
-			return discussion.id;
+			return { id: discussion.id, title: discussion.title };
 		} catch (err) {
 			console.error(`porchlight ui: could not keep the discussion: ${err instanceof Error ? err.message : String(err)}`);
 			return undefined;
@@ -612,7 +612,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				hosted: target.hosted,
 				...(prompt.cut ? { cut: prompt.cut } : {}),
 				...(partial ? { partial } : {}),
-				...(discussion ? { discussion } : {}),
+				...(discussion ? { discussion: discussion.id, title: discussion.title } : {}),
 			});
 		} catch (err) {
 			if (err instanceof AssistantError) throw new HttpError(err.status, err.message);
@@ -1125,7 +1125,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				defaultRoot: options.defaultRoot,
 				reportPath: options.reportPath,
 				scan: status,
-				appearance: await readAppearance(settingsPath),
+				...(await readUiSettings(settingsPath)),
 				// A service (a container, under BoxPilot) is configured where it is managed, not from a shell,
 				// so the page explains connecting the monitor in those terms.
 				service: !loopbackOnly,
@@ -1168,10 +1168,16 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			return sendJson(res, 200, { view });
 		}
 		if (route === "POST /api/settings") {
-			const appearance = (body as { appearance?: unknown } | undefined)?.appearance;
-			if (!isLook(appearance)) throw new HttpError(400, "Unknown appearance");
-			await saveAppearance(settingsPath, appearance as string);
-			return sendJson(res, 200, { appearance });
+			// Either preference, or both; whatever is left out stays as it was.
+			const fields = bodyObject(body);
+			if (fields.appearance === undefined && fields.answers === undefined) throw new HttpError(400, "Choose an appearance or where answers appear");
+			if (fields.appearance !== undefined && !isLook(fields.appearance)) throw new HttpError(400, "Unknown appearance");
+			if (fields.answers !== undefined && !isAnswerPlace(fields.answers)) throw new HttpError(400, "Unknown place for answers");
+			const next = { ...(await readUiSettings(settingsPath)) };
+			if (fields.appearance !== undefined) next.appearance = fields.appearance as string;
+			if (fields.answers !== undefined) next.answers = fields.answers as string;
+			await saveUiSettings(settingsPath, next);
+			return sendJson(res, 200, next);
 		}
 		if (url.pathname === "/api/model" || url.pathname.startsWith("/api/model/")) return modelRoute(res, route, body);
 		if (url.pathname === "/api/access" || url.pathname.startsWith("/api/access/")) return accessRoute(res, route, body, gate);
@@ -1459,7 +1465,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				at: new Date().toISOString(),
 				seconds: Math.round((Date.now() - started) / 100) / 10,
 			});
-			sendJson(res, 200, { text, model: assistant.model, ...(prompt.cut ? { cut: prompt.cut } : {}), ...(discussion ? { discussion } : {}) });
+			sendJson(res, 200, { text, model: assistant.model, ...(prompt.cut ? { cut: prompt.cut } : {}), ...(discussion ? { discussion: discussion.id, title: discussion.title } : {}) });
 		} catch (err) {
 			if (err instanceof AssistantError) throw new HttpError(err.status, err.message);
 			throw err;
@@ -1845,20 +1851,30 @@ async function readReport(path: string): Promise<ScanReport | null> {
 	return report;
 }
 
-/** The chosen look, or the default when none was saved or the file holds something else. */
-async function readAppearance(path: string): Promise<string> {
-	try {
-		const saved = (JSON.parse(await readFile(path, "utf8")) as { appearance?: unknown }).appearance;
-		return isLook(saved) ? (saved as string) : DEFAULT_LOOK;
-	} catch {
-		return DEFAULT_LOOK;
-	}
+/** The interface's own preferences: the look, and where a model's answers appear. */
+interface UiSettings {
+	appearance: string;
+	answers: string;
 }
 
-async function saveAppearance(path: string, appearance: string): Promise<void> {
+/** The chosen look and answer place, each the default when none was saved or the file holds something else. */
+async function readUiSettings(path: string): Promise<UiSettings> {
+	let saved: { appearance?: unknown; answers?: unknown } = {};
+	try {
+		saved = JSON.parse(await readFile(path, "utf8")) ?? {};
+	} catch {
+		// No file yet, or not JSON: the defaults.
+	}
+	return {
+		appearance: isLook(saved.appearance) ? (saved.appearance as string) : DEFAULT_LOOK,
+		answers: isAnswerPlace(saved.answers) ? (saved.answers as string) : DEFAULT_ANSWER_PLACE,
+	};
+}
+
+async function saveUiSettings(path: string, settings: UiSettings): Promise<void> {
 	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
 	const temporary = `${path}.${process.pid}.tmp`;
-	await writeFile(temporary, `${JSON.stringify({ appearance }, null, "\t")}\n`, { mode: 0o600 });
+	await writeFile(temporary, `${JSON.stringify(settings, null, "\t")}\n`, { mode: 0o600 });
 	await rename(temporary, path);
 }
 

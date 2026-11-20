@@ -1,6 +1,6 @@
 # Projects and discussions: plan (2026-11-19)
 
-Goal, in the owner's words: choose a **project folder** for an audit or scan, so that exports and logs land there under clear names. **Reply to a model's answer** inside Porchlight with follow-up questions. Keep those conversations in a **Discussions** section that is still there after the app closes. Show answers **beside the page**, not at the bottom of it. **Part 2, discussions with follow-up questions, is built** (invariant 22, README "Discussions"); parts 1 and 3 are not. The owner decides what is marked **Decide**.
+Goal, in the owner's words: choose a **project folder** for an audit or scan, so that exports and logs land there under clear names. **Reply to a model's answer** inside Porchlight with follow-up questions. Keep those conversations in a **Discussions** section that is still there after the app closes. Show answers **beside the page**, not at the bottom of it. **Parts 2 and 3 are built**: discussions with follow-up questions (invariant 22) and the answers panel (README "Discussions"). Part 1, the project folder, is not. The owner decides what is marked **Decide**.
 
 ## What it would look like
 
@@ -90,7 +90,7 @@ Answers open in a **panel on the right** that slides in when you press Explain, 
 ## Build order
 
 1. **Discussions** with follow-ups, kept in `~/.porchlight`: a store, the `/api/discussions` routes, a follow-up route, the Discussions page, and Explain, Ask and Send moved onto it. Tests with a fake `fetchFn`. **Done**, with these defaults for the decisions below: the last 200 discussions are kept, and a follow-up after a newer scan is refused, so you start a new discussion about the new scan.
-2. **The side panel** and its Appearance choice.
+2. **The side panel** and its Appearance choice. **Done**: answers open on the right by default; Send to a model closes its dialog and answers there too.
 3. **Project folder, option A:** Settings → Projects, the sidebar switcher, the `Porchlight` folder writer, the daily log and the Mac app's Choose… bridge.
 4. **Projects, option B:** per-project scans and history.
 5. The Cloudflare audit, being built in its own session now, and investigations then save their model analysis as discussions and their exports to the project folder.

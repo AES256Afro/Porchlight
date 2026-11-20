@@ -30,3 +30,22 @@ export const DEFAULT_LOOK = "today";
 export function isLook(id) {
 	return typeof id === "string" && LOOKS.some((look) => look.id === id);
 }
+
+/**
+ * Where a model's answers, and the follow-ups under them, appear (Settings → Appearance). Like a
+ * look, this only moves them; it never hides a finding. The server accepts only these ids.
+ *
+ * @type {readonly Look[]}
+ */
+export const ANSWER_PLACES = [
+	{ id: "right", name: "In a panel on the right", description: "The page stays where it is, and the answer stays open as you move between pages." },
+	{ id: "below", name: "Below what you asked about", description: "Under the button you pressed, as part of the page." },
+	{ id: "bottom", name: "In a drawer at the bottom", description: "Full width under the page, for long answers on a narrow screen." },
+];
+
+export const DEFAULT_ANSWER_PLACE = "right";
+
+/** @param {unknown} id */
+export function isAnswerPlace(id) {
+	return typeof id === "string" && ANSWER_PLACES.some((place) => place.id === id);
+}

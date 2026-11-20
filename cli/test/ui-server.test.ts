@@ -1107,6 +1107,36 @@ test("keeps the chosen appearance beside the report, and accepts only the offere
 	assert.equal((await send(again, "GET", "/api/state")).json.appearance, "terminal");
 });
 
+test("keeps where answers appear beside the look, and accepts only the places offered", async (t) => {
+	const server = await start(t);
+	assert.equal((await send(server, "GET", "/api/state")).json.answers, "right");
+
+	await send(server, "POST", "/api/settings", { body: { appearance: "terminal" } });
+	const saved = await send(server, "POST", "/api/settings", { body: { answers: "bottom" } });
+	assert.deepEqual([saved.status, saved.json], [200, { appearance: "terminal", answers: "bottom" }], "one preference leaves the other as it was");
+
+	for (const body of [{ answers: "left" }, { answers: 1 }, { answers: null }, {}, { appearance: "terminal", answers: "../x" }, { appearance: "nope", answers: "below" }]) {
+		assert.equal((await send(server, "POST", "/api/settings", { body })).status, 400, JSON.stringify(body));
+	}
+	const state = (await send(server, "GET", "/api/state")).json;
+	assert.deepEqual([state.appearance, state.answers], ["terminal", "bottom"], "a refused request changes nothing");
+
+	const again = await start(t, { reportPath: join(server.dir, "state", "repo-scan.json") });
+	assert.equal((await send(again, "GET", "/api/state")).json.answers, "bottom");
+});
+
+test("serves every module the page imports", async (t) => {
+	const server = await start(t);
+	const { readFile, readdir } = await import("node:fs/promises");
+	const names = (await readdir(new URL("../ui/", import.meta.url))).filter((name) => name.endsWith(".js"));
+	const imported = new Set<string>(["app.js"]);
+	for (const name of names) {
+		const text = await readFile(new URL(`../ui/${name}`, import.meta.url), "utf8");
+		for (const [, target] of text.matchAll(/^import [^;]*? from "\.\/([\w-]+\.js)";$/gm)) imported.add(target!);
+	}
+	for (const name of imported) assert.equal((await send(server, "GET", `/${name}`, { key: null })).status, 200, name);
+});
+
 test("serves every look's script, and offers twelve looks", async (t) => {
 	const server = await start(t);
 	for (const path of ["/looks.js", "/appearance.js", "/settings.js"]) assert.equal((await send(server, "GET", path, { key: null })).status, 200);

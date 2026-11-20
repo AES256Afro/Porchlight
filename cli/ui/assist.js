@@ -6,6 +6,7 @@ import { api } from "./api.js";
 import { followUpBox } from "./discussion.js";
 import { banner, h, icon, replace, stepNodes } from "./dom.js";
 import { generatedLabel, localModelSetup, MAX_QUESTION, paragraphs, questionProblem, waitingLabel } from "./generated.js";
+import { answersPlace, retitle, showAnswer } from "./panel.js";
 
 /** @typedef {import("./generated.js").AssistantSettings} AssistantSettings */
 /** @typedef {{ start: string, busy: string, again: string, note?: string }} Labels */
@@ -49,6 +50,15 @@ export function assistAction(key, path, assistant, labels, body) {
 	return entry;
 }
 
+/** Every answer's redraw, so changing where answers appear moves the ones already given. */
+/** @type {Set<() => void>} */
+const redraws = new Set();
+
+/** Puts every answer given so far where Settings → Appearance now says. */
+export function redrawAnswers() {
+	for (const redraw of redraws) redraw();
+}
+
 /**
  * @param {string} path
  * @param {AssistantSettings} assistant
@@ -60,48 +70,76 @@ export function assistAction(key, path, assistant, labels, body) {
 function createAssist(path, assistant, labels, body, submit) {
 	/** @type {AssistState} */
 	let state = { state: "idle" };
+	/** The answers panel's heading for this answer: what is being done, then the discussion's title. */
+	/** @type {import("./panel.js").PanelHead} */
+	let head = { title: labels.busy };
 	const button = /** @type {HTMLButtonElement} */ (h("button", { type: submit ? "submit" : "button", class: "button", onclick: submit ? null : () => void run() }));
-	const panel = h("section", { class: "assist", "aria-live": "polite", "aria-label": "Answer from the local model", hidden: true });
+	// Where the answer belongs on the page. It holds the answer itself, or, when answers appear in the
+	// answers panel, a line saying so with a link to bring this answer back there.
+	const panel = h("section", { class: "assist", "aria-label": "Answer from the local model", hidden: true });
+	const content = h("div", { class: "assist-content", "aria-live": "polite" });
+	/** @type {Assist} */
+	const self = { button, panel, run };
 	draw();
-	return { button, panel, run };
+	redraws.add(draw);
+	return self;
 
 	async function run() {
 		if (state.state === "asking") return;
 		state = { state: "asking" };
+		head = { title: labels.busy };
 		draw();
+		if (answersPlace() !== "below") showAnswer(self, content, head);
 		try {
 			const answer = await api("POST", path, body());
 			const model = typeof answer.model === "string" ? answer.model : modelName(assistant);
+			const discussion = typeof answer.discussion === "string" ? answer.discussion : null;
 			state = {
 				state: "done",
 				text: typeof answer.text === "string" ? answer.text : "",
 				model,
 				cut: typeof answer.cut === "string" ? answer.cut : undefined,
 				// The answer is kept as a discussion: follow-up questions go under it, and it can be opened again later.
-				follow:
-					typeof answer.discussion === "string"
-						? followUpBox({ id: answer.discussion, model, host: assistant.host ?? "", hosted: assistant.hosted === true }, { link: true })
-						: null,
+				follow: discussion
+					? followUpBox({ id: discussion, model, host: assistant.host ?? "", hosted: assistant.hosted === true }, { link: answersPlace() === "below" })
+					: null,
 			};
+			head = { title: typeof answer.title === "string" ? answer.title : labels.again, discussion };
 		} catch (err) {
 			state = { state: "failed", error: err instanceof Error ? err.message : String(err) };
+			head = { title: "The model could not answer" };
 		}
 		draw();
+		retitle(self, head);
 	}
 
 	function draw() {
 		button.disabled = state.state === "asking";
 		replace(button, icon("spark"), state.state === "asking" ? labels.busy : state.state === "done" ? labels.again : labels.start);
-		panel.hidden = state.state === "idle";
 		if (state.state === "asking") {
-			replace(panel, h("p", { class: "assist-wait" }, icon("pending"), waitingLabel(modelName(assistant))));
+			replace(content, h("p", { class: "assist-wait" }, icon("pending"), waitingLabel(modelName(assistant))));
 		} else if (state.state === "done") {
-			replace(panel, generatedText(state.text, state.model, [labels.note, state.cut]), state.follow);
+			replace(content, generatedText(state.text, state.model, [labels.note, state.cut]), state.follow);
 		} else if (state.state === "failed") {
-			replace(panel, banner("error", "The local model could not answer", [state.error]), h("button", { type: "button", class: "button", onclick: () => void run() }, "Try again"));
+			replace(content, banner("error", "The local model could not answer", [state.error]), h("button", { type: "button", class: "button", onclick: () => void run() }, "Try again"));
 		} else {
-			replace(panel);
+			replace(content);
 		}
+		panel.hidden = state.state === "idle";
+		if (answersPlace() === "below") {
+			replace(panel, content);
+			return;
+		}
+		replace(
+			panel,
+			h(
+				"p",
+				{ class: "assist-elsewhere" },
+				icon("spark"),
+				state.state === "asking" ? `${labels.busy} The answer shows in the answers panel. ` : "The answer is in the answers panel. ",
+				h("button", { type: "button", class: "link-button", onclick: () => showAnswer(self, content, head) }, "Show it"),
+			),
+		);
 	}
 }
 

@@ -44,6 +44,7 @@ Do not weaken these without the owner asking for it.
 ## Interface conventions
 
 - A look (Settings → Appearance, `cli/ui/looks.js`) restyles or moves what a page shows. It never hides a finding, changes a count or drops the "Not covered" banner. The server accepts only the looks in that list.
+- Where a model's answers appear (`ANSWER_PLACES` in `cli/ui/looks.js`: the answers panel on the right, below what was asked about, or a drawer at the bottom) only moves them. The panel (`cli/ui/panel.js`) sits outside the page, so it stays open between pages, and the page makes room for it rather than going under it; on a narrow screen it covers the page until closed. Like a look, it never hides a finding, and the server accepts only the places in that list.
 - A severity is always shape, colour and word together (`severityBadge`), never colour alone. Status colours mark state only; text stays in the ink colours.
 - An incomplete scan is shown as incomplete (the "Not covered" banner), never as clean.
 - An empty page says what to do next. What a scan would cover is asked from the server (`GET /api/repos/preview`) and shown before anything runs; the words for "nothing here yet" and for setting up the monitor live in `cli/ui/hints.js`, written for a terminal and for a service (BoxPilot) separately, and are tested without the DOM. A folder is looked into only once its box is settled, never on each keystroke.

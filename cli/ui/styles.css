@@ -1396,6 +1396,171 @@ table.nested {
 	overflow-wrap: anywhere;
 }
 
+/* The answers panel: a model's answer and its follow-ups beside the page, or in a drawer under it.
+   It sits outside the page, so it stays open while the owner moves between pages, and the page makes
+   room for it rather than going under it. On a narrow screen it covers the page until closed. */
+
+:root {
+	--answers-width: 420px;
+	/* Where the drawer starts: beside the sidebar. */
+	--answers-left: 224px;
+}
+
+:root[data-look="compact"] {
+	--answers-left: 180px;
+}
+
+:root[data-look="tabs"] {
+	--answers-left: 0px;
+}
+
+body.answers-wide {
+	--answers-width: min(680px, 55vw);
+}
+
+.answers-panel {
+	position: fixed;
+	z-index: 8;
+	display: flex;
+	flex-direction: column;
+	background: var(--surface);
+	color: var(--ink);
+	box-shadow: var(--shadow);
+}
+
+.answers-panel[hidden] {
+	display: none;
+}
+
+body[data-answers="right"] .answers-panel {
+	top: 0;
+	right: 0;
+	bottom: 0;
+	width: var(--answers-width);
+	border-left: 1px solid var(--hairline);
+}
+
+body.answers-open[data-answers="right"] .shell {
+	margin-right: var(--answers-width);
+}
+
+body[data-answers="bottom"] .answers-panel {
+	right: 0;
+	bottom: 0;
+	left: var(--answers-left);
+	max-height: 45vh;
+	border-top: 1px solid var(--hairline);
+}
+
+body.answers-open[data-answers="bottom"] main {
+	padding-bottom: 45vh;
+}
+
+.answers-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 12px 16px;
+	border-bottom: 1px solid var(--hairline);
+}
+
+.answers-title {
+	display: flex;
+	align-items: flex-start;
+	gap: 6px;
+	margin: 0;
+	font-size: 15px;
+	overflow-wrap: anywhere;
+}
+
+.answers-title .icon {
+	flex: none;
+	margin-top: 3px;
+	color: var(--ink-2);
+}
+
+.answers-tools {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
+.answers-tools .button {
+	padding: 4px 10px;
+	font-size: 13px;
+}
+
+.answers-body {
+	flex: 1;
+	display: grid;
+	align-content: start;
+	gap: 10px;
+	padding: 14px 16px 24px;
+	overflow-y: auto;
+}
+
+.answers-body .assist-content,
+.answers-body .send-result {
+	display: grid;
+	gap: 10px;
+}
+
+.answers-body .generated {
+	background: var(--page);
+}
+
+.assist-content {
+	display: grid;
+	gap: 10px;
+}
+
+.assist-elsewhere {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+	color: var(--ink-2);
+}
+
+.link-button {
+	padding: 0;
+	border: 0;
+	background: none;
+	color: var(--accent);
+	font: inherit;
+	text-decoration: underline;
+	cursor: pointer;
+}
+
+.link-button:hover {
+	color: var(--accent-hover);
+}
+
+@media (max-width: 900px) {
+	body[data-answers] .answers-panel {
+		inset: 0;
+		z-index: 30;
+		width: auto;
+		max-height: none;
+		border: 0;
+	}
+
+	body.answers-open[data-answers="right"] .shell {
+		margin-right: 0;
+	}
+
+	body.answers-open[data-answers="bottom"] main {
+		padding-bottom: 0;
+	}
+
+	/* The panel already fills the screen. */
+	.answers-widen {
+		display: none;
+	}
+}
+
 textarea {
 	width: 100%;
 	min-height: 72px;

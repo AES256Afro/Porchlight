@@ -27,7 +27,7 @@ export const store = {
 	 *
 	 * `platform`: the operating system Porchlight runs on, such as "darwin".
 	 *
-	 * @type {{ defaultRoot: string, reportPath: string, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean }, github: { token: boolean, error?: string }, assistant: import("./generated.js").AssistantSettings, appearance: string, remote: boolean, platform: string, sendTargets: import("./send-text.js").SendTarget[], lastView: string | null } | null}
+	 * @type {{ defaultRoot: string, reportPath: string, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean }, github: { token: boolean, error?: string }, assistant: import("./generated.js").AssistantSettings, appearance: string, answers: string, remote: boolean, platform: string, sendTargets: import("./send-text.js").SendTarget[], lastView: string | null } | null}
 	 */
 	settings: null,
 	/** @type {ScanReport | null} */
@@ -97,6 +97,8 @@ export function load() {
 			github: state.github ?? { token: false },
 			assistant: state.assistant ?? { configured: false },
 			appearance: state.appearance ?? "today",
+			// Where a model's answers appear: "right", "below" or "bottom" (Settings → Appearance).
+			answers: typeof state.answers === "string" ? state.answers : "right",
 			remote: state.remote === true,
 			platform: typeof state.platform === "string" ? state.platform : "",
 			sendTargets: Array.isArray(state.sendTargets) ? state.sendTargets : [],
