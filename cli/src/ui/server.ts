@@ -1301,7 +1301,12 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			verify: async (signal) => {
 				// Read again each time: a domain removed from the list is no longer proven.
 				const entry = (await readDomains(investigateDomainsPath)).domains[name];
-				return entry !== undefined && entry.token === token && (await checkOwnership(name, token, options.fetchFn ?? fetch, signal));
+				if (entry === undefined || entry.token !== token) return false;
+				if (await checkOwnership(name, token, options.fetchFn ?? fetch, signal)) return true;
+				// A resolver can miss a record that is there, just after it was published. Asked once more
+				// before the run is stopped; the answer still has to be yes for anything to be sent.
+				await abortableSleep(options.investigateMinGapMs === 0 ? 0 : OWNERSHIP_RECHECK_MS, signal);
+				return !signal.aborted && (await checkOwnership(name, token, options.fetchFn ?? fetch, signal));
 			},
 			approve: (request, signal) =>
 				new Promise<ApprovalAnswer>((resolveApproval) => {
@@ -1361,6 +1366,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	/** The set of changes shown to the owner and waiting for one answer; a new preview replaces it. */
 	let pendingBatch: { id: string; createdAt: number; changes: PlannedChange[] } | null = null;
 	let batchStatus: BatchStatus = { state: "idle" };
+	/** Write permissions Cloudflare refused this token, so the page can say what to add before the next try. */
+	const lacking = new Set<string>();
 	let batchStop: AbortController | null = null;
 
 	/** The token in use: the one saved under Settings → Cloudflare, else the one given at start-up. */
@@ -1398,6 +1405,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				report: await readAudit(cloudflareAuditPath),
 				changes: changes.slice(-50).reverse(),
 				batch: batchStatus,
+				lacking: [...lacking],
 				canChange: here,
 				service: !loopbackOnly,
 				guide: cloudflareGuide(),
@@ -1462,6 +1470,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			const verified = await new CfClient(token, options.fetchFn ?? fetch).verify();
 			if (!verified.ok) throw new HttpError(400, verified.message ?? `Cloudflare says this token is ${verified.status ?? "not active"}`);
 			await saveToken(cloudflareTokenPath, token);
+			lacking.clear();
 			cloudflareVerified = { status: verified.status ?? "active", kind: verified.kind, ...(verified.expiresOn ? { expiresOn: verified.expiresOn } : {}), checkedAt: new Date().toISOString() };
 			return sendJson(res, 200, { token: await cloudflareTokenState() });
 		}
@@ -1471,6 +1480,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			pendingChanges.clear();
 			pendingBatch = null;
 			batchStop?.abort();
+			lacking.clear();
 			return sendJson(res, 200, { token: await cloudflareTokenState() });
 		}
 		if (route === "POST /api/cloudflare/changes/preview") {
@@ -1502,7 +1512,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			if (!token) throw new HttpError(409, "Connect Cloudflare first: paste an API token in Settings → Cloudflare");
 			if (await ownershipTokenChanged(planned)) throw new HttpError(409, "The token for this domain changed since the request was shown. Ask for it again.");
 			const { outcome, changes } = await applyPlanned(planned, token.token);
-			return sendJson(res, 200, { applied: true, ok: outcome.ok, result: outcome.result, changes: changes.slice(-50).reverse() });
+			return sendJson(res, 200, { applied: true, ok: outcome.ok, result: outcome.result, changes: changes.slice(-50).reverse(), lacking: [...lacking] });
 		}
 
 		// "Fix these": every change the latest audit offers, for one zone or all, shown as the exact
@@ -1616,6 +1626,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		// The change's title is Porchlight's, from its own list; the request and the token stay out of the log.
 		log(`Cloudflare change ${outcome.ok ? "applied" : "failed"}: ${planned.title}, on ${planned.zone}`, project);
 		if (!outcome.ok) note(`Cloudflare refused: ${planned.title}. ${outcome.result}`, "warning");
+		if (outcome.denied) lacking.add(planned.permission);
+		else if (outcome.ok) lacking.delete(planned.permission);
 		const changes = await recordChange(cloudflareChangesPath, {
 			at: new Date().toISOString(),
 			zone: planned.zone,
@@ -2315,6 +2327,9 @@ export type BatchStatus =
 	| { state: "idle" }
 	| { state: "running"; startedAt: string; total: number; done: number; applied: number; failed: number; skipped: number; current: string }
 	| { state: "finished"; startedAt: string; finishedAt: string; total: number; applied: number; failed: number; skipped: number; stopped: boolean };
+
+/** How long to wait before asking DNS a second time for an ownership record that was not found mid-run. */
+const OWNERSHIP_RECHECK_MS = 2_000;
 
 /** How a run ended, in the project log's words. */
 const RUN_ENDINGS: Partial<Record<Run["status"], string>> = { done: "finished", stopped: "stopped", failed: "failed" };

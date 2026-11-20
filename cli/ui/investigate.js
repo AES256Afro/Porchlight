@@ -7,9 +7,9 @@
 // model, so every element is built with h() and shown as text.
 import { api, ApiError, download } from "./api.js";
 import { emptyState, formatWhen, h, icon, plural, replace, stepNodes, toast } from "./dom.js";
-import { approvalLine, runLimits } from "./hints.js";
+import { approvalLine, ownershipSteps, runLimits } from "./hints.js";
 import { announceSaved } from "./projects.js";
-import { currentProject } from "./store.js";
+import { currentProject, loadCloudflare, store } from "./store.js";
 
 /** @typedef {import("../src/investigate/engine.ts").Run} Run */
 /** @typedef {import("../src/investigate/engine.ts").Step} Step */
@@ -58,6 +58,8 @@ const OUTCOME_WORDS = /** @type {Record<Step["outcome"], string>} */ ({
 export async function renderInvestigate(view, runId) {
 	/** @type {InvestigateState} */
 	let state = /** @type {any} */ (await api("GET", "/investigate"));
+	// Whether a domain is in the Cloudflare account decides what the ownership steps say.
+	if (!store.cloudflare.loaded) await loadCloudflare().catch(() => {});
 	const setupSlot = h("div");
 	const runSlot = h("div", { "aria-live": "polite" });
 	const historySlot = h("div");
@@ -297,6 +299,8 @@ export async function renderInvestigate(view, runId) {
 		domainSelect.addEventListener("change", drawLimits);
 		turns.addEventListener("input", drawLimits);
 		drawLimits();
+		// Why a run could not start, kept on the form with what to do, instead of a message that disappears.
+		const startProblem = h("div", { "aria-live": "polite" });
 		const approveEach = /** @type {HTMLInputElement} */ (h("input", { type: "radio", name: "approval", value: "each", checked: true }));
 		const approveAll = /** @type {HTMLInputElement} */ (h("input", { type: "radio", name: "approval", value: "all" }));
 		return h(
@@ -306,6 +310,7 @@ export async function renderInvestigate(view, runId) {
 				onsubmit: async (/** @type {SubmitEvent} */ event) => {
 					event.preventDefault();
 					startButton.disabled = true;
+					replace(startProblem);
 					try {
 						const answer = await api("POST", "/investigate/start", {
 							domain: domainSelect.value,
@@ -319,7 +324,10 @@ export async function renderInvestigate(view, runId) {
 						state.active = answer.run;
 						await refresh();
 					} catch (err) {
-						toast(err instanceof Error ? err.message : String(err), "error");
+						const text = err instanceof Error ? err.message : String(err);
+						// The ownership record is not found: that is a job to do, so the steps are shown.
+						if (err instanceof ApiError && err.status === 409 && /TXT record/.test(text)) replace(startProblem, ownershipHelp(domainSelect.value, `The ownership record for ${domainSelect.value} was not found`));
+						else toast(text, "error");
 						startButton.disabled = state.active !== null;
 					}
 				},
@@ -362,6 +370,30 @@ export async function renderInvestigate(view, runId) {
 			h("div", { class: "investigate-may-send" }, h("h3", null, "What this run may send"), limits),
 			assistant.hosted ? h("label", { class: "check-line" }, consent, `Send this to ${assistant.model}, outside my machines`) : null,
 			h("div", { class: "actions" }, startButton),
+			startProblem,
+		);
+	}
+
+	/**
+	 * What to do when a domain's ownership record is not found: the steps, with where to go.
+	 *
+	 * @param {string} domain
+	 * @param {string} title
+	 */
+	function ownershipHelp(domain, title) {
+		const onCloudflare = store.cloudflare.report?.zones.some((zone) => zone.name === domain) === true;
+		return h(
+			"div",
+			{ class: "banner banner-warning", role: "note" },
+			icon("warning"),
+			h(
+				"div",
+				null,
+				h("strong", null, title),
+				h("p", null, "Porchlight sends nothing to a domain until its DNS holds the record that proves it is yours. A record just added can take a few minutes to be seen."),
+				h("ol", { class: "host-fix" }, ...ownershipSteps({ domain, onCloudflare }).map((step) => h("li", null, ...stepNodes(step)))),
+				onCloudflare ? h("p", null, h("a", { class: "button", href: "#/cloudflare" }, "Open the Cloudflare page")) : null,
+			),
 		);
 	}
 
@@ -398,6 +430,7 @@ export async function renderInvestigate(view, runId) {
 				`Turn ${run.turns} of ${run.maxTurns} · ${plural(run.evidence.length, "action run", "actions run")} · ${run.model}${run.hosted ? " (hosted)" : ""} · started ${formatWhen(run.startedAt)}`,
 			),
 			run.ended && !live ? h("p", null, run.ended) : null,
+			!live && run.status === "stopped" && /^Ownership/.test(run.ended ?? "") ? ownershipHelp(run.domain, "What to do about the ownership record") : null,
 			h("p", { class: "hint" }, approvalLine(run)),
 			run.pending ? approvalCard(run) : null,
 			findingsView(run),

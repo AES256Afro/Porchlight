@@ -138,6 +138,55 @@ export function monitorSetupSteps(service) {
 }
 
 /**
+ * A Cloudflare permission as its token page words it: where it is, what it is called, and the level.
+ * "Zone Settings Write" on a zone is "Zone, Zone Settings, Edit".
+ *
+ * @param {{ name: string, scope?: string }} permission
+ */
+export function permissionWords(permission) {
+	const level = /\bWrite$/.test(permission.name) ? "Edit" : "Read";
+	const what = permission.name.replace(/\s+(Read|Write)$/, "");
+	const scope = permission.scope ?? (what === "API Tokens" ? "User" : what.startsWith("Account") ? "Account" : "Zone");
+	return `${scope}, ${what.replace(/^Zone WAF$/, "Zone WAF")}, ${level}`;
+}
+
+/**
+ * What to do when the token lacks permissions, as steps. Editing a token on Cloudflare keeps the
+ * token itself, so nothing has to be pasted again.
+ *
+ * @param {{ name: string, scope?: string }[]} permissions
+ * @param {"change" | "read"} purpose what was refused: a change, or part of the audit
+ * @returns {string[]}
+ */
+export function tokenFixSteps(permissions, purpose) {
+	if (permissions.length === 0) return [];
+	const list = permissions.map((permission) => `"${permissionWords(permission)}"`).join(" and ");
+	return [
+		"Open Cloudflare → My Profile → API Tokens. Find the token you gave Porchlight, open the menu at the end of its row and choose Edit.",
+		`Under Permissions choose Add more and add ${list}. Each is three menus: where it applies, its name, and the level.`,
+		purpose === "change"
+			? "Continue to summary and save. The token itself stays the same, so there is nothing to paste again. Come back here and choose Fix these again."
+			: "Continue to summary and save. The token itself stays the same, so there is nothing to paste again. Come back here and choose Audit again.",
+	];
+}
+
+/**
+ * What to do when a domain's ownership record is missing or no longer found, as steps.
+ *
+ * @param {{ domain: string, onCloudflare: boolean }} options `onCloudflare`: the latest Cloudflare audit lists the domain
+ * @returns {string[]}
+ */
+export function ownershipSteps({ domain, onCloudflare }) {
+	return [
+		`Under Your domains on this page, copy the Name and the Value shown for ${domain}.`,
+		onCloudflare
+			? "Add them as a TXT record in Cloudflare → DNS → Records. Or let Porchlight add it: on the Cloudflare page, this domain's Fix these includes the record once your token has DNS Edit."
+			: `Add them as a TXT record where ${domain}'s DNS is managed.`,
+		"Wait a minute or two, choose Check DNS record, and start the investigation again once it says the record is in place.",
+	];
+}
+
+/**
  * What an investigation may send to the owner's site, as a list to read before approving a whole
  * run at once. The model chooses each step as it goes, so no list of requests exists in advance:
  * these are the limits every step is held to, and the tools come from the server's own list.

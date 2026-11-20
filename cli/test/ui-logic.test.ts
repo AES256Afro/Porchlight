@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { describeFilter, isFiltering, matchesFilter, noFilter } from "../ui/filter.js";
 import { generatedLabel, localModelSetup, MAX_QUESTION, paragraphs, questionProblem, SUGGESTED_MODEL, waitingLabel } from "../ui/generated.js";
-import { approvalLine, domainFromInput, emptyScanHints, fetchByDefault, githubTokenSteps, monitorSetupSteps, previewAdvice, runLimits } from "../ui/hints.js";
+import { approvalLine, domainFromInput, emptyScanHints, fetchByDefault, githubTokenSteps, monitorSetupSteps, ownershipSteps, permissionWords, previewAdvice, runLimits, tokenFixSteps } from "../ui/hints.js";
 import { buildHash, filterFromParams, paginate, paramsFromFilter, parseHash, sortFindings } from "../ui/list.js";
 import { KNOWN_PATHS, settingsAnchor, splitPaths } from "../ui/paths.js";
 
@@ -206,6 +206,31 @@ test("what a run may send is listed from the server's tools, with its limits", a
 	assert.equal(approvalLine({}), "Each HTTP request and TCP connection waits for your approval.");
 	assert.equal(approvalLine({ approvedRest: { turn: 0 } }), "You approved every request of this run when it started.");
 	assert.equal(approvalLine({ approvedRest: { turn: 7 } }), "You approved every request of this run from turn 7 on.");
+});
+
+test("a refused permission comes with where to add it, in Cloudflare's own words", () => {
+	assert.equal(permissionWords({ name: "Zone Settings Write" }), "Zone, Zone Settings, Edit");
+	assert.equal(permissionWords({ name: "DNS Write", scope: "Zone" }), "Zone, DNS, Edit");
+	assert.equal(permissionWords({ name: "Zone WAF Read", scope: "Zone" }), "Zone, Zone WAF, Read");
+	assert.equal(permissionWords({ name: "API Tokens Read", scope: "User" }), "User, API Tokens, Read");
+	assert.equal(permissionWords({ name: "Account Settings Read", scope: "Account" }), "Account, Account Settings, Read");
+	assert.deepEqual(tokenFixSteps([], "change"), []);
+
+	const change = tokenFixSteps([{ name: "Zone Settings Write" }, { name: "DNS Write" }], "change");
+	assert.equal(change.length, 3);
+	// The first step is a known path, so the page links each part of it to Cloudflare's dashboard.
+	const path = splitPaths(change[0] ?? "").find((part) => typeof part !== "string");
+	assert.ok(path && typeof path !== "string" && path.crumbs.at(-1)?.href === "https://dash.cloudflare.com/profile/api-tokens");
+	assert.match(change[1] ?? "", /"Zone, Zone Settings, Edit" and "Zone, DNS, Edit"/);
+	// Editing a token keeps it, so nobody is told to paste it again.
+	assert.match(change[2] ?? "", /nothing to paste again.*Fix these again/);
+	assert.match(tokenFixSteps([{ name: "Bot Management Read", scope: "Zone" }], "read")[2] ?? "", /Audit again/);
+
+	const here = ownershipSteps({ domain: "example.com", onCloudflare: true });
+	assert.match(here[0] ?? "", /copy the Name and the Value shown for example\.com/);
+	assert.match(here[1] ?? "", /Cloudflare → DNS → Records.*Fix these includes the record once your token has DNS Edit/);
+	assert.match(here[2] ?? "", /Check DNS record/);
+	assert.doesNotMatch(ownershipSteps({ domain: "example.com", onCloudflare: false })[1] ?? "", /Cloudflare/);
 });
 
 test("a pasted web address is reduced to its domain name", () => {

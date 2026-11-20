@@ -76,9 +76,9 @@ export const store = {
 	 * The audit of the owner's Cloudflare account. `canChange`: this page may save the token and approve
 	 * changes (only the page on the computer Porchlight runs on).
 	 *
-	 * @type {{ loaded: boolean, token: CloudflareToken, status: CloudflareStatus, report: CfReport | null, changes: AppliedChange[], batch: import("../src/ui/server.ts").BatchStatus, canChange: boolean, service: boolean, guide: CloudflareGuide | null }}
+	 * @type {{ loaded: boolean, token: CloudflareToken, status: CloudflareStatus, report: CfReport | null, changes: AppliedChange[], batch: import("../src/ui/server.ts").BatchStatus, lacking: string[], canChange: boolean, service: boolean, guide: CloudflareGuide | null }}
 	 */
-	cloudflare: { loaded: false, token: { configured: false, source: null }, status: { state: "idle" }, report: null, changes: [], batch: { state: "idle" }, canChange: false, service: false, guide: null },
+	cloudflare: { loaded: false, token: { configured: false, source: null }, status: { state: "idle" }, report: null, changes: [], batch: { state: "idle" }, lacking: [], canChange: false, service: false, guide: null },
 };
 
 /** @type {Set<string>} */
@@ -341,6 +341,7 @@ function setCloudflare(data) {
 		report: data.report ?? null,
 		changes: Array.isArray(data.changes) ? data.changes : [],
 		batch: data.batch ?? { state: "idle" },
+		lacking: Array.isArray(data.lacking) ? data.lacking : [],
 		canChange: data.canChange === true,
 		service: data.service === true,
 		guide: data.guide ?? null,
@@ -386,9 +387,10 @@ export function updateMonitor(monitor) {
 /**
  * The token changed in Settings, or a change was applied: every page follows.
  *
- * @param {Partial<{ token: CloudflareToken, changes: AppliedChange[] }>} update
+ * @param {Partial<{ token: CloudflareToken, changes: AppliedChange[], lacking: string[] }>} update
  */
 export function updateCloudflare(update) {
+	if (update.lacking) store.cloudflare.lacking = update.lacking;
 	if (update.token) {
 		store.cloudflare.token = update.token;
 		if (store.settings) store.settings.cloudflare = update.token;

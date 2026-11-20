@@ -7,7 +7,7 @@ import { coverageBanner } from "./findings.js";
 import { githubPanel } from "./github.js";
 import { emptyScanHints, previewAdvice } from "./hints.js";
 import { buildHash } from "./list.js";
-import { findingRows, load, startScan, store, subscribe } from "./store.js";
+import { findingRows, load, loadCloudflare, startScan, store, subscribe } from "./store.js";
 import { changeSummary } from "./tracking.js";
 
 /** @typedef {import("../src/roadmap/types.ts").Roadmap} Roadmap */
@@ -27,6 +27,8 @@ const CHIPS = 14;
  */
 export async function renderOverview(view) {
 	await load();
+	// The Cloudflare card needs the latest audit; the page is shown without it if that cannot be read.
+	await loadCloudflare().catch(() => {});
 	let left = false;
 	const service = store.settings?.service === true;
 	/** The answer to the latest "what is in this folder" question; an earlier one arriving late is dropped. */
@@ -193,7 +195,7 @@ export async function renderOverview(view) {
 		intro.textContent = report
 			? "Where your code and your websites stand, and what to do first."
 			: "Porchlight checks two things you own: your code and your websites. Start with either one below.";
-		if (!report) return replace(summary, monitorCard(), assistantCard());
+		if (!report) return replace(summary, cloudflareCard(), monitorCard(), assistantCard());
 		const rows = findingRows();
 		/** @type {Record<Severity, number>} */
 		const counts = { critical: 0, high: 0, medium: 0, low: 0 };
@@ -248,6 +250,7 @@ export async function renderOverview(view) {
 			),
 			analysis?.node,
 			historyCard(),
+			cloudflareCard(),
 			monitorCard(),
 			assistantCard(),
 		);
@@ -351,6 +354,43 @@ function assistantCard() {
 	return store.report ? askCard(`ask\n${store.report.scannedAt}`, assistant) : null;
 }
 
+/** Where the Cloudflare account stands, and the one thing to do next there. */
+function cloudflareCard() {
+	const cloudflare = store.cloudflare;
+	const report = cloudflare.report;
+	const body = [];
+	let next = h("a", { class: "button", href: "#/cloudflare" }, "Open Cloudflare");
+	if (!cloudflare.token.configured && !report) {
+		body.push(h("p", null, h("span", { class: "severity status-pending" }, icon("pending"), "Not connected"), h("span", { class: "hint block" }, "Paste a read-only API token and Porchlight checks every domain in your account. No model is needed.")));
+		next = h("a", { class: "button", href: "#/settings/cloudflare" }, "Connect in Settings");
+	} else if (!report) {
+		body.push(h("p", null, h("span", { class: "severity status-pending" }, icon("pending"), "Connected, not audited yet")));
+		next = h("a", { class: "button", href: "#/cloudflare" }, "Audit your account");
+	} else {
+		const checks = report.zones.flatMap((zone) => zone.checks);
+		const failed = checks.filter((check) => check.status === "failed");
+		const unknown = checks.filter((check) => check.status === "unknown").length;
+		const fixable = failed.filter((check) => check.change).length;
+		body.push(
+			h(
+				"p",
+				null,
+				h("span", { class: `severity ${failed.length === 0 ? "status-good" : "status-warning"}` }, icon(failed.length === 0 ? "good" : "warning"), `${plural(failed.length, "problem", "problems")} across ${plural(report.zones.length, "domain", "domains")}`),
+				h("span", { class: "hint block" }, `Audited ${formatWhen(report.checkedAt)}.${unknown > 0 ? ` ${plural(unknown, "check", "checks")} could not be made: the Cloudflare page says which permission to add.` : ""}${fixable > 0 ? ` Porchlight can fix ${fixable} of them for you, once you approve the requests.` : ""}`),
+			),
+		);
+		next = h("a", { class: "button", href: "#/cloudflare" }, fixable > 0 ? "See them and fix what Porchlight can" : "Open the audit");
+	}
+	return h(
+		"div",
+		{ class: "card full" },
+		h("h2", null, "Check your Cloudflare account"),
+		h("p", { class: "sub" }, "Checks each domain's settings in your Cloudflare account: HTTPS, certificates, DNS and email records, the firewall, and who can change the account."),
+		...body,
+		h("p", { class: "card-foot" }, next),
+	);
+}
+
 function monitorCard() {
 	const monitor = store.settings?.monitor;
 	// Nothing given yet is the usual state after installing, not a mistake to quote back.
@@ -366,7 +406,7 @@ function monitorCard() {
 					"p",
 					null,
 					h("span", { class: "severity status-pending" }, icon("pending"), "Not set up yet"),
-					h("span", { class: "hint block" }, why || "It needs the Porchlight monitor, a small service that runs on your Cloudflare account. Setting it up takes three steps."),
+					h("span", { class: "hint block" }, why || "It needs the Porchlight monitor, a small service that runs on your Cloudflare account. The Domains page gives each step, with the commands to copy."),
 				),
 		h("p", { class: "card-foot" }, h("a", { class: "button", href: "#/domains" }, monitor?.configured ? "Open your websites" : "Set it up")),
 	);

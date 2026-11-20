@@ -8,6 +8,7 @@ import { activityList } from "./activity.js";
 import { api, ApiError, download } from "./api.js";
 import { assistAction } from "./assist.js";
 import { banner, formatWhen, h, icon, plural, replace, select, severityBadge, statTile, stepNodes, toast } from "./dom.js";
+import { tokenFixSteps } from "./hints.js";
 import { announceSaved } from "./projects.js";
 import { currentProject, load, loadCloudflare, startCloudflareAudit, store, subscribe, updateCloudflare } from "./store.js";
 
@@ -174,6 +175,28 @@ export async function renderCloudflare(view) {
 		}
 	}
 
+	/**
+	 * What to do about permissions Cloudflare refused this token: the steps, with where to go.
+	 *
+	 * @param {string} title
+	 */
+	function permissionHelp(title) {
+		const lacking = store.cloudflare.lacking;
+		if (lacking.length === 0) return null;
+		return h(
+			"div",
+			{ class: "banner banner-warning cf-next", role: "note" },
+			icon("warning"),
+			h(
+				"div",
+				null,
+				h("strong", null, title),
+				h("p", null, "Your token is read-only for this, which is how Porchlight asks you to start. To let it make these changes:"),
+				h("ol", { class: "host-fix" }, ...tokenFixSteps(lacking.map((name) => ({ name, scope: "Zone" })), "change").map((step) => h("li", null, ...stepNodes(step)))),
+			),
+		);
+	}
+
 	/** The card for a set of changes: the requests to approve, then their progress, then what happened. */
 	function drawBatch() {
 		const status = store.cloudflare.batch;
@@ -248,6 +271,7 @@ export async function renderCloudflare(view) {
 							h("span", { class: "hint" }, `${counts} so far. Stopping leaves what was already sent in place.`),
 						)
 					: null,
+				status.state === "finished" ? permissionHelp("Cloudflare refused these because of the token's permissions") : null,
 				batchActivity.node,
 				h("p", { class: "hint" }, "The same lines, with everything else Porchlight is doing, are on the ", h("a", { href: "#/activity" }, "Activity"), " page."),
 			),
@@ -311,10 +335,20 @@ export async function renderCloudflare(view) {
 					)
 				: null,
 			denied.length > 0
-				? banner(
-						"warning",
-						"This token could not read everything, so some checks say Could not check",
-						denied.map((permission) => `Add "${permission.name}" to read ${permission.purpose}.`),
+				? h(
+						"div",
+						null,
+						banner(
+							"warning",
+							"This token could not read everything, so some checks say Could not check",
+							denied.map((permission) => `"${permission.name}" is missing: it reads ${permission.purpose}.`),
+						),
+						h(
+							"details",
+							{ class: "cf-next-read", open: true },
+							h("summary", null, "How to add them"),
+							h("ol", { class: "host-fix" }, ...tokenFixSteps(denied, "read").map((step) => h("li", null, ...stepNodes(step)))),
+						),
 					)
 				: null,
 			report.zonesSkipped > 0 ? banner("warning", `${report.zonesSkipped} more domains were not audited`, ["An audit covers the first 200 domains of an account."]) : null,
@@ -329,6 +363,7 @@ export async function renderCloudflare(view) {
 							`${plural(fixable(report.zones), "problem has", "problems have")} a change Porchlight can make for you, across ${plural(report.zones.filter((zone) => fixable([zone]) > 0).length, "domain", "domains")}. You see every request first and approve them once; each domain below also has its own Fix these.`,
 						),
 						h("button", { type: "button", class: "button primary", onclick: () => void previewBatch(null) }, icon("change"), "Fix these…"),
+						store.cloudflare.batch.state === "idle" ? permissionHelp("The last change was refused because of the token's permissions") : null,
 					)
 				: null,
 			...report.zones.map((zone) => zoneCard(zone)),
@@ -480,7 +515,7 @@ export async function renderCloudflare(view) {
 				if (!reply.applied) changes.delete(key);
 				else {
 					changes.set(key, { state: "done", ok: reply.ok === true, result: String(reply.result ?? "") });
-					updateCloudflare({ changes: reply.changes });
+					updateCloudflare({ changes: reply.changes, lacking: reply.lacking });
 					toast(reply.ok ? "Change applied. Audit again to see it." : "Cloudflare refused the change", reply.ok ? "info" : "error");
 				}
 			} catch (err) {
