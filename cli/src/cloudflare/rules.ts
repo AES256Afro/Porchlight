@@ -338,9 +338,12 @@ function certificateCheck(zone: ZoneData, now: Date): CfCheck {
 	};
 	for (const pack of zone.certificatePacks.value) {
 		const hosts = (pack.hosts ?? []).slice(0, 3).join(", ") || "this zone";
-		if (pack.status && pack.status !== "active" && !pack.status.startsWith("pending") && pack.status !== "initializing") {
-			problems.push({ severity: "medium", line: `${pack.type ?? "certificate"} pack for ${hosts}: ${pack.status}` });
-		}
+		const serving = !pack.status || pack.status === "active";
+		// Cloudflare keeps a backup certificate beside every Universal one, issued and not deployed: that is its healthy state.
+		const waiting = pack.status === "backup_issued" || pack.status?.startsWith("pending") || pack.status === "initializing";
+		if (!serving && !waiting) problems.push({ severity: "medium", line: `${pack.type ?? "certificate"} pack for ${hosts}: ${pack.status}` });
+		// Only a pack that is serving decides what visitors get. A backup, or a pack on its way in or out, has dates that do not matter.
+		if (!serving) continue;
 		for (const cert of pack.certificates ?? []) {
 			const left = days(cert.expires_on);
 			if (left === null) continue;

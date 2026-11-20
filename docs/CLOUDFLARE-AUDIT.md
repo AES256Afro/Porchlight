@@ -51,7 +51,7 @@ Both user tokens (`cfut_…`) and account tokens (`cfat_…`) work. The token is
 | HSTS | off; max-age under 6 months | medium; low | all | Cloudflare → SSL/TLS → Edge Certificates, 6 months then 12; includeSubDomains and preload only when every subdomain has HTTPS | `PATCH …/settings/security_header` (not applied by Porchlight: hard to undo) |
 | Automatic HTTPS Rewrites | off | low | all | Cloudflare → SSL/TLS → Edge Certificates | `PATCH …/settings/automatic_https_rewrites {"value":"on"}` (Porchlight can apply) |
 | Universal SSL | off with no other active certificate | high | all | Cloudflare → SSL/TLS → Edge Certificates | `PATCH /zones/{id}/ssl/universal/settings {"enabled":true}` |
-| Edge certificates | expired; a Cloudflare-managed one within 14 days (it should have renewed at 30); an uploaded one within 30; a pack in an error state | critical; high; medium | all | Cloudflare → SSL/TLS → Edge Certificates | `GET /zones/{id}/ssl/certificate_packs?status=all` |
+| Edge certificates | of the certificates in use (an active pack, or one you uploaded): expired; a Cloudflare-managed one within 14 days (it should have renewed at 30); an uploaded one within 30. Also a pack in an error state. The backup certificate Cloudflare keeps beside every Universal one (`backup_issued`) and a pack on its way in or out (`pending_…`) are not problems, and their dates are not read | critical; high; medium | all | Cloudflare → SSL/TLS → Edge Certificates | `GET /zones/{id}/ssl/certificate_packs?status=all` |
 | Authenticated origin pulls | neither global (`tls_client_auth`) nor zone-level is on | low | all | Origin certificate on the server first, then Cloudflare → SSL/TLS → Origin Server | `PATCH …/settings/tls_client_auth {"value":"on"}` |
 
 Automatic SSL/TLS (`ssl_automatic_mode: auto`) is noted in the detail: it raises the mode only once the origin presents a valid certificate. Strict (SSL-Only Origin Pull) counts as Full (strict).
@@ -129,6 +129,14 @@ Checked only against Cloudflare's documentation and a fake account in the tests:
 - the `?to=/:account/:zone/…` dashboard links.
 
 To verify: make a read-only token with the permissions above, save it in Settings → Cloudflare, run the audit, and compare each zone's result with its dashboard.
+
+### First run against a real account (20 November 2026)
+
+One account of 26 zones, all on the Free plan. The audit ran to the end. What it showed:
+
+- **Fixed.** Every zone lists a second Universal pack with the status `backup_issued`: the backup certificate Cloudflare keeps beside each Universal one. The certificate rule counted it as "not active", so every zone failed. It now counts only the certificates in use (see the table above).
+- **Still open.** The token could not read WAF rulesets or Bot Management ("Zone WAF Read" and "Bot Management Read" were missing), so both checks said Could not check on every zone, as they should. That leaves the first two items above unverified, and it is not known whether the token came from the template link. If it did, `firewall_services` is the wrong key for Zone WAF Read and the link has no key for Bot Management.
+- **Not compared yet.** No zone's result has been read against its dashboard, and the members check was not looked at.
 
 ## Sources
 

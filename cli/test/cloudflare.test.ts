@@ -38,6 +38,10 @@ test("audits every zone against the built-in rules, knowing each zone's plan", a
 	assert.equal(find(report, "free.example", "hsts").status, "failed");
 	// A Cloudflare-managed certificate 10 days from expiry has failed to renew.
 	assert.equal(find(report, "free.example", "certificates").severity, "high");
+	// Only the certificate in use counts: the backup beside it and an old pack being removed are not problems,
+	// though the backup is 5 days from expiry and the old one expired 9 days ago.
+	assert.deepEqual(find(report, "free.example", "certificates").items, ["free.example, *.free.example: expires in 10 days and has not renewed"]);
+	assert.deepEqual([find(report, "pro.example", "certificates").status, find(report, "pro.example", "certificates").detail], ["passed", "The soonest expires in 70 days."]);
 	assert.equal(find(report, "pro.example", "ssl-mode").status, "passed");
 	assert.equal(find(report, "pro.example", "origin-pulls").status, "passed");
 
