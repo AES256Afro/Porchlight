@@ -311,7 +311,11 @@ export async function renderCloudflare(view) {
 		const failed = checks.filter((item) => item.status === "failed");
 		const unknown = checks.filter((item) => item.status === "unknown");
 		const passed = checks.filter((item) => item.status === "passed");
-		const denied = report.permissions.filter((permission) => permission.granted === false);
+		const refused = report.permissions.filter((permission) => permission.granted === false);
+		// Reading the owner's own tokens is a permission of the user, not of an account or a zone, and a
+		// token given every account and zone permission still lacks it. It is said quietly, not as a fault.
+		const denied = refused.filter((permission) => !isOptional(permission));
+		const optional = refused.filter(isOptional);
 		const token = report.token;
 		return [
 			h(
@@ -349,6 +353,13 @@ export async function renderCloudflare(view) {
 							h("summary", null, "How to add them"),
 							h("ol", { class: "host-fix" }, ...tokenFixSteps(denied, "read").map((step) => h("li", null, ...stepNodes(step)))),
 						),
+					)
+				: null,
+			optional.length > 0
+				? h(
+						"p",
+						{ class: "hint" },
+						`One optional check was not made: your own API tokens and how broad they are. It needs "User, API Tokens, Read", which belongs to your user and is not among a token's account or zone permissions. If Cloudflare's token editor does not offer it, leave it: every other check is complete.`,
 					)
 				: null,
 			report.zonesSkipped > 0 ? banner("warning", `${report.zonesSkipped} more domains were not audited`, ["An audit covers the first 200 domains of an account."]) : null,
@@ -641,6 +652,15 @@ export async function renderCloudflare(view) {
 			),
 		);
 	}
+}
+
+/**
+ * Whether a missing permission is one the audit is complete without: the one that reads the owner's own tokens.
+ *
+ * @param {{ name: string, scope: string }} permission
+ */
+export function isOptional(permission) {
+	return permission.scope === "User" && permission.name === "API Tokens Read";
 }
 
 /**
