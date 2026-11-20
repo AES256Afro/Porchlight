@@ -24,7 +24,7 @@
 export const MODEL_CHOICES = [
 	{
 		id: "ollama-mac",
-		name: "Ollama on this Mac",
+		name: "Ollama on this computer",
 		group: "mac",
 		provider: "ollama",
 		url: "http://localhost:11434",
@@ -34,7 +34,7 @@ export const MODEL_CHOICES = [
 	},
 	{
 		id: "unsloth-mac",
-		name: "Unsloth Studio on this Mac",
+		name: "Unsloth Studio on this computer",
 		group: "mac",
 		provider: "compatible",
 		url: "http://localhost:8888/v1",
@@ -44,7 +44,7 @@ export const MODEL_CHOICES = [
 	},
 	{
 		id: "lmstudio-mac",
-		name: "LM Studio on this Mac",
+		name: "LM Studio on this computer",
 		group: "mac",
 		provider: "compatible",
 		url: "http://localhost:1234/v1",

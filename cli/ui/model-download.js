@@ -184,7 +184,7 @@ export async function modelDownloadSection() {
 							h("li", null, h("button", { type: "button", class: "button", onclick: () => void refresh() }, "Check again")),
 						),
 					),
-			!state.canChange ? h("p", { class: "hint" }, "Models are downloaded from the page on the Mac that runs Porchlight.") : null,
+			!state.canChange ? h("p", { class: "hint" }, "Models are downloaded from the page on the computer that runs Porchlight.") : null,
 			progress(),
 			problem ? h("p", { class: "model-result error", role: "alert" }, icon("warning"), " ", problem) : null,
 			state.canChange

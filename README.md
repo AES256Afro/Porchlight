@@ -376,9 +376,9 @@ Open **Settings → Model** and pick where it runs:
 
 | Choice | Address offered | Key |
 | --- | --- | --- |
-| Ollama on this Mac | `http://localhost:11434` | none |
-| Unsloth Studio on this Mac | `http://localhost:8888/v1` | if Studio asks for one (Settings → API in Studio) |
-| LM Studio on this Mac | `http://localhost:1234/v1` | if set |
+| Ollama on this computer | `http://localhost:11434` | none |
+| Unsloth Studio on this computer | `http://localhost:8888/v1` | if Studio asks for one (Settings → API in Studio) |
+| LM Studio on this computer | `http://localhost:1234/v1` | if set |
 | Ollama on another computer | its address, such as `http://my-server:11434` | none |
 | Other model server | any address that speaks OpenAI's format (llama.cpp, vLLM, OpenRouter) | if it asks for one |
 | Claude, ChatGPT, Gemini, DeepSeek | fixed in the code | your API key |

@@ -1,8 +1,8 @@
 // @ts-check
 // Projects: a folder the owner chooses for an audit or a scan, where saved exports, the model's
 // discussions and a daily log of what Porchlight did are written, inside a "Porchlight" folder of its
-// own. Settings → Projects adds and removes them, on the Mac itself or a service's own page; the
-// switcher at the top of the sidebar moves between them from any page.
+// own. Settings → Projects adds and removes them, on the computer that runs Porchlight or a
+// service's own page; the switcher at the top of the sidebar moves between them from any page.
 import { api } from "./api.js";
 import { banner, h, icon, replace, toast } from "./dom.js";
 import { currentProject, setProjects, store, subscribe } from "./store.js";
@@ -326,7 +326,7 @@ export function projectsSection() {
 						formError,
 						h("div", { class: "actions" }, addButton),
 					)
-				: h("p", { class: "hint" }, "You're on another device. Only the Mac that runs Porchlight can add or remove a project; you can move between them here."),
+				: h("p", { class: "hint" }, "You're on another device. Only the computer that runs Porchlight can add or remove a project; you can move between them here."),
 		);
 	}
 

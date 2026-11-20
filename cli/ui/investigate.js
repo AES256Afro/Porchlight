@@ -205,7 +205,7 @@ export async function renderInvestigate(view, runId) {
 				),
 				state.monitor ? h("p", { class: "hint" }, "When the monitor already watches a domain, its record is used here too, so you publish one record for both.") : null,
 				...domainCards,
-				state.canChange ? addForm : h("p", { class: "hint" }, "Domains are added on the Mac that runs Porchlight."),
+				state.canChange ? addForm : h("p", { class: "hint" }, "Domains are added on the computer that runs Porchlight."),
 			),
 			state.domains.length > 0 && state.canChange ? startCard(assistant) : null,
 		);
@@ -501,7 +501,7 @@ export async function renderInvestigate(view, runId) {
 								),
 							),
 						)
-					: h("p", { class: "hint" }, "Approve it on the Mac that runs Porchlight."),
+					: h("p", { class: "hint" }, "Approve it on the computer that runs Porchlight."),
 			),
 		);
 	}

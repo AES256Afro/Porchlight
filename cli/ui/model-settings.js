@@ -19,7 +19,7 @@ import { setAssistant } from "./store.js";
  */
 
 const GROUPS = /** @type {const} */ ([
-	["mac", "On this Mac"],
+	["mac", "On this computer"],
 	["server", "On another computer"],
 	["hosted", "Through an API"],
 	["off", "None"],

@@ -292,7 +292,7 @@ function askForKey(where) {
 					? h(
 							"p",
 							null,
-							"This is Porchlight on your Mac, opened from another device. On the Mac, open Settings → Access from other devices and copy the link or the key, then paste it here. This tab remembers it until you close it.",
+							"This is Porchlight on another of your computers, opened from this device. On that computer, open Settings → Access from other devices and copy the link or the key, then paste it here. This tab remembers it until you close it.",
 						)
 					: service
 					? h(

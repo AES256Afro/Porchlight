@@ -76,7 +76,7 @@ export function localModelSetup(assistant, service) {
 	return {
 		reason,
 		steps: [
-			"Open Settings → Model and choose where your model runs: Ollama, Unsloth Studio or LM Studio on this Mac, a model server of your own, or the Claude, ChatGPT, Gemini or DeepSeek API.",
+			"Open Settings → Model and choose where your model runs: Ollama, Unsloth Studio or LM Studio on this computer, a model server of your own, or the Claude, ChatGPT, Gemini or DeepSeek API.",
 		],
 		commands: null,
 	};

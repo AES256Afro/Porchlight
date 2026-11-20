@@ -257,7 +257,7 @@ export function localModelCard(assistant, service) {
 			"p",
 			null,
 			h("span", { class: "severity status-pending" }, icon("pending"), "Not connected"),
-			h("span", { class: "hint block" }, "A model, on this Mac, on a server of yours or through an API, can explain a finding, summarise the roadmap, analyse findings against your code and answer questions about a scan."),
+			h("span", { class: "hint block" }, "A model, on this computer, on a server of yours or through an API, can explain a finding, summarise the roadmap, analyse findings against your code and answer questions about a scan."),
 		),
 		setup.reason ? h("p", null, ...stepNodes(setup.reason), ".") : null,
 		...setup.steps.map((step) => h("p", null, ...stepNodes(step))),

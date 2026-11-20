@@ -565,7 +565,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			if (project) log(`Using this project, ${project.name}`, project);
 			return sendJson(res, 200, await projectsState(gate));
 		}
-		if (gate.tailnet) throw new HttpError(403, "Projects are added and removed from the page on the Mac that runs Porchlight");
+		if (gate.tailnet) throw new HttpError(403, "Projects are added and removed from the page on the computer that runs Porchlight");
 		const checkOptions = async () => {
 			const report = await readReport(options.reportPath).catch(() => null);
 			return { home: homedir(), scanRoots: [options.defaultRoot, ...(report ? [report.root] : [])], ...(projectsWithin ? { within: projectsWithin } : {}) };
@@ -957,7 +957,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				}
 				return sendJson(res, 200, { ollama: { host: base.host, reachable: problem === undefined, ...(problem ? { problem } : {}) }, installed, download, canChange: here, hub: HUB_HOST, tasks: HUB_TASKS, sorts: HUB_SORTS, formats: HUB_FORMATS, sizes: HUB_SIZES, machine });
 			}
-			if (!here) throw new HttpError(403, "Models are searched for and downloaded from the page on the Mac that runs Porchlight");
+			if (!here) throw new HttpError(403, "Models are searched for and downloaded from the page on the computer that runs Porchlight");
 			if (route === "GET /api/model/local/search") {
 				const asked = (name: string) => url.searchParams.get(name) ?? "";
 				const fits = asked("fits");
@@ -1052,7 +1052,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		}
 		const address = findTailnet();
 		if (!address) {
-			accessStatus = { enabled: true, listening: false, error: "Tailscale is not connected on this Mac. Start Tailscale; Porchlight will keep checking." };
+			accessStatus = { enabled: true, listening: false, error: "Tailscale is not connected on this computer. Start Tailscale; Porchlight will keep checking." };
 			// Tailscale may come up after Porchlight does.
 			accessRetry = setInterval(() => void (findTailnet() ? applyAccess() : undefined), ACCESS_RETRY_MS);
 			accessRetry.unref();
@@ -1143,7 +1143,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 
 	async function accessRoute(res: ServerResponse, route: string, body: unknown, gate: Gate): Promise<void> {
 		if (route === "GET /api/access") return sendJson(res, 200, accessState(gate));
-		if (gate.tailnet || !gate.loopbackOnly) throw new HttpError(403, "Access can only be changed on the Mac that runs Porchlight");
+		if (gate.tailnet || !gate.loopbackOnly) throw new HttpError(403, "Access can only be changed on the computer that runs Porchlight");
 		if (route === "POST /api/access") {
 			const enabled = bodyObject(body).enabled;
 			if (typeof enabled !== "boolean") throw new HttpError(400, "Say whether access is on");
@@ -1184,7 +1184,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 
 	async function monitorRoute(res: ServerResponse, route: string, body: unknown, gate: Gate): Promise<void> {
 		// A service is given its monitor where it is managed; another device only looks.
-		if (!(gate.loopbackOnly && !gate.tailnet)) throw new HttpError(403, "The monitor is connected from the page on the Mac that runs Porchlight");
+		if (!(gate.loopbackOnly && !gate.tailnet)) throw new HttpError(403, "The monitor is connected from the page on the computer that runs Porchlight");
 		if (route === "POST /api/monitor") {
 			const fields = bodyObject(body);
 			let config: MonitorConfig;
@@ -1301,7 +1301,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			log(`Exported ${FILE_TITLES.investigation} (${format}) as a download`);
 			return sendDownload(res, file);
 		}
-		if (!here) throw new HttpError(403, "Investigations are run from the page on the Mac that runs Porchlight");
+		if (!here) throw new HttpError(403, "Investigations are run from the page on the computer that runs Porchlight");
 		const fields = bodyObject(body);
 
 		if (route === "POST /api/investigate/domains") {
@@ -1576,7 +1576,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				});
 			return sendJson(res, 202, { status: cloudflareStatus });
 		}
-		if (!here) throw new HttpError(403, "The Cloudflare token and changes to your account are managed from the page on the Mac that runs Porchlight");
+		if (!here) throw new HttpError(403, "The Cloudflare token and changes to your account are managed from the page on the computer that runs Porchlight");
 		const fields = bodyObject(body);
 
 		if (route === "POST /api/cloudflare/token") {
@@ -1811,7 +1811,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		}
 
 		if (!originAllowed(req.headers.origin, host, gate.loopbackOnly)) throw new HttpError(403, "Cross-site request refused");
-		// Says where the reader's key is kept: a service's settings, or the Mac's Settings for another device.
+		// Says where the reader's key is kept: a service's settings, or Settings on the computer that runs Porchlight, for another device.
 		if (!sessionMatches(req.headers[SESSION_HEADER], gate.key())) {
 			sendJson(res, 401, { error: "Session key required", service: !gate.loopbackOnly && !gate.tailnet, tailnet: gate.tailnet });
 			return null;

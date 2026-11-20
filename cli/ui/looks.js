@@ -10,7 +10,7 @@
 
 /** @type {readonly Look[]} */
 export const LOOKS = [
-	{ id: "today", name: "Standard", description: "The original look. Follows your Mac's light or dark setting." },
+	{ id: "today", name: "Standard", description: "The original look. Follows your system's light or dark setting." },
 	{ id: "light", name: "Light and clean", description: "The same layout, always light." },
 	{ id: "dashboard", name: "Severity dashboard", description: "Counts by severity stay in the sidebar on every page." },
 	{ id: "tabs", name: "Top tabs", description: "The sections move to a bar along the top, leaving more room for lists." },

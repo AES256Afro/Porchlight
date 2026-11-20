@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { LOOKS } from "../ui/looks.js";
 
 // The page's colours are tokens on :root, redefined for dark mode and by some looks. Every look is
-// read in both of the Mac's appearances and checked against WCAG AA: text 4.5:1, and 3:1 for what
+// read in both light and dark appearances and checked against WCAG AA: text 4.5:1, and 3:1 for what
 // is not text but must be seen (a severity mark, a field's edge, the focus ring).
 const css = readFileSync(new URL("../ui/styles.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 

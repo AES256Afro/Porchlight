@@ -313,7 +313,7 @@ test("removing the token forgets it and any change waiting for an answer", async
 	assert.equal((await send(server, "POST", "/api/cloudflare/changes/approve", { id: pending.id, approve: true })).status, 409);
 });
 
-test("another device on the tailnet reads the audit, but only the page on this Mac saves a token, asks for a change or approves one", async (t) => {
+test("another device on the tailnet reads the audit, but only the page on the computer that runs Porchlight saves a token, asks for a change or approves one", async (t) => {
 	const { server, world, state } = await start(t, { tailnetAddress: () => "127.0.0.1", accessPort: 0 });
 	await send(server, "POST", "/api/cloudflare/token", { token: fakeCloudflareToken() });
 	await send(server, "POST", "/api/cloudflare/audit", { lookups: false });
@@ -340,7 +340,7 @@ test("another device on the tailnet reads the audit, but only the page on this M
 	await stat(join(state, "cloudflare-settings.json"));
 	assert.equal((await send(server, "GET", "/api/cloudflare")).json.token.configured, true, "and the saved token is not forgotten");
 
-	// A request shown on this Mac cannot be approved from the device, and the refusal does not use it up.
+	// A request shown on that computer cannot be approved from the device, and the refusal does not use it up.
 	const pending = (await send(server, "POST", "/api/cloudflare/changes/preview", { zone: FREE_ZONE, change: "min-tls-1.2" })).json.pending;
 	assert.equal((await send(device, "POST", "/api/cloudflare/changes/approve", { id: pending.id, approve: true })).status, 403);
 	assert.equal((await send(device, "POST", "/api/cloudflare/changes/approve", { id: pending.id, approve: false })).status, 403, "nor can it be cancelled from there");

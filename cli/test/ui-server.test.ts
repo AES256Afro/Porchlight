@@ -1566,7 +1566,7 @@ test("other devices get in only on the tailnet address, only with the access key
 	assert.equal((await send(device(key), "POST", "/api/access", { ...viaName, body: { enabled: false } })).status, 403);
 	assert.equal((await send(device(key), "POST", "/api/access/key", viaName)).status, 403);
 
-	// A device can move between projects, but only the Mac chooses a folder: it cannot add, look into or remove one.
+	// A device can move between projects, but only the computer that runs Porchlight chooses a folder: it cannot add, look into or remove one.
 	assert.equal((await send(device(key), "GET", "/api/projects", viaName)).json.canChange, false);
 	assert.equal((await send(device(key), "GET", `/api/projects/preview?folder=${encodeURIComponent(server.dir)}`, viaName)).status, 403);
 	assert.equal((await send(device(key), "POST", "/api/projects", { ...viaName, body: { name: "x", folder: join(server.dir, "x") } })).status, 403);
