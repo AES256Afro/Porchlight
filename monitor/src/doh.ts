@@ -2,7 +2,7 @@ import type { FetchFn } from "./env.ts";
 
 export type RecordType = "A" | "AAAA" | "CNAME" | "NS" | "MX" | "TXT" | "CAA";
 
-const TYPE_CODE: Record<RecordType, number> = {
+export const TYPE_CODE: Record<RecordType, number> = {
 	A: 1,
 	NS: 2,
 	CNAME: 5,

@@ -34,8 +34,10 @@ export default defineConfig(({ mode }) => ({
 			SNAPSHOTS_TO_KEEP: bindings.text("30"),
 		},
 		// Each tick scans the single most overdue domain, so one invocation
-		// never has to fit more than one domain's requests.
-		triggers: [triggers.scheduled({ schedule: "0 * * * *" })],
+		// never has to fit more than one domain's requests. Every ten minutes
+		// keeps up with 144 domains a day and lets a failed scan be retried
+		// within the hour (SCHEDULE_SLACK_MS in src/scan.ts assumes this period).
+		triggers: [triggers.scheduled({ schedule: "*/10 * * * *" })],
 		observability: { enabled: true },
 	},
 }));

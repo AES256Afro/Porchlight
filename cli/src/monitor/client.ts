@@ -28,6 +28,19 @@ export function monitorConfig(env: Record<string, string | undefined>): MonitorC
 	return { url, token };
 }
 
+/**
+ * The address of an API path under the monitor's base address. A monitor
+ * served under a path (behind a proxy at https://example.com/monitor) keeps
+ * that prefix; `new URL("/domains", base)` would drop it.
+ */
+export function monitorUrl(base: URL, path: string): URL {
+	const root = new URL(base);
+	root.search = "";
+	root.hash = "";
+	if (!root.pathname.endsWith("/")) root.pathname += "/";
+	return new URL(path.replace(/^\/+/, ""), root);
+}
+
 export interface MonitorResponse {
 	status: number;
 	// The Worker's API is the source of truth for these shapes; see monitor/src/api.ts.
@@ -41,7 +54,7 @@ export async function callMonitor(
 	body?: unknown,
 	fetchFn: typeof fetch = fetch,
 ): Promise<MonitorResponse> {
-	const response = await fetchFn(new URL(path, config.url), {
+	const response = await fetchFn(monitorUrl(config.url, path), {
 		method,
 		headers: {
 			authorization: `Bearer ${config.token}`,

@@ -31,19 +31,57 @@ export async function fetchCtCerts(domain: string, fetchFn: FetchFn): Promise<Ct
 	return parseCtRows(rows, domain);
 }
 
+/**
+ * The most of a crt.sh answer read. A busy domain's list runs to a few
+ * megabytes; past this the answer is refused (and the scan says the log could
+ * not be read) rather than filling the Worker's memory.
+ */
+const MAX_CT_BYTES = 16 * 1024 * 1024;
+
 async function queryCrtSh(identity: string, fetchFn: FetchFn): Promise<unknown[]> {
 	const url = new URL("https://crt.sh/");
 	url.searchParams.set("q", identity);
 	url.searchParams.set("output", "json");
 	url.searchParams.set("exclude", "expired");
+	// One row per certificate, not one for the precertificate and another for the certificate.
+	url.searchParams.set("deduplicate", "Y");
 	const res = await fetchFn(url, {
 		headers: { "user-agent": USER_AGENT },
 		signal: AbortSignal.timeout(25_000),
 	});
-	if (!res.ok) throw new Error(`crt.sh: HTTP ${res.status}`);
-	const rows: unknown = await res.json();
+	if (!res.ok) {
+		await res.body?.cancel();
+		throw new Error(`crt.sh: HTTP ${res.status}`);
+	}
+	const rows: unknown = JSON.parse(await readTextCapped(res, MAX_CT_BYTES));
 	if (!Array.isArray(rows)) throw new Error("crt.sh: unexpected response shape");
 	return rows;
+}
+
+/** The body as text, or an error once it passes `maxBytes`; reading stops there. */
+export async function readTextCapped(res: Response, maxBytes: number): Promise<string> {
+	const tooLarge = () => new Error(`Answer larger than ${maxBytes} bytes`);
+	const declared = Number(res.headers.get("content-length"));
+	if (declared > maxBytes) {
+		await res.body?.cancel();
+		throw tooLarge();
+	}
+	if (!res.body) return "";
+	const reader = res.body.getReader();
+	const decoder = new TextDecoder();
+	let text = "";
+	let size = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		size += value.byteLength;
+		if (size > maxBytes) {
+			await reader.cancel();
+			throw tooLarge();
+		}
+		text += decoder.decode(value, { stream: true });
+	}
+	return text + decoder.decode();
 }
 
 export function parseCtRows(rows: unknown[], domain: string): CtCert[] {

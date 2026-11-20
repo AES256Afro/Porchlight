@@ -20,7 +20,7 @@ Find the keys and passwords committed to your code and the packages with known s
 - **Any model, or none.** A model can explain a finding, summarise the roadmap, answer questions about a scan, or judge each finding against your code. Run one on your Mac (Ollama, Unsloth Studio, LM Studio), on another computer, or use Claude, ChatGPT, Gemini or DeepSeek through their APIs; choose it in Settings. What a model says is shown as advice beside a finding. It never changes a severity, a count or the roadmap.
 - **Exports** in Markdown, HTML, CSV or JSON. HTML, Markdown and JSON exports can include a mural written by a model: what was found, what to fix and in what order, what has been done, and what to do next.
 - **Fetch repositories from GitHub**, public or private, and scan them along with the ones on disk.
-- **Watch your websites.** A Cloudflare Worker checks the domains you own every hour for new hostnames, DNS changes, expiring certificates and missing security headers. It scans a domain only after you prove it is yours with a DNS record.
+- **Watch your websites.** A Cloudflare Worker checks the domains you own every day for new hostnames, DNS changes, expiring certificates and missing security headers. It scans a domain only after you prove it is yours with a DNS record.
 - **Investigate with a model.** On a website you have proven is yours, a model plans an investigation step by step: DNS lookups, single HTTP requests, TCP connections. Each HTTP request and connection waits for your approval, ownership is checked again before every step, and every finding has to cite the request and response it rests on. See [Investigate with a model](#investigate-with-a-model).
 - **Audit your Cloudflare account.** Connect a read-only API token and Porchlight checks every domain in the account against built-in rules, no model needed: SSL/TLS mode, HTTPS, TLS versions, HSTS, certificates, DNSSEC, CAA, SPF, DKIM and DMARC, DNS records that expose your server or point at services that are gone, WAF managed rules, bot protection, members without two-factor authentication and API tokens with broad rights. The rules know each domain's plan. Porchlight can add its ownership record or fix a setting, but only once you approve the exact request. See [Audit your Cloudflare account](#audit-your-cloudflare-account).
 - **Check this Mac.** A read-only check of the computer Porchlight runs on: pending updates, FileVault, the firewall and macOS's other protections, what accepts connections from the network, credentials kept in plain-text files, and installed npm and Python packages with known vulnerabilities.
@@ -524,7 +524,7 @@ Not covered: the Global API Key and how members sign in, your own firewall rules
 
 1. You register a domain. The monitor gives you a TXT record to publish at `_porchlight-challenge.<domain>`.
 2. Once that record resolves, the domain is verified. The record is re-checked before every scan; if it disappears, scanning stops and you get one alert.
-3. Every hour the Worker scans the verified domain whose last scan is oldest, if it is older than 24 hours.
+3. Every ten minutes the Worker scans the verified domain whose last scan is oldest, if it is older than 24 hours. A scan that fails is tried again after an hour, then every two hours. After three failures in a row you get one alert, and another once scans work again. Only one scan of a domain runs at a time, so a scan you start while the schedule is scanning it is refused rather than alerting twice.
 4. Each scan is compared with the previous one. You are alerted only when something changed, a finding appeared, or a finding was fixed.
 
 Nothing is requested from, or about, a domain that has not passed the ownership check.
@@ -585,6 +585,8 @@ printf 'ADMIN_TOKEN=%s\n' "$(openssl rand -hex 32)" > .secrets.production
 npx cf deploy --secrets-file .secrets.production
 ```
 
+When you update Porchlight, run the `migrations apply` command again before `cf deploy`: a new version can add columns the Worker needs. Until you do, the monitor answers "The database is missing a migration".
+
 To receive alerts, add `ALERT_WEBHOOK_URL=https://...` to `.secrets.production` before deploying. Alerts are POSTed as JSON with a `text` field holding the summary, plus the structured report. Without a webhook, alerts go to the Worker's log.
 
 Point the CLI at the URL `cf deploy` prints, with the same token:
@@ -612,7 +614,7 @@ Set in `monitor/cloudflare.config.ts`.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `SCAN_INTERVAL_HOURS` | 24 | How old a domain's last scan must be before it is scanned again |
-| `MAX_HOSTS` | 12 | Hosts probed per scan: the apex, `www`, then alphabetical. The rest are listed but not probed |
+| `MAX_HOSTS` | 12 | Hosts probed per scan: the apex, `www`, then the rest in turn, new names first. Hosts left out wait for a later scan |
 | `CERT_EXPIRY_WARN_DAYS` | 14 | Warning window, capped at a fifth of the certificate's lifetime |
 | `SNAPSHOTS_TO_KEEP` | 30 | Scans retained per domain |
 
@@ -623,7 +625,7 @@ The default `MAX_HOSTS` keeps a worst-case scan under 50 outbound requests, the 
 - Certificate expiry comes from the certificate logs, not from the certificate a server presents. A Worker cannot read a peer certificate.
 - Hostnames are discovered only through certificates. A host that has never had one is not found. There is no subdomain guessing by design.
 - Addresses behind a CNAME are not compared, because they belong to the target's operator and rotate. An apex that sits behind a rotating load balancer will still produce A-record changes.
-- The schedule scans one domain per hour, so 24 domains a day at the defaults.
+- The schedule wakes every ten minutes and scans one domain each time, so up to 144 domains a day at the defaults.
 - Domain names are sent to crt.sh and Cloudflare's DNS resolver.
 
 ## Development

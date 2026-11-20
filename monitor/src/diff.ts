@@ -87,6 +87,9 @@ function diffHost(host: string, before: HostState, after: HostState): Change[] {
 	return changes;
 }
 
+/** Order does not matter: older snapshots hold an alias chain sorted, newer ones in chain order. */
 function sameSet(a: string[], b: string[]): boolean {
-	return a.length === b.length && a.every((value, i) => value === b[i]);
+	if (a.length !== b.length) return false;
+	const sortedB = [...b].sort();
+	return [...a].sort().every((value, i) => value === sortedB[i]);
 }

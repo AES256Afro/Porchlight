@@ -22,15 +22,14 @@ export async function handleRequest(request: Request, env: AppEnv, deps: Deps): 
 	} catch (err) {
 		// Details go to the log, never to the caller.
 		console.error(`Unhandled error: ${errorMessage(err)}`);
-		const unmigrated = /no such table/i.test(errorMessage(err));
-		return json(
-			{
-				error: unmigrated
-					? "The database has no tables yet. Apply the migrations; see the README."
-					: "Internal error",
-			},
-			500,
-		);
+		const message = errorMessage(err);
+		let error = "Internal error";
+		if (/no such table/i.test(message)) {
+			error = "The database has no tables yet. Apply the migrations; see the README.";
+		} else if (/no such column/i.test(message)) {
+			error = "The database is missing a migration. Apply the migrations; see the README.";
+		}
+		return json({ error }, 500);
 	}
 }
 
@@ -51,7 +50,7 @@ async function route(request: Request, env: AppEnv, deps: Deps): Promise<Respons
 		return methodNotAllowed("GET, POST");
 	}
 
-	const name = normalizeDomain(decodeURIComponent(segments[1]!));
+	const name = normalizeDomain(safeDecode(segments[1]!));
 	const domain = name ? await getDomain(env.DB, name) : null;
 	if (!domain) return json({ error: "Domain is not registered" }, 404);
 
@@ -108,9 +107,8 @@ async function verifyDomain(domain: DomainRow, env: AppEnv, deps: Deps): Promise
 			409,
 		);
 	}
-	const now = deps.now().toISOString();
-	await markVerified(env.DB, domain.id, now);
-	return json({ domain: describeDomain({ ...domain, verified_at: now }) });
+	const updated = await markVerified(env.DB, domain.id, deps.now().toISOString());
+	return json({ domain: describeDomain(updated) });
 }
 
 async function scanDomain(domain: DomainRow, env: AppEnv, deps: Deps): Promise<Response> {
@@ -137,6 +135,20 @@ async function scanDomain(domain: DomainRow, env: AppEnv, deps: Deps): Promise<R
 			);
 		case "error":
 			return json({ error: `Scan failed: ${outcome.error}` }, 502);
+		case "busy":
+			return json(
+				{ error: "A scan of this domain is already running. Try again in a minute." },
+				409,
+			);
+	}
+}
+
+/** A path segment that is not valid percent-encoding names no domain, rather than failing the request. */
+function safeDecode(segment: string): string {
+	try {
+		return decodeURIComponent(segment);
+	} catch {
+		return "";
 	}
 }
 
@@ -183,6 +195,8 @@ function describeDomain(domain: DomainRow) {
 		verifiedAt: domain.verified_at,
 		lastScanAt: domain.last_scan_at,
 		lastScanStatus: domain.last_scan_status,
+		/** Scans that have failed in a row; 0 unless the last scan failed. */
+		errorStreak: domain.error_streak,
 		challenge: challengeOf(domain),
 	};
 }

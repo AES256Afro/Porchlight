@@ -49,7 +49,7 @@ export function deriveFindings(
 			const finding = certFinding(host, state.cert, settings, now);
 			if (finding) add(finding);
 		}
-		if (state.http?.ok) {
+		if (state.http?.ok && !pageUnavailable(state.http.status)) {
 			for (const header of missingHeaders(state.http)) {
 				add({
 					id: `missing-header:${host}:${header}`,
@@ -145,15 +145,35 @@ function missingHeaders(probe: Extract<HttpProbe, { ok: true }>): SecurityHeader
 	});
 }
 
+/**
+ * A server error or rate limit says the site could not serve its page just
+ * then, not how the page is configured: an outage's bare 503 lacks every
+ * header the site normally sends. Header findings are neither raised nor
+ * cleared by one.
+ */
+function pageUnavailable(status: number): boolean {
+	return status >= 500 || status === 429;
+}
+
 /** Whether this scan had the evidence to confirm or clear `finding`. */
 function reobserved(snapshot: Snapshot, finding: Finding): boolean {
 	if (finding.basis === "apex") return snapshot.apex.CAA !== undefined;
 	const state = snapshot.hosts[finding.host];
 	if (!state) return true; // The host left the inventory, which clears its findings.
 	if (state.dns === null) return false;
-	if (finding.basis === "http") return state.http?.ok === true || !resolves(state.dns);
+	if (finding.basis === "http") {
+		if (!resolves(state.dns)) return true;
+		return state.http?.ok === true && !pageUnavailable(state.http.status);
+	}
 	return true;
 }
+
+/**
+ * A finding that turns into a worse one about the same thing (a certificate
+ * that was expiring has now expired) is reported as the new, worse finding;
+ * the milder one is not also reported as resolved.
+ */
+const WORSENS_TO: Record<string, string> = { "cert-expiring": "cert-expired" };
 
 export function diffFindings(
 	previous: Finding[],
@@ -161,8 +181,13 @@ export function diffFindings(
 ): { added: Finding[]; resolved: Finding[] } {
 	const before = new Set(previous.map((finding) => finding.id));
 	const after = new Set(current.map((finding) => finding.id));
+	const worsened = (finding: Finding) => {
+		const kind = finding.id.slice(0, finding.id.indexOf(":"));
+		const worse = WORSENS_TO[kind];
+		return worse !== undefined && after.has(`${worse}${finding.id.slice(kind.length)}`);
+	};
 	return {
 		added: current.filter((finding) => !before.has(finding.id)),
-		resolved: previous.filter((finding) => !after.has(finding.id)),
+		resolved: previous.filter((finding) => !after.has(finding.id) && !worsened(finding)),
 	};
 }
