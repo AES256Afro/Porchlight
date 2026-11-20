@@ -266,8 +266,10 @@ export async function investigate(run: Run, deps: EngineDeps, signal: AbortSigna
 				step.outcome = "waiting";
 				run.status = "waiting";
 				run.pending = { stepId: step.id, tool: action.tool, args: actionArgs(action), description: step.description, rationale: step.rationale ?? "" };
+				// Asked before the save, so the request can be answered from the moment the page can show it.
+				const asked = deps.approve({ runId: run.id, stepId: step.id, action, description: step.description, rationale: step.rationale ?? "" }, signal);
 				await save();
-				const answer = await deps.approve({ runId: run.id, stepId: step.id, action, description: step.description, rationale: step.rationale ?? "" }, signal);
+				const answer = await asked;
 				delete run.pending;
 				run.status = "running";
 				if (signal.aborted) {
