@@ -161,9 +161,15 @@ export function permissionWords(permission) {
 export function tokenFixSteps(permissions, purpose) {
 	if (permissions.length === 0) return [];
 	const list = permissions.map((permission) => `"${permissionWords(permission)}"`).join(" and ");
+	// Cloudflare's editor lists permissions in groups with a search box; some accounts still see three menus a row.
+	const add = `Add ${list}: type the name into "Search for permission groups", open the group it is in, and tick it at that level. Tick only these. Selecting everything gives the token far more than Porchlight uses.`;
+	// Seen on a real account: a token with every permission ticked still could not list the owner's tokens.
+	const tokens = permissions.some((permission) => permission.name === "API Tokens Read")
+		? ' Cloudflare does not offer "API Tokens" to every token. If the search does not find it, leave it: only the check of your own tokens stays Could not check, and nothing else is affected.'
+		: "";
 	return [
 		"Open Cloudflare → My Profile → API Tokens. Find the token you gave Porchlight, open the menu at the end of its row and choose Edit.",
-		`Under Permissions choose Add more and add ${list}. Each is three menus: where it applies, its name, and the level.`,
+		`${add}${tokens}`,
 		purpose === "change"
 			? "Continue to summary and save. The token itself stays the same, so there is nothing to paste again. Come back here and choose Fix these again."
 			: "Continue to summary and save. The token itself stays the same, so there is nothing to paste again. Come back here and choose Audit again.",

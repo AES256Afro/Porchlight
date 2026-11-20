@@ -287,8 +287,10 @@ export async function renderInvestigate(view, runId) {
 		const goal = /** @type {HTMLTextAreaElement} */ (h("textarea", { name: "goal", rows: 3, maxLength: state.defaults.maxGoal, "aria-label": "Goal" }));
 		goal.value = state.defaults.goal;
 		const turns = /** @type {HTMLInputElement} */ (h("input", { type: "number", name: "turns", min: 1, max: state.defaults.maxTurnsLimit, value: String(state.defaults.maxTurns), "aria-label": "Turns" }));
-		const consent = /** @type {HTMLInputElement} */ (h("input", { type: "checkbox", name: "sendsToHosted", required: true }));
-		const startButton = /** @type {HTMLButtonElement} */ (h("button", { type: "submit", class: "button primary", disabled: state.active !== null }, "Start investigation"));
+		// With a hosted model the page says above what is sent, and the button says where it goes: pressing it is the yes.
+		const startButton = /** @type {HTMLButtonElement} */ (
+			h("button", { type: "submit", class: "button primary", disabled: state.active !== null }, assistant.hosted ? `Start, sending to ${assistant.model}` : "Start investigation")
+		);
 		// The model chooses each step as it goes, so what can be shown before a run is what every step is held to.
 		const limits = h("ul", { class: "investigate-limits" });
 		const drawLimits = () => {
@@ -317,7 +319,7 @@ export async function renderInvestigate(view, runId) {
 							goal: goal.value,
 							maxTurns: Number(turns.value),
 							approveAll: approveAll.checked,
-							...(assistant.hosted ? { sendsToHosted: consent.checked } : {}),
+							...(assistant.hosted ? { sendsToHosted: true } : {}),
 						});
 						runId = undefined;
 						if (location.hash !== "#/investigate") history.replaceState(null, "", "#/investigate");
@@ -368,7 +370,9 @@ export async function renderInvestigate(view, runId) {
 				),
 			),
 			h("div", { class: "investigate-may-send" }, h("h3", null, "What this run may send"), limits),
-			assistant.hosted ? h("label", { class: "check-line" }, consent, `Send this to ${assistant.model}, outside my machines`) : null,
+			assistant.hosted
+				? h("p", { class: "hint" }, `Starting sends what the box above describes to ${assistant.model}, outside your machines. Every step it takes is listed here and on the Activity page as it happens. To keep everything on your machines, choose a local model in Settings.`)
+				: null,
 			h("div", { class: "actions" }, startButton),
 			startProblem,
 		);

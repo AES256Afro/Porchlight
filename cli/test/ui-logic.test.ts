@@ -225,6 +225,10 @@ test("a refused permission comes with where to add it, in Cloudflare's own words
 	// Editing a token keeps it, so nobody is told to paste it again.
 	assert.match(change[2] ?? "", /nothing to paste again.*Fix these again/);
 	assert.match(tokenFixSteps([{ name: "Bot Management Read", scope: "Zone" }], "read")[2] ?? "", /Audit again/);
+	// Only what is named, never everything; and the one permission Cloudflare may not offer is said to be optional.
+	assert.match(change[1] ?? "", /Search for permission groups.*Tick only these/);
+	assert.doesNotMatch(change[1] ?? "", /does not offer/);
+	assert.match(tokenFixSteps([{ name: "API Tokens Read", scope: "User" }], "read")[1] ?? "", /"User, API Tokens, Read".*does not offer "API Tokens" to every token.*leave it/);
 
 	const here = ownershipSteps({ domain: "example.com", onCloudflare: true });
 	assert.match(here[0] ?? "", /copy the Name and the Value shown for example\.com/);

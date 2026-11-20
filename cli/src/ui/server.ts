@@ -1288,6 +1288,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		void investigate(run, {
 			ask: async (system, user, signal) => {
 				const local = !hosted;
+				note(`Investigation of ${name}, turn ${run.turns}: asking ${modelWords(config)} for the next step`);
 				// The owner's own model answers one request at a time; Explain and Ask wait their turn.
 				while (local && modelBusy && !signal.aborted) await abortableSleep(500, signal);
 				if (local) modelBusy = true;

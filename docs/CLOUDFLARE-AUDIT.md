@@ -136,6 +136,7 @@ One account of 26 zones, all on the Free plan. The audit ran to the end. What it
 
 - **Fixed.** Every zone lists a second Universal pack with the status `backup_issued`: the backup certificate Cloudflare keeps beside each Universal one. The certificate rule counted it as "not active", so every zone failed. It now counts only the certificates in use (see the table above).
 - **Still open.** The token could not read WAF rulesets or Bot Management ("Zone WAF Read" and "Bot Management Read" were missing), so both checks said Could not check on every zone, as they should. That leaves the first two items above unverified, and it is not known whether the token came from the template link. If it did, `firewall_services` is the wrong key for Zone WAF Read and the link has no key for Bot Management.
+- **Second run, the same day, with a token given every permission.** WAF rulesets and Bot Management were read on all 26 zones, so both checks ran; their results have not been compared with the dashboard. `GET /user/tokens` was still refused, so "API Tokens Read" may be a permission Cloudflare does not give an API token at all; the page now says it is optional.
 - **Not compared yet.** No zone's result has been read against its dashboard, and the members check was not looked at.
 
 ## Sources
