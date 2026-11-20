@@ -18,6 +18,7 @@ Find the keys and passwords committed to your code and the packages with known s
 - **Fetch repositories from GitHub**, public or private, and scan them along with the ones on disk.
 - **Watch your websites.** A Cloudflare Worker checks the domains you own every hour for new hostnames, DNS changes, expiring certificates and missing security headers. It scans a domain only after you prove it is yours with a DNS record.
 - **Investigate with a model.** On a website you have proven is yours, a model plans an investigation step by step: DNS lookups, single HTTP requests, TCP connections. Each HTTP request and connection waits for your approval, ownership is checked again before every step, and every finding has to cite the request and response it rests on. See [Investigate with a model](#investigate-with-a-model).
+- **Audit your Cloudflare account.** Connect a read-only API token and Porchlight checks every domain in the account against built-in rules, no model needed: SSL/TLS mode, HTTPS, TLS versions, HSTS, certificates, DNSSEC, CAA, SPF, DKIM and DMARC, DNS records that expose your server or point at services that are gone, WAF managed rules, bot protection, members without two-factor authentication and API tokens with broad rights. The rules know each domain's plan. Porchlight can add its ownership record or fix a setting, but only once you approve the exact request. See [Audit your Cloudflare account](#audit-your-cloudflare-account).
 - **Check this Mac.** A read-only check of the computer Porchlight runs on: pending updates, FileVault, the firewall and macOS's other protections, what accepts connections from the network, credentials kept in plain-text files, and installed npm and Python packages with known vulnerabilities.
 - **A Mac app, twelve looks, and access from your other devices** over Tailscale.
 
@@ -39,7 +40,7 @@ The screenshots show made-up repositories, checked by the real scanners.
 - **To a hosted model, if you choose one**: only what the page shows about the findings you ask about. Never a secret's value, a commit author or an email address. The page warns you before anything is sent.
 - **To your own websites, and to the model you choose, if you investigate one**: the DNS lookups, HTTP requests and TCP connections you approve go from this computer to the domain you verified and its subdomains. The model is sent the domain, your goal, the tool list and the results (your site's DNS records and HTTP responses, Set-Cookie values left out). DNS lookups and the ownership check go to Cloudflare's DNS-over-HTTPS resolver. The page says this before a run starts, and a hosted model is used only after you tick the box saying so. See [Investigate with a model](#investigate-with-a-model).
 - **To GitHub**, only if you fetch repositories from it.
-- **To your own Cloudflare account**, if you deploy the monitor.
+- **To your own Cloudflare account**, if you deploy the monitor, or connect a token for the Cloudflare audit. The token goes only to Cloudflare's API. A change is sent only when you approve the exact request.
 
 Everything else, including the reports, stays on your machine, readable only by you.
 
@@ -478,6 +479,39 @@ How it is kept safe:
 - As a service (BoxPilot) it does not run: in a container it would see the container, not the computer.
 
 Not covered: apps in `/Applications` and from the App Store, Ruby gems, Go and Rust tools, other Python environments, and services that use UDP.
+
+## Audit your Cloudflare account
+
+**Cloudflare** (under "Your websites") checks every domain (zone) in your Cloudflare account. From a terminal:
+
+```bash
+porchlight cloudflare audit        # add --json for JSON, --no-lookups to skip DNS lookups of CNAME targets
+```
+
+1. Make an API token at Cloudflare → My Profile → API Tokens with **Read** permissions only. **Settings → Cloudflare** opens Cloudflare's "Create token" page with most of them ticked, and lists them all: Zone Read, Zone Settings Read, DNS Read, SSL and Certificates Read, Zone WAF Read, Bot Management Read (zone); Account Settings Read, Account API Tokens Read (account); API Tokens Read (user).
+2. Paste it in Settings → Cloudflare. Porchlight checks it with Cloudflare and keeps it in `cloudflare-settings.json` beside the report, readable only by you. In a terminal or as a service, set `PORCHLIGHT_CLOUDFLARE_TOKEN` instead.
+3. Choose **Audit my account**.
+
+Each domain is listed with its plan and its problems, worst first, each with why it matters, the fix (with links into Cloudflare's dashboard) and the API call that makes it. The rules, their severities and their sources are in [docs/CLOUDFLARE-AUDIT.md](docs/CLOUDFLARE-AUDIT.md). In short:
+
+| Area | What it checks |
+| --- | --- |
+| SSL/TLS | Encryption mode (Full (strict)), Always Use HTTPS, minimum TLS 1.2, TLS 1.3, HSTS, Automatic HTTPS Rewrites, Universal SSL, certificate expiry, authenticated origin pulls |
+| DNS | DNSSEC, CAA records, DNS-only records that publish the address of a proxied server, internal addresses in public DNS, CNAME records pointing at names that no longer exist |
+| Email | SPF, DKIM and DMARC |
+| Firewall and bots | WAF managed rules, OWASP Core, Under Attack mode, Browser Integrity Check, Bot Fight Mode or Super Bot Fight Mode |
+| Account | Members without two-factor authentication, Super Administrators, API tokens that can change everything from anywhere with no end date, unused tokens |
+
+How it is kept safe:
+
+- It only reads, through Cloudflare's API at `api.cloudflare.com`. The token is sent there as a header and nowhere else: never to the page after you paste it, a log, a report, an export or a model.
+- A domain's plan decides what is a problem: a Free domain is never told to turn on a paid feature. Something the token may not read is shown as **Could not check**, with the permission to add, never as passed.
+- Looking up where a CNAME record points (to find one left pointing at a deleted site that someone else could claim) happens only for a domain whose `_porchlight-challenge` record proves it is yours, checked in the same audit. You can turn it off.
+- **Changes are yours to approve.** With DNS Write or Zone Settings Write added to the token, Porchlight can add its ownership record, turn on Always Use HTTPS, TLS 1.3, Automatic HTTPS Rewrites or Browser Integrity Check, or set the minimum TLS version to 1.2. It shows the exact request first, and sends it once, only when you choose **Approve and send** on the Mac that runs Porchlight. Every change is listed on the page and kept in `cloudflare-changes.json`.
+- Members are shown by a masked email (`a…@example.com`). The audit is kept in `cloudflare-audit.json`, readable only by you. Exports (Markdown, HTML, CSV, JSON) escape everything for their format.
+- **Analysis by a model** is optional. It reads the audit as the page shows it, never the token, members or token names, and changes no check.
+
+Not covered: the Global API Key and how members sign in, your own firewall rules, Workers, Pages, R2, Zero Trust and Tunnel, your origin servers themselves, and your registrar's settings.
 
 ## Monitor domains
 

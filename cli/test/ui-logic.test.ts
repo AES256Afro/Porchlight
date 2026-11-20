@@ -237,19 +237,25 @@ test("click paths become breadcrumbs; other arrows stay text", () => {
 	for (const known of KNOWN_PATHS) {
 		for (const crumb of known.crumbs) {
 			if (crumb.href === null) continue;
-			const allowed = { page: /^#\/settings(\/[a-z]+)?$/, web: /^https:\/\/github\.com\/settings\//, mac: /^x-apple\.systempreferences:(com\.apple\.[\w.-]+)?$/, plain: /^$/ }[known.kind];
+			const allowed = {
+				page: /^#\/settings(\/[a-z]+)?$/,
+				web: /^https:\/\/(github\.com\/settings\/|dash\.cloudflare\.com\/(\?to=\/:account\/[a-z:/-]+|profile(\/api-tokens)?)?$)/,
+				mac: /^x-apple\.systempreferences:(com\.apple\.[\w.-]+)?$/,
+				plain: /^$/,
+			}[known.kind];
 			assert.match(crumb.href, allowed, `${known.text}: ${crumb.href}`);
 		}
 	}
 });
 
-test("every click path the page or the host check writes is a known path", async () => {
+test("every click path the page, the host check or the Cloudflare audit writes is a known path", async () => {
 	const { readFile, readdir } = await import("node:fs/promises");
 	const files = [
 		...(await readdir(new URL("../ui/", import.meta.url))).filter((name) => name.endsWith(".js") && name !== "paths.js").map((name) => new URL(`../ui/${name}`, import.meta.url)),
 		...(await readdir(new URL("../src/host/", import.meta.url))).filter((name) => name.endsWith(".ts")).map((name) => new URL(`../src/host/${name}`, import.meta.url)),
+		...(await readdir(new URL("../src/cloudflare/", import.meta.url))).filter((name) => name.endsWith(".ts")).map((name) => new URL(`../src/cloudflare/${name}`, import.meta.url)),
 	];
-	const starts = /(?:System Settings|Settings|Apps) → /g;
+	const starts = /(?:System Settings|Settings|Apps|Cloudflare) → /g;
 	for (const file of files) {
 		const text = await readFile(file, "utf8");
 		for (const line of text.split("\n")) {

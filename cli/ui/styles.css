@@ -2809,3 +2809,65 @@ fieldset.looks legend {
 .investigate-run h3 {
 	margin-top: 18px;
 }
+
+/* Cloudflare: the audit of the owner's Cloudflare account */
+
+.cf-zone-head,
+.cf-severities {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 12px;
+	margin: 0 0 8px;
+}
+
+.cf-severities {
+	margin: 12px 0;
+}
+
+.cf-severity-count {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.cf-plan {
+	padding: 1px 8px;
+	border: 1px solid var(--hairline);
+	border-radius: 999px;
+	color: var(--ink-2);
+	font-size: 12.5px;
+}
+
+.cf-approval {
+	margin-top: 10px;
+	padding: 10px 12px;
+	border: 1px solid var(--hairline);
+	border-radius: 8px;
+}
+
+.cf-request {
+	margin: 8px 0;
+	padding: 10px 12px;
+	overflow-x: auto;
+	background: var(--page);
+	border: 1px solid var(--hairline);
+	border-radius: 8px;
+	font-family: var(--mono);
+	font-size: 12.5px;
+	line-height: 1.5;
+	white-space: pre;
+}
+
+.cloudflare-permissions li + li {
+	margin-top: 4px;
+}
+
+/* A long request or value scrolls inside its own box instead of widening the card. */
+.host-list > .host-check {
+	min-width: 0;
+}
+
+.host-check code {
+	overflow-wrap: anywhere;
+}

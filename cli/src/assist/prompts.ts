@@ -4,6 +4,7 @@ import { domainSuggestions, type MonitorFinding, type MonitorReport } from "../r
 import { buildRepoRoadmap, suggestionsFor } from "../roadmap/repos.ts";
 import { phaseTitle, type PhaseKey, type Roadmap } from "../roadmap/types.ts";
 import type { ChatMessage } from "./ollama.ts";
+import type { CfCheck, CfReport } from "../cloudflare/types.ts";
 import { describeFilter, matchesFilter, noFilter, type FindingFilter } from "../../ui/filter.js";
 
 /**
@@ -69,6 +70,12 @@ const TASKS = {
 		"Summarise it for the owner in a few short paragraphs: what changed since the previous scan (hosts added or gone, DNS records, HTTPS), which findings need attention and how urgently (expired or expiring certificates, DNS records someone could take over, missing security headers), and what was resolved.",
 		'If "firstScan" is true there is no previous scan: say so, and summarise the open findings instead. If nothing changed and nothing is open, say that plainly.',
 		"Keep it under 250 words.",
+	],
+	cloudflare: [
+		"The data is Porchlight's audit of the owner's own Cloudflare account: each zone (domain) with its plan, and the checks Porchlight's built-in rules made, each with a status (failed, unknown meaning it could not be checked, passed, unavailable meaning not on the zone's plan), a severity and the fix the rules suggest.",
+		"Write a short analysis for the owner: which problems to fix first across all zones and why, which fixes are quick and which need care (HSTS, Full (strict) and authenticated origin pulls can break a site if done in the wrong order), and what the checks that could not be made leave unknown.",
+		"Do not recommend a feature for a zone whose check says it is not on that zone's plan, except to say a paid plan would add it. Do not change the severities: they are the rules' own.",
+		"Keep it under 300 words.",
 	],
 	ask: [
 		'The data is the latest scan of the owner\'s git repositories: findings, most severe first, each with its repository, location and suggested fix ("fix"); the steps for each fix are in "fixSteps".',
@@ -221,6 +228,44 @@ export function domainPrompt(report: MonitorReport & Record<string, unknown>): P
 		"in that order, the most severe open findings first",
 	);
 	return build(TASKS.domain, data, cut);
+}
+
+/**
+ * The Cloudflare audit as the page shows it, for an optional analysis. Built from this server's own
+ * copy of the audit. The token is never in the audit; members' emails (even masked) and token names
+ * are left out, and so is any value of an ownership record. Zone checks keep a few of their items
+ * (record names and values the page lists); account checks keep only their counts.
+ */
+export function cloudflarePrompt(report: CfReport): Prompt {
+	const zoneCheck = (item: CfCheck) => ({
+		title: clip(item.title),
+		status: item.status,
+		severity: item.severity,
+		seen: clip(item.detail),
+		...(item.status !== "passed" && item.fix ? { fix: item.fix.map(clip) } : {}),
+		...(item.status !== "passed" && item.items
+			? { items: item.items.filter((line) => !/(porchlight|securityx)-verify=/i.test(line)).slice(0, 10).map(clip) }
+			: {}),
+	});
+	const accountCheck = (item: CfCheck) => ({ title: clip(item.title), status: item.status, severity: item.severity, seen: clip(item.detail), ...(item.status !== "passed" && item.fix ? { fix: item.fix.map(clip) } : {}) });
+	const order = { failed: 0, unknown: 1, unavailable: 2, passed: 3 };
+	const zones = [...report.zones]
+		.map((zone) => ({
+			zone: clip(zone.name),
+			plan: clip(zone.planName),
+			problems: zone.checks.filter((item) => item.status === "failed").length,
+			checks: [...zone.checks].sort((a, b) => order[a.status] - order[b.status]).map((item) => (item.status === "passed" ? { title: clip(item.title), status: "passed" } : zoneCheck(item))),
+		}))
+		.sort((a, b) => b.problems - a.problems);
+	const base = {
+		checkedAt: clip(report.checkedAt),
+		zonesAudited: report.zones.length,
+		zonesNotAudited: report.zonesSkipped,
+		notCovered: report.notCovered.map(clip),
+		account: [...report.accounts.flatMap((account) => account.checks), ...report.userChecks].map(accountCheck),
+	};
+	const { data, cut } = pack(base, [["zones", zones, "zones"]], "the zones with the most problems first");
+	return build(TASKS.cloudflare, data, cut);
 }
 
 /** Answers a question from the stored report only. The question is the owner's; it is not part of the data. */

@@ -5,6 +5,7 @@ import { h, icon, replace, toast } from "./dom.js";
 import { applyLook, currentLook } from "./appearance.js";
 import { LOOKS } from "./looks.js";
 import { accessSection } from "./access-settings.js";
+import { cloudflareSection } from "./cloudflare-settings.js";
 import { modelSection } from "./model-settings.js";
 import { load, store } from "./store.js";
 
@@ -17,6 +18,7 @@ export async function renderSettings(view) {
 	// Kept across redraws, so changing the look leaves a half-filled model form as it is.
 	const model = store.settings?.service ? null : await modelSection();
 	const access = store.settings?.service ? null : await accessSection();
+	const cloudflare = await cloudflareSection();
 	let saving = Promise.resolve();
 
 	/** @param {string} id */
@@ -50,6 +52,7 @@ export async function renderSettings(view) {
 				{ class: "page" },
 				h("div", { class: "page-head" }, h("div", null, h("h1", null, "Settings"), h("p", { class: "sub" }, "Which model Porchlight uses, how it looks, and what it's connected to."))),
 				model,
+				cloudflare,
 				access,
 				h(
 					"fieldset",
@@ -103,6 +106,7 @@ function connections() {
 				settings.assistant.configured ? `Model: ${settings.assistant.model} at ${settings.assistant.host}` : "Model: not connected",
 			),
 			line(settings.github.token, settings.github.token ? "GitHub: token set, private repositories can be fetched" : "GitHub: public repositories only"),
+			line(settings.cloudflare.configured, settings.cloudflare.configured ? "Cloudflare: token saved, your account can be audited" : "Cloudflare: not connected"),
 		),
 		h(
 			"p",

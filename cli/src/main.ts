@@ -16,6 +16,11 @@ import { renderHostText } from "./host/render.ts";
 import { run } from "./repos/exec.ts";
 import { adoptOldSettings, dataFolder } from "./legacy.ts";
 import { startUiServer } from "./ui/server.ts";
+import { auditCloudflare } from "./cloudflare/audit.ts";
+import { tokenShapeProblem } from "./cloudflare/client.ts";
+import { renderCloudflareText } from "./cloudflare/export.ts";
+import { readSavedToken } from "./cloudflare/store.ts";
+import { readDomains } from "./investigate/ownership.ts";
 
 const USAGE = `Porchlight
 
@@ -49,6 +54,13 @@ Usage:
       --json                       Print the result as JSON
       --offline                    Do not ask Apple for updates or look packages up on OSV.dev
 
+  porchlight cloudflare audit       Check every domain in your Cloudflare account against built-in
+                                   rules: SSL/TLS, DNS, email records, firewall, members and tokens.
+                                   Reads only. Needs a read-only API token (see the README)
+      --json                       Print the result as JSON
+      --no-lookups                 Do not look up where CNAME records point, even for domains
+                                   whose Porchlight ownership record proves them
+
   porchlight ui                     Open the local web interface for both tools
       --port <n>                   Port to listen on (default: 4747, or the next free port)
       --host <address>             Address to listen on (default: 127.0.0.1). Any other
@@ -66,6 +78,9 @@ Other models, chosen with PORCHLIGHT_LLM_PROVIDER: "compatible" for a server
 that speaks OpenAI's format at PORCHLIGHT_LLM_URL (LM Studio, llama.cpp), or a
 hosted one ("anthropic", "openai", "deepseek") with PORCHLIGHT_LLM_API_KEY.
 
+The Cloudflare audit uses the token saved under Settings → Cloudflare in the
+interface, or PORCHLIGHT_CLOUDFLARE_TOKEN. It is sent only to Cloudflare's API.
+
 The interface can fetch repositories from GitHub to scan. Public ones need
 nothing; private ones need PORCHLIGHT_GITHUB_TOKEN, a token that can read them.
 `;
@@ -81,6 +96,7 @@ export async function main(argv: string[]): Promise<number> {
 		if (group === "domains" && command === "export") return await domainsExport(rest);
 		if (group === "domains" && command) return await domains(command, rest);
 		if (group === "host" && command === "check") return await hostCheck(rest);
+		if (group === "cloudflare" && command === "audit") return await cloudflareAudit(rest);
 		if (group === "ui") return await ui(argv.slice(1));
 	} catch (err) {
 		console.error(`porchlight: ${err instanceof Error ? err.message : String(err)}`);
@@ -144,6 +160,34 @@ async function hostCheck(args: string[]): Promise<number> {
 		},
 	});
 	process.stdout.write(values.json ? `${JSON.stringify(report, null, "\t")}\n` : renderHostText(report));
+	return 0;
+}
+
+/**
+ * Audits the owner's Cloudflare account and prints what the built-in rules found. Reads only: changes
+ * are made from the interface, one at a time, after the owner approves the exact request.
+ * `deps` lets tests pass a fake network and their own folder.
+ */
+export async function cloudflareAudit(args: string[], deps: { fetchFn?: typeof fetch; env?: NodeJS.ProcessEnv; dataDir?: string; write?: (text: string) => void } = {}): Promise<number> {
+	const { values } = parseArgs({ args, options: { json: { type: "boolean", default: false }, "no-lookups": { type: "boolean", default: false } } });
+	const env = deps.env ?? process.env;
+	const dir = deps.dataDir ?? (await dataFolder(homedir()));
+	// BoxPilot passes an optional setting left empty as an empty variable, so empty counts as not given.
+	const token = env.PORCHLIGHT_CLOUDFLARE_TOKEN?.trim() || (await readSavedToken(join(dir, "cloudflare-settings.json")))?.token;
+	if (!token) throw new Error("No Cloudflare API token. Save one under Settings → Cloudflare in the interface, or set PORCHLIGHT_CLOUDFLARE_TOKEN. It needs read permissions only; the README lists them.");
+	const problem = tokenShapeProblem(token);
+	if (problem) throw new Error(`PORCHLIGHT_CLOUDFLARE_TOKEN: ${problem}`);
+	const domains = await readDomains(join(dir, "investigate-domains.json"));
+	const report = await auditCloudflare({
+		token,
+		fetchFn: deps.fetchFn,
+		lookups: !values["no-lookups"],
+		ownershipTokens: Object.fromEntries(Object.entries(domains.domains).map(([name, entry]) => [name, entry.token])),
+		onProgress: ({ done, total, current }) => {
+			if (current) console.error(`Reading ${Math.min(done + 1, total)} of ${total}: ${current}`);
+		},
+	});
+	(deps.write ?? ((text: string) => void process.stdout.write(text)))(values.json ? `${JSON.stringify(report, null, "\t")}\n` : renderCloudflareText(report));
 	return 0;
 }
 
@@ -230,6 +274,8 @@ async function ui(args: string[]): Promise<number> {
 	// BoxPilot passes an optional setting left empty as an empty variable, so empty counts as not given.
 	const githubToken = process.env.PORCHLIGHT_GITHUB_TOKEN?.trim() || undefined;
 	const githubError = githubToken ? (tokenProblem(githubToken) ?? undefined) : undefined;
+	const cloudflareToken = process.env.PORCHLIGHT_CLOUDFLARE_TOKEN?.trim() || undefined;
+	const cloudflareTokenError = cloudflareToken ? (tokenShapeProblem(cloudflareToken) ?? undefined) : undefined;
 	const reportPath = resolve(values.report ?? join(await dataFolder(homedir()), "repo-scan.json"));
 	// The address is the switch: BoxPilot fills the model setting with a default, so a model alone turns nothing on.
 	// Off, as opposed to a setting to correct: no provider chosen and no address given.
@@ -252,6 +298,8 @@ async function ui(args: string[]): Promise<number> {
 			assistant,
 			assistantError,
 			assistantUnset,
+			...(cloudflareToken && !cloudflareTokenError ? { cloudflareToken } : {}),
+			cloudflareTokenError,
 		}),
 	);
 	if (server.port !== port && port !== 0) console.log(`Port ${port} is in use, so this copy is on ${server.port}.`);
