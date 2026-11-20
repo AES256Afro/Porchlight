@@ -350,7 +350,7 @@ Outside BoxPilot:
 ```bash
 export PORCHLIGHT_UI_KEY="$(openssl rand -hex 32)"   # keep it: the page asks for it
 docker run -d --name porchlight -p 127.0.0.1:4747:4747 -e PORCHLIGHT_UI_KEY \
-  -v "$HOME/Projects:/repos:ro" -v porchlight-data:/data ghcr.io/aes256afro/porchlight:0.9.0
+  -v "$HOME/Projects:/repos:ro" -v porchlight-data:/data ghcr.io/aes256afro/porchlight:0.10.0
 ```
 
 In the container, `porchlight ui --host 0.0.0.0` changes what protects it:
