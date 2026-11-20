@@ -93,7 +93,7 @@ Answers open in a **panel on the right** that slides in when you press Explain, 
 2. **The side panel** and its Appearance choice. **Done**: answers open on the right by default; Send to a model closes its dialog and answers there too.
 3. **Project folder, option A:** Settings → Projects, the sidebar switcher, the `Porchlight` folder writer, the daily log and the Mac app's Choose… bridge. **Done**: files are readable only by the owner (0600), a discussion begun in a project is saved there and rewritten after each answer, and the log covers projects, scans, exports, models asked and Deeper analysis.
 4. **Projects, option B:** per-project scans and history.
-5. The Cloudflare audit, being built in its own session now, and investigations then save their model analysis as discussions and their exports to the project folder.
+5. The Cloudflare audit and investigations save their model analysis as discussions and their exports to the project folder. **Done for the Cloudflare audit**: its analysis is a discussion (follow-ups until a newer audit), and its export, audits and approved changes reach the project. An investigation's report can be saved to the project; its model findings are not discussions.
 
 ## Decide
 

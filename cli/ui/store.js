@@ -15,7 +15,13 @@ import { findingKey } from "./tracking.js";
 /** @typedef {SuggestedFinding & { repo: string }} FindingRow */
 /** @typedef {import("../src/host/types.ts").HostReport} HostReport */
 /** @typedef {import("../src/ui/server.ts").HostStatus} HostStatus */
-/** @typedef {"report" | "scan" | "settings" | "notes" | "host" | "projects"} Change */
+/** @typedef {import("../src/cloudflare/types.ts").CfReport} CfReport */
+/** @typedef {import("../src/ui/server.ts").CloudflareStatus} CloudflareStatus */
+/** @typedef {{ configured: boolean, source: "settings" | "startup" | null, savedAt?: string, error?: string, verified?: { status: string, kind: "user" | "account", expiresOn?: string, checkedAt: string } }} CloudflareToken */
+/** @typedef {{ name: string, scope: string, purpose: string }} CloudflarePermission */
+/** @typedef {{ read: CloudflarePermission[], write: CloudflarePermission[], templateUrl: string }} CloudflareGuide */
+/** @typedef {{ at: string, zone: string, zoneId: string, change: string, title: string, request: { method: string, url: string, body: unknown }, ok: boolean, result: string }} AppliedChange */
+/** @typedef {"report" | "scan" | "settings" | "notes" | "host" | "cloudflare" | "projects"} Change */
 /** @typedef {import("../src/projects/projects.ts").Project} Project */
 /**
  * The projects and the one in use. `canChange`: this page may add and remove them (not another device
@@ -34,7 +40,9 @@ export const store = {
 	 *
 	 * `platform`: the operating system Porchlight runs on, such as "darwin".
 	 *
-	 * @type {{ defaultRoot: string, reportPath: string, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean }, github: { token: boolean, error?: string }, assistant: import("./generated.js").AssistantSettings, appearance: string, answers: string, remote: boolean, platform: string, sendTargets: import("./send-text.js").SendTarget[], lastView: string | null } | null}
+	 * `cloudflare`: whether a Cloudflare token is saved or given at start-up; never the token.
+	 *
+	 * @type {{ defaultRoot: string, reportPath: string, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean }, github: { token: boolean, error?: string }, assistant: import("./generated.js").AssistantSettings, appearance: string, answers: string, remote: boolean, platform: string, sendTargets: import("./send-text.js").SendTarget[], lastView: string | null, cloudflare: CloudflareToken } | null}
 	 */
 	settings: null,
 	/** @type {ScanReport | null} */
@@ -64,6 +72,13 @@ export const store = {
 	host: { status: { state: "idle" }, report: null, service: false },
 	/** @type {Projects} */
 	projects: { current: null, projects: [], canChange: false },
+	/**
+	 * The audit of the owner's Cloudflare account. `canChange`: this page may save the token and approve
+	 * changes (only the page on the computer Porchlight runs on).
+	 *
+	 * @type {{ loaded: boolean, token: CloudflareToken, status: CloudflareStatus, report: CfReport | null, changes: AppliedChange[], canChange: boolean, service: boolean, guide: CloudflareGuide | null }}
+	 */
+	cloudflare: { loaded: false, token: { configured: false, source: null }, status: { state: "idle" }, report: null, changes: [], canChange: false, service: false, guide: null },
 };
 
 /** @type {Set<string>} */
@@ -79,6 +94,8 @@ let rows = null;
 let pollTimer;
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let hostTimer;
+/** @type {ReturnType<typeof setTimeout> | undefined} */
+let cloudflareTimer;
 
 /**
  * @param {(change: Change) => void} listener
@@ -112,6 +129,7 @@ export function load() {
 			platform: typeof state.platform === "string" ? state.platform : "",
 			sendTargets: Array.isArray(state.sendTargets) ? state.sendTargets : [],
 			lastView: typeof state.lastView === "string" ? state.lastView : null,
+			cloudflare: state.cloudflare ?? { configured: false, source: null },
 		};
 		emit("settings");
 		if (state.projects) setProjects(state.projects);
@@ -168,6 +186,7 @@ export function currentProject() {
 export function reset() {
 	clearTimeout(pollTimer);
 	clearTimeout(hostTimer);
+	clearTimeout(cloudflareTimer);
 	loading = null;
 	rows = null;
 	store.settings = null;
@@ -309,6 +328,73 @@ function pollHost() {
 		} catch (err) {
 			store.host.status = { state: "failed", finishedAt: "", error: err instanceof Error ? err.message : String(err) };
 			emit("host");
+		}
+	}, POLL_MS);
+}
+
+/** @param {Record<string, any>} data */
+function setCloudflare(data) {
+	store.cloudflare = {
+		loaded: true,
+		token: data.token ?? { configured: false, source: null },
+		status: data.status ?? { state: "idle" },
+		report: data.report ?? null,
+		changes: Array.isArray(data.changes) ? data.changes : [],
+		canChange: data.canChange === true,
+		service: data.service === true,
+		guide: data.guide ?? null,
+	};
+	if (store.settings) store.settings.cloudflare = store.cloudflare.token;
+	emit("cloudflare");
+}
+
+/** Reads the latest Cloudflare audit and the token's state, and follows an audit that is running. */
+export async function loadCloudflare() {
+	setCloudflare(await api("GET", "/cloudflare"));
+	if (store.cloudflare.status.state === "running") pollCloudflare();
+}
+
+/**
+ * Starts an audit of the Cloudflare account. It only reads; `lookups` says whether it may look up
+ * where CNAME records point, for zones whose ownership record proves them.
+ *
+ * @param {{ lookups: boolean }} options
+ */
+export async function startCloudflareAudit(options) {
+	try {
+		const { status } = await api("POST", "/cloudflare/audit", options);
+		store.cloudflare.status = status;
+		emit("cloudflare");
+	} catch (err) {
+		// Already running, started from another tab: follow it instead.
+		if (!(err instanceof ApiError && err.status === 409 && store.cloudflare.status.state === "running")) throw err;
+	}
+	pollCloudflare();
+}
+
+/**
+ * The token changed in Settings, or a change was applied: every page follows.
+ *
+ * @param {Partial<{ token: CloudflareToken, changes: AppliedChange[] }>} update
+ */
+export function updateCloudflare(update) {
+	if (update.token) {
+		store.cloudflare.token = update.token;
+		if (store.settings) store.settings.cloudflare = update.token;
+	}
+	if (update.changes) store.cloudflare.changes = update.changes;
+	emit("cloudflare");
+}
+
+function pollCloudflare() {
+	clearTimeout(cloudflareTimer);
+	cloudflareTimer = setTimeout(async () => {
+		try {
+			setCloudflare(await api("GET", "/cloudflare"));
+			if (store.cloudflare.status.state === "running") pollCloudflare();
+		} catch (err) {
+			store.cloudflare.status = { state: "failed", finishedAt: "", error: err instanceof Error ? err.message : String(err) };
+			emit("cloudflare");
 		}
 	}, POLL_MS);
 }

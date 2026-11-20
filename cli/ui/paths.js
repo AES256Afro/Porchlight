@@ -5,7 +5,7 @@
 // request (invariant 8), and the text stays the same words, so the CLI and exports print it as is.
 //
 // - "page": a place in Porchlight itself (`#/…`).
-// - "web": a page on another site, opened in the browser.
+// - "web": a page on another site (GitHub's settings, Cloudflare's dashboard), opened in the browser.
 // - "mac": a pane of System Settings on this Mac (`x-apple.systempreferences:`), linked only when
 //   the page is shown on the Mac itself; from another device it would open that device's settings.
 // - "plain": a path Porchlight has no address for (BoxPilot's, another app's), shown as breadcrumbs.
@@ -25,6 +25,10 @@ const NETWORK = pane("com.apple.Network-Settings.extension");
 const PRIVACY = pane("com.apple.settings.PrivacySecurity.extension");
 const USERS = pane("com.apple.Users-Groups-Settings.extension");
 
+/** Cloudflare's dashboard. `:account` and `:zone` are Cloudflare's own placeholders: it asks which one. */
+const CLOUDFLARE = "https://dash.cloudflare.com/";
+const cloudflare = (/** @type {string} */ to) => `https://dash.cloudflare.com/?to=/:account/${to}`;
+
 /** @type {[text: string, kind: PathKind, hrefs: (string | null)[]][]} */
 const LIST = [
 	// Porchlight's own Settings page, by section (see `settingsAnchor`).
@@ -32,6 +36,18 @@ const LIST = [
 	["Settings → Access from other devices", "page", ["#/settings", "#/settings/access"]],
 	["Settings → Appearance", "page", ["#/settings", "#/settings/appearance"]],
 	["Settings → Projects", "page", ["#/settings", "#/settings/projects"]],
+	["Settings → Cloudflare", "page", ["#/settings", "#/settings/cloudflare"]],
+
+	// Cloudflare's dashboard, as the Cloudflare audit's fixes name it.
+	["Cloudflare → SSL/TLS → Overview", "web", [CLOUDFLARE, cloudflare(":zone/ssl-tls"), cloudflare(":zone/ssl-tls")]],
+	["Cloudflare → SSL/TLS → Edge Certificates", "web", [CLOUDFLARE, cloudflare(":zone/ssl-tls"), cloudflare(":zone/ssl-tls/edge-certificates")]],
+	["Cloudflare → SSL/TLS → Origin Server", "web", [CLOUDFLARE, cloudflare(":zone/ssl-tls"), cloudflare(":zone/ssl-tls/origin")]],
+	["Cloudflare → DNS → Records", "web", [CLOUDFLARE, cloudflare(":zone/dns/records"), cloudflare(":zone/dns/records")]],
+	["Cloudflare → DNS → Settings", "web", [CLOUDFLARE, cloudflare(":zone/dns/records"), cloudflare(":zone/dns/settings")]],
+	["Cloudflare → Security → Settings", "web", [CLOUDFLARE, cloudflare(":zone/security/settings"), cloudflare(":zone/security/settings")]],
+	["Cloudflare → Manage Account → Members", "web", [CLOUDFLARE, null, cloudflare("members")]],
+	["Cloudflare → Manage Account → Account API Tokens", "web", [CLOUDFLARE, null, cloudflare("api-tokens")]],
+	["Cloudflare → My Profile → API Tokens", "web", [CLOUDFLARE, "https://dash.cloudflare.com/profile", "https://dash.cloudflare.com/profile/api-tokens"]],
 
 	// GitHub.
 	[
@@ -110,6 +126,6 @@ export function splitPaths(text) {
  * @param {string[]} path the address's path, as `parseHash` gives it
  */
 export function settingsAnchor(path) {
-	const sections = ["model", "projects", "access", "appearance"];
+	const sections = ["model", "projects", "access", "appearance", "cloudflare"];
 	return path[0] === "settings" && sections.includes(path[1] ?? "") ? `settings-${path[1]}` : null;
 }

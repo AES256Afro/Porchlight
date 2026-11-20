@@ -21,6 +21,7 @@ import {
 import { judgedHighlights, muralFacts, MuralError, parseMural, type Mural } from "../assist/mural.ts";
 import {
 	askPrompt,
+	cloudflarePrompt,
 	DATA_CAP,
 	domainPrompt,
 	findingPrompt,
@@ -94,6 +95,11 @@ import {
 	type Project,
 	type Saved,
 } from "../projects/projects.ts";
+import { APPROVAL_WINDOW_MS, describeChange, isChangeId, planChange, sendChange, type PlannedChange } from "../cloudflare/apply.ts";
+import { auditCloudflare, READ_PERMISSIONS, TOKEN_TEMPLATE_URL, WRITE_PERMISSIONS } from "../cloudflare/audit.ts";
+import { CfClient, tokenShapeProblem } from "../cloudflare/client.ts";
+import { CF_FORMATS, exportCloudflare, type CfFormat } from "../cloudflare/export.ts";
+import { forgetToken, readAudit, readChanges, readSavedToken, recordChange, saveAudit, saveToken } from "../cloudflare/store.ts";
 
 export interface UiOptions {
 	/** 0 picks a free port. */
@@ -142,6 +148,10 @@ export interface UiOptions {
 	investigateNet?: Net;
 	/** The least time between two actions on one host (default 1 s). Tests pass 0. */
 	investigateMinGapMs?: number;
+	/** A Cloudflare API token given at start-up (PORCHLIGHT_CLOUDFLARE_TOKEN). One saved in Settings → Cloudflare replaces it. */
+	cloudflareToken?: string;
+	/** Why the start-up token is not used, shown in Settings. */
+	cloudflareTokenError?: string;
 }
 
 /** The model in use: chosen in Settings, or given at start-up. */
@@ -207,6 +217,13 @@ export type HostStatus =
 	| { state: "done"; finishedAt: string }
 	| { state: "failed"; finishedAt: string; error: string };
 
+/** The audit of the owner's Cloudflare account, run in the background like a scan. */
+export type CloudflareStatus =
+	| { state: "idle" }
+	| { state: "running"; startedAt: string; done: number; total: number; current: string }
+	| { state: "done"; finishedAt: string }
+	| { state: "failed"; finishedAt: string; error: string };
+
 export type FetchStatus =
 	| { state: "idle" }
 	| { state: "running"; done: number; total: number; current: string | null; errors: { repo: string; message: string }[] }
@@ -220,7 +237,7 @@ export type AnalysisStatus =
 
 const UI_DIR = join(import.meta.dirname, "../../ui");
 /** The page's own modules. Nothing else in the folder is served. */
-const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths", "investigate", "discussions", "discussion", "discussion-links", "panel", "projects"];
+const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths", "investigate", "discussions", "discussion", "discussion-links", "panel", "projects", "cloudflare", "cloudflare-settings"];
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
 	"/": { file: "index.html", type: "text/html; charset=utf-8" },
 	"/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
@@ -260,7 +277,7 @@ const MAX_FETCH = 300;
 const GITHUB_DEPTH = 2;
 const DOMAIN_PATTERN = /^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/;
 /** What the local model can be asked for, one route each. */
-const ASSIST_ROUTES = ["finding", "roadmap", "domain", "ask"];
+const ASSIST_ROUTES = ["finding", "roadmap", "domain", "ask", "cloudflare"];
 
 class HttpError extends Error {
 	status: number;
@@ -346,6 +363,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		if (muralJob.state === "running") busy.push("A mural is being written");
 		if (hostStatus.state === "running") busy.push("This computer is being checked");
 		if (investigation) busy.push(`An investigation of ${investigation.run.domain} is running`);
+		if (cloudflareStatus.state === "running") busy.push("Your Cloudflare account is being audited");
 		if (sending > 0) busy.push("A model is answering what you sent it");
 		else if (modelBusy && muralJob.state !== "running" && analysing.state !== "running") busy.push("The model is answering");
 		return busy;
@@ -555,6 +573,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	}
 
 	const NEWER_SCAN = "A newer scan has replaced the one this discussion is about. Ask again from the page to start a new discussion about it.";
+	const NEWER_AUDIT = "A newer Cloudflare audit has replaced the one this discussion is about. Ask again from the Cloudflare page to start a new discussion about it.";
 
 	/**
 	 * Whether a discussion can take a follow-up now, and the model it goes to: the same one it began
@@ -571,7 +590,10 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				reason: `${discussion.model} at ${discussion.host}, the model this discussion used, is no longer set up. Set it up again under Settings → Model, or ask again from the page to start a new discussion.`,
 			};
 		}
-		if (discussion.kind !== "domain") {
+		if (discussion.kind === "cloudflare") {
+			const audit = await readAudit(cloudflareAuditPath).catch(() => null);
+			if (!audit || audit.checkedAt !== discussion.about.checkedAt) return { ok: false, reason: NEWER_AUDIT };
+		} else if (discussion.kind !== "domain") {
 			const report = await readReport(options.reportPath).catch(() => null);
 			if (!report || report.scannedAt !== discussion.about.scannedAt) return { ok: false, reason: NEWER_SCAN };
 		}
@@ -587,6 +609,11 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				throw new HttpError(409, `A newer scan of ${about.domain} has replaced the one this discussion is about. Ask again from the Domains page to start a new discussion about it.`);
 			}
 			return domainPrompt(report);
+		}
+		if (discussion.kind === "cloudflare") {
+			const audit = await readAudit(cloudflareAuditPath);
+			if (!audit || audit.checkedAt !== about.checkedAt) throw new HttpError(409, NEWER_AUDIT);
+			return cloudflarePrompt(audit);
 		}
 		const report = await storedReport();
 		if (report.scannedAt !== about.scannedAt) throw new HttpError(409, NEWER_SCAN);
@@ -1227,6 +1254,180 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		return runSaves;
 	}
 
+	// The Cloudflare account audit: the owner's token, kept beside the report and never sent to the page.
+	const cloudflareTokenPath = join(dirname(options.reportPath), "cloudflare-settings.json");
+	const cloudflareAuditPath = join(dirname(options.reportPath), "cloudflare-audit.json");
+	const cloudflareChangesPath = join(dirname(options.reportPath), "cloudflare-changes.json");
+	let cloudflareStatus: CloudflareStatus = { state: "idle" };
+	/** What Cloudflare last said about the token in use. Never the token. */
+	let cloudflareVerified: { status: string; kind: "user" | "account"; expiresOn?: string; checkedAt: string } | null = null;
+	/** Changes shown to the owner and waiting for their answer, by their random id. */
+	const pendingChanges = new Map<string, PlannedChange>();
+
+	/** The token in use: the one saved under Settings → Cloudflare, else the one given at start-up. */
+	async function cloudflareToken(): Promise<{ token: string; source: "settings" | "startup" } | null> {
+		const saved = await readSavedToken(cloudflareTokenPath);
+		if (saved) return { token: saved.token, source: "settings" };
+		return options.cloudflareToken ? { token: options.cloudflareToken, source: "startup" } : null;
+	}
+
+	/** What the page may know about the token: whether there is one, where it came from, what Cloudflare said. */
+	async function cloudflareTokenState() {
+		const saved = await readSavedToken(cloudflareTokenPath);
+		const source = saved ? "settings" : options.cloudflareToken ? "startup" : null;
+		return {
+			configured: source !== null,
+			source,
+			...(saved?.savedAt ? { savedAt: saved.savedAt } : {}),
+			...(options.cloudflareTokenError && !saved ? { error: options.cloudflareTokenError } : {}),
+			...(cloudflareVerified ? { verified: cloudflareVerified } : {}),
+		};
+	}
+
+	function cloudflareGuide() {
+		return { read: READ_PERMISSIONS, write: WRITE_PERMISSIONS, templateUrl: TOKEN_TEMPLATE_URL };
+	}
+
+	async function cloudflareRoute(res: ServerResponse, route: string, url: URL, body: unknown, gate: Gate): Promise<void> {
+		// Saving a token and changing the account are for this computer's page only; reading is for any page with the key.
+		const here = gate.loopbackOnly && !gate.tailnet;
+		if (route === "GET /api/cloudflare") {
+			const changes = await readChanges(cloudflareChangesPath);
+			return sendJson(res, 200, {
+				token: await cloudflareTokenState(),
+				status: cloudflareStatus,
+				report: await readAudit(cloudflareAuditPath),
+				changes: changes.slice(-50).reverse(),
+				canChange: here,
+				service: !loopbackOnly,
+				guide: cloudflareGuide(),
+				assistant: assistantSummary(),
+			});
+		}
+		if (route === "GET /api/cloudflare/token") return sendJson(res, 200, { token: await cloudflareTokenState(), canChange: here, guide: cloudflareGuide() });
+		if (route === "GET /api/cloudflare/export" || route === "POST /api/cloudflare/export") {
+			const report = await readAudit(cloudflareAuditPath);
+			if (!report) throw new HttpError(404, "There is no Cloudflare audit yet. Run one first.");
+			const format = url.searchParams.get("format") ?? "md";
+			if (!(CF_FORMATS as readonly string[]).includes(format)) throw new HttpError(400, `Choose a format: ${CF_FORMATS.join(", ")}`);
+			const zone = url.searchParams.get("zone");
+			if (zone !== null && !report.zones.some((candidate) => candidate.id === zone)) throw new HttpError(404, "That zone is not in the latest audit");
+			const file = exportCloudflare(report, format as CfFormat, zone);
+			// POST writes it into the project in use; GET hands it to the browser to save.
+			if (route === "POST /api/cloudflare/export") return saveExport(res, file, "cloudflare");
+			log(`Exported ${FILE_TITLES.cloudflare} (${format}) as a download`);
+			return sendDownload(res, file);
+		}
+		if (route === "POST /api/cloudflare/audit") {
+			if (cloudflareStatus.state === "running") throw new HttpError(409, "A Cloudflare audit is already running");
+			const token = await cloudflareToken();
+			if (!token) throw new HttpError(409, "Connect Cloudflare first: paste an API token in Settings → Cloudflare");
+			const lookups = bodyObject(body).lookups;
+			if (lookups !== undefined && typeof lookups !== "boolean") throw new HttpError(400, "lookups must be true or false");
+			const ownership = await readDomains(investigateDomainsPath);
+			cloudflareStatus = { state: "running", startedAt: new Date().toISOString(), done: 0, total: 0, current: "" };
+			const project = await projects.current();
+			log("Cloudflare audit started", project);
+			// Not awaited: the page polls for progress, as it does for a scan.
+			void auditCloudflare({
+				token: token.token,
+				fetchFn: options.fetchFn,
+				lookups: lookups !== false,
+				ownershipTokens: Object.fromEntries(Object.entries(ownership.domains).map(([name, entry]) => [name, entry.token])),
+				onProgress: ({ done, total, current }) => {
+					if (cloudflareStatus.state === "running") cloudflareStatus = { ...cloudflareStatus, done, total, current };
+				},
+			})
+				.then(async (report) => {
+					await saveAudit(cloudflareAuditPath, report);
+					cloudflareVerified = { status: report.token.status, kind: report.token.kind, ...(report.token.expiresOn ? { expiresOn: report.token.expiresOn } : {}), checkedAt: report.checkedAt };
+					cloudflareStatus = { state: "done", finishedAt: new Date().toISOString() };
+					const problems = [...report.zones.flatMap((zone) => zone.checks), ...report.accounts.flatMap((account) => account.checks), ...report.userChecks].filter((item) => item.status === "failed").length;
+					log(`Cloudflare audit finished: ${report.zones.length} ${report.zones.length === 1 ? "zone" : "zones"}, ${problems} ${problems === 1 ? "problem" : "problems"}`, project);
+				})
+				.catch((err) => {
+					cloudflareStatus = { state: "failed", finishedAt: new Date().toISOString(), error: err instanceof Error ? err.message : String(err) };
+					log("Cloudflare audit failed", project);
+				});
+			return sendJson(res, 202, { status: cloudflareStatus });
+		}
+		if (!here) throw new HttpError(403, "The Cloudflare token and changes to your account are managed from the page on the Mac that runs Porchlight");
+		const fields = bodyObject(body);
+
+		if (route === "POST /api/cloudflare/token") {
+			const token = typeof fields.token === "string" ? fields.token.trim() : "";
+			const problem = tokenShapeProblem(token);
+			if (problem) throw new HttpError(400, problem);
+			// Checked with Cloudflare before it is saved, so a mistake never replaces a working token.
+			const verified = await new CfClient(token, options.fetchFn ?? fetch).verify();
+			if (!verified.ok) throw new HttpError(400, verified.message ?? `Cloudflare says this token is ${verified.status ?? "not active"}`);
+			await saveToken(cloudflareTokenPath, token);
+			cloudflareVerified = { status: verified.status ?? "active", kind: verified.kind, ...(verified.expiresOn ? { expiresOn: verified.expiresOn } : {}), checkedAt: new Date().toISOString() };
+			return sendJson(res, 200, { token: await cloudflareTokenState() });
+		}
+		if (route === "POST /api/cloudflare/token/remove") {
+			await forgetToken(cloudflareTokenPath);
+			cloudflareVerified = null;
+			pendingChanges.clear();
+			return sendJson(res, 200, { token: await cloudflareTokenState() });
+		}
+		if (route === "POST /api/cloudflare/changes/preview") {
+			const report = await readAudit(cloudflareAuditPath);
+			const zone = report?.zones.find((candidate) => candidate.id === fields.zone);
+			if (!report || !zone) throw new HttpError(404, "That zone is not in the latest audit. Run the audit again.");
+			const change = fields.change;
+			if (!isChangeId(change)) throw new HttpError(400, "Choose one of the changes the audit offers");
+			// Only a change the audit offered for a problem it found in this zone.
+			if (!zone.checks.some((item) => item.change === change && item.status === "failed")) throw new HttpError(409, "The latest audit does not suggest that change for this zone");
+			let ownershipToken: string | undefined;
+			if (change === "ownership-record") ownershipToken = (await readDomains(investigateDomainsPath)).domains[zone.name]?.token ?? newToken();
+			const planned = planChange(zone, change, ownershipToken);
+			for (const [id, waiting] of pendingChanges) if (Date.now() - waiting.createdAt > APPROVAL_WINDOW_MS) pendingChanges.delete(id);
+			if (pendingChanges.size >= MAX_PENDING_CHANGES) throw new HttpError(409, "Answer the changes already waiting first");
+			pendingChanges.set(planned.id, planned);
+			return sendJson(res, 200, { pending: describeChange(planned) });
+		}
+		if (route === "POST /api/cloudflare/changes/approve") {
+			const planned = typeof fields.id === "string" ? pendingChanges.get(fields.id) : undefined;
+			if (!planned || Date.now() - planned.createdAt > APPROVAL_WINDOW_MS) {
+				if (planned) pendingChanges.delete(planned.id);
+				throw new HttpError(409, "That change is no longer waiting. Ask for it again to see the request.");
+			}
+			if (typeof fields.approve !== "boolean") throw new HttpError(400, "Say whether to apply it");
+			pendingChanges.delete(planned.id);
+			if (!fields.approve) return sendJson(res, 200, { applied: false });
+			const token = await cloudflareToken();
+			if (!token) throw new HttpError(409, "Connect Cloudflare first: paste an API token in Settings → Cloudflare");
+			if (planned.change === "ownership-record") {
+				const entry = (await readDomains(investigateDomainsPath)).domains[planned.zone];
+				if (entry && entry.token !== planned.ownershipToken) throw new HttpError(409, "The token for this domain changed since the request was shown. Ask for it again.");
+			}
+			const outcome = await sendChange(new CfClient(token.token, options.fetchFn ?? fetch), planned);
+			// Kept for the investigation and the audit: the record now holds this token.
+			if (outcome.ok && planned.change === "ownership-record" && planned.ownershipToken) {
+				const file = await readDomains(investigateDomainsPath);
+				if (!file.domains[planned.zone]) {
+					file.domains[planned.zone] = { token: planned.ownershipToken, addedAt: new Date().toISOString(), source: "local" };
+					await saveDomains(investigateDomainsPath, file);
+				}
+			}
+			// The change's title is Porchlight's, from its own list; the request and the token stay out of the log.
+			log(`Cloudflare change ${outcome.ok ? "applied" : "failed"}: ${planned.title}, on ${planned.zone}`);
+			const changes = await recordChange(cloudflareChangesPath, {
+				at: new Date().toISOString(),
+				zone: planned.zone,
+				zoneId: planned.zoneId,
+				change: planned.change,
+				title: planned.title,
+				request: { method: planned.method, url: planned.url, body: planned.body },
+				ok: outcome.ok,
+				result: outcome.result,
+			});
+			return sendJson(res, 200, { applied: true, ok: outcome.ok, result: outcome.result, changes: changes.slice(-50).reverse() });
+		}
+		throw new HttpError(404, "Not found");
+	}
+
 	const localGate: Gate = { loopbackOnly, key: () => sessionKey, port: () => port, tailnet: false };
 	const respond = (gate: Gate) => (req: IncomingMessage, res: ServerResponse) => {
 		handle(req, res, gate).catch((err) => {
@@ -1297,6 +1498,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				lastView: await readView(viewPath),
 				// The projects, and the one exports, discussions and the log go to.
 				projects: await projectsState(gate),
+				// Whether Cloudflare is connected and how, never the token.
+				cloudflare: await cloudflareTokenState(),
 				// What "Send to a model" offers. Never a key: only where each one runs and which model.
 				sendTargets: targets().map((target) => ({ id: target.id, label: target.label, model: target.config.model, host: target.config.url.host, hosted: target.hosted, current: target.current })),
 			});
@@ -1306,6 +1509,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		if (url.pathname === "/api/discussions" || url.pathname.startsWith("/api/discussions/")) return discussionRoute(res, route, url, body);
 		if (url.pathname === "/api/host" || url.pathname === "/api/host/check") return hostRoute(res, route, body);
 		if (url.pathname === "/api/investigate" || url.pathname.startsWith("/api/investigate/")) return investigateRoute(res, route, url, body, gate);
+		if (url.pathname === "/api/cloudflare" || url.pathname.startsWith("/api/cloudflare/")) return cloudflareRoute(res, route, url, body, gate);
 		if (route === "GET /api/repos/history") {
 			const report = await readReport(options.reportPath);
 			const scans = (await history.list()).reverse();
@@ -1585,6 +1789,11 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			const report = await latestDomainReport(domain);
 			prompt = domainPrompt(report);
 			about = { domain, takenAt: String(report.takenAt) };
+		} else if (kind === "cloudflare") {
+			const report = await readAudit(cloudflareAuditPath);
+			if (!report) throw new HttpError(404, "There is no Cloudflare audit yet. Run one first.");
+			prompt = cloudflarePrompt(report);
+			about = { checkedAt: report.checkedAt, zones: report.zones.length };
 		} else if (kind === "ask") {
 			const question = fields.question;
 			if (typeof question !== "string" || question.trim() === "" || question.length > MAX_QUESTION) {
@@ -1734,6 +1943,9 @@ export function checkKey(key: string): void {
 		throw new Error(`PORCHLIGHT_UI_KEY must be at least ${MIN_KEY_LENGTH} characters, with no spaces or control characters`);
 	}
 }
+
+/** Changes shown to the owner at once, waiting for their answer. */
+const MAX_PENDING_CHANGES = 20;
 
 /** A mural reads at most this many findings the model judged real, most severe first. */
 const MURAL_HIGHLIGHTS = 40;

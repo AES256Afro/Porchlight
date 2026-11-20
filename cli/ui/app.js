@@ -1,6 +1,7 @@
 // @ts-check
 import { adoptSessionKey, api, ApiError, setSessionKey } from "./api.js";
 import { emptyState, formatWhen, h, icon, plural, replace, severityBadge, stepNodes, toast } from "./dom.js";
+import { renderCloudflare } from "./cloudflare.js";
 import { renderDiscussions } from "./discussions.js";
 import { renderDomains } from "./domains.js";
 import { renderFindings } from "./findings.js";
@@ -25,6 +26,7 @@ const SECTIONS = /** @type {const} */ ([
 	["findings", "Findings"],
 	["roadmap", "Roadmap"],
 	["domains", "Domains"],
+	["cloudflare", "Cloudflare"],
 	["investigate", "Investigate"],
 	["host", "This Mac"],
 	["discussions", "Discussions"],
@@ -175,6 +177,7 @@ function page(section, context) {
 	if (section === "findings") return context.path[1] === "by-repo" ? renderByRepo(view, context) : renderFindings(view, context);
 	if (section === "roadmap") return renderRoadmap(view, context);
 	if (section === "domains") return renderDomains(view, context.path[1]);
+	if (section === "cloudflare") return renderCloudflare(view);
 	if (section === "investigate") return renderInvestigate(view, context.path[1]);
 	if (section === "discussions") return renderDiscussions(view, context);
 	if (section === "settings") return renderSettings(view);

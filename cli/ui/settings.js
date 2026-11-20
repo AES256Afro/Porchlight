@@ -7,6 +7,7 @@ import { redrawAnswers } from "./assist.js";
 import { ANSWER_PLACES, DEFAULT_ANSWER_PLACE, LOOKS } from "./looks.js";
 import { answersPlaceChanged } from "./panel.js";
 import { accessSection } from "./access-settings.js";
+import { cloudflareSection } from "./cloudflare-settings.js";
 import { modelSection } from "./model-settings.js";
 import { projectsSection } from "./projects.js";
 import { load, store } from "./store.js";
@@ -21,6 +22,7 @@ export async function renderSettings(view) {
 	const model = store.settings?.service ? null : await modelSection();
 	const access = store.settings?.service ? null : await accessSection();
 	const projects = projectsSection();
+	const cloudflare = await cloudflareSection();
 	let saving = Promise.resolve();
 
 	/** @param {string} id */
@@ -79,6 +81,7 @@ export async function renderSettings(view) {
 				h("div", { class: "page-head" }, h("div", null, h("h1", null, "Settings"), h("p", { class: "sub" }, "Which model Porchlight uses, where it keeps your files, how it looks, and what it's connected to."))),
 				model,
 				projects,
+				cloudflare,
 				access,
 				h(
 					"fieldset",
@@ -146,6 +149,7 @@ function connections() {
 				settings.assistant.configured ? `Model: ${settings.assistant.model} at ${settings.assistant.host}` : "Model: not connected",
 			),
 			line(settings.github.token, settings.github.token ? "GitHub: token set, private repositories can be fetched" : "GitHub: public repositories only"),
+			line(settings.cloudflare.configured, settings.cloudflare.configured ? "Cloudflare: token saved, your account can be audited" : "Cloudflare: not connected"),
 		),
 		h(
 			"p",

@@ -38,6 +38,8 @@ export const FILE_TITLES = {
 	"discussion-domain": "Explain a domain",
 	"discussion-ask": "Question about the scan",
 	"discussion-send": "Sent to a model",
+	"discussion-cloudflare": "Cloudflare analysis",
+	cloudflare: "Cloudflare audit",
 } as const;
 export type FileTitle = keyof typeof FILE_TITLES;
 

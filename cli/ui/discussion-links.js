@@ -13,6 +13,7 @@ export const KIND_LABELS = [
 	["roadmap", "What to fix first"],
 	["ask", "Question about a scan"],
 	["send", "Sent to a model"],
+	["cloudflare", "Cloudflare analysis"],
 	["domain", "Explain a domain's scan"],
 ];
 
@@ -51,6 +52,7 @@ export function aboutLink(discussion) {
 	if (discussion.kind === "finding" && about.repo && about.location) return { href: buildHash(["findings"], { repo: about.repo, q: about.location }), label: "Open the finding" };
 	if (discussion.kind === "domain" && about.domain) return { href: buildHash(["domains", about.domain]), label: "Open the domain" };
 	if (discussion.kind === "roadmap") return { href: buildHash(["roadmap"]), label: "Open the roadmap" };
+	if (discussion.kind === "cloudflare") return { href: buildHash(["cloudflare"]), label: "Open the Cloudflare audit" };
 	if (discussion.kind === "send") {
 		const filter = about.filter ?? {};
 		const settings = { severity: filter.severity, kind: filter.kind, q: filter.q, repo: filter.repo };

@@ -19,7 +19,7 @@ import { DATA_END, DATA_START, type Prompt } from "../assist/prompts.ts";
 import { writePrivate } from "../investigate/ownership.ts";
 import { mdText } from "../roadmap/escape.ts";
 
-export const DISCUSSION_KINDS = ["finding", "roadmap", "domain", "ask", "send"] as const;
+export const DISCUSSION_KINDS = ["finding", "roadmap", "domain", "ask", "send", "cloudflare"] as const;
 export type DiscussionKind = (typeof DISCUSSION_KINDS)[number];
 
 /** How each kind is named on the page and in exports. */
@@ -29,6 +29,7 @@ export const KIND_WORDS: Record<DiscussionKind, string> = {
 	domain: "Explain a domain's scan",
 	ask: "Question about a scan",
 	send: "Sent to a model",
+	cloudflare: "Cloudflare analysis",
 };
 
 /** What the discussion is about: enough to rebuild the data the model was given, and to link back to it. */
@@ -51,6 +52,9 @@ export interface DiscussionAbout {
 	filter?: { severity?: string; kind?: string; q?: string; repo?: string };
 	/** The filter in words, when only part of the scan was sent. */
 	partial?: string;
+	/** The Cloudflare audit the analysis read, and how many zones it covered. A follow-up needs the same audit. */
+	checkedAt?: string;
+	zones?: number;
 }
 
 export interface DiscussionTurn {
@@ -148,6 +152,10 @@ export function discussionTitle(kind: DiscussionKind, about: DiscussionAbout, qu
 	else if (kind === "roadmap") title = "What to fix first, and why";
 	else if (kind === "domain") title = `Domain: ${about.domain ?? "?"}${about.takenAt ? `, scan of ${about.takenAt.slice(0, 10)}` : ""}`;
 	else if (kind === "ask") title = `Ask: ${oneLine(question ?? "", QUESTION_IN_TITLE)}`;
+	else if (kind === "cloudflare") {
+		const zones = typeof about.zones === "number" ? `, ${about.zones} ${about.zones === 1 ? "zone" : "zones"}` : "";
+		title = `Cloudflare: analysis of the audit${about.checkedAt ? ` of ${about.checkedAt.slice(0, 10)}` : ""}${zones}`;
+	}
 	else title = `${about.purpose === "repair" ? "Repair plan" : "Deeper analysis"} of the ${about.content === "findings" ? "findings" : "roadmap"}${about.partial ? ` (${about.partial})` : ""}`;
 	return oneLine(title, TITLE_CAP);
 }
@@ -333,6 +341,7 @@ function aboutWords(discussion: Discussion): string[] {
 	if (about.partial) lines.push(`Only part of the scan: ${about.partial}`);
 	if (about.scannedAt) lines.push(`Scan of ${about.scannedAt}`);
 	if (about.takenAt) lines.push(`Domain scan of ${about.takenAt}`);
+	if (about.checkedAt) lines.push(`Cloudflare audit of ${about.checkedAt}${typeof about.zones === "number" ? `, ${about.zones} ${about.zones === 1 ? "zone" : "zones"}` : ""}`);
 	return lines;
 }
 
