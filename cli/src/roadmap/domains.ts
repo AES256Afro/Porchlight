@@ -1,21 +1,12 @@
+import type { Finding, ScanReport } from "../../../monitor/src/types.ts";
 import type { Severity } from "../repos/types.ts";
 import { assemble, emptyCounts, type Action, type FindingRow, type FindingsList, type PhaseKey, type Planned, type Roadmap } from "./types.ts";
 
-/** A finding as the monitor reports it. Its `id` is `<kind>:<host>` or `missing-header:<host>:<header>`. */
-export interface MonitorFinding {
-	id: string;
-	severity: "high" | "medium" | "low";
-	host: string;
-	title: string;
-}
+/** A finding as the monitor reports it (monitor/src/types.ts). Its `id` is `<kind>:<host>` or `missing-header:<host>:<header>`. */
+export type MonitorFinding = Pick<Finding, "id" | "severity" | "host" | "title">;
 
 /** The parts of a monitor scan report a roadmap is built from. */
-export interface MonitorReport {
-	domain: string;
-	takenAt: string;
-	findings: MonitorFinding[];
-	notes: string[];
-}
+export type MonitorReport = Pick<ScanReport, "domain" | "takenAt" | "notes"> & { findings: MonitorFinding[] };
 
 const SUMMARIES: Record<PhaseKey, string> = {
 	now: "Records someone else could take over, and certificates that have expired.",

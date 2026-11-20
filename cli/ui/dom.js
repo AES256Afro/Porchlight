@@ -43,8 +43,82 @@ export function append(parent, children) {
  * @param {...(Node | string | number | null | undefined | false)} children
  */
 export function replace(parent, ...children) {
+	const giveBack = rememberFocus(parent);
 	parent.replaceChildren();
 	append(parent, children);
+	giveBack?.();
+}
+
+/**
+ * Redrawing part of the page replaces its elements, which would drop keyboard
+ * focus to the top of the page and leave a screen reader lost. When focus was
+ * inside `parent`, the control in the same place afterwards takes it back: the
+ * same kind of element with the same label, or else the one in the same
+ * position among its kind. Text being typed keeps its caret.
+ *
+ * @param {Element} parent
+ * @returns {(() => void) | null}
+ */
+function rememberFocus(parent) {
+	const active = document.activeElement;
+	if (!(active instanceof HTMLElement) || active === parent || !parent.contains(active)) return null;
+	const tag = active.tagName;
+	const key = focusKey(active);
+	const kind = active.className;
+	const all = () => /** @type {HTMLElement[]} */ ([...parent.getElementsByTagName(tag)]);
+	const index = all().filter((element) => focusKey(element) === key).indexOf(active);
+	const position = all().filter((element) => element.className === kind).indexOf(active);
+	const caret = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement ? [active.selectionStart, active.selectionEnd] : null;
+	return () => {
+		// Something drawn in the meantime took focus on purpose (a dialog, a field that opened).
+		if (document.activeElement && document.activeElement !== document.body) return;
+		const same = all().filter((element) => element.className === kind);
+		const target = all().filter((element) => focusKey(element) === key)[index] ?? same[Math.min(position, same.length - 1)];
+		if (!target || target.matches(":disabled")) return;
+		target.focus({ preventScroll: true });
+		if (caret && (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) {
+			try {
+				target.setSelectionRange(caret[0], caret[1]);
+			} catch {
+				// Some input types have no caret.
+			}
+		}
+	};
+}
+
+/** @param {Element} element */
+function focusKey(element) {
+	return [
+		element.id,
+		element.getAttribute("role"),
+		element.getAttribute("aria-label"),
+		element.getAttribute("href"),
+		element.getAttribute("name"),
+		element.getAttribute("placeholder"),
+		(element.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 120),
+	].join("\u0000");
+}
+
+/** When the screen reader last heard about a long-running task, by its name. */
+const lastSaid = new Map();
+
+/**
+ * Says `message` to screen readers without showing anything. A task that
+ * reports progress often (a scan every second) passes `every`, so the reader
+ * hears about it at most that often instead of on each update.
+ *
+ * @param {string} message
+ * @param {{ topic?: string, every?: number }} [options]
+ */
+export function announce(message, { topic = "", every = 0 } = {}) {
+	const region = document.getElementById("announcer");
+	if (!region) return;
+	const now = Date.now();
+	if (topic && every > 0 && now - (lastSaid.get(topic) ?? 0) < every) return;
+	if (topic) lastSaid.set(topic, now);
+	// Cleared first, so the same words twice in a row are still read out.
+	region.textContent = "";
+	setTimeout(() => (region.textContent = message), 50);
 }
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -161,7 +235,9 @@ export function plural(count, one, many) {
 }
 
 /**
- * Shows a short message that announces itself to screen readers and then leaves.
+ * Shows a short message that announces itself to screen readers. News leaves
+ * on its own; an error stays until it is dismissed, so it cannot be missed by
+ * someone who looked away or reads slowly.
  *
  * @param {string} message
  * @param {"info" | "error"} [kind]
@@ -170,10 +246,14 @@ export function plural(count, one, many) {
 export function toast(message, kind = "info", action) {
 	const region = document.getElementById("toasts");
 	if (!region) return;
+	const dismiss = () => {
+		clearTimeout(timer);
+		item.remove();
+	};
 	const item = h(
 		"div",
-		{ class: `toast toast-${kind}` },
-		message,
+		{ class: `toast toast-${kind}`, role: kind === "error" ? "alert" : null },
+		h("span", { class: "toast-message" }, message),
 		action
 			? h(
 					"button",
@@ -182,15 +262,16 @@ export function toast(message, kind = "info", action) {
 						class: "toast-action",
 						onclick: () => {
 							action.run();
-							item.remove();
+							dismiss();
 						},
 					},
 					action.label,
 				)
 			: null,
+		h("button", { type: "button", class: "toast-close", "aria-label": "Dismiss", onclick: dismiss }, "×"),
 	);
 	region.append(item);
-	setTimeout(() => item.remove(), action ? 10_000 : kind === "error" ? 8000 : 4000);
+	const timer = kind === "error" ? undefined : setTimeout(dismiss, action ? 10_000 : 5000);
 }
 
 /**
@@ -273,9 +354,10 @@ export function pager(view, noun, go) {
 			? h(
 					"span",
 					{ class: "pager-buttons" },
-					h("button", { type: "button", class: "button", disabled: view.page <= 1, onclick: () => go(view.page - 1) }, "Previous"),
+					// aria-disabled rather than disabled: on the last page "Next" keeps keyboard focus instead of dropping it.
+					h("button", { type: "button", class: "button", "aria-disabled": view.page <= 1 ? "true" : null, onclick: () => view.page > 1 && go(view.page - 1) }, "Previous"),
 					h("span", { class: "pager-page" }, `Page ${view.page} of ${view.pages}`),
-					h("button", { type: "button", class: "button", disabled: view.page >= view.pages, onclick: () => go(view.page + 1) }, "Next"),
+					h("button", { type: "button", class: "button", "aria-disabled": view.page >= view.pages ? "true" : null, onclick: () => view.page < view.pages && go(view.page + 1) }, "Next"),
 				)
 			: null,
 	);
@@ -320,17 +402,30 @@ export function emptyState(title, text, action = null) {
 }
 
 /**
+ * A row of stat tiles. Its columns follow its own width and how many tiles it holds (styles.css), so
+ * no tile is left alone on a line: six go three by two, five put the total on a line of its own.
+ *
+ * @param {...(HTMLElement | null)} tiles
+ */
+export function tileRow(...tiles) {
+	const shown = tiles.filter((tile) => tile !== null);
+	return h("div", { class: "tiles-wrap" }, h("div", { class: "tiles", dataset: { count: String(shown.length) } }, ...shown));
+}
+
+/**
  * A stat tile: a label and the number it names.
  *
  * @param {string} label
  * @param {number | string} value
  * @param {Node | null} [mark] shown beside the label
+ * @param {string} [href] makes the tile a link to what it counts
  * @returns {HTMLElement}
  */
-export function statTile(label, value, mark = null) {
+export function statTile(label, value, mark = null, href = "") {
+	// With an address the tile is a link to what it counts.
 	return h(
-		"div",
-		{ class: "tile" },
+		href ? "a" : "div",
+		{ class: href ? "tile tile-link" : "tile", href: href || null },
 		h("div", { class: "tile-label" }, mark, label),
 		h("div", { class: "tile-value" }, typeof value === "number" ? value.toLocaleString() : value),
 	);

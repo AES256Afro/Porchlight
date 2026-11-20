@@ -18,12 +18,14 @@
 					Porchlight
 				</a>
 				<nav id="nav" class="nav" aria-label="Sections"></nav>
-				<div id="scan-status" class="scan-status" role="status" aria-live="polite"></div>
+				<div id="scan-status" class="scan-status"></div>
 			</aside>
 			<main id="view" tabindex="-1"></main>
 		</div>
 		<aside id="answers" class="answers-panel" aria-label="Answer from the model" hidden></aside>
-		<div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+		<div id="toasts" class="toasts" aria-live="polite"></div>
+		<!-- What screen readers are told about progress, at a calm pace (announce() in dom.js). -->
+		<div id="announcer" class="visually-hidden" role="status" aria-live="polite"></div>
 		<noscript><p class="noscript">Porchlight needs JavaScript to show your scans.</p></noscript>
 	</body>
 </html>

@@ -17,6 +17,11 @@ export interface Action {
 	clears: string[];
 	/** Findings cleared, by severity. */
 	counts: Counts;
+	/**
+	 * A search that lists exactly the findings this action clears in its place, when one piece of
+	 * text does (a package at a version, a secret's location), so the page can link to them.
+	 */
+	match?: string;
 }
 
 export type PhaseKey = "now" | "next" | "schedule" | "later";

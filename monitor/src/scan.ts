@@ -148,8 +148,9 @@ export function buildReport(
 	const unprobed = hosts.filter((host) => !host.probed).length;
 	if (unprobed > 0) {
 		notes.push(
-			`${unprobed} known hosts were not probed this scan because MAX_HOSTS is ${settings.maxHosts}; ` +
-				"they take turns in later scans.",
+			// Said for the owner, not in the setting's name; the README says how to raise the limit.
+			`${unprobed} of ${hosts.length} known hosts were not checked this time: each scan checks ${settings.maxHosts}, ` +
+				"and the rest take turns in later scans.",
 		);
 	}
 	const failedLookups = hosts.filter((host) => host.probed && host.dns === null).length;

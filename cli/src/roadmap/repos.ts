@@ -131,7 +131,7 @@ function upgradeAction(findings: Finding[]): Action {
 	const [name, version] = [first.detail.slice(0, at), first.detail.slice(at + 1)].map((part) => part.replace(/`/g, "")) as [string, string];
 	const target = highestVersion(findings.map((finding) => finding.fixedIn).filter((fix) => fix !== undefined))?.replace(/`/g, "");
 	const unfixed = findings.filter((finding) => finding.fixedIn === undefined);
-	const base = { priority: worst(findings), where: first.location, clears: unique(findings.map((finding) => finding.ruleId)), counts: count(findings) };
+	const base = { priority: worst(findings), where: first.location, clears: unique(findings.map((finding) => finding.ruleId)), counts: count(findings), match: first.detail };
 
 	if (target === undefined) {
 		return {
@@ -184,6 +184,7 @@ function rotateAction(secret: Finding): Action {
 		],
 		clears: [`${secret.ruleId} (${secret.detail})`],
 		counts: count([secret]),
+		match: secret.location,
 	};
 }
 
@@ -204,6 +205,7 @@ function reviewAction(secrets: Finding[]): Action {
 		],
 		clears: unique(secrets.map((secret) => secret.ruleId)),
 		counts: count(secrets),
+		...(secrets.length === 1 ? { match: first.location } : {}),
 	};
 }
 

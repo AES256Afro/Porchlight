@@ -1,21 +1,6 @@
-import type { Change } from "./diff.ts";
-import type { Finding } from "./findings.ts";
+import type { Change, Finding, ScanReport } from "./types.ts";
 
-/** What one scan concluded. Stored with its snapshot and sent as the alert payload. */
-export interface ScanReport {
-	domain: string;
-	takenAt: string;
-	/** True for the first scan of a domain: there is nothing to compare against. */
-	baseline: boolean;
-	changes: Change[];
-	newFindings: Finding[];
-	resolvedFindings: Finding[];
-	/** All open findings, including ones first reported by earlier scans. */
-	findings: Finding[];
-	hostCount: number;
-	/** Limits on what this scan could see, so an empty report is not mistaken for a clean one. */
-	notes: string[];
-}
+export type { ScanReport };
 
 export function hasNews(report: ScanReport): boolean {
 	return (

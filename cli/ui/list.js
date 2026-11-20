@@ -100,6 +100,37 @@ export function paramsFromFilter(filter) {
 	return settings;
 }
 
+/** @typedef {{ key: "rank" | "name" | "secrets" | "vulnerabilities" | import("./filter.js").Severity, descending: boolean }} RepoSort */
+
+const REPO_SORT_KEYS = ["rank", "name", "secrets", "vulnerabilities", ...ALL_SEVERITIES];
+
+/**
+ * The By repository order an address describes: `sort=critical`, with `order=asc` only when it
+ * differs from that column's own first order (counts start largest, names start at A).
+ *
+ * @param {URLSearchParams} params
+ * @returns {RepoSort}
+ */
+export function repoSortFromParams(params) {
+	const wanted = params.get("sort") ?? "rank";
+	const key = /** @type {RepoSort["key"]} */ (REPO_SORT_KEYS.includes(wanted) ? wanted : "rank");
+	const natural = key !== "name";
+	const order = params.get("order");
+	return { key, descending: key === "rank" ? true : order === "asc" ? false : order === "desc" ? true : natural };
+}
+
+/**
+ * The address settings for a By repository order; the worst-first default leaves the address clean.
+ *
+ * @param {RepoSort} sort
+ * @returns {Record<string, string | undefined>}
+ */
+export function repoSortParams(sort) {
+	if (sort.key === "rank") return {};
+	const natural = sort.key !== "name";
+	return { sort: sort.key, order: sort.descending === natural ? undefined : sort.descending ? "desc" : "asc" };
+}
+
 const SEVERITY_RANK = { critical: 0, high: 1, medium: 2, low: 3 };
 
 /**

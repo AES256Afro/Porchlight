@@ -1,5 +1,6 @@
 import type { ScanReport } from "./report.ts";
 import type { Snapshot } from "./snapshot.ts";
+import type { ScanStatus } from "./types.ts";
 
 export interface DomainRow {
 	id: number;
@@ -18,7 +19,7 @@ export interface DomainRow {
 	scan_claimed_at: string | null;
 }
 
-export type ScanStatus = "ok" | "unverified" | "error";
+export type { ScanStatus };
 
 export interface StoredScan {
 	snapshot: Snapshot;

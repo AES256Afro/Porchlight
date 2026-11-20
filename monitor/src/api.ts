@@ -2,6 +2,7 @@ import { normalizeDomain } from "./domain.ts";
 import { errorMessage, type AppEnv, type Deps } from "./env.ts";
 import { challengeName, challengeValue, checkOwnership, newChallengeToken } from "./ownership.ts";
 import { formatReport } from "./report.ts";
+import type { DomainView } from "./types.ts";
 import { runScan } from "./scan.ts";
 import {
 	addDomain,
@@ -180,7 +181,7 @@ async function timingSafeEqual(a: string, b: string): Promise<boolean> {
 	return crypto.subtle.timingSafeEqual(digestA, digestB);
 }
 
-function challengeOf(domain: DomainRow) {
+function challengeOf(domain: DomainRow): DomainView["challenge"] {
 	return {
 		type: "TXT",
 		name: challengeName(domain.name),
@@ -188,7 +189,7 @@ function challengeOf(domain: DomainRow) {
 	};
 }
 
-function describeDomain(domain: DomainRow) {
+function describeDomain(domain: DomainRow): DomainView {
 	return {
 		name: domain.name,
 		verified: domain.verified_at !== null && domain.last_scan_status !== "unverified",

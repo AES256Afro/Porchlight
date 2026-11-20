@@ -1,12 +1,7 @@
-/** A domain as the monitor's API lists it (monitor/src/api.ts, describeDomain). */
-export interface MonitorDomain {
-	name: string;
-	verified: boolean;
-	lastScanAt: string | null;
-	lastScanStatus: "ok" | "unverified" | "error" | null;
-	/** Scans that have failed in a row. Absent from a monitor deployed before it was added. */
-	errorStreak?: number;
-}
+import type { DomainView } from "../../../monitor/src/types.ts";
+
+/** The parts of a domain, as the monitor lists it, that a line describes. A monitor deployed before the error streak was added sends none. */
+export type MonitorDomain = Pick<DomainView, "name" | "verified" | "lastScanAt" | "lastScanStatus"> & { errorStreak?: number };
 
 /** One line for `porchlight domains list` and `show`. */
 export function describeDomain(domain: MonitorDomain): string {

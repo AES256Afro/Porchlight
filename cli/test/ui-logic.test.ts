@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { describeFilter, isFiltering, matchesFilter, noFilter } from "../ui/filter.js";
 import { generatedLabel, localModelSetup, MAX_QUESTION, paragraphs, questionProblem, SUGGESTED_MODEL, waitingLabel } from "../ui/generated.js";
-import { fixBrief, fixGroups } from "../ui/hints.js";
+import { fixBrief, fixGroups, keyRejectedWords, offlineWords } from "../ui/hints.js";
 import { approvalLine, domainFromInput, emptyScanHints, fetchByDefault, githubTokenSteps, monitorSetupSteps, ownershipSteps, permissionWords, previewAdvice, runLimits, tokenFixSteps } from "../ui/hints.js";
-import { buildHash, filterFromParams, paginate, paramsFromFilter, parseHash, sortFindings } from "../ui/list.js";
+import { buildHash, filterFromParams, paginate, paramsFromFilter, parseHash, repoSortFromParams, repoSortParams, sortFindings } from "../ui/list.js";
 import { KNOWN_PATHS, settingsAnchor, splitPaths } from "../ui/paths.js";
 
 const finding = { severity: "high", kind: "vulnerability", ruleId: "GHSA-x", location: "web/package-lock.json", detail: "pillow@12.3.0", title: "Heap overflow" };
@@ -51,6 +51,35 @@ test("an address that is stale or edited by hand still opens", () => {
 	assert.deepEqual(parseHash("#/domains/example.com").path, ["domains", "example.com"]);
 	assert.deepEqual(parseHash("#/domains/%E0%A4%A").path, ["domains", "%E0%A4%A"]);
 	assert.deepEqual(filterFromParams(new URLSearchParams("severity=bogus&kind=nonsense&q=x")), { ...noFilter(), query: "x" });
+});
+
+test("the By repository order survives a round trip through the address, and its default leaves it clean", () => {
+	for (const sort of [
+		{ key: "rank", descending: true },
+		{ key: "name", descending: false },
+		{ key: "name", descending: true },
+		{ key: "critical", descending: true },
+		{ key: "critical", descending: false },
+		{ key: "secrets", descending: true },
+	] as const) {
+		const params = new URLSearchParams(Object.entries(repoSortParams(sort)).filter(([, value]) => value !== undefined) as [string, string][]);
+		assert.deepEqual(repoSortFromParams(params), sort);
+	}
+	assert.deepEqual(repoSortParams({ key: "rank", descending: true }), {});
+	assert.deepEqual(repoSortParams({ key: "critical", descending: true }), { sort: "critical", order: undefined });
+	// Something unknown in the address falls back to worst first.
+	assert.deepEqual(repoSortFromParams(new URLSearchParams("sort=password&order=sideways")), { key: "rank", descending: true });
+});
+
+test("says where to start Porchlight again, and why a key was refused, in the words for how it runs", () => {
+	assert.match(offlineWords("terminal"), /porchlight ui/);
+	assert.match(offlineWords("mac"), /Porchlight app/);
+	assert.match(offlineWords("service"), /BoxPilot/);
+	assert.doesNotMatch(offlineWords("service"), /porchlight ui/);
+	assert.match(keyRejectedWords("pasted", "local"), /not accepted.*#k=/);
+	assert.match(keyRejectedWords("stale", "local"), /started again/);
+	assert.match(keyRejectedWords("pasted", "service"), /not accepted/);
+	assert.doesNotMatch(keyRejectedWords("stale", "tailnet"), /printed/);
 });
 
 test("pages a list and pulls an out-of-range page back in", () => {

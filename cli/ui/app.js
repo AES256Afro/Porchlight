@@ -1,7 +1,8 @@
 // @ts-check
 import { renderActivity } from "./activity.js";
-import { adoptSessionKey, api, ApiError, setSessionKey } from "./api.js";
-import { emptyState, formatWhen, h, icon, plural, replace, severityBadge, stepNodes, toast } from "./dom.js";
+import { adoptSessionKey, api, ApiError, hasSessionKey, setOfflineMessage, setSessionKey } from "./api.js";
+import { announce, emptyState, formatWhen, h, icon, plural, replace, severityBadge, stepNodes, toast } from "./dom.js";
+import { keyRejectedWords, offlineWords } from "./hints.js";
 import { renderCloudflare } from "./cloudflare.js";
 import { renderDiscussions } from "./discussions.js";
 import { renderDomains } from "./domains.js";
@@ -68,6 +69,7 @@ subscribe((change) => {
 	if (change === "settings" && store.settings) {
 		applyLook(store.settings.appearance);
 		hostLabel.textContent = hostName();
+		setOfflineMessage(offlineWords(store.settings.service ? "service" : inMacApp() ? "mac" : "terminal"));
 	}
 	drawScanStatus();
 });
@@ -120,13 +122,21 @@ async function route() {
 		if (link.dataset.nav === section) link.setAttribute("aria-current", "page");
 		else link.removeAttribute("aria-current");
 	}
+	// On a phone the sections scroll sideways; the current one is brought into sight.
+	if (nav.scrollWidth > nav.clientWidth) {
+		const currentLink = /** @type {HTMLElement | null} */ (nav.querySelector('[aria-current="page"]'));
+		if (currentLink) nav.scrollTo({ left: currentLink.offsetLeft - (nav.clientWidth - currentLink.offsetWidth) / 2, behavior: "smooth" });
+	}
 	document.title = `${section === "host" ? hostName() : SECTIONS.find(([key]) => key === section)?.[1]} · Porchlight`;
 
 	leave();
 	leave = () => {};
 	const current = ++navigation;
 	if (!view.hasChildNodes()) replace(view, h("p", { class: "loading" }, "Loading…"));
-	/** @type {import("./findings.js").Route} */
+	// The last page stays on screen, dimmed, until the next one is ready (styles.css delays the dimming, so a quick page does not flicker).
+	view.setAttribute("aria-busy", "true");
+	view.classList.add("is-loading");
+	/** @type {import("./finding-parts.js").Route} */
 	const context = {
 		path,
 		params,
@@ -140,6 +150,8 @@ async function route() {
 	try {
 		const cleanup = await page(section, context);
 		if (current !== navigation) return cleanup();
+		view.removeAttribute("aria-busy");
+		view.classList.remove("is-loading");
 		leave = cleanup;
 		drawScanStatus();
 		rememberView();
@@ -158,6 +170,8 @@ async function route() {
 		}
 	} catch (err) {
 		if (current !== navigation) return;
+		view.removeAttribute("aria-busy");
+		view.classList.remove("is-loading");
 		if (err instanceof ApiError && err.status === 401) return askForKey(err.body.tailnet === true ? "tailnet" : err.body.service === true ? "service" : "local");
 		replace(
 			view,
@@ -172,7 +186,7 @@ async function route() {
 
 /**
  * @param {string} section
- * @param {import("./findings.js").Route} context
+ * @param {import("./finding-parts.js").Route} context
  * @returns {Promise<() => void>}
  */
 function page(section, context) {
@@ -208,11 +222,15 @@ function drawScanStatus() {
 	);
 	if (scan.state === "running") {
 		const known = scan.total > 0;
+		const progress = known ? `Scanning ${Math.min(scan.done + 1, scan.total)} of ${scan.total}` : "Finding repositories";
 		replace(
 			scanStatus,
-			h("strong", null, known ? `Scanning ${Math.min(scan.done + 1, scan.total)} of ${scan.total}` : "Finding repositories"),
+			h("strong", null, progress),
 			h("progress", { max: known ? scan.total : null, value: known ? scan.done : null, "aria-label": "Scan progress" }),
 		);
+		// The bar moves every second; a screen reader hears that the scan started, then where it is twice a minute.
+		if (!announced.startsWith("running")) announce("Scan started", { topic: "scan" });
+		else announce(progress, { topic: "scan", every: 30_000 });
 	} else if (scan.state === "failed") {
 		replace(scanStatus, h("span", { class: "severity status-warning" }, icon("warning"), "Last scan failed"), h("a", { href: "#/overview" }, "See why"));
 	} else if (store.report) {
@@ -221,8 +239,19 @@ function drawScanStatus() {
 		replace(scanStatus, store.settings ? h("span", null, "No scan yet") : null);
 	}
 	const state = scan.state === "done" ? `done ${scan.finishedAt}` : scan.state;
-	if (state !== announced && scan.state === "done" && announced.startsWith("running")) toast("Scan finished");
+	if (state !== announced && announced.startsWith("running")) {
+		if (scan.state === "done") toast("Scan finished");
+		else if (scan.state === "failed") announce("The scan failed. The Overview says why.");
+	}
 	announced = state;
+}
+
+/** Set when a key is pasted, so the page that comes back can say whether it was refused. */
+let keyPasted = false;
+
+/** Whether this page is shown inside the Mac app, which says how to start Porchlight again. */
+function inMacApp() {
+	return Boolean(/** @type {any} */ (window).webkit?.messageHandlers?.porchlight);
 }
 
 /**
@@ -233,8 +262,11 @@ function drawScanStatus() {
  */
 function askForKey(where) {
 	const service = where !== "local";
+	// A key was given and refused: say so, rather than showing the same request again as if nothing happened.
+	const refused = keyPasted ? keyRejectedWords("pasted", where) : hasSessionKey() ? keyRejectedWords("stale", where) : null;
+	keyPasted = false;
 	const input = /** @type {HTMLInputElement} */ (
-		h("input", { type: "password", name: "key", autocomplete: "off", required: true, "aria-label": service ? "Access key" : "Session key" })
+		h("input", { type: "password", name: "key", autocomplete: "off", required: true, "aria-label": service ? "Access key" : "Session key", "aria-invalid": refused ? "true" : null })
 	);
 	replace(
 		view,
@@ -249,11 +281,13 @@ function askForKey(where) {
 						event.preventDefault();
 						// Accept the whole printed link as well as the key on its own.
 						setSessionKey(input.value.replace(/^.*#k=/, ""));
+						keyPasted = true;
 						reset();
 						void route();
 					},
 				},
 				h("h2", null, service ? "Paste your access key" : "Session key needed"),
+				refused ? h("p", { class: "form-error", role: "alert", id: "key-refused" }, refused) : null,
 				where === "tailnet"
 					? h(
 							"p",

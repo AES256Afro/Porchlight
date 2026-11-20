@@ -2,8 +2,8 @@
 import { api } from "./api.js";
 import { analysisCard } from "./analysis.js";
 import { askCard, localModelCard } from "./assist.js";
-import { banner, formatWhen, h, icon, PHASE_TITLES, plural, replace, severityBadge, statTile, stepNodes, toast } from "./dom.js";
-import { coverageBanner } from "./findings.js";
+import { banner, formatWhen, h, icon, PHASE_TITLES, plural, replace, severityBadge, statTile, stepNodes, tileRow, toast } from "./dom.js";
+import { coverageBanner } from "./finding-parts.js";
 import { githubPanel } from "./github.js";
 import { emptyScanHints, previewAdvice } from "./hints.js";
 import { buildHash } from "./list.js";
@@ -41,6 +41,8 @@ export async function renderOverview(view) {
 	const scanSlot = h("div");
 	const previewSlot = h("div", { class: "preview", "aria-live": "polite" });
 	const summary = h("div");
+	/** Credentials that look live, at the top of the page: until they are rotated they can be used. */
+	const urgent = h("div");
 	const intro = h("p", { class: "sub" });
 	const rootInput = /** @type {HTMLInputElement} */ (
 		h("input", { type: "text", name: "root", value: store.report?.root ?? store.settings?.defaultRoot ?? "", spellcheck: false, autocomplete: "off", required: true })
@@ -61,6 +63,7 @@ export async function renderOverview(view) {
 			"section",
 			{ class: "page" },
 			h("div", { class: "page-head" }, h("div", null, h("h1", null, "Overview"), intro)),
+			urgent,
 			h(
 				"div",
 				{ class: "card full" },
@@ -196,7 +199,10 @@ export async function renderOverview(view) {
 		intro.textContent = report
 			? "Where your code and your websites stand, and what to do first."
 			: "Porchlight checks two things you own: your code and your websites. Start with either one below.";
-		if (!report) return replace(summary, cloudflareCard(), monitorCard(), assistantCard());
+		if (!report) {
+			replace(urgent);
+			return replace(summary, cloudflareCard(), monitorCard(), assistantCard());
+		}
 		const rows = findingRows();
 		/** @type {Record<Severity, number>} */
 		const counts = { critical: 0, high: 0, medium: 0, low: 0 };
@@ -211,12 +217,11 @@ export async function renderOverview(view) {
 			summary,
 			h("p", { class: "sub scan-line" }, `Last scan: ${plural(report.repos.length, "repository", "repositories")} under ${report.root}, ${formatWhen(report.scannedAt)}.`),
 			coverageBanner(),
-			h(
-				"div",
-				{ class: "tiles" },
-				statTile("Total findings", rows.length),
-				...SEVERITIES.map((severity) => statTile(SEVERITY_LABELS[severity], counts[severity], icon(severity, `severity-${severity}`))),
-				statTile("Repositories affected", `${affected.length.toLocaleString()} of ${report.repos.length.toLocaleString()}`),
+			tileRow(
+				// Each number opens the findings it counts.
+				statTile("Total findings", rows.length, null, "#/findings"),
+				...SEVERITIES.map((severity) => statTile(SEVERITY_LABELS[severity], counts[severity], icon(severity, `severity-${severity}`), buildHash(["findings"], { severity }))),
+				statTile("Repositories affected", `${affected.length.toLocaleString()} of ${report.repos.length.toLocaleString()}`, null, "#/findings/by-repo"),
 			),
 			h(
 				"div",
@@ -260,6 +265,7 @@ export async function renderOverview(view) {
 			const { roadmap } = /** @type {{ roadmap: Roadmap }} */ (await api("GET", "/repos/roadmap"));
 			if (left || store.report !== report) return;
 			const rotate = roadmap.phases[0]?.groups.flatMap((group) => group.actions.filter((action) => action.kind === "rotate").map((action) => ({ group: group.name, action }))) ?? [];
+			replace(urgent, rotate.length > 0 ? liveCredentials(rotate) : null);
 			replace(
 				phases,
 				h("h2", null, "What to repair first"),
@@ -283,14 +289,6 @@ export async function renderOverview(view) {
 								);
 							}),
 						),
-				rotate.length > 0
-					? h(
-							"div",
-							{ class: "callout" },
-							h("strong", null, plural(rotate.length, "credential looks live", "credentials look live")),
-							h("ul", null, ...rotate.slice(0, TOP).map(({ group, action }) => h("li", { class: "wrap" }, `${group}: `, h("code", null, action.where)))),
-						)
-					: null,
 				h("p", { class: "card-foot" }, h("a", { href: "#/roadmap" }, "Open the roadmap")),
 			);
 		} catch (err) {
@@ -298,6 +296,33 @@ export async function renderOverview(view) {
 			replace(phases, h("h2", null, "What to repair first"), banner("error", "Could not build the roadmap", [err instanceof Error ? err.message : String(err)]));
 		}
 	}
+}
+
+/**
+ * The banner at the top of the Overview when credentials look live: how many, where the first few
+ * are, and a link to the repairs. Each place opens that finding on the Findings page.
+ *
+ * @param {{ group: string, action: import("../src/roadmap/types.ts").Action }[]} rotate
+ */
+function liveCredentials(rotate) {
+	return h(
+		"section",
+		{ class: "banner banner-error urgent", "aria-labelledby": "live-credentials" },
+		h("h2", { id: "live-credentials", class: "banner-title" }, icon("warning"), plural(rotate.length, "credential looks live", "credentials look live")),
+		h("p", null, "Rotate these first. Each one is in git history, so deleting the line does not make it safe."),
+		h(
+			"ul",
+			{ class: "urgent-list" },
+			...rotate.slice(0, TOP).map(({ group, action }) =>
+				h("li", { class: "wrap" }, h("a", { href: buildHash(["findings"], { repo: group, q: action.match ?? action.where }) }, `${group}: `, h("code", null, action.where))),
+			),
+		),
+		h(
+			"p",
+			{ class: "card-foot" },
+			h("a", { class: "button", href: buildHash(["roadmap"], { kind: "secret" }) }, rotate.length > TOP ? `See all ${rotate.length.toLocaleString()} on the Roadmap` : "See how to rotate them"),
+		),
+	);
 }
 
 /**

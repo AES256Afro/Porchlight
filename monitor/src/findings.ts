@@ -2,19 +2,9 @@ import { resolves } from "./collect/dns.ts";
 import type { HttpProbe, SecurityHeader } from "./collect/http.ts";
 import type { Settings } from "./env.ts";
 import type { HostState, Snapshot } from "./snapshot.ts";
+import type { Finding, Severity } from "./types.ts";
 
-export type Severity = "high" | "medium" | "low";
-
-/** A problem with the current state of the domain, as opposed to a change between scans. */
-export interface Finding {
-	/** Stable across scans, so a finding is reported once when it appears and once when it clears. */
-	id: string;
-	severity: Severity;
-	host: string;
-	/** Which observation the finding rests on; decides whether a later scan can clear it. */
-	basis: "dns" | "http" | "cert" | "apex";
-	title: string;
-}
+export type { Finding, Severity };
 
 const DAY_MS = 86_400_000;
 const SEVERITY_ORDER: Record<Severity, number> = { high: 0, medium: 1, low: 2 };

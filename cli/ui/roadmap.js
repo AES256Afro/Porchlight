@@ -1,22 +1,24 @@
 // @ts-check
 import { api } from "./api.js";
 import { assistAction } from "./assist.js";
-import { banner, emptyState, h, PHASE_TITLES, plural, replace, select, severityBadge, stepNodes } from "./dom.js";
+import { banner, emptyState, h, pager, PHASE_TITLES, plural, replace, select, severityBadge, stepNodes } from "./dom.js";
 import { exportButton, openExportDialog } from "./export.js";
 import { openSendDialog, sendButton } from "./send.js";
-import { noScanYet } from "./findings.js";
+import { clearFiltersButton, noScanYet, repoChoices, severityChips, viewLink } from "./finding-parts.js";
 import { matchesFilter } from "./filter.js";
-import { debounce, filterFromParams, paramsFromFilter } from "./list.js";
+import { debounce, filterFromParams, paginate, paramsFromFilter } from "./list.js";
 import { findingRows, load, store, subscribe } from "./store.js";
 
 /** @typedef {import("../src/roadmap/types.ts").Roadmap} Roadmap */
 /** @typedef {import("../src/roadmap/types.ts").Action} Action */
 /** @typedef {import("../src/roadmap/types.ts").Phase} Phase */
-/** @typedef {import("./findings.js").Route} Route */
+/** @typedef {import("./finding-parts.js").Route} Route */
 
 const SEVERITIES = /** @type {const} */ (["critical", "high", "medium", "low"]);
 /** Advisory IDs listed on an action before the rest are summarised as a count. */
 const MAX_IDS = 8;
+/** Actions shown in a group at a time; a long group is paged. */
+const ACTIONS_PAGE = 20;
 
 /**
  * The Roadmap page: what to repair, in order. One action can clear many findings.
@@ -34,6 +36,8 @@ export async function renderRoadmap(view, route) {
 	/** Only the answer to the latest request is shown, however the requests overlap. */
 	let request = 0;
 	let left = false;
+	/** The page shown in each group of the chosen phase, by the group's name. @type {Map<string, number>} */
+	const pages = new Map();
 
 	const body = h("div");
 	const fetchSoon = debounce(fetchRoadmap, 200);
@@ -49,7 +53,15 @@ export async function renderRoadmap(view, route) {
 	function draw() {
 		const report = store.report;
 		if (!report) return replace(view, h("section", { class: "page" }, header(null), noScanYet("The shortest list of repairs appears here, most urgent first. One repair, such as upgrading a package, can clear many problems at once.")));
-		const repos = report.repos.filter((repo) => repo.findings.length > 0).map((repo) => repo.name).sort((a, b) => a.localeCompare(b));
+		const refetch = () => {
+			pages.clear();
+			clear.refresh();
+			void fetchRoadmap();
+		};
+		const clear = clearFiltersButton(filter, () => {
+			pages.clear();
+			draw();
+		});
 		const search = /** @type {HTMLInputElement} */ (
 			h("input", {
 				type: "search",
@@ -58,6 +70,8 @@ export async function renderRoadmap(view, route) {
 				"aria-label": "Search the roadmap",
 				oninput: () => {
 					filter.query = search.value;
+					pages.clear();
+					clear.refresh();
 					fetchSoon();
 				},
 			})
@@ -101,7 +115,9 @@ export async function renderRoadmap(view, route) {
 					"div",
 					{ class: "filters" },
 					h("div", { class: "field grow" }, search),
-					select("Repository", [["", "All repositories"], .../** @type {[string, string][]} */ (repos.map((name) => [name, name]))], filter.repo ?? "", (value) => ((filter.repo = value), fetchRoadmap())),
+					// The severity filter can come from a link (the Overview's tiles, a shared address), so it is always shown.
+					severityChips(filter, refetch),
+					select("Repository", repoChoices(filter), filter.repo ?? "", (value) => ((filter.repo = value), refetch())),
 					select(
 						"Type",
 						[
@@ -110,8 +126,9 @@ export async function renderRoadmap(view, route) {
 							["vulnerability", "Vulnerabilities"],
 						],
 						filter.kind,
-						(value) => ((filter.kind = /** @type {typeof filter.kind} */ (value)), fetchRoadmap()),
+						(value) => ((filter.kind = /** @type {typeof filter.kind} */ (value)), refetch()),
 					),
+					clear.button,
 				),
 				body,
 			),
@@ -154,19 +171,47 @@ export async function renderRoadmap(view, route) {
 			body,
 			h(
 				"div",
-				{ class: "phases", role: "tablist", "aria-label": "Phases" },
+				{ class: "phases", role: "tablist", "aria-label": "Phases", onkeydown: moveBetweenTabs },
 				...roadmap.phases.map((candidate, index) => phaseTab(candidate, index, candidate === phase)),
 			),
-			h("p", { class: "sub phase-summary" }, phase.summary),
-			...phase.groups.map((group) =>
-				h(
-					"section",
-					{ class: "action-group" },
-					h("h2", null, group.name, h("span", { class: "count" }, plural(group.actions.length, "action", "actions"))),
-					h("ul", { class: "action-list" }, ...group.actions.map(actionCard)),
-				),
+			h(
+				"div",
+				{ id: "roadmap-phase", role: "tabpanel", "aria-labelledby": `phase-tab-${phase.key}` },
+				h("p", { class: "sub phase-summary" }, phase.summary),
+				...phase.groups.map((group) => {
+					const paged = paginate(group.actions, pages.get(group.name) ?? 1, ACTIONS_PAGE);
+					return h(
+						"section",
+						{ class: "action-group" },
+						h("h2", null, group.name, h("span", { class: "count" }, plural(group.actions.length, "action", "actions"))),
+						h("ul", { class: "action-list" }, ...paged.items.map((action) => actionCard(action, group.name, filter))),
+						paged.pages > 1
+							? pager(paged, "actions", (next) => {
+									pages.set(group.name, next);
+									show();
+								})
+							: null,
+					);
+				}),
 			),
 		);
+	}
+
+	/**
+	 * Arrow keys, Home and End move between the phases, as in any tab list; each tab is one Tab stop.
+	 *
+	 * @param {KeyboardEvent} event
+	 */
+	function moveBetweenTabs(event) {
+		const tabs = /** @type {HTMLButtonElement[]} */ ([...(/** @type {HTMLElement} */ (event.currentTarget)).querySelectorAll('[role="tab"]:not(:disabled)')]);
+		const at = tabs.indexOf(/** @type {HTMLButtonElement} */ (document.activeElement));
+		if (at === -1) return;
+		const next = { ArrowRight: at + 1, ArrowDown: at + 1, ArrowLeft: at - 1, ArrowUp: at - 1, Home: 0, End: tabs.length - 1 }[event.key];
+		if (next === undefined) return;
+		event.preventDefault();
+		const tab = tabs[(next + tabs.length) % tabs.length];
+		tab?.click();
+		/** @type {HTMLElement | null} */ (body.querySelector('[role="tab"][aria-selected="true"]'))?.focus();
 	}
 
 	/** @param {Phase} phase @param {number} index @param {boolean} selected */
@@ -178,11 +223,15 @@ export async function renderRoadmap(view, route) {
 			{
 				type: "button",
 				role: "tab",
+				id: `phase-tab-${phase.key}`,
 				class: "phase-tab",
 				"aria-selected": String(selected),
+				"aria-controls": "roadmap-phase",
+				tabindex: selected ? "0" : "-1",
 				disabled: actions.length === 0,
 				onclick: () => {
 					phaseKey = phase.key;
+					pages.clear();
 					show();
 				},
 			},
@@ -203,8 +252,12 @@ function header(action) {
 	);
 }
 
-/** @param {Action} action */
-function actionCard(action) {
+/**
+ * @param {Action} action
+ * @param {string} place the repository or host the action belongs to
+ * @param {import("./filter.js").FindingFilter} filter the page's filter, so the linked findings are the ones counted here
+ */
+function actionCard(action, place, filter) {
 	const total = SEVERITIES.reduce((sum, severity) => sum + action.counts[severity], 0);
 	const breakdown = SEVERITIES.filter((severity) => action.counts[severity] > 0).map((severity) => `${action.counts[severity].toLocaleString()} ${severity}`).join(", ");
 	const ids = action.clears.length > MAX_IDS ? [...action.clears.slice(0, MAX_IDS), `and ${(action.clears.length - MAX_IDS).toLocaleString()} more`] : action.clears;
@@ -222,5 +275,7 @@ function actionCard(action) {
 			h("dt", null, "How"),
 			h("dd", null, h("ol", null, ...action.how.map((step) => h("li", null, ...stepNodes(step))))),
 		),
+		// The findings behind the action, on the Findings page, where each has its detail and notes.
+		action.match ? h("p", { class: "hint" }, viewLink(["findings"], { ...filter, query: action.match, repo: place }, {}, `See ${total === 1 ? "this finding" : `these ${total.toLocaleString()} findings`}`)) : null,
 	);
 }

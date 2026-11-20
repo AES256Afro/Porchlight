@@ -10,7 +10,7 @@ import { monitorConfig } from "../src/monitor/client.ts";
 import type { Runner } from "../src/repos/exec.ts";
 import type { ScanOptions } from "../src/repos/scan.ts";
 import type { ScanReport } from "../src/repos/types.ts";
-import { hostAllowed, MIN_KEY_LENGTH, originAllowed, startUiServer, type UiOptions, type UiServer } from "../src/ui/server.ts";
+import { hostAllowed, MIN_KEY_LENGTH, originAllowed, SCRIPTS, startUiServer, type UiOptions, type UiServer } from "../src/ui/server.ts";
 import { makeTree, tempDir } from "./helpers.ts";
 
 const ADMIN_TOKEN = "admin-token-that-must-never-reach-the-browser";
@@ -112,6 +112,12 @@ test("serves the page with headers that confine it to this server", async (t) =>
 	for (const asset of ["/styles.css", "/favicon.svg", ...scripts.map((name) => `/${name}.js`)]) {
 		assert.equal((await send(server, "GET", asset, { key: null })).status, 200, asset);
 	}
+});
+
+test("serves every script in ui/, so a new one cannot be left out", async () => {
+	const { readdir } = await import("node:fs/promises");
+	const files = (await readdir(new URL("../ui/", import.meta.url))).filter((name) => name.endsWith(".js")).map((name) => name.slice(0, -3));
+	assert.deepEqual([...SCRIPTS].sort(), files.sort());
 });
 
 test("serves only its own files", async (t) => {

@@ -1,18 +1,18 @@
 // @ts-check
-import { banner, emptyState, h, icon, replace, severityBadge } from "./dom.js";
-import { coverageBanner, filterBar, findingDetail, findingsHeader, noScanYet, settingsBanner, severityTiles } from "./findings.js";
+import { banner, emptyState, h, icon, pager, replace, severityBadge } from "./dom.js";
+import { coverageBanner, filterBar, findingDetail, findingsHeader, noScanYet, settingsBanner, severityTiles } from "./finding-parts.js";
 import { ALL_SEVERITIES, isFiltering, matchesFilter } from "./filter.js";
-import { filterFromParams, paramsFromFilter } from "./list.js";
+import { filterFromParams, paginate, paramsFromFilter, repoSortFromParams, repoSortParams } from "./list.js";
 import { findingRows, load, store, subscribe } from "./store.js";
 
 /** @typedef {import("./filter.js").Severity} Severity */
 /** @typedef {import("./store.js").Repo} Repo */
 /** @typedef {import("./store.js").SuggestedFinding} Finding */
-/** @typedef {import("./findings.js").Route} Route */
+/** @typedef {import("./finding-parts.js").Route} Route */
 
 const SEVERITY_LABELS = { critical: "Critical", high: "High", medium: "Medium", low: "Low" };
-/** Findings listed for a repository before asking for the rest; keeps large repositories quick to open. */
-const DETAIL_PAGE = 100;
+/** Findings listed for a repository at a time; a large repository is paged, so it opens quickly. */
+const DETAIL_PAGE = 50;
 
 /**
  * Findings grouped by repository, worst repository first.
@@ -24,12 +24,12 @@ const DETAIL_PAGE = 100;
 export async function renderByRepo(view, route) {
 	await load();
 	const filter = filterFromParams(route.params);
-	/** @type {{ key: "rank" | "name" | "secrets" | "vulnerabilities" | Severity, descending: boolean }} */
-	let sort = { key: "rank", descending: true };
+	// The order is kept in the address, like the filters, so a reload or a shared link keeps it.
+	let sort = repoSortFromParams(route.params);
 	/** @type {Set<string>} */
 	const expanded = new Set();
-	/** @type {Set<string>} */
-	const showAll = new Set();
+	/** The page of findings shown in each open repository, by its path. @type {Map<string, number>} */
+	const pages = new Map();
 	/** @type {Set<string>} */
 	const openFindings = new Set();
 
@@ -41,14 +41,25 @@ export async function renderByRepo(view, route) {
 
 	function draw() {
 		if (!store.report) return replace(view, h("section", { class: "page" }, findingsHeader("by-repo"), noScanYet()));
-		replace(view, h("section", { class: "page" }, findingsHeader("by-repo", filter), coverageBanner(), settingsBanner(), filterBar(filter, update), results));
+		replace(
+			view,
+			h(
+				"section",
+				{ class: "page" },
+				findingsHeader("by-repo", filter),
+				coverageBanner(),
+				settingsBanner(),
+				filterBar(filter, () => (pages.clear(), update()), { onCleared: () => (pages.clear(), draw()) }),
+				results,
+			),
+		);
 		update();
 	}
 
 	function update() {
 		const report = store.report;
 		if (!report) return;
-		route.replace(paramsFromFilter(filter));
+		route.replace({ ...paramsFromFilter(filter), ...repoSortParams(sort) });
 		const filtering = isFiltering(filter);
 
 		const rows = report.repos.map((repo, rank) => {
@@ -186,7 +197,8 @@ export async function renderByRepo(view, route) {
 
 	/** @param {Repo} repo @param {Finding[]} findings */
 	function findingsList(repo, findings) {
-		const shown = findings.slice(0, showAll.has(repo.path) ? findings.length : DETAIL_PAGE);
+		const paged = paginate(findings, pages.get(repo.path) ?? 1, DETAIL_PAGE);
+		const shown = paged.items;
 		return h(
 			"div",
 			{ class: "findings" },
@@ -244,19 +256,11 @@ export async function renderByRepo(view, route) {
 					}),
 				),
 			),
-			findings.length > shown.length
-				? h(
-						"button",
-						{
-							type: "button",
-							class: "button quiet",
-							onclick: () => {
-								showAll.add(repo.path);
-								update();
-							},
-						},
-						`Show all ${findings.length.toLocaleString()} findings`,
-					)
+			paged.pages > 1
+				? pager(paged, "findings", (next) => {
+						pages.set(repo.path, next);
+						update();
+					})
 				: null,
 		);
 	}

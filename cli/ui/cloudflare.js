@@ -7,7 +7,7 @@
 import { activityList } from "./activity.js";
 import { api, ApiError, download } from "./api.js";
 import { assistAction } from "./assist.js";
-import { banner, formatWhen, h, icon, plural, replace, select, severityBadge, statTile, stepNodes, toast } from "./dom.js";
+import { banner, formatWhen, h, icon, plural, replace, select, severityBadge, statTile, stepNodes, tileRow, toast } from "./dom.js";
 import { fixBrief, fixGroups, tokenFixSteps } from "./hints.js";
 import { announceSaved } from "./projects.js";
 import { currentProject, load, loadCloudflare, startCloudflareAudit, store, subscribe, updateCloudflare } from "./store.js";
@@ -367,9 +367,7 @@ export async function renderCloudflare(view) {
 				{ class: "sub scan-line" },
 				`Last audited ${formatWhen(report.checkedAt)} · ${plural(report.zones.length, "domain", "domains")} · ${token.kind === "account" ? "account token" : "user token"}${token.expiresOn ? `, expiring ${formatWhen(token.expiresOn)}` : ""}.`,
 			),
-			h(
-				"div",
-				{ class: "tiles" },
+			tileRow(
 				statTile("Problems", failed.length),
 				statTile("Could not check", unknown.length, unknown.length > 0 ? icon("pending") : null),
 				statTile("Passed", passed.length, icon("good")),

@@ -1,11 +1,8 @@
 import { APEX_TYPES } from "./collect/dns.ts";
 import type { HostState, Snapshot } from "./snapshot.ts";
+import type { Change } from "./types.ts";
 
-export type Change =
-	| { kind: "host_added"; host: string }
-	| { kind: "host_removed"; host: string }
-	| { kind: "dns_changed"; host: string; record: string; before: string[]; after: string[] }
-	| { kind: "https_changed"; host: string; before: string; after: string };
+export type { Change };
 
 /**
  * What changed between two scans. Only compares things both scans actually

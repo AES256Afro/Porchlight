@@ -328,3 +328,33 @@ export function domainFromInput(text) {
 		.replace(/:\d+$/, "")
 		.replace(/\.$/, "");
 }
+
+/**
+ * What to say when Porchlight does not answer at all, by how it was started: from a terminal, as the
+ * Mac app, or as a service under BoxPilot. Each says where to start it again.
+ *
+ * @param {"terminal" | "mac" | "service"} startedFrom
+ */
+export function offlineWords(startedFrom) {
+	if (startedFrom === "service") return "Porchlight is not answering. In BoxPilot, check that the Porchlight app is running, then reload this page.";
+	if (startedFrom === "mac") return "Porchlight is not answering. Quit the Porchlight app and open it again.";
+	return "Porchlight is not answering. Start it again with: porchlight ui";
+}
+
+/**
+ * Why a key was refused, said above the box to paste it in. "pasted": the key just pasted was wrong.
+ * "stale": the tab's key stopped working, which on this computer means Porchlight was started again
+ * (each start makes a new key), and elsewhere that the access key was replaced.
+ *
+ * @param {"pasted" | "stale"} why
+ * @param {"local" | "service" | "tailnet"} where
+ */
+export function keyRejectedWords(why, where) {
+	if (why === "pasted") {
+		return where === "local"
+			? "That key was not accepted. Copy the whole link Porchlight printed when it started, or the part after #k=."
+			: "That key was not accepted. Copy it again in full; it is case-sensitive.";
+	}
+	if (where === "local") return "Porchlight has started again since this tab opened, so its old key no longer works. Open the new link it printed.";
+	return "This tab's key no longer works: it may have been replaced. Paste the current one.";
+}

@@ -273,7 +273,7 @@ describe("scanning", () => {
 
 		expect(body.report.hostCount).toBe(6);
 		expect(body.report.notes).toEqual([
-			"3 known hosts were not probed this scan because MAX_HOSTS is 3; they take turns in later scans.",
+			"3 of 6 known hosts were not checked this time: each scan checks 3, and the rest take turns in later scans.",
 		]);
 		const probedSites = deps.requests.filter(
 			(url) =>

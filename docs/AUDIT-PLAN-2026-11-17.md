@@ -152,6 +152,18 @@ Pin the base image digest and the BoxPilot schema (S8). Fix the picomatch dev ad
 
 ### M4: Accessible and calmer interface. Size: M–L
 
+**Status, 2026-11-20: built, not released.** Checked in the browser with a demo scan and a stand-in monitor at 375, 800 and 1280 px, light and dark.
+- Focus: `replace()` in `dom.js` gives focus back to the control in the same place after a redraw (the same label, or the same position), with the caret kept. The pager and the domain actions use `aria-disabled`, so the button that was pressed keeps focus. Roadmap phases are a real tab list: arrow keys, Home and End, one Tab stop, and a tab panel.
+- Live region: the scan status no longer announces itself every 800 ms. `announce()` says the scan started, where it is twice a minute, and that it finished or failed. A failed poll is retried five times before the scan is marked failed (B11).
+- Contrast: new `--warning-mark`, `--serious-mark`, `--field-border` and `--on-accent` tokens, a darker `--muted` in light themes, and fixes to the Native, Terminal and High contrast looks. `cli/test/contrast.test.ts` checks text at 4.5:1 and marks, field edges and the focus ring at 3:1 for every look, light and dark.
+- Scales: six type sizes (from 16), four corner radii, and spacing snapped to one scale; the same test keeps them there.
+- Errors stay until dismissed; news leaves after 5 s. A refused key says why (pasted wrong, or Porchlight restarted). Pages dim while the next one loads. The offline message names how to start Porchlight again: terminal, Mac app or BoxPilot.
+- Filters travel between All findings, By repository and the Roadmap. "Clear filters" appears when something is filtered. A repository named by the address but not in the scan is shown as a choice. The Roadmap has the severity filter. The By repository order is in the address. Each repository's findings and each roadmap group are paged.
+- The live-credentials warning heads the Overview, linking to each finding and to the repairs. The Overview tiles open what they count. A finding links to its repair, and a repair to its findings (`Action.match`).
+- Layout: tile rows never leave one tile alone (6, 3 by 2, 2 by 3); on a phone the sections get their own line with an edge cue; setup steps and the domain findings table fit their boxes. "Add a website" sits at the top right, says what was wrong with a name in plain words, and the DNS check's result stays on the page. The monitor's note no longer says "MAX_HOSTS".
+- Code: the shared parts moved to `cli/ui/finding-parts.js`. The monitor's API types live in `monitor/src/types.ts`, and the CLI and the page import them. A test checks that every file in `cli/ui/` is served.
+- Not done: no automated axe run (the contrast test and a scripted tab-order check stand in for it); the "Explain" 409 on overlapping clicks and cancelling a scan stay with M5.
+
 - Focus restore on redraw.
 - Throttle the live region.
 - Light-mode contrast tokens, plus type, spacing and radius scales (14 font sizes down to about 5).

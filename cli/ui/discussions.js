@@ -16,7 +16,7 @@ import { currentProject, load, store } from "./store.js";
 
 /**
  * @param {HTMLElement} view
- * @param {import("./findings.js").Route} context
+ * @param {import("./finding-parts.js").Route} context
  * @returns {Promise<() => void>}
  */
 export async function renderDiscussions(view, context) {
@@ -28,7 +28,7 @@ export async function renderDiscussions(view, context) {
 
 /**
  * @param {HTMLElement} view
- * @param {import("./findings.js").Route} context
+ * @param {import("./finding-parts.js").Route} context
  */
 async function renderList(view, context) {
 	const data = await api("GET", "/discussions");

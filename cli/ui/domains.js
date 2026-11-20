@@ -1,52 +1,17 @@
 // @ts-check
 import { api, ApiError } from "./api.js";
 import { assistAction } from "./assist.js";
-import { banner, formatWhen, h, icon, plural, replace, severityBadge, statTile, stepNodes, toast } from "./dom.js";
+import { banner, formatWhen, h, icon, plural, replace, severityBadge, statTile, stepNodes, tileRow, toast } from "./dom.js";
 import { exportButton, openExportDialog } from "./export.js";
 import { domainFromInput, monitorSetupSteps } from "./hints.js";
 
 const WATCHES = "Watches the domains you own for new subdomains, DNS changes, expiring certificates and missing security headers. It only looks at what is public.";
 
-/**
- * @typedef {object} Domain
- * @property {string} name
- * @property {boolean} verified
- * @property {string | null} verifiedAt
- * @property {string | null} lastScanAt
- * @property {"ok" | "unverified" | "error" | null} lastScanStatus
- * @property {number} [errorStreak] Scans failed in a row; absent from a monitor deployed before it was added.
- * @property {{ type: string, name: string, value: string }} challenge
- */
-
-/**
- * @typedef {object} MonitorFinding
- * @property {string} id
- * @property {"high" | "medium" | "low"} severity
- * @property {string} host
- * @property {string} title
- */
-
-/**
- * @typedef {(
- *   | { kind: "host_added", host: string }
- *   | { kind: "host_removed", host: string }
- *   | { kind: "dns_changed", host: string, record: string, before: string[], after: string[] }
- *   | { kind: "https_changed", host: string, before: string, after: string }
- * )} Change
- */
-
-/**
- * @typedef {object} MonitorReport
- * @property {string} domain
- * @property {string} takenAt
- * @property {boolean} baseline
- * @property {Change[]} changes
- * @property {MonitorFinding[]} newFindings
- * @property {MonitorFinding[]} resolvedFindings
- * @property {MonitorFinding[]} findings
- * @property {number} hostCount
- * @property {string[]} notes
- */
+// The monitor's own types (monitor/src/types.ts). errorStreak is absent from a monitor deployed before it was added.
+/** @typedef {Omit<import("../../monitor/src/types.ts").DomainView, "errorStreak"> & { errorStreak?: number }} Domain */
+/** @typedef {import("../../monitor/src/types.ts").Finding} MonitorFinding */
+/** @typedef {import("../../monitor/src/types.ts").Change} Change */
+/** @typedef {import("../../monitor/src/types.ts").ScanReport} MonitorReport */
 
 /**
  * The Domains page: register domains with the monitor, prove ownership, scan, and read what changed.
@@ -66,9 +31,21 @@ export async function renderDomains(view, selected) {
 	let domains = [];
 	const list = h("ul", { class: "domain-list", "aria-label": "Domains" });
 	const detail = h("div", { class: "detail" });
+	const addProblem = h("p", { class: "form-error", id: "add-domain-problem", role: "alert", hidden: true });
 	const input = /** @type {HTMLInputElement} */ (
-		h("input", { type: "text", name: "domain", placeholder: "example.com", spellcheck: false, autocomplete: "off", required: true, "aria-label": "Website to add, as a domain name such as example.com" })
+		h("input", {
+			type: "text",
+			name: "domain",
+			placeholder: "example.com",
+			spellcheck: false,
+			autocomplete: "off",
+			required: true,
+			"aria-label": "Website to add, as a domain name such as example.com",
+			"aria-describedby": "add-domain-problem",
+		})
 	);
+	/** What the last Check DNS record or Scan now said, shown on the domain until the next one. @type {{ domain: string, ok: boolean, text: string } | null} */
+	let outcome = null;
 
 	replace(
 		view,
@@ -79,7 +56,12 @@ export async function renderDomains(view, selected) {
 				"div",
 				{ class: "page-head" },
 				h("div", null, h("h1", null, "Domains"), h("p", { class: "sub" }, `The websites you own, checked by your monitor at ${state.monitor.host}.`)),
-				h("form", { class: "inline-form", onsubmit: addDomain }, h("div", { class: "field grow" }, input), h("button", { type: "submit", class: "button primary" }, "Add a website")),
+				h(
+					"form",
+					{ class: "add-domain", onsubmit: addDomain },
+					h("div", { class: "inline-form" }, h("div", { class: "field grow" }, input), h("button", { type: "submit", class: "button primary" }, "Add a website")),
+					addProblem,
+				),
 			),
 			h("div", { class: "split" }, list, detail),
 		),
@@ -163,14 +145,25 @@ export async function renderDomains(view, selected) {
 	/** @param {SubmitEvent} event */
 	async function addDomain(event) {
 		event.preventDefault();
+		// People paste a whole address; the monitor wants the name alone.
+		const name = domainFromInput(input.value);
+		const problem = (/** @type {string} */ text) => {
+			addProblem.textContent = text;
+			addProblem.hidden = false;
+			input.setAttribute("aria-invalid", "true");
+			input.focus();
+		};
+		addProblem.hidden = true;
+		input.removeAttribute("aria-invalid");
+		if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(name)) return problem(`"${input.value.trim()}" is not a domain name. Type one such as example.com.`);
 		try {
-			// People paste a whole address; the monitor wants the name alone.
-			const { domain } = await api("POST", "/domains", { domain: domainFromInput(input.value) });
+			const { domain } = await api("POST", "/domains", { domain: name });
 			input.value = "";
 			if (domain.name === selected) await refreshList().then(showDetail);
 			else location.hash = `#/domains/${domain.name}`;
 		} catch (err) {
-			toast(message(err), "error");
+			// The monitor's own wording is for its API; a refused name is said in the page's words.
+			problem(err instanceof ApiError && err.status === 400 ? `The monitor did not accept "${name}" as a domain name. Type one such as example.com.` : message(err));
 		}
 	}
 
@@ -224,6 +217,9 @@ export async function renderDomains(view, selected) {
 				),
 			),
 			report ? null : journey(everVerified ? 3 : 2),
+			outcome && outcome.domain === domain.name
+				? h("p", { class: outcome.ok ? "outcome outcome-good" : "outcome form-error", role: outcome.ok ? "status" : "alert" }, icon(outcome.ok ? "good" : "warning"), outcome.text)
+				: null,
 			domain.verified ? null : challengeCard(domain, verifyButton),
 			explain?.panel,
 			report
@@ -242,14 +238,18 @@ export async function renderDomains(view, selected) {
 		 * @param {"scan" | "verify"} action
 		 */
 		async function act(button, busyLabel, action) {
+			// aria-disabled, not disabled: a disabled button drops keyboard focus, and the owner may want to try again.
+			if (button.getAttribute("aria-disabled") === "true") return;
 			const label = button.textContent;
-			button.disabled = true;
+			button.setAttribute("aria-disabled", "true");
 			button.textContent = busyLabel;
+			// The result is said on the page, beside what it is about, until the next check: a DNS record
+			// that is not there yet is the usual answer, and it needs reading, not a toast that leaves.
 			try {
 				await api("POST", `/domains/${encodeURIComponent(domain.name)}/${action}`);
-				toast(action === "scan" ? `Scanned ${domain.name}` : `${domain.name} is verified`);
+				outcome = { domain: domain.name, ok: true, text: action === "scan" ? `Scanned ${domain.name}.` : `${domain.name} is verified. Keep the DNS record in place: it is checked again before every scan.` };
 			} catch (err) {
-				toast(message(err), "error");
+				outcome = { domain: domain.name, ok: false, text: message(err) };
 			}
 			button.textContent = label;
 			await refreshList();
@@ -262,8 +262,8 @@ export async function renderDomains(view, selected) {
 		const dialog = /** @type {HTMLDialogElement} */ (
 			h(
 				"dialog",
-				{ class: "dialog", onclose: () => dialog.remove() },
-				h("h2", null, `Remove ${name}?`),
+				{ class: "dialog", "aria-labelledby": "remove-title", onclose: () => dialog.remove() },
+				h("h2", { id: "remove-title" }, `Remove ${name}?`),
 				h("p", null, "The monitor will stop scanning it and delete its scan history. This cannot be undone."),
 				h(
 					"div",
@@ -377,9 +377,7 @@ function reportView(report, suggestions) {
 		{ class: "report" },
 		h("p", { class: "sub" }, `Scanned ${formatWhen(report.takenAt)}. ${summary}`),
 		report.notes.length > 0 ? banner("warning", "This scan could not see everything", report.notes) : null,
-		h(
-			"div",
-			{ class: "tiles" },
+		tileRow(
 			statTile("Hosts", report.hostCount),
 			statTile("Open findings", report.findings.length),
 			statTile("High", count("high"), icon("high", "severity-high")),

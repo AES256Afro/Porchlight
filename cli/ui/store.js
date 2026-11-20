@@ -271,7 +271,11 @@ function setScan(scan) {
 	emit("scan");
 }
 
-function poll() {
+/** Polls in a row that may fail (a busy machine, a moment off the network) before the scan is given up on. */
+const POLL_TRIES = 5;
+
+/** @param {number} [failures] how many polls in a row have failed so far */
+function poll(failures = 0) {
 	clearTimeout(pollTimer);
 	pollTimer = setTimeout(async () => {
 		try {
@@ -280,9 +284,11 @@ function poll() {
 			if (scan.state === "running") return poll();
 			if (scan.state === "done") await loadReport();
 		} catch (err) {
-			setScan({ state: "failed", root: "", finishedAt: "", error: err instanceof Error ? err.message : String(err) });
+			// One failed poll says nothing about the scan, which runs on the server either way: ask again, more slowly.
+			if (failures + 1 < POLL_TRIES) return poll(failures + 1);
+			setScan({ state: "failed", root: "", finishedAt: "", error: `Lost touch with the scan: ${err instanceof Error ? err.message : String(err)}` });
 		}
-	}, POLL_MS);
+	}, POLL_MS * 2 ** failures);
 }
 
 /** Every finding of the report as one list, each carrying its repository's name. Built once per report. */

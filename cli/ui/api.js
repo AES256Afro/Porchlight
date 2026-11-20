@@ -38,6 +38,19 @@ export function setSessionKey(key) {
 
 let memoryKey = "";
 
+/** Whether this tab holds a key, so a refusal can be told apart from a first visit. */
+export function hasSessionKey() {
+	return sessionKey() !== "";
+}
+
+/** What to say when Porchlight does not answer at all. app.js sets it once it knows how Porchlight was started. */
+let offlineMessage = "Porchlight is not answering. If it was closed, start it again.";
+
+/** @param {string} message */
+export function setOfflineMessage(message) {
+	offlineMessage = message;
+}
+
 function sessionKey() {
 	try {
 		return sessionStorage.getItem(STORAGE_KEY) ?? memoryKey;
@@ -58,7 +71,7 @@ export async function download(path) {
 	try {
 		response = await fetch(`/api${path}`, { headers: { "x-porchlight-session": sessionKey() } });
 	} catch {
-		throw new ApiError(0, "Porchlight is not running. Start it again with: porchlight ui", {});
+		throw new ApiError(0, offlineMessage, {});
 	}
 	if (!response.ok) {
 		const data = await response.json().catch(() => ({}));
@@ -87,7 +100,7 @@ export async function apiText(path) {
 	try {
 		response = await fetch(`/api${path}`, { headers: { "x-porchlight-session": sessionKey() } });
 	} catch {
-		throw new ApiError(0, "Porchlight is not running. Start it again with: porchlight ui", {});
+		throw new ApiError(0, offlineMessage, {});
 	}
 	if (!response.ok) {
 		const data = await response.json().catch(() => ({}));
@@ -116,7 +129,7 @@ export async function api(method, path, body) {
 			body: body === undefined ? undefined : JSON.stringify(body),
 		});
 	} catch {
-		throw new ApiError(0, "Porchlight is not running. Start it again with: porchlight ui", {});
+		throw new ApiError(0, offlineMessage, {});
 	}
 	/** @type {Record<string, any>} */
 	let data = {};

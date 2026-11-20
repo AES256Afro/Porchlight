@@ -2,7 +2,7 @@
 // "This Mac": what Porchlight can see of the computer it runs on. The check only reads; this page
 // starts it, follows it, and shows what it found. Every element is built with h(): program names,
 // paths and update titles come from the system and are never treated as HTML.
-import { formatWhen, h, icon, plural, replace, severityBadge, statTile, stepNodes, toast } from "./dom.js";
+import { formatWhen, h, icon, plural, replace, severityBadge, statTile, stepNodes, tileRow, toast } from "./dom.js";
 import { AREA_TITLES, combinedCommands, hostName as nameFor, splitChecks } from "./host-areas.js";
 import { load, loadHost, startHostCheck, store, subscribe } from "./store.js";
 
@@ -156,9 +156,7 @@ function drawReport(report) {
 	const os = report.os ? `${report.os.name} ${report.os.version}${report.os.build ? ` (${report.os.build})` : ""}` : null;
 	return [
 		h("p", { class: "sub scan-line" }, `Last checked ${formatWhen(report.checkedAt)}${os ? ` · ${os}` : ""}.`),
-		h(
-			"div",
-			{ class: "tiles" },
+		tileRow(
 			statTile("Problems", failed.length),
 			statTile("Could not check", unknown.length, unknown.length > 0 ? icon("pending") : null),
 			statTile("Passed", passed.length, icon("good")),
