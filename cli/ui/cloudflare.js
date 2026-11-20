@@ -4,7 +4,7 @@
 // Porchlight can make is shown as the exact request and sent only when the owner approves it here
 // (invariant 21). Every element is built with h(): record names and values come from DNS, which
 // others can influence, and are never treated as HTML.
-import { api, download } from "./api.js";
+import { api, ApiError, download } from "./api.js";
 import { assistAction } from "./assist.js";
 import { banner, formatWhen, h, icon, plural, replace, select, severityBadge, statTile, stepNodes, toast } from "./dom.js";
 import { announceSaved } from "./projects.js";
@@ -205,8 +205,44 @@ export async function renderCloudflare(view) {
 			{ class: "cf-zone-head" },
 			h("span", { class: "cf-plan" }, `${zone.planName}${zone.paused ? ", paused" : ""}${zone.status !== "active" ? `, ${zone.status}` : ""}`),
 			...(counts.length > 0 ? counts : [h("span", { class: "severity status-good" }, icon("good"), "No problems")]),
+			zoneActions(zone),
 		);
 		return groupCard(zone.name, head, zone.checks, zone);
+	}
+
+	/**
+	 * Where else this domain can go: the monitor's watch list, and an investigation. Each only adds
+	 * the name to that page's list; proving ownership and starting anything happen there.
+	 *
+	 * @param {CfZoneReport} zone
+	 */
+	function zoneActions(zone) {
+		const watched = store.settings?.monitor.configured === true;
+		const watch = async () => {
+			try {
+				await api("POST", "/domains", { domain: zone.name });
+			} catch (err) {
+				// Already on the list is fine: show it there.
+				if (!(err instanceof ApiError && err.status === 409)) return toast(err instanceof Error ? err.message : String(err), "error");
+			}
+			location.hash = `#/domains/${encodeURIComponent(zone.name)}`;
+		};
+		const investigate = async () => {
+			try {
+				await api("POST", "/investigate/domains", { domain: zone.name });
+				location.hash = "#/investigate";
+			} catch (err) {
+				toast(err instanceof Error ? err.message : String(err), "error");
+			}
+		};
+		return h(
+			"span",
+			{ class: "cf-zone-actions" },
+			watched
+				? h("button", { type: "button", class: "button quiet", title: `Add ${zone.name} to the websites the monitor watches`, onclick: () => void watch() }, icon("domains"), "Watch in Domains")
+				: h("a", { class: "button quiet", href: "#/domains", title: "Set up the monitor first" }, icon("domains"), "Set up watching"),
+			store.cloudflare.canChange ? h("button", { type: "button", class: "button quiet", title: `Add ${zone.name} to the domains a model can investigate`, onclick: () => void investigate() }, icon("investigate"), "Investigate") : null,
+		);
 	}
 
 	/**

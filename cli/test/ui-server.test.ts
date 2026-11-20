@@ -673,6 +673,73 @@ test("only relays the routes the monitor has, with a well-formed domain", async 
 	assert.equal(calls, 0);
 });
 
+test("the monitor is connected in Settings: checked before it is saved, kept owner-only, and its token never comes back", async (t) => {
+	const calls: string[] = [];
+	// A monitor at monitor.example that knows one token; anything else is refused or is not a monitor.
+	const fetchFn = (async (url: URL, init: RequestInit) => {
+		const authorization = (init.headers as Record<string, string>).authorization;
+		calls.push(`${init.method} ${url.toString()}`);
+		if (url.host === "down.example") throw new Error(`connect ECONNREFUSED while sending ${authorization}`);
+		if (url.host !== "monitor.example") return new Response("<html>a website</html>", { status: 200 });
+		if (authorization !== `Bearer ${ADMIN_TOKEN}`) return Response.json({ error: "Unauthorized" }, { status: 401 });
+		return Response.json(url.pathname === "/domains" ? { domains: [] } : { ok: url.pathname });
+	}) as unknown as typeof fetch;
+	const server = await start(t, { fetchFn, monitorUnset: true });
+	const saved = join(server.dir, "state", "monitor-settings.json");
+	const connect = (address: unknown, token: unknown) => send(server, "POST", "/api/monitor", { body: { address, token } });
+
+	// Refused before anything is sent: no address, not https, a user name in it, a token too short or with a space.
+	for (const [address, token] of [
+		["", ADMIN_TOKEN],
+		["http://monitor.example", ADMIN_TOKEN],
+		["https://user:pass@monitor.example", ADMIN_TOKEN],
+		["ftp://monitor.example", ADMIN_TOKEN],
+		["https://monitor.example", "short"],
+		["https://monitor.example", `${ADMIN_TOKEN} with spaces`],
+		["https://monitor.example", 42],
+	] as [unknown, unknown][]) {
+		assert.equal((await connect(address, token)).status, 400, `${String(address)} ${String(token).length}`);
+	}
+	assert.deepEqual(calls, [], "nothing was asked of anyone");
+
+	// Asked of the monitor before it is saved: a wrong token, something that is not a monitor, or no answer saves nothing.
+	const wrong = await connect("https://monitor.example", ADMIN_TOKEN.toUpperCase());
+	assert.deepEqual([wrong.status, /refused this admin token/.test(wrong.json.error)], [400, true]);
+	const other = await connect("https://www.example", ADMIN_TOKEN);
+	assert.deepEqual([other.status, /not as a Porchlight monitor/.test(other.json.error)], [400, true]);
+	const down = await connect("https://down.example", ADMIN_TOKEN);
+	assert.deepEqual([down.status, /Could not reach down\.example/.test(down.json.error)], [400, true]);
+	assert.ok(!down.text.includes(ADMIN_TOKEN), "an error never carries the token");
+	await assert.rejects(stat(saved));
+	assert.equal((await send(server, "GET", "/api/state")).json.monitor.configured, false);
+
+	// The address is reduced to its origin; a path or query typed after it is dropped.
+	const connected = await connect(" monitor.example/domains?x=1 ", `  ${ADMIN_TOKEN}\n`);
+	assert.equal(connected.status, 200);
+	assert.deepEqual([connected.json.monitor.configured, connected.json.monitor.host, connected.json.monitor.source], [true, "monitor.example", "settings"]);
+	assert.ok(!connected.text.includes(ADMIN_TOKEN));
+	assert.equal((await stat(saved)).mode & 0o777, 0o600);
+	assert.equal(JSON.parse(await readFile(saved, "utf8")).url, "https://monitor.example");
+
+	// It is in use at once, with no restart, and the token still never reaches the page.
+	const state = await send(server, "GET", "/api/state");
+	assert.equal(state.json.monitor.host, "monitor.example");
+	assert.ok(!state.text.includes(ADMIN_TOKEN));
+	assert.equal((await send(server, "GET", "/api/domains")).status, 200);
+	assert.equal(calls.at(-1), "GET https://monitor.example/domains");
+
+	// A mistake later never replaces the connection that works.
+	assert.equal((await connect("https://monitor.example", `${ADMIN_TOKEN}x`)).status, 400);
+	assert.equal((await send(server, "GET", "/api/domains")).status, 200);
+
+	// It is read again when Porchlight next starts, and comes before what was given at start-up.
+	const again = await start(t, { fetchFn, reportPath: join(server.dir, "state", "repo-scan.json"), monitor: monitorConfig({ PORCHLIGHT_MONITOR_URL: "https://old.example", PORCHLIGHT_ADMIN_TOKEN: ADMIN_TOKEN }) });
+	assert.equal((await send(again, "GET", "/api/state")).json.monitor.host, "monitor.example");
+	const removed = await send(again, "POST", "/api/monitor/remove");
+	assert.deepEqual(removed.json.monitor, { configured: true, host: "old.example" }, "removing it falls back to the start-up setting");
+	await assert.rejects(stat(saved));
+});
+
 test("turns an unreachable monitor into a clear error", async (t) => {
 	const fetchFn = (async () => {
 		throw new Error("connect ECONNREFUSED");
@@ -1395,6 +1462,10 @@ test("other devices get in only on the tailnet address, only with the access key
 	assert.equal((await send(device(key), "POST", "/api/investigate/approve", { ...viaName, body: { run: "inv_0000000000000000", step: "step_000000000000", approve: true, rest: true } })).status, 403);
 	assert.equal((await send(device(key), "POST", "/api/investigate/stop", viaName)).status, 200);
 
+	// Nor can a device connect or remove the monitor.
+	assert.equal((await send(device(key), "POST", "/api/monitor", { ...viaName, body: { address: "https://monitor.example", token: ADMIN_TOKEN } })).status, 403);
+	assert.equal((await send(device(key), "POST", "/api/monitor/remove", viaName)).status, 403);
+
 	// A new key turns the old one away.
 	const renewed = await send(server, "POST", "/api/access/key");
 	const newKey = new URL(renewed.json.link).hash.slice("#k=".length);
@@ -1441,6 +1512,8 @@ test("a service keeps its project folders in a projects folder of its own data f
 	}
 	const added = await send(service, "POST", "/api/projects", { key, body: { name: "acme", folder: join(within, "acme") } });
 	assert.equal(added.status, 200);
+	// A service is given its monitor where it is managed, never from its page.
+	assert.equal((await send(service, "POST", "/api/monitor", { key, body: { address: "https://monitor.example", token: ADMIN_TOKEN } })).status, 403);
 	assert.ok((await stat(join(within, "acme", "Porchlight", "Exports"))).isDirectory());
 });
 

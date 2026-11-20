@@ -42,7 +42,7 @@ export const store = {
 	 *
 	 * `cloudflare`: whether a Cloudflare token is saved or given at start-up; never the token.
 	 *
-	 * @type {{ defaultRoot: string, reportPath: string, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean }, github: { token: boolean, error?: string }, assistant: import("./generated.js").AssistantSettings, appearance: string, answers: string, remote: boolean, platform: string, sendTargets: import("./send-text.js").SendTarget[], lastView: string | null, cloudflare: CloudflareToken } | null}
+	 * @type {{ defaultRoot: string, reportPath: string, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean, source?: "settings", savedAt?: string }, github: { token: boolean, error?: string }, assistant: import("./generated.js").AssistantSettings, appearance: string, answers: string, remote: boolean, platform: string, sendTargets: import("./send-text.js").SendTarget[], lastView: string | null, cloudflare: CloudflareToken } | null}
 	 */
 	settings: null,
 	/** @type {ScanReport | null} */
@@ -370,6 +370,16 @@ export async function startCloudflareAudit(options) {
 		if (!(err instanceof ApiError && err.status === 409 && store.cloudflare.status.state === "running")) throw err;
 	}
 	pollCloudflare();
+}
+
+/**
+ * The monitor was connected or removed in Settings: every page follows. Only its host, never its token.
+ *
+ * @param {NonNullable<typeof store.settings>["monitor"]} monitor
+ */
+export function updateMonitor(monitor) {
+	if (store.settings) store.settings.monitor = monitor;
+	emit("settings");
 }
 
 /**

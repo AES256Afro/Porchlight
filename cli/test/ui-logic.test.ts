@@ -165,14 +165,27 @@ test("before a scan, says how many repositories it would cover, or how to get so
 	assert.equal(previewAdvice({ root: "/nope", exists: false, total: 0, repos: [], fetched: 0, depth: 3 }, null).title, "/nope is not a folder");
 });
 
-test("setting up website checks is three steps, ending where the two values are entered", () => {
+test("setting up website checks gives every command to paste, and ends where the two values are entered", () => {
 	const service = monitorSetupSteps(true);
 	const local = monitorSetupSteps(false);
-	assert.equal(service.length, 3);
-	assert.equal(local.length, 3);
-	assert.match(service[2] ?? "", /Apps → Porchlight → Settings.*"Monitor address".*"Monitor admin token"/);
-	assert.doesNotMatch(local[2] ?? "", /BoxPilot/);
-	assert.equal(service[0], local[0]);
+	assert.equal(service.length, local.length);
+	// The same deploy either way; only where the address and token go differs.
+	assert.deepEqual(service.slice(0, -1), local.slice(0, -1));
+	assert.match(service.at(-1)?.text ?? "", /Apps → Porchlight → Settings.*"Monitor address".*"Monitor admin token"/);
+	assert.match(local.at(-1)?.text ?? "", /Settings → Monitor.*No restart/);
+	assert.doesNotMatch(local.at(-1)?.text ?? "", /BoxPilot/);
+	// Every step before the last carries what to type, in the order the README gives it, so nobody is sent off to read it.
+	const commands = local.flatMap((step) => step.commands ?? []);
+	assert.ok(local.slice(0, -1).every((step) => (step.commands?.length ?? 0) > 0));
+	assert.deepEqual(
+		commands.filter((command) => command.startsWith("npx cf ")),
+		["npx cf auth login", "npx cf d1 create --name porchlight-monitor", "npx cf d1 migrations apply <DATABASE_ID>", "npx cf deploy --secrets-file .secrets.production"],
+	);
+	assert.ok(commands.includes(`printf 'ADMIN_TOKEN=%s\\n' "$(openssl rand -hex 32)" > .secrets.production`));
+	// A step never says to read instructions somewhere else, and no command changes anything but the monitor's own folder.
+	assert.ok(local.every((step) => !/README|instructions/i.test(step.text)));
+	assert.ok(commands.every((command) => !/sudo|rm |curl /.test(command)));
+	assert.equal(settingsAnchor(["settings", "monitor"]), "settings-monitor");
 });
 
 test("what a run may send is listed from the server's tools, with its limits", async () => {

@@ -96,19 +96,45 @@ export function fetchByDefault(repo) {
 	return !repo.fork && !repo.archived;
 }
 
+/** @typedef {{ text: string, commands?: string[] }} SetupStep */
+
 /**
- * How to connect the monitor that checks websites, as numbered steps. As a service the two values
- * go into BoxPilot's settings; from a terminal they are set before starting Porchlight.
+ * How to set up the monitor that checks websites, as numbered steps, each with the commands to
+ * paste into Terminal. Everything needed is here, so nobody is sent off to read instructions
+ * elsewhere. The last step is where the address and the token go: Settings → Monitor on this
+ * computer, or BoxPilot's settings for a service.
  *
  * @param {boolean} service
- * @returns {string[]}
+ * @returns {SetupStep[]}
  */
 export function monitorSetupSteps(service) {
-	const deploy = 'Put the monitor on your Cloudflare account. This is done once, from a computer that has this project: its README has the commands under "Monitor domains". The free plan is enough.';
-	const values = "Keep two things from that step: the monitor's address, which looks like `https://porchlight-monitor.your-name.workers.dev`, and the admin token you made for it.";
-	return service
-		? [deploy, values, 'In BoxPilot, open Apps → Porchlight → Settings. Paste them into "Monitor address" and "Monitor admin token", then confirm. Porchlight restarts and this page becomes your list of websites.']
-		: [deploy, values, "Stop Porchlight, set both values, and start it again:"];
+	return [
+		{
+			text: "Open Terminal in the Porchlight project folder and sign in to Cloudflare. A browser window opens for you to allow it. The free plan is enough, and this is done once. If this computer has no copy of the project, get one first with the top command.",
+			commands: ["git clone https://github.com/AES256Afro/Porchlight.git && cd Porchlight && npm install", "cd monitor", "npx cf auth login"],
+		},
+		{
+			text: "Make the monitor's database. The command prints a database ID: copy it.",
+			commands: ["npx cf d1 create --name porchlight-monitor"],
+		},
+		{
+			text: "Open `monitor/cloudflare.config.ts` in an editor and put that ID in place of the value of `D1_DATABASE_ID`. Then prepare the database, with the same ID in place of `<DATABASE_ID>`.",
+			commands: ["npx cf d1 migrations apply <DATABASE_ID>"],
+		},
+		{
+			text: "Make the monitor's admin token and deploy. The first command writes a new random token into `.secrets.production`. The second prints the monitor's address when it finishes, which looks like `https://porchlight-monitor.your-name.workers.dev`.",
+			commands: ["printf 'ADMIN_TOKEN=%s\\n' \"$(openssl rand -hex 32)\" > .secrets.production", "npx cf deploy --secrets-file .secrets.production"],
+		},
+		{
+			text: "Show the admin token so you can copy it. It is the only secret here: anyone who has it can change which websites your monitor watches.",
+			commands: ["sed -n 's/^ADMIN_TOKEN=//p' .secrets.production"],
+		},
+		{
+			text: service
+				? 'In BoxPilot, open Apps → Porchlight → Settings. Paste the address into "Monitor address" and the token into "Monitor admin token", then confirm. Porchlight restarts and this page becomes your list of websites.'
+				: "Paste the address and the token in Settings → Monitor. Porchlight checks them with the monitor and this page becomes your list of websites. No restart is needed.",
+		},
+	];
 }
 
 /**

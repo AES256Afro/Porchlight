@@ -37,6 +37,7 @@ const LIST = [
 	["Settings → Appearance", "page", ["#/settings", "#/settings/appearance"]],
 	["Settings → Projects", "page", ["#/settings", "#/settings/projects"]],
 	["Settings → Cloudflare", "page", ["#/settings", "#/settings/cloudflare"]],
+	["Settings → Monitor", "page", ["#/settings", "#/settings/monitor"]],
 
 	// Cloudflare's dashboard, as the Cloudflare audit's fixes name it.
 	["Cloudflare → SSL/TLS → Overview", "web", [CLOUDFLARE, cloudflare(":zone/ssl-tls"), cloudflare(":zone/ssl-tls")]],
@@ -126,6 +127,6 @@ export function splitPaths(text) {
  * @param {string[]} path the address's path, as `parseHash` gives it
  */
 export function settingsAnchor(path) {
-	const sections = ["model", "projects", "access", "appearance", "cloudflare"];
+	const sections = ["model", "projects", "access", "appearance", "cloudflare", "monitor"];
 	return path[0] === "settings" && sections.includes(path[1] ?? "") ? `settings-${path[1]}` : null;
 }

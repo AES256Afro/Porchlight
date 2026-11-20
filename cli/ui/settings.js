@@ -8,6 +8,7 @@ import { ANSWER_PLACES, DEFAULT_ANSWER_PLACE, LOOKS } from "./looks.js";
 import { answersPlaceChanged } from "./panel.js";
 import { accessSection } from "./access-settings.js";
 import { cloudflareSection } from "./cloudflare-settings.js";
+import { monitorSection } from "./monitor-settings.js";
 import { modelSection } from "./model-settings.js";
 import { projectsSection } from "./projects.js";
 import { load, store } from "./store.js";
@@ -23,6 +24,7 @@ export async function renderSettings(view) {
 	const access = store.settings?.service ? null : await accessSection();
 	const projects = projectsSection();
 	const cloudflare = await cloudflareSection();
+	const monitor = monitorSection();
 	let saving = Promise.resolve();
 
 	/** @param {string} id */
@@ -82,6 +84,7 @@ export async function renderSettings(view) {
 				model,
 				projects,
 				cloudflare,
+				monitor,
 				access,
 				h(
 					"fieldset",
@@ -156,7 +159,7 @@ function connections() {
 			{ class: "hint" },
 			settings.service
 				? "These are set in the service's settings."
-				: "These are set when Porchlight starts: in the Mac app, in ~/.porchlight/app.env; in a terminal, with the PORCHLIGHT_ environment variables.",
+				: "The model, the monitor and Cloudflare are connected in the sections above. A GitHub token is set when Porchlight starts: in the Mac app, in ~/.porchlight/app.env; in a terminal, with PORCHLIGHT_GITHUB_TOKEN.",
 		),
 	);
 }

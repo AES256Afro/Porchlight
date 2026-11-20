@@ -101,7 +101,7 @@ It prints a link. Open it to get both tools in the browser:
 - **This Mac**: check the computer Porchlight runs on; see [Check this Mac](#check-this-mac).
 - **Discussions**: every answer a model gave on these pages, with your follow-up questions; see [Discussions](#discussions).
 - **Project** (above the sections): which project folder saved exports, discussions and the log go to; see [Projects](#projects).
-- **Domains**: add a website by its domain name, prove it is yours with one DNS record, scan, and read what changed, with a suggested fix for each finding. Until the monitor is connected the page walks through setting it up. It needs `PORCHLIGHT_MONITOR_URL` and `PORCHLIGHT_ADMIN_TOKEN` set when you start the interface (see [Monitor domains](#monitor-domains)).
+- **Domains**: add a website by its domain name, prove it is yours with one DNS record, scan, and read what changed, with a suggested fix for each finding. Until the monitor is connected the page walks through setting it up, with each command to copy. Connect it under **Settings → Monitor**: paste the monitor's address and admin token, Porchlight asks the monitor whether they work, and the page becomes your list of websites with no restart. The two can also be given at start-up as `PORCHLIGHT_MONITOR_URL` and `PORCHLIGHT_ADMIN_TOKEN` (see [Monitor domains](#monitor-domains)); a connection saved in Settings comes first.
 - **Settings**: add project folders under **Projects** (see [Projects](#projects)), pick one of twelve looks under **Appearance** (Standard, Light, Severity dashboard, Top tabs, Split view, Roadmap first, Terminal, Native Mac, Repository cards, Model plan view, High contrast, Compact), and where a model's answers appear: in a panel on the right (the default), below what you asked about, or in a drawer at the bottom. Both are saved beside the report (`ui-settings.json`) and used every time Porchlight opens. It also lists what Porchlight is connected to.
 
 Every page with findings has an **Export** button; see [Export a repair roadmap](#export-a-repair-roadmap). Beside it, **Send to model** sends the roadmap or the findings to a model you choose; see [Send to a model](#send-to-a-model).
@@ -634,7 +634,11 @@ npx cf deploy --secrets-file .secrets.production
 
 To receive alerts, add `ALERT_WEBHOOK_URL=https://...` to `.secrets.production` before deploying. Alerts are POSTed as JSON with a `text` field holding the summary, plus the structured report. Without a webhook, alerts go to the Worker's log.
 
-Point the CLI at the URL `cf deploy` prints, with the same token:
+In the interface, paste the URL `cf deploy` prints and the token under **Settings → Monitor**. They are kept in `monitor-settings.json` beside the report, readable only by you; the token is sent only to that address and never back to the page. From another device, or when Porchlight runs as a service, the page cannot change them.
+
+Each domain on the Cloudflare page has **Watch in Domains**, which adds it to the monitor's list, and **Investigate**, which adds it to the domains a model can investigate. Either only adds the name: proving ownership and starting anything happen on that page.
+
+For the command line, point it at the same URL with the same token:
 
 ```bash
 export PORCHLIGHT_MONITOR_URL=https://<your worker URL>
