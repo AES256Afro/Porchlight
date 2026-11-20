@@ -1,11 +1,15 @@
 // @ts-check
 // "Investigate with a model": a model plans an investigation of a website you have proven you own,
 // and Porchlight carries it out with a few fixed tools. This page adds domains and shows their
-// ownership record, starts a run, puts each HTTP request and TCP connection to you first, and shows
-// the steps, the evidence and what the model judged. Everything here comes from the target or the
+// ownership record, starts a run, puts each HTTP request and TCP connection to you first (or, when
+// you approve a whole run at once, lists what that run may send before you do), and shows the
+// steps, the evidence and what the model judged. Everything here comes from the target or the
 // model, so every element is built with h() and shown as text.
 import { api, ApiError, download } from "./api.js";
 import { emptyState, formatWhen, h, icon, plural, replace, stepNodes, toast } from "./dom.js";
+import { approvalLine, ownershipSteps, runLimits } from "./hints.js";
+import { announceSaved } from "./projects.js";
+import { currentProject, loadCloudflare, store } from "./store.js";
 
 /** @typedef {import("../src/investigate/engine.ts").Run} Run */
 /** @typedef {import("../src/investigate/engine.ts").Step} Step */
@@ -21,6 +25,7 @@ import { emptyState, formatWhen, h, icon, plural, replace, stepNodes, toast } fr
  *   assistant: import("./generated.js").AssistantSettings,
  *   disclosure?: string,
  *   monitor: boolean,
+ *   tools: import("../src/investigate/tools.ts").ToolSpec[],
  *   defaults: { goal: string, maxTurns: number, maxTurnsLimit: number, minGapMs: number, maxGoal: number },
  * }} InvestigateState
  */
@@ -53,6 +58,8 @@ const OUTCOME_WORDS = /** @type {Record<Step["outcome"], string>} */ ({
 export async function renderInvestigate(view, runId) {
 	/** @type {InvestigateState} */
 	let state = /** @type {any} */ (await api("GET", "/investigate"));
+	// Whether a domain is in the Cloudflare account decides what the ownership steps say.
+	if (!store.cloudflare.loaded) await loadCloudflare().catch(() => {});
 	const setupSlot = h("div");
 	const runSlot = h("div", { "aria-live": "polite" });
 	const historySlot = h("div");
@@ -78,7 +85,7 @@ export async function renderInvestigate(view, runId) {
 					h(
 						"p",
 						{ class: "sub" },
-						"A model plans an investigation of a website you have proven you own, one step at a time. Porchlight runs each step with a few fixed tools: DNS lookups on their own, every HTTP request and TCP connection only after you approve it. Nothing outside the domain and its subdomains is touched.",
+						"A model plans an investigation of a website you have proven you own, one step at a time. Porchlight runs each step with a few fixed tools: DNS lookups on their own, HTTP requests and TCP connections only with your approval, given one at a time or once for the whole run. Nothing outside the domain and its subdomains is touched.",
 					),
 				),
 			),
@@ -280,8 +287,24 @@ export async function renderInvestigate(view, runId) {
 		const goal = /** @type {HTMLTextAreaElement} */ (h("textarea", { name: "goal", rows: 3, maxLength: state.defaults.maxGoal, "aria-label": "Goal" }));
 		goal.value = state.defaults.goal;
 		const turns = /** @type {HTMLInputElement} */ (h("input", { type: "number", name: "turns", min: 1, max: state.defaults.maxTurnsLimit, value: String(state.defaults.maxTurns), "aria-label": "Turns" }));
-		const consent = /** @type {HTMLInputElement} */ (h("input", { type: "checkbox", name: "sendsToHosted", required: true }));
-		const startButton = /** @type {HTMLButtonElement} */ (h("button", { type: "submit", class: "button primary", disabled: state.active !== null }, "Start investigation"));
+		// With a hosted model the page says above what is sent, and the button says where it goes: pressing it is the yes.
+		const startButton = /** @type {HTMLButtonElement} */ (
+			h("button", { type: "submit", class: "button primary", disabled: state.active !== null }, assistant.hosted ? `Start, sending to ${assistant.model}` : "Start investigation")
+		);
+		// The model chooses each step as it goes, so what can be shown before a run is what every step is held to.
+		const limits = h("ul", { class: "investigate-limits" });
+		const drawLimits = () => {
+			const asked = Number(turns.value);
+			const maxTurns = Number.isInteger(asked) && asked >= 1 ? Math.min(asked, state.defaults.maxTurnsLimit) : state.defaults.maxTurns;
+			replace(limits, ...runLimits({ tools: state.tools, domain: domainSelect.value, maxTurns, minGapMs: state.defaults.minGapMs }).map((line) => h("li", null, line)));
+		};
+		domainSelect.addEventListener("change", drawLimits);
+		turns.addEventListener("input", drawLimits);
+		drawLimits();
+		// Why a run could not start, kept on the form with what to do, instead of a message that disappears.
+		const startProblem = h("div", { "aria-live": "polite" });
+		const approveEach = /** @type {HTMLInputElement} */ (h("input", { type: "radio", name: "approval", value: "each", checked: true }));
+		const approveAll = /** @type {HTMLInputElement} */ (h("input", { type: "radio", name: "approval", value: "all" }));
 		return h(
 			"form",
 			{
@@ -289,25 +312,30 @@ export async function renderInvestigate(view, runId) {
 				onsubmit: async (/** @type {SubmitEvent} */ event) => {
 					event.preventDefault();
 					startButton.disabled = true;
+					replace(startProblem);
 					try {
 						const answer = await api("POST", "/investigate/start", {
 							domain: domainSelect.value,
 							goal: goal.value,
 							maxTurns: Number(turns.value),
-							...(assistant.hosted ? { sendsToHosted: consent.checked } : {}),
+							approveAll: approveAll.checked,
+							...(assistant.hosted ? { sendsToHosted: true } : {}),
 						});
 						runId = undefined;
 						if (location.hash !== "#/investigate") history.replaceState(null, "", "#/investigate");
 						state.active = answer.run;
 						await refresh();
 					} catch (err) {
-						toast(err instanceof Error ? err.message : String(err), "error");
+						const text = err instanceof Error ? err.message : String(err);
+						// The ownership record is not found: that is a job to do, so the steps are shown.
+						if (err instanceof ApiError && err.status === 409 && /TXT record/.test(text)) replace(startProblem, ownershipHelp(domainSelect.value, `The ownership record for ${domainSelect.value} was not found`));
+						else toast(text, "error");
 						startButton.disabled = state.active !== null;
 					}
 				},
 			},
 			h("h2", null, "Start an investigation"),
-			h("p", { class: "hint" }, `With ${assistant.model} at ${assistant.host}. At most one action a second for each host.`),
+			h("p", { class: "hint" }, `With ${assistant.model} at ${assistant.host}.`),
 			assistant.hosted
 				? h(
 						"div",
@@ -319,8 +347,57 @@ export async function renderInvestigate(view, runId) {
 			h("label", { class: "field" }, h("span", null, "Domain"), domainSelect),
 			h("label", { class: "field" }, h("span", null, "Goal"), goal),
 			h("label", { class: "field" }, h("span", null, "Turns at most"), turns),
-			assistant.hosted ? h("label", { class: "check-line" }, consent, `Send this to ${assistant.model}, outside my machines`) : null,
+			h(
+				"fieldset",
+				null,
+				h("legend", null, "Requests to your site"),
+				h(
+					"label",
+					{ class: "choice" },
+					approveEach,
+					h("span", null, h("strong", null, "Ask me before each one"), h("span", { class: "hint" }, "Every HTTP request and TCP connection waits for you, showing exactly what would be sent.")),
+				),
+				h(
+					"label",
+					{ class: "choice" },
+					approveAll,
+					h(
+						"span",
+						null,
+						h("strong", null, "Approve them all for this run"),
+						h("span", { class: "hint" }, "Porchlight sends each one as the model asks for it, without stopping to ask, inside the limits below. It applies to this run only."),
+					),
+				),
+			),
+			h("div", { class: "investigate-may-send" }, h("h3", null, "What this run may send"), limits),
+			assistant.hosted
+				? h("p", { class: "hint" }, `Starting sends what the box above describes to ${assistant.model}, outside your machines. Every step it takes is listed here and on the Activity page as it happens. To keep everything on your machines, choose a local model in Settings.`)
+				: null,
 			h("div", { class: "actions" }, startButton),
+			startProblem,
+		);
+	}
+
+	/**
+	 * What to do when a domain's ownership record is not found: the steps, with where to go.
+	 *
+	 * @param {string} domain
+	 * @param {string} title
+	 */
+	function ownershipHelp(domain, title) {
+		const onCloudflare = store.cloudflare.report?.zones.some((zone) => zone.name === domain) === true;
+		return h(
+			"div",
+			{ class: "banner banner-warning", role: "note" },
+			icon("warning"),
+			h(
+				"div",
+				null,
+				h("strong", null, title),
+				h("p", null, "Porchlight sends nothing to a domain until its DNS holds the record that proves it is yours. A record just added can take a few minutes to be seen."),
+				h("ol", { class: "host-fix" }, ...ownershipSteps({ domain, onCloudflare }).map((step) => h("li", null, ...stepNodes(step)))),
+				onCloudflare ? h("p", null, h("a", { class: "button", href: "#/cloudflare" }, "Open the Cloudflare page")) : null,
+			),
 		);
 	}
 
@@ -357,6 +434,8 @@ export async function renderInvestigate(view, runId) {
 				`Turn ${run.turns} of ${run.maxTurns} · ${plural(run.evidence.length, "action run", "actions run")} · ${run.model}${run.hosted ? " (hosted)" : ""} · started ${formatWhen(run.startedAt)}`,
 			),
 			run.ended && !live ? h("p", null, run.ended) : null,
+			!live && run.status === "stopped" && /^Ownership/.test(run.ended ?? "") ? ownershipHelp(run.domain, "What to do about the ownership record") : null,
+			h("p", { class: "hint" }, approvalLine(run)),
 			run.pending ? approvalCard(run) : null,
 			findingsView(run),
 			run.summary ? h("div", { class: "generated" }, h("p", { class: "generated-label" }, icon("spark"), `Written by ${run.model}. Check it against the evidence.`), h("div", { class: "generated-text" }, h("p", null, run.summary))) : null,
@@ -369,6 +448,7 @@ export async function renderInvestigate(view, runId) {
 				: h(
 						"div",
 						{ class: "actions" },
+						saveToProjectButton(run),
 						exportButton(run, "md", "Export as Markdown"),
 						exportButton(run, "json", "Export as JSON"),
 					),
@@ -378,10 +458,10 @@ export async function renderInvestigate(view, runId) {
 	/** @param {Run} run */
 	function approvalCard(run) {
 		const pending = /** @type {NonNullable<Run["pending"]>} */ (run.pending);
-		/** @param {boolean} approve */
-		const answer = async (approve) => {
+		/** @param {boolean} approve @param {boolean} [rest] this one and every later request of the run */
+		const answer = async (approve, rest = false) => {
 			try {
-				await api("POST", "/investigate/approve", { run: run.id, step: pending.stepId, approve });
+				await api("POST", "/investigate/approve", { run: run.id, step: pending.stepId, approve, ...(rest ? { rest: true } : {}) });
 			} catch (err) {
 				toast(err instanceof Error ? err.message : String(err), "error");
 			}
@@ -401,9 +481,25 @@ export async function renderInvestigate(view, runId) {
 				state.canChange
 					? h(
 							"div",
-							{ class: "actions" },
-							h("button", { type: "button", class: "button primary", onclick: () => void answer(true) }, "Approve"),
-							h("button", { type: "button", class: "button", onclick: () => void answer(false) }, "Deny"),
+							null,
+							h(
+								"div",
+								{ class: "actions" },
+								h("button", { type: "button", class: "button primary", onclick: () => void answer(true) }, "Approve"),
+								h("button", { type: "button", class: "button", onclick: () => void answer(true, true) }, "Approve all the rest"),
+								h("button", { type: "button", class: "button", onclick: () => void answer(false) }, "Deny"),
+							),
+							h(
+								"details",
+								{ class: "investigate-rest" },
+								h("summary", null, "What \u201cApprove all the rest\u201d allows"),
+								h("p", { class: "hint" }, "This request and every later one of this run are sent without stopping to ask. Nothing else changes:"),
+								h(
+									"ul",
+									{ class: "investigate-limits" },
+									...runLimits({ tools: state.tools, domain: run.domain, maxTurns: run.maxTurns, minGapMs: run.minGapMs, turnsLeft: run.maxTurns - run.turns }).map((line) => h("li", null, line)),
+								),
+							),
 						)
 					: h("p", { class: "hint" }, "Approve it on the Mac that runs Porchlight."),
 			),
@@ -460,7 +556,12 @@ export async function renderInvestigate(view, runId) {
 		return h(
 			"li",
 			{ class: `investigate-step outcome-${step.outcome.replace(/\s/g, "-")}` },
-			h("div", null, h("span", { class: "hint" }, `Turn ${step.turn} · ${OUTCOME_WORDS[step.outcome]}`), what ? h("code", null, what) : null),
+			h(
+				"div",
+				null,
+				h("span", { class: "hint" }, `Turn ${step.turn} · ${OUTCOME_WORDS[step.outcome]}${step.approvedBy === "run" ? " · approved for the whole run" : step.approvedBy === "owner" ? " · approved by you" : ""}`),
+				what ? h("code", null, what) : null,
+			),
 			step.thought ? h("p", { class: "generated-label" }, icon("spark"), step.thought) : null,
 			step.reason && step.outcome !== "ran" ? h("p", { class: "hint" }, step.reason) : null,
 			evidence
@@ -474,6 +575,29 @@ export async function renderInvestigate(view, runId) {
 						h("pre", { class: "investigate-pre" }, evidence.response),
 					)
 				: null,
+		);
+	}
+
+	/** With a project in use: the Markdown export written into its folder. @param {Run} run */
+	function saveToProjectButton(run) {
+		const project = currentProject();
+		if (!project) return null;
+		return h(
+			"button",
+			{
+				type: "button",
+				class: "button",
+				onclick: async () => {
+					try {
+						const { saved } = await api("POST", `/investigate/export?id=${encodeURIComponent(run.id)}&format=md`);
+						announceSaved(saved);
+					} catch (err) {
+						toast(err instanceof Error ? err.message : String(err), "error");
+					}
+				},
+			},
+			icon("folder"),
+			`Save in ${project.name}`,
 		);
 	}
 

@@ -18,8 +18,13 @@ export interface PlannedChange {
 	title: string;
 	/** The permission the token needs for it. */
 	permission: string;
-	method: "POST" | "PATCH";
+	method: "POST" | "PATCH" | "PUT";
 	path: string;
+	/**
+	 * Set for a change that can affect how the site or its mail behaves: what could go wrong, in
+	 * words. Such a change is shown with this warning and is never ticked for the owner.
+	 */
+	care?: string;
 	/** The full address, as sent. */
 	url: string;
 	body: unknown;
@@ -31,7 +36,48 @@ export interface PlannedChange {
 /** How long a request shown to the owner can still be approved. */
 export const APPROVAL_WINDOW_MS = 10 * 60_000;
 
-const SETTING_CHANGES: Record<Exclude<CfChangeId, "ownership-record">, { settingId: string; value: string; title: string }> = {
+type SettingChange = "always-use-https" | "min-tls-1.2" | "tls-1.3" | "automatic-https-rewrites" | "browser-check";
+
+/**
+ * Changes that are right for most sites and wrong for some. Each is still one fixed request; what
+ * differs is that the owner is told what could go wrong and has to choose it.
+ */
+const CARE_CHANGES: Record<Exclude<CfChangeId, SettingChange | "ownership-record" | "dmarc-monitor">, { method: "PATCH" | "PUT"; path: string; body: unknown; title: string; permission: string; care: string }> = {
+	"bot-fight-mode": {
+		method: "PUT",
+		path: "/bot_management",
+		body: { fight_mode: true },
+		title: "Turn on Bot Fight Mode",
+		permission: "Bot Management Write",
+		care: "It challenges traffic that looks automated, and that can include your own scripts, monitoring or an API client. It cannot be skipped for one path.",
+	},
+	dnssec: {
+		method: "PATCH",
+		path: "/dnssec",
+		body: { status: "active" },
+		title: "Turn on DNSSEC",
+		permission: "DNS Write",
+		care: "It protects nothing until the DS record Cloudflare then shows is added at your registrar. Cloudflare Registrar adds it for you; anywhere else you add it by hand. Later, moving the domain away from Cloudflare means turning DNSSEC off first.",
+	},
+	hsts: {
+		method: "PATCH",
+		path: "/settings/security_header",
+		body: { value: { strict_transport_security: { enabled: true, max_age: 15_552_000, include_subdomains: false, preload: false, nosniff: true } } },
+		title: "Turn on HSTS for 6 months",
+		permission: "Zone Settings Write",
+		care: "Browsers that have visited then refuse plain HTTP for this domain for 6 months, and turning it off does not undo that for them. Do it only if the site works over HTTPS and will keep doing so. Subdomains are not included.",
+	},
+	"ssl-strict": {
+		method: "PATCH",
+		path: "/settings/ssl",
+		body: { value: "strict" },
+		title: "Set the encryption mode to Full (strict)",
+		permission: "Zone Settings Write",
+		care: "Cloudflare then checks your server's certificate. If it is expired, self-signed or for another name, visitors get error 526 until it is fixed or the mode is set back to Full.",
+	},
+};
+
+const SETTING_CHANGES: Record<SettingChange, { settingId: string; value: string; title: string }> = {
 	"always-use-https": { settingId: "always_use_https", value: "on", title: "Turn on Always Use HTTPS" },
 	"min-tls-1.2": { settingId: "min_tls_version", value: "1.2", title: "Set the minimum TLS version to 1.2" },
 	"tls-1.3": { settingId: "tls_1_3", value: "on", title: "Turn on TLS 1.3" },
@@ -62,7 +108,25 @@ export function planChange(zone: { id: string; name: string }, change: CfChangeI
 			ownershipToken,
 		};
 	}
-	const template = SETTING_CHANGES[change];
+	if (change === "dmarc-monitor") {
+		const path = zonePath(zone.id, "/dns_records");
+		return {
+			...base,
+			title: `Add a DMARC record that only reports to ${zone.name}`,
+			permission: "DNS Write",
+			method: "POST",
+			path,
+			url: CfClient.url(path).href,
+			body: { type: "TXT", name: `_dmarc.${zone.name}`, content: '"v=DMARC1; p=none"', ttl: 1, comment: "Added by Porchlight: reports only" },
+			care: "It blocks nothing: it is the first step. The audit will still list DMARC as weak until you change the policy to quarantine or reject, which should wait until you know who sends mail for the domain.",
+		};
+	}
+	if (change in CARE_CHANGES) {
+		const template = CARE_CHANGES[change as keyof typeof CARE_CHANGES];
+		const path = zonePath(zone.id, template.path);
+		return { ...base, title: `${template.title} for ${zone.name}`, permission: template.permission, method: template.method, path, url: CfClient.url(path).href, body: template.body, care: template.care };
+	}
+	const template = SETTING_CHANGES[change as SettingChange];
 	const path = zonePath(zone.id, `/settings/${template.settingId}`);
 	return { ...base, title: `${template.title} for ${zone.name}`, permission: "Zone Settings Write", method: "PATCH", path, url: CfClient.url(path).href, body: { value: template.value } };
 }
@@ -75,6 +139,7 @@ export function describeChange(planned: PlannedChange) {
 		change: planned.change,
 		title: planned.title,
 		permission: planned.permission,
+		...(planned.care ? { care: planned.care } : {}),
 		request: {
 			method: planned.method,
 			url: planned.url,
@@ -85,10 +150,32 @@ export function describeChange(planned: PlannedChange) {
 	};
 }
 
-/** Sends one approved change, exactly as planned. */
-export async function sendChange(client: CfClient, planned: PlannedChange): Promise<{ ok: boolean; result: string }> {
+/** Sends one approved change, exactly as planned. `denied`: the token lacks the permission for it. */
+export async function sendChange(client: CfClient, planned: PlannedChange): Promise<{ ok: boolean; result: string; denied?: boolean }> {
 	const answer = await client.send<unknown>(planned.method, planned.path, planned.body);
 	if (answer.ok) return { ok: true, result: "Cloudflare accepted the change." };
 	const hint = answer.denied ? ` The token needs "${planned.permission}" for this.` : "";
-	return { ok: false, result: `${answer.message}.${hint}` };
+	return { ok: false, result: `${answer.message}.${hint}`, ...(answer.denied ? { denied: true } : {}) };
+}
+
+/** The most changes one approval may cover. */
+export const MAX_BATCH = 300;
+
+/**
+ * Every change the latest audit offers, for one zone or for all of them: one fixed template per
+ * problem that has one, in the audit's own order. Nothing from a request chooses a change; a
+ * request can only name a zone of the audit, or leave some of these out.
+ */
+export function planBatch(
+	zones: readonly { id: string; name: string; checks: readonly { status: string; change?: CfChangeId }[] }[],
+	ownershipToken: (zone: string) => string,
+): PlannedChange[] {
+	const planned: PlannedChange[] = [];
+	for (const zone of zones) {
+		for (const check of zone.checks) {
+			if (check.status !== "failed" || !check.change || planned.length >= MAX_BATCH) continue;
+			planned.push(planChange(zone, check.change, check.change === "ownership-record" ? ownershipToken(zone.name) : undefined));
+		}
+	}
+	return planned;
 }

@@ -1,9 +1,10 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { homedir, hostname, networkInterfaces } from "node:os";
+import { cpus, homedir, hostname, networkInterfaces, totalmem } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { judge, readAnalysis, saveAnalysis, unitKey, unitsOf, VERDICTS, type AnalysisFile } from "../analysis/analyse.ts";
+import { DEFAULT_OLLAMA, describeMachine, DownloadError, HUB_FORMATS, HUB_HOST, HUB_SIZES, HUB_SORTS, HUB_TASKS, installedModels, modelNameProblem, pullModel, searchHub } from "../assist/download.ts";
 import { AssistantError, chat, HOSTED, isHosted, listModels, type AssistantConfig, type HostedProvider } from "../assist/ollama.ts";
 import {
 	addressFromConfig,
@@ -36,11 +37,12 @@ import {
 	type SendContent,
 	type SendPurpose,
 } from "../assist/prompts.ts";
-import { describeFilter } from "../../ui/filter.js";
+import { describeFilter, isFiltering } from "../../ui/filter.js";
 import { MAX_QUESTION } from "../../ui/generated.js";
-import { DEFAULT_LOOK, isLook } from "../../ui/looks.js";
+import { DEFAULT_ANSWER_PLACE, DEFAULT_LOOK, isAnswerPlace, isLook } from "../../ui/looks.js";
 import { fetchedRepos, fetchRepo, GithubError, listRepos, parseRepoName, removeFetched, validOwner, type GithubConfig } from "../github/github.ts";
 import { callMonitor, type MonitorConfig } from "../monitor/client.ts";
+import { forgetMonitor, monitorProblem, MonitorSettingsError, parseMonitorSettings, readSavedMonitor, saveMonitor } from "../monitor/settings.ts";
 import { discoverRepos } from "../repos/discover.ts";
 import type { Runner } from "../repos/exec.ts";
 import { coverageNotes, nameUnder, rank, rankRepos, repoName, settingNotes } from "../repos/report.ts";
@@ -54,13 +56,49 @@ import { SEVERITIES, type ScanReport, type Severity } from "../repos/types.ts";
 import { domainSuggestions, type MonitorReport } from "../roadmap/domains.ts";
 import { exportDomain, exportRepos, ExportError, parseFilter, type ExportFile } from "../roadmap/export.ts";
 import { buildRepoRoadmap, listRepoFindings, suggestionsFor } from "../roadmap/repos.ts";
-import { DEFAULT_GOAL, DEFAULT_MAX_TURNS, DEFAULT_MIN_GAP_MS, investigate, MAX_GOAL, MAX_TURNS_LIMIT, newRun, type Run } from "../investigate/engine.ts";
+import { DEFAULT_GOAL, DEFAULT_MAX_TURNS, DEFAULT_MIN_GAP_MS, investigate, MAX_GOAL, MAX_TURNS_LIMIT, newRun, type ApprovalAnswer, type Run } from "../investigate/engine.ts";
 import { exportInvestigation, INVESTIGATION_FORMATS, type InvestigationFormat } from "../investigate/export.ts";
 import { challengeName, challengeValue, checkOwnership, newToken, readDomains, saveDomains, tokenFromChallenge } from "../investigate/ownership.ts";
 import { abortableSleep, parseDomain, RateLimiter } from "../investigate/scope.ts";
 import { isRunId, RunStore, settled } from "../investigate/store.ts";
 import { liveNet, TOOLS as INVESTIGATION_TOOLS, type Net } from "../investigate/tools.ts";
-import { APPROVAL_WINDOW_MS, describeChange, isChangeId, planChange, sendChange, type PlannedChange } from "../cloudflare/apply.ts";
+import {
+	DISCUSSION_FORMATS,
+	DiscussionStore,
+	exportDiscussion,
+	fingerprintOf,
+	followUpPrompt,
+	HOSTED_HISTORY_CAP,
+	KIND_WORDS,
+	LOCAL_HISTORY_CAP,
+	MAX_TURNS,
+	newDiscussion,
+	viewOf,
+	type Discussion,
+	type DiscussionAbout,
+	type DiscussionFormat,
+	type DiscussionKind,
+	type DiscussionTurn,
+} from "../discussions/discussions.ts";
+import type { SendTarget } from "../assist/settings.ts";
+import {
+	appendLog,
+	checkFolder,
+	cleanName,
+	FILE_TITLES,
+	isProjectId,
+	oneLine,
+	OWN_FOLDER,
+	prepareProject,
+	ProjectError,
+	ProjectStore,
+	rewriteFile,
+	saveFile,
+	type FileTitle,
+	type Project,
+	type Saved,
+} from "../projects/projects.ts";
+import { APPROVAL_WINDOW_MS, describeChange, isChangeId, planBatch, planChange, sendChange, type PlannedChange } from "../cloudflare/apply.ts";
 import { auditCloudflare, READ_PERMISSIONS, TOKEN_TEMPLATE_URL, WRITE_PERMISSIONS } from "../cloudflare/audit.ts";
 import { CfClient, tokenShapeProblem } from "../cloudflare/client.ts";
 import { CF_FORMATS, exportCloudflare, type CfFormat } from "../cloudflare/export.ts";
@@ -202,7 +240,7 @@ export type AnalysisStatus =
 
 const UI_DIR = join(import.meta.dirname, "../../ui");
 /** The page's own modules. Nothing else in the folder is served. */
-const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths", "investigate", "cloudflare", "cloudflare-settings"];
+const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths", "investigate", "discussions", "discussion", "discussion-links", "panel", "projects", "cloudflare", "cloudflare-settings", "monitor-settings", "activity", "model-download"];
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
 	"/": { file: "index.html", type: "text/html; charset=utf-8" },
 	"/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
@@ -391,6 +429,318 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		return sendTargets(savedModel, startup.config, startupKeys);
 	}
 
+	// Discussions: every answer a model gives on a page, kept so it can be read again and followed up.
+	const discussionStore = new DiscussionStore(join(dirname(options.reportPath), "discussions"));
+	/** Discussions waiting for a follow-up answer: one question at a time each. */
+	const answering = new Set<string>();
+
+	// Projects: a folder the owner chose, where exports, discussions and a daily log are written.
+	const dataDir = dirname(options.reportPath);
+	const projects = new ProjectStore(join(dataDir, "projects.json"));
+	// A service (a container) keeps project folders in its data volume, in a folder of their own.
+	const projectsWithin = loopbackOnly ? undefined : join(dataDir, "projects");
+	if (projectsWithin) await mkdir(projectsWithin, { recursive: true, mode: 0o700 }).catch(() => {});
+	let logging: Promise<void> = Promise.resolve();
+
+	/**
+	 * Adds a line to a project's log: the one given, or the one in use. Lines are written in order, and
+	 * a log that cannot be written never stops the work it records. Only Porchlight's own words and
+	 * figures go in: never a key, a token, a secret value or a model's text.
+	 */
+	function log(text: string, project?: Project | null): void {
+		const at = new Date();
+		note(text);
+		logging = logging
+			.then(async () => {
+				const target = project === undefined ? await projects.current() : project;
+				if (target) await appendLog(target, text, at);
+			})
+			.catch((err) => console.error(`porchlight ui: could not write the project's log: ${err instanceof Error ? err.message : String(err)}`));
+	}
+
+	/**
+	 * What Porchlight is doing, as it happens, for the page's Activity view: the last MAX_ACTIVITY lines,
+	 * kept in memory only. Like the project log it holds Porchlight's own words and figures, one line
+	 * each: never a key, a token, a secret value, a request's body or a model's text.
+	 */
+	const activity: ActivityLine[] = [];
+	let activityCount = 0;
+	function note(text: string, kind: ActivityLine["kind"] = "info"): void {
+		activityCount += 1;
+		activity.push({ n: activityCount, at: new Date().toISOString(), kind, text: oneLine(text).slice(0, 400) });
+		if (activity.length > MAX_ACTIVITY) activity.splice(0, activity.length - MAX_ACTIVITY);
+	}
+
+	/** The model and where it runs, for the log: a hosted one is said to be outside the owner's machines. */
+	function modelWords(config: AssistantConfig): string {
+		return isHosted(config) ? `${config.model} (${HOSTED[config.provider as HostedProvider].name}, outside your machines)` : `${config.model} at ${config.url.host}`;
+	}
+
+	/** Writes a discussion's transcript into a project as a new file, and records where. */
+	async function newTranscript(discussion: Discussion, project: Project): Promise<Saved> {
+		const saved = await saveFile(project, "Discussions", `discussion-${discussion.kind}`, "md", exportDiscussion(discussion, "md").body);
+		discussion.saved = { project: project.id, name: saved.name };
+		await discussionStore.save(discussion);
+		return saved;
+	}
+
+	/** Writes a kept transcript again after a new answer, in the project it is kept in, if that is still listed. */
+	async function updateTranscript(discussion: Discussion): Promise<Saved | null> {
+		if (!discussion.saved) return null;
+		const project = await projects.get(discussion.saved.project);
+		if (!project) return null;
+		return rewriteFile(project, "Discussions", discussion.saved.name, exportDiscussion(discussion, "md").body);
+	}
+
+	/** The transcript is a copy: one that cannot be written is said in the server's output, never at the cost of the answer. */
+	function transcriptFailed(err: unknown): null {
+		console.error(`porchlight ui: could not save the discussion to the project: ${err instanceof Error ? err.message : String(err)}`);
+		return null;
+	}
+
+	/** An export written into the project in use instead of downloaded, and said in its log. */
+	async function saveExport(res: ServerResponse, file: { body: string; filename: string }, title: FileTitle): Promise<void> {
+		const project = await projects.current();
+		if (!project) throw new HttpError(409, "Choose a project first, under Settings → Projects, or download the file instead.");
+		const extension = /\.([a-z]+)$/.exec(file.filename)?.[1] ?? "txt";
+		const saved = await saveFile(project, "Exports", title, extension, file.body);
+		log(`Exported ${FILE_TITLES[title]} (${extension}) to ${OWN_FOLDER}/Exports/${saved.name}`, project);
+		return sendJson(res, 200, { saved: { ...saved, projectName: project.name } });
+	}
+
+	async function projectsState(gate: Gate) {
+		const file = await projects.read();
+		return {
+			current: file.current,
+			projects: file.projects,
+			// The page on this computer, or a service's own page; never another device over the tailnet.
+			canChange: !gate.tailnet,
+			// A service keeps its project folders inside its data folder.
+			...(projectsWithin ? { within: projectsWithin } : {}),
+		};
+	}
+
+	async function projectsRoute(res: ServerResponse, route: string, url: URL, body: unknown, gate: Gate): Promise<void> {
+		if (route === "GET /api/projects") return sendJson(res, 200, await projectsState(gate));
+		const fields = route.startsWith("POST ") ? bodyObject(body) : {};
+		// Moving between projects already chosen is open to any page with the key: it chooses no folder.
+		if (route === "POST /api/projects/use") {
+			const id = fields.id ?? null;
+			if (id !== null && !isProjectId(id)) throw new HttpError(400, "Choose a project");
+			const project = await projects.use(id);
+			if (project) log(`Using this project, ${project.name}`, project);
+			return sendJson(res, 200, await projectsState(gate));
+		}
+		if (gate.tailnet) throw new HttpError(403, "Projects are added and removed from the page on the Mac that runs Porchlight");
+		const checkOptions = async () => {
+			const report = await readReport(options.reportPath).catch(() => null);
+			return { home: homedir(), scanRoots: [options.defaultRoot, ...(report ? [report.root] : [])], ...(projectsWithin ? { within: projectsWithin } : {}) };
+		};
+		if (route === "GET /api/projects/preview") return sendJson(res, 200, { check: await checkFolder(url.searchParams.get("folder"), await checkOptions()) });
+		if (route === "POST /api/projects") {
+			const name = cleanName(fields.name);
+			if (!name) throw new HttpError(400, "Name the project in 1 to 60 characters, such as acme-audit");
+			const check = await checkFolder(fields.folder, await checkOptions());
+			if (check.error) throw new HttpError(400, check.error);
+			const project = await projects.add(name, check.folder);
+			try {
+				await prepareProject(project);
+			} catch (err) {
+				await projects.remove(project.id).catch(() => {});
+				throw err;
+			}
+			log(`Project started: ${project.name}, in ${project.folder}`, project);
+			return sendJson(res, 200, { ...(await projectsState(gate)), added: project.id });
+		}
+		if (route === "POST /api/projects/remove") {
+			if (!isProjectId(fields.id)) throw new HttpError(400, "Choose a project");
+			const project = await projects.remove(fields.id);
+			log("Project taken off Porchlight's list. Its folder and files are left as they are.", project);
+			return sendJson(res, 200, await projectsState(gate));
+		}
+		throw new HttpError(404, "Not found");
+	}
+
+	/**
+	 * Keeps a model's first answer as a discussion. Not keeping it never costs the owner the answer:
+	 * the page still shows it, only without a follow-up box.
+	 */
+	async function recordDiscussion(
+		kind: DiscussionKind,
+		about: DiscussionAbout,
+		config: AssistantConfig,
+		targetId: string | null,
+		cut: string | null,
+		first: DiscussionTurn,
+	): Promise<{ id: string; title: string } | undefined> {
+		try {
+			const target = targetId ?? targets().find((candidate) => fingerprintOf(candidate.config) === fingerprintOf(config))?.id ?? "";
+			const discussion = newDiscussion({ kind, about, config, hosted: isHosted(config), target, cut, first });
+			await discussionStore.save(discussion);
+			await discussionStore.prune().catch(() => {});
+			// Begun while a project is in use: its transcript is kept there too, and written again after each answer.
+			const project = await projects.current();
+			if (project) await newTranscript(discussion, project).catch(transcriptFailed);
+			log(`Asked ${modelWords(config)}: ${KIND_WORDS[kind]}, answered in ${first.seconds} s`, project);
+			return { id: discussion.id, title: discussion.title };
+		} catch (err) {
+			console.error(`porchlight ui: could not keep the discussion: ${err instanceof Error ? err.message : String(err)}`);
+			return undefined;
+		}
+	}
+
+	const NEWER_SCAN = "A newer scan has replaced the one this discussion is about. Ask again from the page to start a new discussion about it.";
+	const NEWER_AUDIT = "A newer Cloudflare audit has replaced the one this discussion is about. Ask again from the Cloudflare page to start a new discussion about it.";
+
+	/**
+	 * Whether a discussion can take a follow-up now, and the model it goes to: the same one it began
+	 * with, never one swapped in since, and the same scan, never a newer one the model has not read.
+	 */
+	async function followUpState(discussion: Discussion): Promise<{ ok: true; target: SendTarget } | { ok: false; reason: string }> {
+		if (discussion.turns.length >= MAX_TURNS) {
+			return { ok: false, reason: `This discussion has ${MAX_TURNS} answers, the most one can hold. Ask again from the page to start a new one.` };
+		}
+		const target = targets().find((candidate) => candidate.id === discussion.target);
+		if (!target || fingerprintOf(target.config) !== discussion.fingerprint) {
+			return {
+				ok: false,
+				reason: `${discussion.model} at ${discussion.host}, the model this discussion used, is no longer set up. Set it up again under Settings → Model, or ask again from the page to start a new discussion.`,
+			};
+		}
+		if (discussion.kind === "cloudflare") {
+			const audit = await readAudit(cloudflareAuditPath).catch(() => null);
+			if (!audit || audit.checkedAt !== discussion.about.checkedAt) return { ok: false, reason: NEWER_AUDIT };
+		} else if (discussion.kind !== "domain") {
+			const report = await readReport(options.reportPath).catch(() => null);
+			if (!report || report.scannedAt !== discussion.about.scannedAt) return { ok: false, reason: NEWER_SCAN };
+		}
+		return { ok: true, target };
+	}
+
+	/** The first prompt of a discussion, built again from this server's own data, exactly as it was sent (invariant 13). */
+	async function rebuildPrompt(discussion: Discussion, target: SendTarget): Promise<Prompt> {
+		const about = discussion.about;
+		if (discussion.kind === "domain") {
+			const report = await latestDomainReport(about.domain ?? "");
+			if (String(report.takenAt) !== about.takenAt) {
+				throw new HttpError(409, `A newer scan of ${about.domain} has replaced the one this discussion is about. Ask again from the Domains page to start a new discussion about it.`);
+			}
+			return domainPrompt(report);
+		}
+		if (discussion.kind === "cloudflare") {
+			const audit = await readAudit(cloudflareAuditPath);
+			if (!audit || audit.checkedAt !== about.checkedAt) throw new HttpError(409, NEWER_AUDIT);
+			return cloudflarePrompt(audit);
+		}
+		const report = await storedReport();
+		if (report.scannedAt !== about.scannedAt) throw new HttpError(409, NEWER_SCAN);
+		if (discussion.kind === "finding") {
+			const found = locateFinding(report, { repo: about.repo ?? "", ruleId: about.ruleId ?? "", location: about.location ?? "", detail: about.detail });
+			if (!found) throw new HttpError(409, NEWER_SCAN);
+			return findingPrompt(report, found.repo, found.finding);
+		}
+		if (discussion.kind === "roadmap") return roadmapPrompt(report);
+		if (discussion.kind === "ask") return askPrompt(report, discussion.turns[0]?.question ?? "");
+		const filter = parseFilter({ severity: about.filter?.severity, kind: about.filter?.kind, match: about.filter?.q, repo: about.filter?.repo });
+		return sendPrompt(report, {
+			content: about.content === "findings" ? "findings" : "roadmap",
+			purpose: about.purpose === "repair" ? "repair" : "analyse",
+			filter,
+			cap: target.hosted ? HOSTED_DATA_CAP : DATA_CAP,
+		});
+	}
+
+	/**
+	 * Kept discussions: the list, one in full, a file of one, deleting one, and a follow-up question.
+	 * A follow-up sends the first prompt as built from this server's data, the conversation so far and
+	 * the owner's question, to the model the discussion began with. The answer is text for the page.
+	 */
+	async function discussionRoute(res: ServerResponse, route: string, url: URL, body: unknown): Promise<void> {
+		if (route === "GET /api/discussions") return sendJson(res, 200, { discussions: await discussionStore.list(), maxTurns: MAX_TURNS });
+		if (route === "GET /api/discussions/one" || route === "GET /api/discussions/export") {
+			const discussion = await discussionStore.read(url.searchParams.get("id"));
+			if (!discussion) throw new HttpError(404, "There is no such discussion");
+			if (route === "GET /api/discussions/export") {
+				const format = url.searchParams.get("format") ?? "md";
+				if (!(DISCUSSION_FORMATS as readonly string[]).includes(format)) throw new HttpError(400, `Choose a format: ${DISCUSSION_FORMATS.join(" or ")}`);
+				return sendDownload(res, exportDiscussion(discussion, format as DiscussionFormat));
+			}
+			const state = await followUpState(discussion);
+			return sendJson(res, 200, { discussion: viewOf(discussion), followUp: state.ok ? { ok: true } : { ok: false, reason: state.reason } });
+		}
+		const fields = bodyObject(body);
+		// A copy of the transcript in the project in use: written again there after each answer from now on.
+		if (route === "POST /api/discussions/save") {
+			const discussion = await discussionStore.read(fields.id);
+			if (!discussion) throw new HttpError(404, "There is no such discussion");
+			const project = await projects.current();
+			if (!project) throw new HttpError(409, "Choose a project first, under Settings → Projects.");
+			const saved = discussion.saved?.project === project.id ? await updateTranscript(discussion) : await newTranscript(discussion, project);
+			if (saved) log(`Saved a discussion (${KIND_WORDS[discussion.kind]}) to ${OWN_FOLDER}/Discussions/${saved.name}`, project);
+			return sendJson(res, 200, { discussion: viewOf(discussion), saved: saved ? { ...saved, projectName: project.name } : null });
+		}
+		if (route === "POST /api/discussions/delete") {
+			if (typeof fields.id === "string" && answering.has(fields.id)) throw new HttpError(409, "This discussion is waiting for an answer. Delete it when the answer has come");
+			if (!(await discussionStore.remove(fields.id))) throw new HttpError(404, "There is no such discussion");
+			return sendJson(res, 200, { deleted: fields.id });
+		}
+		if (route !== "POST /api/discussions/ask") throw new HttpError(404, "Not found");
+
+		const question = fields.question;
+		if (typeof question !== "string" || question.trim() === "" || question.length > MAX_QUESTION) throw new HttpError(400, `Ask a question of 1 to ${MAX_QUESTION} characters`);
+		const discussion = await discussionStore.read(fields.id);
+		if (!discussion) throw new HttpError(404, "There is no such discussion");
+		if (answering.has(discussion.id)) throw new HttpError(409, "This discussion is still waiting for an answer to the last question");
+		const state = await followUpState(discussion);
+		if (!state.ok) throw new HttpError(409, state.reason);
+		const target = state.target;
+		const prompt = await rebuildPrompt(discussion, target);
+		const { messages, note } = followUpPrompt(prompt, discussion.turns, question.trim(), target.hosted ? HOSTED_HISTORY_CAP : LOCAL_HISTORY_CAP);
+
+		// As for "Send to a model": the owner's own model answers one request at a time, a hosted one many.
+		const local = !target.hosted;
+		if (local && modelBusy) throw new HttpError(409, "The model is still answering another request. Try again when it has finished.");
+		if (local) modelBusy = true;
+		answering.add(discussion.id);
+		sending += 1;
+		const cancel = new AbortController();
+		const onClose = () => {
+			if (!res.writableFinished) cancel.abort();
+		};
+		res.once("close", onClose);
+		const started = Date.now();
+		try {
+			const long = discussion.kind === "send";
+			const answer = await chat(target.config, messages, {
+				fetchFn: options.fetchFn,
+				signal: cancel.signal,
+				...(long ? { timeoutMs: SEND_TIMEOUT_MS, maxTokens: SEND_TOKENS } : {}),
+			});
+			const turn: DiscussionTurn = {
+				question: question.trim(),
+				answer,
+				model: target.config.model,
+				at: new Date().toISOString(),
+				seconds: Math.round((Date.now() - started) / 100) / 10,
+				...(note ? { note } : {}),
+			};
+			discussion.turns.push(turn);
+			discussion.updatedAt = turn.at;
+			await discussionStore.save(discussion);
+			const kept = await updateTranscript(discussion).catch(transcriptFailed);
+			log(`Follow-up question to ${modelWords(target.config)}: ${KIND_WORDS[discussion.kind]}, answered in ${turn.seconds} s`, kept ? await projects.get(kept.project) : undefined);
+			sendJson(res, 200, { discussion: viewOf(discussion), turn });
+		} catch (err) {
+			if (err instanceof AssistantError) throw new HttpError(err.status, err.message);
+			throw err;
+		} finally {
+			res.off("close", onClose);
+			answering.delete(discussion.id);
+			sending -= 1;
+			if (local) modelBusy = false;
+		}
+	}
+
 	/**
 	 * "Send to a model": the roadmap or the findings, all or what the filters show, to the model the
 	 * owner picks, for a deeper analysis or a repair plan. The request names the model by Porchlight's
@@ -423,9 +773,28 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			if (!res.writableFinished) cancel.abort();
 		};
 		res.once("close", onClose);
+		const started = Date.now();
 		try {
 			const answer = await chat(target.config, prompt.messages, { fetchFn: options.fetchFn, signal: cancel.signal, timeoutMs: SEND_TIMEOUT_MS, maxTokens: SEND_TOKENS });
 			const partial = describeFilter(filter);
+			// What the page's filter was, in the request's own words, so a follow-up rebuilds the same data.
+			const filterWords = Object.fromEntries(
+				(["severity", "kind", "q", "repo"] as const).flatMap((name) => (text(name) === null ? [] : [[name, text(name) as string]])),
+			);
+			const about: DiscussionAbout = {
+				scannedAt: report.scannedAt,
+				content: fields.content as string,
+				purpose: fields.purpose as string,
+				...(Object.keys(filterWords).length > 0 ? { filter: filterWords } : {}),
+				...(partial ? { partial } : {}),
+			};
+			const discussion = await recordDiscussion("send", about, target.config, target.id, prompt.cut, {
+				question: null,
+				answer,
+				model: target.config.model,
+				at: new Date().toISOString(),
+				seconds: Math.round((Date.now() - started) / 100) / 10,
+			});
 			sendJson(res, 200, {
 				text: answer,
 				model: target.config.model,
@@ -433,6 +802,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				hosted: target.hosted,
 				...(prompt.cut ? { cut: prompt.cut } : {}),
 				...(partial ? { partial } : {}),
+				...(discussion ? { discussion: discussion.id, title: discussion.title } : {}),
 			});
 		} catch (err) {
 			if (err instanceof AssistantError) throw new HttpError(err.status, err.message);
@@ -524,6 +894,87 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		} catch (err) {
 			if (err instanceof ModelSettingError) throw new HttpError(400, err.message);
 			if (err instanceof AssistantError) throw new HttpError(err.status, err.message);
+			throw err;
+		}
+	}
+
+	// Downloading a local model: Ollama does it, at the address chosen under Settings → Model or on
+	// this computer. One at a time, and only from this computer's page: it fills a disk.
+	let download: DownloadStatus = { state: "idle" };
+	// What this computer can run, from its memory: read once, from the system, never from a request.
+	const machine = describeMachine(totalmem(), cpus()[0]?.model ?? "", process.platform, process.arch);
+	let downloadStop: AbortController | null = null;
+	function ollamaBase(): URL {
+		const config = model.config;
+		return config && (config.provider ?? "ollama") === "ollama" ? config.url : new URL(DEFAULT_OLLAMA);
+	}
+
+	async function downloadRoute(res: ServerResponse, route: string, url: URL, body: unknown, gate: Gate): Promise<void> {
+		const here = gate.loopbackOnly && !gate.tailnet;
+		try {
+			if (route === "GET /api/model/local") {
+				const base = ollamaBase();
+				let installed: Awaited<ReturnType<typeof installedModels>> = [];
+				let problem: string | undefined;
+				try {
+					installed = await installedModels(base, options.fetchFn);
+				} catch (err) {
+					problem = err instanceof Error ? err.message : String(err);
+				}
+				return sendJson(res, 200, { ollama: { host: base.host, reachable: problem === undefined, ...(problem ? { problem } : {}) }, installed, download, canChange: here, hub: HUB_HOST, tasks: HUB_TASKS, sorts: HUB_SORTS, formats: HUB_FORMATS, sizes: HUB_SIZES, machine });
+			}
+			if (!here) throw new HttpError(403, "Models are searched for and downloaded from the page on the Mac that runs Porchlight");
+			if (route === "GET /api/model/local/search") {
+				const asked = (name: string) => url.searchParams.get(name) ?? "";
+				const fits = asked("fits");
+				if (fits !== "" && fits !== "1") throw new HttpError(400, "fits is 1 or left out");
+				return sendJson(res, 200, {
+					models: await searchHub(
+						{ q: asked("q"), task: asked("task"), sort: asked("sort"), author: asked("author"), tag: asked("tag"), format: asked("format"), size: asked("size"), ...(fits === "1" ? { fitsUpTo: machine.fitsUpTo } : {}) },
+						options.fetchFn,
+					),
+				});
+			}
+			if (route === "POST /api/model/local/stop") {
+				downloadStop?.abort();
+				return sendJson(res, 200, { stopped: downloadStop !== null });
+			}
+			if (route !== "POST /api/model/local/download") throw new HttpError(404, "Not found");
+			if (download.state === "running") throw new HttpError(409, `${download.name} is being downloaded. Wait for it, or stop it first`);
+			const name = bodyObject(body).name;
+			const problem = modelNameProblem(name);
+			if (problem) throw new HttpError(400, problem);
+			const chosen = String(name).trim();
+			const base = ollamaBase();
+			const stop = new AbortController();
+			downloadStop = stop;
+			const startedAt = new Date().toISOString();
+			download = { state: "running", name: chosen, startedAt, step: "Asking Ollama", total: 0, completed: 0 };
+			log(`Model download started: ${chosen}, through Ollama at ${base.host}`);
+			// Not awaited: a model is gigabytes, and the page follows it.
+			void pullModel(base, chosen, {
+				fetchFn: options.fetchFn,
+				signal: stop.signal,
+				onProgress: (progress) => {
+					if (download.state === "running") download = { ...download, ...progress };
+				},
+			})
+				.then(() => {
+					download = { state: "done", name: chosen, startedAt, finishedAt: new Date().toISOString() };
+					log(`Model downloaded: ${chosen}`);
+				})
+				.catch((err) => {
+					const error = stop.signal.aborted ? "Stopped by you. Ollama keeps what it already has, so starting again picks up from there." : err instanceof Error ? err.message : String(err);
+					download = { state: "failed", name: chosen, startedAt, finishedAt: new Date().toISOString(), error };
+					log(stop.signal.aborted ? `Model download stopped: ${chosen}` : `Model download failed: ${chosen}`);
+					if (!stop.signal.aborted) note(error, "warning");
+				})
+				.finally(() => {
+					if (downloadStop === stop) downloadStop = null;
+				});
+			return sendJson(res, 202, { download });
+		} catch (err) {
+			if (err instanceof DownloadError) throw new HttpError(502, err.message);
 			throw err;
 		}
 	}
@@ -678,6 +1129,55 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	}
 
 
+	// The monitor that watches the owner's websites. A connection saved under Settings → Monitor comes
+	// before the one given at start-up, as a saved model or Cloudflare token does. The admin token is
+	// added to each call here and never sent to the page.
+	const monitorSettingsPath = join(dirname(options.reportPath), "monitor-settings.json");
+	let savedMonitor = await readSavedMonitor(monitorSettingsPath);
+	let monitor: MonitorConfig | null = savedMonitor?.config ?? options.monitor;
+
+	function monitorState() {
+		if (!monitor) {
+			return {
+				configured: false,
+				error: options.monitorError ?? "The monitor is not configured",
+				// Neither setting given: the usual state of a fresh install, as opposed to a value to correct.
+				unset: options.monitorUnset ?? false,
+			};
+		}
+		return { configured: true, host: monitor.url.host, ...(savedMonitor ? { source: "settings", savedAt: savedMonitor.savedAt } : {}) };
+	}
+
+	async function monitorRoute(res: ServerResponse, route: string, body: unknown, gate: Gate): Promise<void> {
+		// A service is given its monitor where it is managed; another device only looks.
+		if (!(gate.loopbackOnly && !gate.tailnet)) throw new HttpError(403, "The monitor is connected from the page on the Mac that runs Porchlight");
+		if (route === "POST /api/monitor") {
+			const fields = bodyObject(body);
+			let config: MonitorConfig;
+			try {
+				config = parseMonitorSettings(fields.address, fields.token);
+			} catch (err) {
+				if (err instanceof MonitorSettingsError) throw new HttpError(400, err.message);
+				throw err;
+			}
+			// Asked before it is saved, so a mistake never replaces a working connection.
+			const problem = await monitorProblem(config, options.fetchFn ?? fetch);
+			if (problem) throw new HttpError(400, problem);
+			savedMonitor = await saveMonitor(monitorSettingsPath, config);
+			monitor = config;
+			log(`Monitor connected: ${config.url.host}`);
+			return sendJson(res, 200, { monitor: monitorState() });
+		}
+		if (route === "POST /api/monitor/remove") {
+			await forgetMonitor(monitorSettingsPath);
+			savedMonitor = null;
+			monitor = options.monitor;
+			log("Monitor connection removed from Settings");
+			return sendJson(res, 200, { monitor: monitorState() });
+		}
+		throw new HttpError(404, "Not found");
+	}
+
 	// "Investigate with a model": one run at a time, on a domain whose ownership record holds its token.
 	const investigateDir = join(dirname(options.reportPath), "investigations");
 	const investigateDomainsPath = join(dirname(options.reportPath), "investigate-domains.json");
@@ -745,7 +1245,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				active: investigation ? investigation.run : null,
 				assistant: assistantSummary(),
 				...(config ? { disclosure: investigationDisclosure(config) } : {}),
-				monitor: options.monitor !== null,
+				monitor: monitor !== null,
 				tools: INVESTIGATION_TOOLS,
 				defaults: { goal: DEFAULT_GOAL, maxTurns: DEFAULT_MAX_TURNS, maxTurnsLimit: MAX_TURNS_LIMIT, minGapMs: options.investigateMinGapMs ?? DEFAULT_MIN_GAP_MS, maxGoal: MAX_GOAL },
 			});
@@ -756,13 +1256,16 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			if (!run) throw new HttpError(404, "There is no such investigation");
 			return sendJson(res, 200, { run });
 		}
-		if (route === "GET /api/investigate/export") {
+		if (route === "GET /api/investigate/export" || route === "POST /api/investigate/export") {
 			const id = url.searchParams.get("id");
 			const run = isRunId(id) ? await currentRun(id) : null;
 			if (!run) throw new HttpError(404, "There is no such investigation");
 			const format = url.searchParams.get("format") ?? "md";
 			if (!(INVESTIGATION_FORMATS as readonly string[]).includes(format)) throw new HttpError(400, `Choose a format: ${INVESTIGATION_FORMATS.join(" or ")}`);
-			return sendDownload(res, exportInvestigation(run, format as InvestigationFormat));
+			const file = exportInvestigation(run, format as InvestigationFormat);
+			if (route === "POST /api/investigate/export") return saveExport(res, file, "investigation");
+			log(`Exported ${FILE_TITLES.investigation} (${format}) as a download`);
+			return sendDownload(res, file);
 		}
 		if (!here) throw new HttpError(403, "Investigations are run from the page on the Mac that runs Porchlight");
 		const fields = bodyObject(body);
@@ -774,8 +1277,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			if (!file.domains[name]) {
 				// When the monitor already watches this domain, its record serves here too.
 				let token: string | null = null;
-				if (options.monitor) {
-					const answer = await callMonitor(options.monitor, "GET", `/domains/${encodeURIComponent(name)}`, undefined, options.fetchFn).catch(() => null);
+				if (monitor) {
+					const answer = await callMonitor(monitor, "GET", `/domains/${encodeURIComponent(name)}`, undefined, options.fetchFn).catch(() => null);
 					if (answer?.status === 200) token = tokenFromChallenge(answer.body?.domain?.challenge?.value);
 				}
 				file.domains[name] = { token: token ?? newToken(), addedAt: new Date().toISOString(), source: token ? "monitor" : "local" };
@@ -811,10 +1314,15 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				throw new HttpError(409, "That action is no longer waiting for approval");
 			}
 			if (typeof fields.approve !== "boolean") throw new HttpError(400, "Say whether to approve");
+			// "rest": this action and every later one of this run. It can only go with a yes.
+			if (fields.rest !== undefined && typeof fields.rest !== "boolean") throw new HttpError(400, "Say whether to approve the rest of the run");
+			const rest = fields.rest === true;
+			if (rest && !fields.approve) throw new HttpError(400, "The rest of a run can be approved, not denied. Use Stop to end it");
 			const { resolve: answer } = active.approval;
 			active.approval = null;
-			answer(fields.approve);
-			return sendJson(res, 200, { approved: fields.approve });
+			answer(rest ? "rest" : fields.approve);
+			if (rest) log(`Investigation of ${active.run.domain}: you approved the rest of its requests at turn ${active.run.turns}`);
+			return sendJson(res, 200, { approved: fields.approve, rest });
 		}
 		if (route === "POST /api/investigate/finding") {
 			if (!isRunId(fields.run)) throw new HttpError(400, "Name the investigation");
@@ -838,6 +1346,9 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		if (typeof goal !== "string" || goal.trim() === "" || goal.length > MAX_GOAL) throw new HttpError(400, `Write a goal of 1 to ${MAX_GOAL} characters`);
 		const maxTurns = fields.maxTurns ?? DEFAULT_MAX_TURNS;
 		if (typeof maxTurns !== "number" || !Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > MAX_TURNS_LIMIT) throw new HttpError(400, `Choose 1 to ${MAX_TURNS_LIMIT} turns`);
+		// Approving every request of the run at its start is the owner's choice, said plainly or not at all.
+		if (fields.approveAll !== undefined && typeof fields.approveAll !== "boolean") throw new HttpError(400, "Say whether to approve the run's requests now");
+		const approveAll = fields.approveAll === true;
 		const hosted = isHosted(config);
 		// The page shows what will be sent; a hosted model is used only once the owner has said yes to it.
 		if (hosted && fields.sendsToHosted !== true) throw new HttpError(409, investigationDisclosure(config));
@@ -845,15 +1356,21 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			throw new HttpError(409, `The TXT record ${challengeName(name)} does not hold ${challengeValue(token)} yet. Publish it, wait a few minutes, and check again`);
 		}
 
-		const run = newRun({ domain: name, goal: goal.trim(), model: config.model, modelHost: config.url.host, hosted, maxTurns, minGapMs: options.investigateMinGapMs ?? DEFAULT_MIN_GAP_MS });
+		const run = newRun({ domain: name, goal: goal.trim(), model: config.model, modelHost: config.url.host, hosted, maxTurns, minGapMs: options.investigateMinGapMs ?? DEFAULT_MIN_GAP_MS, approveAll });
 		const stop = new AbortController();
+		const stepsNoted = new Set<string>();
+		const waitingNoted = new Set<string>();
 		const active: InvestigationJob = { run, stop, approval: null };
 		investigation = active;
 		await saveActive(run);
+		// The log goes to the project in use now, also for the line written when the run ends.
+		const logTo = await projects.current();
+		log(`Investigation of ${name} started: ${modelWords(config)}, at most ${maxTurns} turns, ${approveAll ? "every request approved at the start" : "each request waits for your approval"}`, logTo);
 		// Not awaited: the run outlives this request and the page polls for progress.
 		void investigate(run, {
 			ask: async (system, user, signal) => {
 				const local = !hosted;
+				note(`Investigation of ${name}, turn ${run.turns}: asking ${modelWords(config)} for the next step`);
 				// The owner's own model answers one request at a time; Explain and Ask wait their turn.
 				while (local && modelBusy && !signal.aborted) await abortableSleep(500, signal);
 				if (local) modelBusy = true;
@@ -867,14 +1384,19 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			verify: async (signal) => {
 				// Read again each time: a domain removed from the list is no longer proven.
 				const entry = (await readDomains(investigateDomainsPath)).domains[name];
-				return entry !== undefined && entry.token === token && (await checkOwnership(name, token, options.fetchFn ?? fetch, signal));
+				if (entry === undefined || entry.token !== token) return false;
+				if (await checkOwnership(name, token, options.fetchFn ?? fetch, signal)) return true;
+				// A resolver can miss a record that is there, just after it was published. Asked once more
+				// before the run is stopped; the answer still has to be yes for anything to be sent.
+				await abortableSleep(options.investigateMinGapMs === 0 ? 0 : OWNERSHIP_RECHECK_MS, signal);
+				return !signal.aborted && (await checkOwnership(name, token, options.fetchFn ?? fetch, signal));
 			},
 			approve: (request, signal) =>
-				new Promise<boolean>((resolveApproval) => {
-					const done = (approved: boolean) => {
+				new Promise<ApprovalAnswer>((resolveApproval) => {
+					const done = (answer: ApprovalAnswer) => {
 						signal.removeEventListener("abort", abort);
 						if (active.approval?.stepId === request.stepId) active.approval = null;
-						resolveApproval(approved);
+						resolveApproval(answer);
 					};
 					const abort = () => done(false);
 					if (signal.aborted) return done(false);
@@ -882,12 +1404,29 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 					active.approval = { stepId: request.stepId, resolve: done };
 				}),
 			limiter: new RateLimiter(run.minGapMs),
-			onChange: (changed) => saveActive(changed),
+			onChange: (changed) => {
+				for (const step of changed.steps) {
+					if (step.outcome === "waiting" && !waitingNoted.has(step.id)) {
+						waitingNoted.add(step.id);
+						note(`Investigation of ${name}, turn ${step.turn}: ${step.description ?? "an action"} is waiting for your approval`, "warning");
+					}
+					if (step.outcome === "waiting" || stepsNoted.has(step.id)) continue;
+					// A step that ran under the run's approval is saved once more when it finishes; noted then.
+					if (step.outcome === "refused" && step.reason === undefined) continue;
+					stepsNoted.add(step.id);
+					const what = step.description ?? (step.tool ? `${step.tool} (not a valid action)` : "no action");
+					note(`Investigation of ${name}, turn ${step.turn}: ${what}: ${step.outcome}`, step.outcome === "ran" ? "good" : step.outcome === "no action" ? "info" : "warning");
+				}
+				return saveActive(changed);
+			},
 		}, stop.signal)
 			.catch(() => {})
 			.finally(async () => {
 				await runSaves;
 				if (investigation === active) investigation = null;
+				const actions = run.evidence.length;
+				const found = run.findings.length;
+				log(`Investigation of ${name} ${RUN_ENDINGS[run.status] ?? "ended"}: ${actions} ${actions === 1 ? "action" : "actions"} run, ${found} ${found === 1 ? "finding" : "findings"} from the model`, logTo);
 				await runStore.prune().catch(() => {});
 			});
 		return sendJson(res, 202, { run });
@@ -907,6 +1446,12 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	let cloudflareVerified: { status: string; kind: "user" | "account"; expiresOn?: string; checkedAt: string } | null = null;
 	/** Changes shown to the owner and waiting for their answer, by their random id. */
 	const pendingChanges = new Map<string, PlannedChange>();
+	/** The set of changes shown to the owner and waiting for one answer; a new preview replaces it. */
+	let pendingBatch: { id: string; createdAt: number; changes: PlannedChange[] } | null = null;
+	let batchStatus: BatchStatus = { state: "idle" };
+	/** Write permissions Cloudflare refused this token, so the page can say what to add before the next try. */
+	const lacking = new Set<string>();
+	let batchStop: AbortController | null = null;
 
 	/** The token in use: the one saved under Settings → Cloudflare, else the one given at start-up. */
 	async function cloudflareToken(): Promise<{ token: string; source: "settings" | "startup" } | null> {
@@ -942,6 +1487,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				status: cloudflareStatus,
 				report: await readAudit(cloudflareAuditPath),
 				changes: changes.slice(-50).reverse(),
+				batch: batchStatus,
+				lacking: [...lacking],
 				canChange: here,
 				service: !loopbackOnly,
 				guide: cloudflareGuide(),
@@ -949,14 +1496,18 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			});
 		}
 		if (route === "GET /api/cloudflare/token") return sendJson(res, 200, { token: await cloudflareTokenState(), canChange: here, guide: cloudflareGuide() });
-		if (route === "GET /api/cloudflare/export") {
+		if (route === "GET /api/cloudflare/export" || route === "POST /api/cloudflare/export") {
 			const report = await readAudit(cloudflareAuditPath);
 			if (!report) throw new HttpError(404, "There is no Cloudflare audit yet. Run one first.");
 			const format = url.searchParams.get("format") ?? "md";
 			if (!(CF_FORMATS as readonly string[]).includes(format)) throw new HttpError(400, `Choose a format: ${CF_FORMATS.join(", ")}`);
 			const zone = url.searchParams.get("zone");
 			if (zone !== null && !report.zones.some((candidate) => candidate.id === zone)) throw new HttpError(404, "That zone is not in the latest audit");
-			return sendDownload(res, exportCloudflare(report, format as CfFormat, zone));
+			const file = exportCloudflare(report, format as CfFormat, zone);
+			// POST writes it into the project in use; GET hands it to the browser to save.
+			if (route === "POST /api/cloudflare/export") return saveExport(res, file, "cloudflare");
+			log(`Exported ${FILE_TITLES.cloudflare} (${format}) as a download`);
+			return sendDownload(res, file);
 		}
 		if (route === "POST /api/cloudflare/audit") {
 			if (cloudflareStatus.state === "running") throw new HttpError(409, "A Cloudflare audit is already running");
@@ -966,6 +1517,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			if (lookups !== undefined && typeof lookups !== "boolean") throw new HttpError(400, "lookups must be true or false");
 			const ownership = await readDomains(investigateDomainsPath);
 			cloudflareStatus = { state: "running", startedAt: new Date().toISOString(), done: 0, total: 0, current: "" };
+			const project = await projects.current();
+			log("Cloudflare audit started", project);
 			// Not awaited: the page polls for progress, as it does for a scan.
 			void auditCloudflare({
 				token: token.token,
@@ -980,9 +1533,12 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 					await saveAudit(cloudflareAuditPath, report);
 					cloudflareVerified = { status: report.token.status, kind: report.token.kind, ...(report.token.expiresOn ? { expiresOn: report.token.expiresOn } : {}), checkedAt: report.checkedAt };
 					cloudflareStatus = { state: "done", finishedAt: new Date().toISOString() };
+					const problems = [...report.zones.flatMap((zone) => zone.checks), ...report.accounts.flatMap((account) => account.checks), ...report.userChecks].filter((item) => item.status === "failed").length;
+					log(`Cloudflare audit finished: ${report.zones.length} ${report.zones.length === 1 ? "zone" : "zones"}, ${problems} ${problems === 1 ? "problem" : "problems"}`, project);
 				})
 				.catch((err) => {
 					cloudflareStatus = { state: "failed", finishedAt: new Date().toISOString(), error: err instanceof Error ? err.message : String(err) };
+					log("Cloudflare audit failed", project);
 				});
 			return sendJson(res, 202, { status: cloudflareStatus });
 		}
@@ -997,6 +1553,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			const verified = await new CfClient(token, options.fetchFn ?? fetch).verify();
 			if (!verified.ok) throw new HttpError(400, verified.message ?? `Cloudflare says this token is ${verified.status ?? "not active"}`);
 			await saveToken(cloudflareTokenPath, token);
+			lacking.clear();
 			cloudflareVerified = { status: verified.status ?? "active", kind: verified.kind, ...(verified.expiresOn ? { expiresOn: verified.expiresOn } : {}), checkedAt: new Date().toISOString() };
 			return sendJson(res, 200, { token: await cloudflareTokenState() });
 		}
@@ -1004,6 +1561,9 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			await forgetToken(cloudflareTokenPath);
 			cloudflareVerified = null;
 			pendingChanges.clear();
+			pendingBatch = null;
+			batchStop?.abort();
+			lacking.clear();
 			return sendJson(res, 200, { token: await cloudflareTokenState() });
 		}
 		if (route === "POST /api/cloudflare/changes/preview") {
@@ -1033,41 +1593,146 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			if (!fields.approve) return sendJson(res, 200, { applied: false });
 			const token = await cloudflareToken();
 			if (!token) throw new HttpError(409, "Connect Cloudflare first: paste an API token in Settings → Cloudflare");
-			if (planned.change === "ownership-record") {
-				const entry = (await readDomains(investigateDomainsPath)).domains[planned.zone];
-				if (entry && entry.token !== planned.ownershipToken) throw new HttpError(409, "The token for this domain changed since the request was shown. Ask for it again.");
+			if (await ownershipTokenChanged(planned)) throw new HttpError(409, "The token for this domain changed since the request was shown. Ask for it again.");
+			const { outcome, changes } = await applyPlanned(planned, token.token);
+			return sendJson(res, 200, { applied: true, ok: outcome.ok, result: outcome.result, changes: changes.slice(-50).reverse(), lacking: [...lacking] });
+		}
+
+		// "Fix these": every change the latest audit offers, for one zone or all, shown as the exact
+		// requests and sent after one approval. The same fixed templates, each sent once and recorded.
+		if (route === "POST /api/cloudflare/changes/batch/stop") {
+			// What was already sent stays sent; the rest are not.
+			batchStop?.abort();
+			return sendJson(res, 200, { stopped: batchStop !== null });
+		}
+		if (route === "POST /api/cloudflare/changes/batch/preview") {
+			if (batchStatus.state === "running") throw new HttpError(409, "Changes are being sent now. Wait for them to finish, or stop them");
+			const report = await readAudit(cloudflareAuditPath);
+			if (!report) throw new HttpError(404, "There is no Cloudflare audit yet. Run one first.");
+			let zones = report.zones;
+			if (fields.zone !== undefined) {
+				zones = report.zones.filter((candidate) => candidate.id === fields.zone);
+				if (zones.length === 0) throw new HttpError(404, "That zone is not in the latest audit. Run the audit again.");
 			}
-			const outcome = await sendChange(new CfClient(token.token, options.fetchFn ?? fetch), planned);
-			// Kept for the investigation and the audit: the record now holds this token.
-			if (outcome.ok && planned.change === "ownership-record" && planned.ownershipToken) {
-				const file = await readDomains(investigateDomainsPath);
-				if (!file.domains[planned.zone]) {
-					file.domains[planned.zone] = { token: planned.ownershipToken, addedAt: new Date().toISOString(), source: "local" };
-					await saveDomains(investigateDomainsPath, file);
+			const domains = (await readDomains(investigateDomainsPath)).domains;
+			const planned = planBatch(zones, (name) => domains[name]?.token ?? newToken());
+			if (planned.length === 0) throw new HttpError(409, "The latest audit found nothing here that Porchlight can change");
+			pendingBatch = { id: randomBytes(12).toString("hex"), createdAt: Date.now(), changes: planned };
+			return sendJson(res, 200, { batch: { id: pendingBatch.id, expiresAt: new Date(pendingBatch.createdAt + APPROVAL_WINDOW_MS).toISOString(), changes: planned.map(describeChange) } });
+		}
+		if (route === "POST /api/cloudflare/changes/batch/approve") {
+			const batch = pendingBatch;
+			if (!batch || batch.id !== fields.id || Date.now() - batch.createdAt > APPROVAL_WINDOW_MS) {
+				if (batch && batch.id === fields.id) pendingBatch = null;
+				throw new HttpError(409, "Those changes are no longer waiting. Ask for them again to see the requests.");
+			}
+			if (typeof fields.approve !== "boolean") throw new HttpError(400, "Say whether to send them");
+			// Some may be left out; none can be added. Each name must be one of the requests that was shown.
+			// A change that carries a warning is sent only when it is named: a bare yes never covers it.
+			let chosen = batch.changes.filter((change) => !change.care);
+			if (fields.include !== undefined) {
+				const include = fields.include;
+				if (!Array.isArray(include) || !include.every((id) => typeof id === "string" && batch.changes.some((change) => change.id === id))) {
+					throw new HttpError(400, "Choose among the changes that were shown");
 				}
+				chosen = batch.changes.filter((change) => include.includes(change.id));
 			}
-			const changes = await recordChange(cloudflareChangesPath, {
-				at: new Date().toISOString(),
-				zone: planned.zone,
-				zoneId: planned.zoneId,
-				change: planned.change,
-				title: planned.title,
-				request: { method: planned.method, url: planned.url, body: planned.body },
-				ok: outcome.ok,
-				result: outcome.result,
-			});
-			return sendJson(res, 200, { applied: true, ok: outcome.ok, result: outcome.result, changes: changes.slice(-50).reverse() });
+			if (fields.approve && chosen.length === 0) throw new HttpError(400, "Choose at least one change to send");
+			if (batchStatus.state === "running") throw new HttpError(409, "Changes are being sent now");
+			pendingBatch = null;
+			if (!fields.approve) return sendJson(res, 200, { started: false });
+			const token = await cloudflareToken();
+			if (!token) throw new HttpError(409, "Connect Cloudflare first: paste an API token in Settings → Cloudflare");
+			const startedAt = new Date().toISOString();
+			const stop = new AbortController();
+			batchStop = stop;
+			batchStatus = { state: "running", startedAt, total: chosen.length, done: 0, applied: 0, failed: 0, skipped: 0, current: "" };
+			const logTo = await projects.current();
+			log(`Cloudflare changes approved together: ${chosen.length}, on ${new Set(chosen.map((change) => change.zone)).size} ${new Set(chosen.map((change) => change.zone)).size === 1 ? "domain" : "domains"}`, logTo);
+			// Not awaited: the page follows it in the Activity view.
+			void (async () => {
+				let applied = 0;
+				let failed = 0;
+				let skipped = 0;
+				// A permission the token turned out to lack: the rest that need it are not sent, only said.
+				const lacking = new Set<string>();
+				for (const planned of chosen) {
+					if (stop.signal.aborted) break;
+					if (batchStatus.state === "running") batchStatus = { ...batchStatus, current: planned.title };
+					if (lacking.has(planned.permission)) {
+						skipped += 1;
+						note(`Not sent: ${planned.title}. The token lacks "${planned.permission}"`, "warning");
+					} else if (await ownershipTokenChanged(planned)) {
+						skipped += 1;
+						note(`Not sent: ${planned.title}. The token for this domain changed since the request was shown`, "warning");
+					} else {
+						note(`Sending: ${planned.title}`);
+						try {
+							const { outcome } = await applyPlanned(planned, token.token, logTo);
+							if (outcome.ok) applied += 1;
+							else failed += 1;
+							if (outcome.denied) lacking.add(planned.permission);
+						} catch (err) {
+							failed += 1;
+							note(`Could not send: ${planned.title}. ${err instanceof Error ? err.message : String(err)}`.split(token.token).join("[token]"), "warning");
+						}
+					}
+					if (batchStatus.state === "running") batchStatus = { ...batchStatus, done: applied + failed + skipped, applied, failed, skipped };
+				}
+				const stopped = stop.signal.aborted;
+				batchStatus = { state: "finished", startedAt, finishedAt: new Date().toISOString(), total: chosen.length, applied, failed, skipped, stopped };
+				if (batchStop === stop) batchStop = null;
+				log(`Cloudflare changes ${stopped ? "stopped" : "finished"}: ${applied} applied, ${failed} refused, ${skipped + (stopped ? chosen.length - applied - failed - skipped : 0)} not sent`, logTo);
+			})();
+			return sendJson(res, 202, { started: true, batch: batchStatus });
 		}
 		throw new HttpError(404, "Not found");
+	}
+
+	/** For the ownership record: whether this computer's token for the domain changed after the request was shown. */
+	async function ownershipTokenChanged(planned: PlannedChange): Promise<boolean> {
+		if (planned.change !== "ownership-record") return false;
+		const entry = (await readDomains(investigateDomainsPath)).domains[planned.zone];
+		return entry !== undefined && entry.token !== planned.ownershipToken;
+	}
+
+	/** Sends one approved change, exactly as planned, and records it whether Cloudflare accepted it or not. */
+	async function applyPlanned(planned: PlannedChange, token: string, project?: Project | null) {
+		const outcome = await sendChange(new CfClient(token, options.fetchFn ?? fetch), planned);
+		// Kept for the investigation and the audit: the record now holds this token.
+		if (outcome.ok && planned.change === "ownership-record" && planned.ownershipToken) {
+			const file = await readDomains(investigateDomainsPath);
+			if (!file.domains[planned.zone]) {
+				file.domains[planned.zone] = { token: planned.ownershipToken, addedAt: new Date().toISOString(), source: "local" };
+				await saveDomains(investigateDomainsPath, file);
+			}
+		}
+		// The change's title is Porchlight's, from its own list; the request and the token stay out of the log.
+		log(`Cloudflare change ${outcome.ok ? "applied" : "failed"}: ${planned.title}, on ${planned.zone}`, project);
+		if (!outcome.ok) note(`Cloudflare refused: ${planned.title}. ${outcome.result}`, "warning");
+		if (outcome.denied) lacking.add(planned.permission);
+		else if (outcome.ok) lacking.delete(planned.permission);
+		const changes = await recordChange(cloudflareChangesPath, {
+			at: new Date().toISOString(),
+			zone: planned.zone,
+			zoneId: planned.zoneId,
+			change: planned.change,
+			title: planned.title,
+			request: { method: planned.method, url: planned.url, body: planned.body },
+			ok: outcome.ok,
+			result: outcome.result,
+		});
+		return { outcome, changes };
 	}
 
 	const localGate: Gate = { loopbackOnly, key: () => sessionKey, port: () => port, tailnet: false };
 	const respond = (gate: Gate) => (req: IncomingMessage, res: ServerResponse) => {
 		handle(req, res, gate).catch((err) => {
 			// An export that cannot be made is the caller's mistake, and the message says what to change.
-			const known = err instanceof HttpError || err instanceof ExportError;
+			const known = err instanceof HttpError || err instanceof ExportError || err instanceof ProjectError;
 			if (!known) console.error(`porchlight ui: ${err instanceof Error ? err.message : String(err)}`);
-			sendJson(res, err instanceof HttpError ? err.status : known ? 400 : 500, { error: known ? err.message : "Internal error" });
+			// A project folder that cannot be written is a state to put right, said in the owner's terms.
+			sendJson(res, err instanceof HttpError ? err.status : err instanceof ProjectError ? 409 : known ? 400 : 500, { error: known ? err.message : "Internal error" });
 		});
 	};
 	const server = createServer(respond(localGate));
@@ -1108,7 +1773,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				defaultRoot: options.defaultRoot,
 				reportPath: options.reportPath,
 				scan: status,
-				appearance: await readAppearance(settingsPath),
+				...(await readUiSettings(settingsPath)),
 				// A service (a container, under BoxPilot) is configured where it is managed, not from a shell,
 				// so the page explains connecting the monitor in those terms.
 				service: !loopbackOnly,
@@ -1116,18 +1781,13 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				remote: gate.tailnet,
 				// The computer Porchlight runs on, so the page can call it "This Mac".
 				platform: process.platform,
-				monitor: options.monitor
-					? { configured: true, host: options.monitor.url.host }
-					: {
-							configured: false,
-							error: options.monitorError ?? "The monitor is not configured",
-							// Neither setting given: the usual state of a fresh install, as opposed to a value to correct.
-							unset: options.monitorUnset ?? false,
-						},
+				monitor: monitorState(),
 				// Whether a token is set, never the token.
 				github: { token: github.token !== undefined, ...(options.githubError ? { error: options.githubError } : {}) },
 				assistant: assistantSummary(),
 				lastView: await readView(viewPath),
+				// The projects, and the one exports, discussions and the log go to.
+				projects: await projectsState(gate),
 				// Whether Cloudflare is connected and how, never the token.
 				cloudflare: await cloudflareTokenState(),
 				// What "Send to a model" offers. Never a key: only where each one runs and which model.
@@ -1135,9 +1795,17 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			});
 		}
 		if (route === "POST /api/repos/send") return sendRoute(res, body);
+		if (url.pathname === "/api/projects" || url.pathname.startsWith("/api/projects/")) return projectsRoute(res, route, url, body, gate);
+		if (url.pathname === "/api/discussions" || url.pathname.startsWith("/api/discussions/")) return discussionRoute(res, route, url, body);
 		if (url.pathname === "/api/host" || url.pathname === "/api/host/check") return hostRoute(res, route, body);
 		if (url.pathname === "/api/investigate" || url.pathname.startsWith("/api/investigate/")) return investigateRoute(res, route, url, body, gate);
 		if (url.pathname === "/api/cloudflare" || url.pathname.startsWith("/api/cloudflare/")) return cloudflareRoute(res, route, url, body, gate);
+		if (url.pathname === "/api/monitor" || url.pathname.startsWith("/api/monitor/")) return monitorRoute(res, route, body, gate);
+		if (route === "GET /api/activity") {
+			const after = Number(url.searchParams.get("after") ?? 0);
+			const from = Number.isInteger(after) && after >= 0 ? after : 0;
+			return sendJson(res, 200, { lines: activity.filter((line) => line.n > from), last: activityCount });
+		}
 		if (route === "GET /api/repos/history") {
 			const report = await readReport(options.reportPath);
 			const scans = (await history.list()).reverse();
@@ -1153,17 +1821,25 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			return sendJson(res, 200, { view });
 		}
 		if (route === "POST /api/settings") {
-			const appearance = (body as { appearance?: unknown } | undefined)?.appearance;
-			if (!isLook(appearance)) throw new HttpError(400, "Unknown appearance");
-			await saveAppearance(settingsPath, appearance as string);
-			return sendJson(res, 200, { appearance });
+			// Either preference, or both; whatever is left out stays as it was.
+			const fields = bodyObject(body);
+			if (fields.appearance === undefined && fields.answers === undefined) throw new HttpError(400, "Choose an appearance or where answers appear");
+			if (fields.appearance !== undefined && !isLook(fields.appearance)) throw new HttpError(400, "Unknown appearance");
+			if (fields.answers !== undefined && !isAnswerPlace(fields.answers)) throw new HttpError(400, "Unknown place for answers");
+			const next = { ...(await readUiSettings(settingsPath)) };
+			if (fields.appearance !== undefined) next.appearance = fields.appearance as string;
+			if (fields.answers !== undefined) next.answers = fields.answers as string;
+			await saveUiSettings(settingsPath, next);
+			return sendJson(res, 200, next);
 		}
+		if (url.pathname === "/api/model/local" || url.pathname.startsWith("/api/model/local/")) return downloadRoute(res, route, url, body, gate);
 		if (url.pathname === "/api/model" || url.pathname.startsWith("/api/model/")) return modelRoute(res, route, body);
 		if (url.pathname === "/api/access" || url.pathname.startsWith("/api/access/")) return accessRoute(res, route, body, gate);
 		if (url.pathname.startsWith("/api/assist/")) return assist(req, res, url.pathname.slice("/api/assist/".length), body);
 		if (route === "GET /api/repos/report") return sendJson(res, 200, { ...(await loadReport(options.reportPath, analysisPath)), findingNotes: await readNotes(notesPath) });
 		if (url.pathname === "/api/analysis" || url.pathname === "/api/analysis/stop") return analysisRoute(res, route, body);
-		if (route === "GET /api/repos/roadmap" || route === "GET /api/repos/export" || url.pathname === "/api/repos/mural") {
+		if (route === "GET /api/repos/roadmap" || url.pathname === "/api/repos/export" || url.pathname === "/api/repos/mural") {
+			if (url.pathname === "/api/repos/export" && req.method !== "GET" && req.method !== "POST") throw new HttpError(405, "Method not allowed");
 			const report = await readReport(options.reportPath);
 			if (!report) throw new HttpError(404, "There is no scan yet. Scan a folder first.");
 			const query = url.searchParams;
@@ -1176,7 +1852,12 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				if (muralJob.state !== "done" || muralJob.key !== key) throw new HttpError(409, "Write the mural first: it is made for this scan and these filters");
 				mural = muralJob.mural;
 			}
-			return sendDownload(res, exportRepos(report, exportChoice(query), filter, mural));
+			const file = exportRepos(report, exportChoice(query), filter, mural);
+			const title: FileTitle = `${exportChoice(query).content === "findings" ? "findings" : "roadmap"}${isFiltering(filter) ? "-partial" : ""}`;
+			// POST writes it into the project in use; GET hands it to the browser to save.
+			if (req.method === "POST") return saveExport(res, file, title);
+			log(`Exported ${FILE_TITLES[title]} (${file.extension}) as a download`);
+			return sendDownload(res, file);
 		}
 		if (route === "GET /api/repos/scan") return sendJson(res, 200, { scan: status });
 		if (route === "GET /api/repos/preview") {
@@ -1191,6 +1872,9 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			const { root, depth } = await scanRequest(body);
 			const also = (await fetchedRepos(github.dir)).length > 0 ? [{ root: github.dir, depth: GITHUB_DEPTH }] : undefined;
 			status = { state: "running", root, startedAt: new Date().toISOString(), done: 0, total: 0, current: null };
+			// The scan is logged in the project in use when it starts, even if the owner moves to another meanwhile.
+			const project = await projects.current();
+			log(`Scan started: ${root}, ${depth} ${depth === 1 ? "level" : "levels"} down`, project);
 			// Not awaited: the scan outlives this request and the UI polls for progress.
 			void scan({
 				root,
@@ -1204,33 +1888,41 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 					if (report.repos.length === 0) {
 						const error = `No git repositories found under ${root}`;
 						status = { state: "failed", root, finishedAt: new Date().toISOString(), error, noRepositories: true, depth };
+						log(`Scan found nothing to check: ${error}`, project);
 						return;
 					}
 					// A scan that checked nothing must not replace one that did.
 					if (report.tools.every((tool) => tool.status === "missing")) {
 						const error = `No scanner is installed. Install one: ${report.tools.map((tool) => tool.installHint).join("; ")}`;
 						status = { state: "failed", root, finishedAt: new Date().toISOString(), error };
+						log("Scan failed: no scanner is installed", project);
 						return;
 					}
 					await saveReport(options.reportPath, report);
 					await history.add(report).catch((err) => console.error(`porchlight ui: could not keep the scan in history: ${err instanceof Error ? err.message : String(err)}`));
 					status = { state: "done", root, finishedAt: new Date().toISOString() };
+					log(`Scan finished: ${scanCounts(report)}`, project);
 				})
 				.catch((err) => {
 					const error = err instanceof Error ? err.message : String(err);
 					status = { state: "failed", root, finishedAt: new Date().toISOString(), error };
+					log(`Scan failed: ${error}`, project);
 				});
 			return sendJson(res, 202, { scan: status });
 		}
 
 		const domainExport = /^\/api\/domains\/([^/]+)\/export$/.exec(url.pathname);
 		if (domainExport) {
-			if (req.method !== "GET") throw new HttpError(405, "Method not allowed");
+			if (req.method !== "GET" && req.method !== "POST") throw new HttpError(405, "Method not allowed");
 			const [code, answer] = await proxyToMonitor("GET", `/api/domains/${domainExport[1]}`, undefined);
 			const report = (answer as { report?: MonitorReport | null }).report;
 			if (code !== 200) throw new HttpError(code, (answer as { error?: string }).error ?? "The monitor refused the request");
 			if (!report) throw new HttpError(404, "This domain has not been scanned yet, so there is nothing to export.");
-			return sendDownload(res, exportDomain(report, exportChoice(url.searchParams)));
+			const file = exportDomain(report, exportChoice(url.searchParams));
+			const title: FileTitle = exportChoice(url.searchParams).content === "findings" ? "domain-findings" : "domain-roadmap";
+			if (req.method === "POST") return saveExport(res, file, title);
+			log(`Exported ${FILE_TITLES[title]} (${file.extension}) as a download`);
+			return sendDownload(res, file);
 		}
 		if (url.pathname === "/api/domains" || url.pathname.startsWith("/api/domains/")) {
 			const [code, answer] = await proxyToMonitor(req.method ?? "GET", url.pathname, body);
@@ -1286,6 +1978,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		const stop = new AbortController();
 		stopAnalysis = stop;
 		analysing = { state: "running", done: 0, total: queue.length, current: null, failed: 0 };
+		const project = await projects.current();
+		log(`Deeper analysis started: ${queue.length} ${queue.length === 1 ? "item" : "items"} for ${modelWords(assistant)}`, project);
 		// Not awaited: the analysis outlives this request and the page polls for progress.
 		void (async () => {
 			let done = 0;
@@ -1313,6 +2007,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				done++;
 			}
 			analysing = { state: stop.signal.aborted ? "stopped" : "done", finishedAt: new Date().toISOString(), done: done - failed, total: queue.length, failed, ...(lastError ? { lastError } : {}) };
+			log(`Deeper analysis ${stop.signal.aborted ? "stopped" : "finished"}: ${done - failed} judged, ${failed} failed`, project);
 		})();
 		return sendJson(res, 202, { status: analysing });
 	}
@@ -1383,18 +2078,28 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		const fields = bodyObject(body);
 
 		let prompt: Prompt;
+		/** What the answer is about, kept with it as a discussion so it can be followed up. */
+		let about: DiscussionAbout;
+		let firstQuestion: string | null = null;
 		if (kind === "domain") {
-			prompt = domainPrompt(await latestDomainReport(domainField(fields)));
+			const domain = domainField(fields);
+			const report = await latestDomainReport(domain);
+			prompt = domainPrompt(report);
+			about = { domain, takenAt: String(report.takenAt) };
 		} else if (kind === "cloudflare") {
 			const report = await readAudit(cloudflareAuditPath);
 			if (!report) throw new HttpError(404, "There is no Cloudflare audit yet. Run one first.");
 			prompt = cloudflarePrompt(report);
+			about = { checkedAt: report.checkedAt, zones: report.zones.length };
 		} else if (kind === "ask") {
 			const question = fields.question;
 			if (typeof question !== "string" || question.trim() === "" || question.length > MAX_QUESTION) {
 				throw new HttpError(400, `Ask a question of 1 to ${MAX_QUESTION} characters`);
 			}
-			prompt = askPrompt(await storedReport(), question);
+			const report = await storedReport();
+			prompt = askPrompt(report, question);
+			about = { scannedAt: report.scannedAt };
+			firstQuestion = question.trim();
 		} else if (kind === "finding") {
 			const target = {
 				repo: textField(fields, "repo", 1000),
@@ -1406,8 +2111,19 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			const found = locateFinding(report, target);
 			if (!found) throw new HttpError(404, "That finding is not in the latest scan. Reload the page to see the current one.");
 			prompt = findingPrompt(report, found.repo, found.finding);
+			about = {
+				scannedAt: report.scannedAt,
+				repo: target.repo,
+				ruleId: target.ruleId,
+				location: target.location,
+				detail: found.finding.detail,
+				title: found.finding.title,
+				severity: found.finding.severity,
+			};
 		} else {
-			prompt = roadmapPrompt(await storedReport());
+			const report = await storedReport();
+			prompt = roadmapPrompt(report);
+			about = { scannedAt: report.scannedAt };
 		}
 
 		if (modelBusy) throw new HttpError(409, "The model is still answering another request. Try again when it has finished.");
@@ -1418,9 +2134,17 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			if (!res.writableFinished) cancel.abort();
 		};
 		res.once("close", onClose);
+		const started = Date.now();
 		try {
 			const text = await chat(assistant, prompt.messages, { fetchFn: options.fetchFn, signal: cancel.signal });
-			sendJson(res, 200, { text, model: assistant.model, ...(prompt.cut ? { cut: prompt.cut } : {}) });
+			const discussion = await recordDiscussion(kind as DiscussionKind, about, assistant, null, prompt.cut, {
+				question: firstQuestion,
+				answer: text,
+				model: assistant.model,
+				at: new Date().toISOString(),
+				seconds: Math.round((Date.now() - started) / 100) / 10,
+			});
+			sendJson(res, 200, { text, model: assistant.model, ...(prompt.cut ? { cut: prompt.cut } : {}), ...(discussion ? { discussion: discussion.id, title: discussion.title } : {}) });
 		} catch (err) {
 			if (err instanceof AssistantError) throw new HttpError(err.status, err.message);
 			throw err;
@@ -1438,10 +2162,10 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 
 	/** The latest scan report of a domain, read from the monitor. The admin token is added here and never leaves this process. */
 	async function latestDomainReport(domain: string): Promise<MonitorReport & Record<string, unknown>> {
-		if (!options.monitor) throw new HttpError(503, options.monitorError ?? "The monitor is not configured");
+		if (!monitor) throw new HttpError(503, options.monitorError ?? "The monitor is not configured");
 		let answer: { status: number; body: Record<string, unknown> };
 		try {
-			answer = await callMonitor(options.monitor, "GET", `/domains/${encodeURIComponent(domain)}`, undefined, options.fetchFn);
+			answer = await callMonitor(monitor, "GET", `/domains/${encodeURIComponent(domain)}`, undefined, options.fetchFn);
 		} catch (err) {
 			throw new HttpError(502, `Could not reach the monitor: ${err instanceof Error ? err.message : String(err)}`);
 		}
@@ -1456,7 +2180,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 
 	/** Forwards a domains call to the monitor. The admin token is added here and never reaches the browser. */
 	async function proxyToMonitor(method: string, pathname: string, body: unknown): Promise<[number, unknown]> {
-		if (!options.monitor) throw new HttpError(503, options.monitorError ?? "The monitor is not configured");
+		if (!monitor) throw new HttpError(503, options.monitorError ?? "The monitor is not configured");
 		const [name, action, ...extra] = pathname.split("/").slice(3);
 		let target: string;
 		if (name === undefined) {
@@ -1474,7 +2198,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		}
 		try {
 			const sendBody = method === "POST" && name === undefined ? body : undefined;
-			const response = await callMonitor(options.monitor, method, target, sendBody, options.fetchFn);
+			const response = await callMonitor(monitor, method, target, sendBody, options.fetchFn);
 			return [response.status, response.body];
 		} catch (err) {
 			throw new HttpError(502, `Could not reach the monitor: ${err instanceof Error ? err.message : String(err)}`);
@@ -1674,11 +2398,39 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 }
 
 /** Sends a file to save. Its name is built from a fixed stem and a date, never from request input. */
+/** A local model being downloaded through Ollama. `step` is Ollama's own word for what it is doing. */
+export type DownloadStatus =
+	| { state: "idle" }
+	| { state: "running"; name: string; startedAt: string; step: string; total: number; completed: number }
+	| { state: "done"; name: string; startedAt: string; finishedAt: string }
+	| { state: "failed"; name: string; startedAt: string; finishedAt: string; error: string };
+
+/** One line of the Activity view. `n` counts up, so the page asks only for what it has not seen. */
+export interface ActivityLine {
+	n: number;
+	at: string;
+	kind: "info" | "good" | "warning";
+	text: string;
+}
+const MAX_ACTIVITY = 400;
+
+/** A set of Cloudflare changes the owner approved at once, as it is sent. */
+export type BatchStatus =
+	| { state: "idle" }
+	| { state: "running"; startedAt: string; total: number; done: number; applied: number; failed: number; skipped: number; current: string }
+	| { state: "finished"; startedAt: string; finishedAt: string; total: number; applied: number; failed: number; skipped: number; stopped: boolean };
+
+/** How long to wait before asking DNS a second time for an ownership record that was not found mid-run. */
+const OWNERSHIP_RECHECK_MS = 2_000;
+
+/** How a run ended, in the project log's words. */
+const RUN_ENDINGS: Partial<Record<Run["status"], string>> = { done: "finished", stopped: "stopped", failed: "failed" };
+
 interface InvestigationJob {
 	run: Run;
 	stop: AbortController;
 	/** The action waiting for the owner, and how to answer it. */
-	approval: { stepId: string; resolve: (approved: boolean) => void } | null;
+	approval: { stepId: string; resolve: (answer: ApprovalAnswer) => void } | null;
 }
 
 function sendDownload(res: ServerResponse, file: Pick<ExportFile, "contentType" | "filename" | "body">): void {
@@ -1692,6 +2444,21 @@ function sendDownload(res: ServerResponse, file: Pick<ExportFile, "contentType" 
 
 function exportChoice(query: URLSearchParams): { content?: string; format?: string } {
 	return { content: query.get("content") ?? undefined, format: query.get("format") ?? undefined };
+}
+
+/** A finished scan in figures, for a project's log: "3 repositories, 12 findings (1 critical, 4 high, 7 medium)". */
+export function scanCounts(report: ScanReport): string {
+	const counts = new Map<Severity, number>();
+	let total = 0;
+	for (const repo of report.repos) {
+		for (const finding of repo.findings) {
+			counts.set(finding.severity, (counts.get(finding.severity) ?? 0) + 1);
+			total++;
+		}
+	}
+	const repositories = `${report.repos.length} ${report.repos.length === 1 ? "repository" : "repositories"}`;
+	const bySeverity = SEVERITIES.filter((severity) => counts.has(severity)).map((severity) => `${counts.get(severity)} ${severity}`);
+	return `${repositories}, ${total} ${total === 1 ? "finding" : "findings"}${bySeverity.length > 0 ? ` (${bySeverity.join(", ")})` : ""}`;
 }
 
 /** Adds the repair for each open finding to a monitor answer that carries a scan report. */
@@ -1809,20 +2576,30 @@ async function readReport(path: string): Promise<ScanReport | null> {
 	return report;
 }
 
-/** The chosen look, or the default when none was saved or the file holds something else. */
-async function readAppearance(path: string): Promise<string> {
-	try {
-		const saved = (JSON.parse(await readFile(path, "utf8")) as { appearance?: unknown }).appearance;
-		return isLook(saved) ? (saved as string) : DEFAULT_LOOK;
-	} catch {
-		return DEFAULT_LOOK;
-	}
+/** The interface's own preferences: the look, and where a model's answers appear. */
+interface UiSettings {
+	appearance: string;
+	answers: string;
 }
 
-async function saveAppearance(path: string, appearance: string): Promise<void> {
+/** The chosen look and answer place, each the default when none was saved or the file holds something else. */
+async function readUiSettings(path: string): Promise<UiSettings> {
+	let saved: { appearance?: unknown; answers?: unknown } = {};
+	try {
+		saved = JSON.parse(await readFile(path, "utf8")) ?? {};
+	} catch {
+		// No file yet, or not JSON: the defaults.
+	}
+	return {
+		appearance: isLook(saved.appearance) ? (saved.appearance as string) : DEFAULT_LOOK,
+		answers: isAnswerPlace(saved.answers) ? (saved.answers as string) : DEFAULT_ANSWER_PLACE,
+	};
+}
+
+async function saveUiSettings(path: string, settings: UiSettings): Promise<void> {
 	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
 	const temporary = `${path}.${process.pid}.tmp`;
-	await writeFile(temporary, `${JSON.stringify({ appearance }, null, "\t")}\n`, { mode: 0o600 });
+	await writeFile(temporary, `${JSON.stringify(settings, null, "\t")}\n`, { mode: 0o600 });
 	await rename(temporary, path);
 }
 

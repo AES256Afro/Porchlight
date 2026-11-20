@@ -21,7 +21,14 @@ import { findingKey } from "./tracking.js";
 /** @typedef {{ name: string, scope: string, purpose: string }} CloudflarePermission */
 /** @typedef {{ read: CloudflarePermission[], write: CloudflarePermission[], templateUrl: string }} CloudflareGuide */
 /** @typedef {{ at: string, zone: string, zoneId: string, change: string, title: string, request: { method: string, url: string, body: unknown }, ok: boolean, result: string }} AppliedChange */
-/** @typedef {"report" | "scan" | "settings" | "notes" | "host" | "cloudflare"} Change */
+/** @typedef {"report" | "scan" | "settings" | "notes" | "host" | "cloudflare" | "projects"} Change */
+/** @typedef {import("../src/projects/projects.ts").Project} Project */
+/**
+ * The projects and the one in use. `canChange`: this page may add and remove them (not another device
+ * over the tailnet). `within`: a service keeps its project folders inside this folder.
+ *
+ * @typedef {{ current: string | null, projects: Project[], canChange: boolean, within?: string }} Projects
+ */
 
 const POLL_MS = 800;
 
@@ -35,7 +42,7 @@ export const store = {
 	 *
 	 * `cloudflare`: whether a Cloudflare token is saved or given at start-up; never the token.
 	 *
-	 * @type {{ defaultRoot: string, reportPath: string, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean }, github: { token: boolean, error?: string }, assistant: import("./generated.js").AssistantSettings, appearance: string, remote: boolean, platform: string, sendTargets: import("./send-text.js").SendTarget[], lastView: string | null, cloudflare: CloudflareToken } | null}
+	 * @type {{ defaultRoot: string, reportPath: string, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean, source?: "settings", savedAt?: string }, github: { token: boolean, error?: string }, assistant: import("./generated.js").AssistantSettings, appearance: string, answers: string, remote: boolean, platform: string, sendTargets: import("./send-text.js").SendTarget[], lastView: string | null, cloudflare: CloudflareToken } | null}
 	 */
 	settings: null,
 	/** @type {ScanReport | null} */
@@ -63,13 +70,15 @@ export const store = {
 	 * @type {{ status: HostStatus, report: HostReport | null, service: boolean }}
 	 */
 	host: { status: { state: "idle" }, report: null, service: false },
+	/** @type {Projects} */
+	projects: { current: null, projects: [], canChange: false },
 	/**
 	 * The audit of the owner's Cloudflare account. `canChange`: this page may save the token and approve
 	 * changes (only the page on the computer Porchlight runs on).
 	 *
-	 * @type {{ loaded: boolean, token: CloudflareToken, status: CloudflareStatus, report: CfReport | null, changes: AppliedChange[], canChange: boolean, service: boolean, guide: CloudflareGuide | null }}
+	 * @type {{ loaded: boolean, token: CloudflareToken, status: CloudflareStatus, report: CfReport | null, changes: AppliedChange[], batch: import("../src/ui/server.ts").BatchStatus, lacking: string[], canChange: boolean, service: boolean, guide: CloudflareGuide | null }}
 	 */
-	cloudflare: { loaded: false, token: { configured: false, source: null }, status: { state: "idle" }, report: null, changes: [], canChange: false, service: false, guide: null },
+	cloudflare: { loaded: false, token: { configured: false, source: null }, status: { state: "idle" }, report: null, changes: [], batch: { state: "idle" }, lacking: [], canChange: false, service: false, guide: null },
 };
 
 /** @type {Set<string>} */
@@ -114,6 +123,8 @@ export function load() {
 			github: state.github ?? { token: false },
 			assistant: state.assistant ?? { configured: false },
 			appearance: state.appearance ?? "today",
+			// Where a model's answers appear: "right", "below" or "bottom" (Settings → Appearance).
+			answers: typeof state.answers === "string" ? state.answers : "right",
 			remote: state.remote === true,
 			platform: typeof state.platform === "string" ? state.platform : "",
 			sendTargets: Array.isArray(state.sendTargets) ? state.sendTargets : [],
@@ -121,6 +132,7 @@ export function load() {
 			cloudflare: state.cloudflare ?? { configured: false, source: null },
 		};
 		emit("settings");
+		if (state.projects) setProjects(state.projects);
 		store.scan = state.scan;
 		await loadReport();
 		if (store.scan.state === "running") poll();
@@ -148,6 +160,26 @@ export function setAssistant(assistant) {
 			emit("settings");
 		})
 		.catch(() => {});
+}
+
+/**
+ * The projects as the server last said, after a change on any page.
+ *
+ * @param {Projects} projects
+ */
+export function setProjects(projects) {
+	store.projects = {
+		current: typeof projects.current === "string" ? projects.current : null,
+		projects: Array.isArray(projects.projects) ? projects.projects : [],
+		canChange: projects.canChange === true,
+		...(typeof projects.within === "string" ? { within: projects.within } : {}),
+	};
+	emit("projects");
+}
+
+/** The project exports, discussions and the log go to, or null. */
+export function currentProject() {
+	return store.projects.projects.find((project) => project.id === store.projects.current) ?? null;
 }
 
 /** Forgets everything, so the next `load` starts again. Used after the session key changes. */
@@ -308,6 +340,8 @@ function setCloudflare(data) {
 		status: data.status ?? { state: "idle" },
 		report: data.report ?? null,
 		changes: Array.isArray(data.changes) ? data.changes : [],
+		batch: data.batch ?? { state: "idle" },
+		lacking: Array.isArray(data.lacking) ? data.lacking : [],
 		canChange: data.canChange === true,
 		service: data.service === true,
 		guide: data.guide ?? null,
@@ -319,7 +353,7 @@ function setCloudflare(data) {
 /** Reads the latest Cloudflare audit and the token's state, and follows an audit that is running. */
 export async function loadCloudflare() {
 	setCloudflare(await api("GET", "/cloudflare"));
-	if (store.cloudflare.status.state === "running") pollCloudflare();
+	if (store.cloudflare.status.state === "running" || store.cloudflare.batch.state === "running") pollCloudflare();
 }
 
 /**
@@ -341,11 +375,22 @@ export async function startCloudflareAudit(options) {
 }
 
 /**
+ * The monitor was connected or removed in Settings: every page follows. Only its host, never its token.
+ *
+ * @param {NonNullable<typeof store.settings>["monitor"]} monitor
+ */
+export function updateMonitor(monitor) {
+	if (store.settings) store.settings.monitor = monitor;
+	emit("settings");
+}
+
+/**
  * The token changed in Settings, or a change was applied: every page follows.
  *
- * @param {Partial<{ token: CloudflareToken, changes: AppliedChange[] }>} update
+ * @param {Partial<{ token: CloudflareToken, changes: AppliedChange[], lacking: string[] }>} update
  */
 export function updateCloudflare(update) {
+	if (update.lacking) store.cloudflare.lacking = update.lacking;
 	if (update.token) {
 		store.cloudflare.token = update.token;
 		if (store.settings) store.settings.cloudflare = update.token;
@@ -359,7 +404,7 @@ function pollCloudflare() {
 	cloudflareTimer = setTimeout(async () => {
 		try {
 			setCloudflare(await api("GET", "/cloudflare"));
-			if (store.cloudflare.status.state === "running") pollCloudflare();
+			if (store.cloudflare.status.state === "running" || store.cloudflare.batch.state === "running") pollCloudflare();
 		} catch (err) {
 			store.cloudflare.status = { state: "failed", finishedAt: "", error: err instanceof Error ? err.message : String(err) };
 			emit("cloudflare");

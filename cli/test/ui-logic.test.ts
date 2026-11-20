@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { describeFilter, isFiltering, matchesFilter, noFilter } from "../ui/filter.js";
 import { generatedLabel, localModelSetup, MAX_QUESTION, paragraphs, questionProblem, SUGGESTED_MODEL, waitingLabel } from "../ui/generated.js";
-import { domainFromInput, emptyScanHints, fetchByDefault, githubTokenSteps, monitorSetupSteps, previewAdvice } from "../ui/hints.js";
+import { fixBrief, fixGroups } from "../ui/hints.js";
+import { approvalLine, domainFromInput, emptyScanHints, fetchByDefault, githubTokenSteps, monitorSetupSteps, ownershipSteps, permissionWords, previewAdvice, runLimits, tokenFixSteps } from "../ui/hints.js";
 import { buildHash, filterFromParams, paginate, paramsFromFilter, parseHash, sortFindings } from "../ui/list.js";
 import { KNOWN_PATHS, settingsAnchor, splitPaths } from "../ui/paths.js";
 
@@ -165,14 +166,100 @@ test("before a scan, says how many repositories it would cover, or how to get so
 	assert.equal(previewAdvice({ root: "/nope", exists: false, total: 0, repos: [], fetched: 0, depth: 3 }, null).title, "/nope is not a folder");
 });
 
-test("setting up website checks is three steps, ending where the two values are entered", () => {
+test("setting up website checks gives every command to paste, and ends where the two values are entered", () => {
 	const service = monitorSetupSteps(true);
 	const local = monitorSetupSteps(false);
-	assert.equal(service.length, 3);
-	assert.equal(local.length, 3);
-	assert.match(service[2] ?? "", /Apps → Porchlight → Settings.*"Monitor address".*"Monitor admin token"/);
-	assert.doesNotMatch(local[2] ?? "", /BoxPilot/);
-	assert.equal(service[0], local[0]);
+	assert.equal(service.length, local.length);
+	// The same deploy either way; only where the address and token go differs.
+	assert.deepEqual(service.slice(0, -1), local.slice(0, -1));
+	assert.match(service.at(-1)?.text ?? "", /Apps → Porchlight → Settings.*"Monitor address".*"Monitor admin token"/);
+	assert.match(local.at(-1)?.text ?? "", /Settings → Monitor.*No restart/);
+	assert.doesNotMatch(local.at(-1)?.text ?? "", /BoxPilot/);
+	// Every step before the last carries what to type, in the order the README gives it, so nobody is sent off to read it.
+	const commands = local.flatMap((step) => step.commands ?? []);
+	assert.ok(local.slice(0, -1).every((step) => (step.commands?.length ?? 0) > 0));
+	assert.deepEqual(
+		commands.filter((command) => command.startsWith("npx cf ")),
+		["npx cf auth login", "npx cf d1 create --name porchlight-monitor", "npx cf d1 migrations apply <DATABASE_ID>", "npx cf deploy --secrets-file .secrets.production"],
+	);
+	assert.ok(commands.includes(`printf 'ADMIN_TOKEN=%s\\n' "$(openssl rand -hex 32)" > .secrets.production`));
+	// A step never says to read instructions somewhere else, and no command changes anything but the monitor's own folder.
+	assert.ok(local.every((step) => !/README|instructions/i.test(step.text)));
+	assert.ok(commands.every((command) => !/sudo|rm |curl /.test(command)));
+	assert.equal(settingsAnchor(["settings", "monitor"]), "settings-monitor");
+});
+
+test("what a run may send is listed from the server's tools, with its limits", async () => {
+	const { TOOLS } = await import("../src/investigate/tools.ts");
+	const lines = runLimits({ tools: TOOLS, domain: "example.com", maxTurns: 25, minGapMs: 1000 });
+	// Only the tools that touch the site: a DNS lookup never needed approval.
+	assert.equal(lines.length, 6);
+	assert.match(lines[0] ?? "", /^Send one HTTP request .* Methods: GET, HEAD, OPTIONS\.$/);
+	assert.match(lines[1] ?? "", /^Check whether one TCP port/);
+	assert.ok(!lines.some((line) => /DNS-over-HTTPS/.test(line)));
+	assert.match(lines[2] ?? "", /^Only to example\.com and its subdomains\./);
+	assert.equal(lines[3], "At most 25 turns, and one action a second for each host.");
+	assert.match(lines[4] ?? "", /ownership record is checked before every action/);
+	assert.match(lines[5] ?? "", /Stop ends the run at once/);
+	// Part-way through a run, what is left is what is said.
+	assert.equal(runLimits({ tools: TOOLS, domain: "example.com", maxTurns: 25, minGapMs: 2500, turnsLeft: 1 })[3], "At most 1 more turn (25 in all), and one action every 2.5 seconds for each host.");
+
+	assert.equal(approvalLine({}), "Each HTTP request and TCP connection waits for your approval.");
+	assert.equal(approvalLine({ approvedRest: { turn: 0 } }), "You approved every request of this run when it started.");
+	assert.equal(approvalLine({ approvedRest: { turn: 7 } }), "You approved every request of this run from turn 7 on.");
+});
+
+test("a refused permission comes with where to add it, in Cloudflare's own words", () => {
+	assert.equal(permissionWords({ name: "Zone Settings Write" }), "Zone, Zone Settings, Edit");
+	assert.equal(permissionWords({ name: "DNS Write", scope: "Zone" }), "Zone, DNS, Edit");
+	assert.equal(permissionWords({ name: "Zone WAF Read", scope: "Zone" }), "Zone, Zone WAF, Read");
+	assert.equal(permissionWords({ name: "API Tokens Read", scope: "User" }), "User, API Tokens, Read");
+	assert.equal(permissionWords({ name: "Account Settings Read", scope: "Account" }), "Account, Account Settings, Read");
+	assert.deepEqual(tokenFixSteps([], "change"), []);
+
+	const change = tokenFixSteps([{ name: "Zone Settings Write" }, { name: "DNS Write" }], "change");
+	assert.equal(change.length, 3);
+	// The first step is a known path, so the page links each part of it to Cloudflare's dashboard.
+	const path = splitPaths(change[0] ?? "").find((part) => typeof part !== "string");
+	assert.ok(path && typeof path !== "string" && path.crumbs.at(-1)?.href === "https://dash.cloudflare.com/profile/api-tokens");
+	assert.match(change[1] ?? "", /"Zone, Zone Settings, Edit" and "Zone, DNS, Edit"/);
+	// Editing a token keeps it, so nobody is told to paste it again.
+	assert.match(change[2] ?? "", /nothing to paste again.*Fix these again/);
+	assert.match(tokenFixSteps([{ name: "Bot Management Read", scope: "Zone" }], "read")[2] ?? "", /Audit again/);
+	// Only what is named, never everything; and the one permission Cloudflare may not offer is said to be optional.
+	assert.match(change[1] ?? "", /Search for permission groups.*Tick only these/);
+	assert.doesNotMatch(change[1] ?? "", /does not offer/);
+	assert.match(tokenFixSteps([{ name: "API Tokens Read", scope: "User" }], "read")[1] ?? "", /"User, API Tokens, Read".*does not offer "API Tokens" to every token.*leave it/);
+
+	const here = ownershipSteps({ domain: "example.com", onCloudflare: true });
+	assert.match(here[0] ?? "", /copy the Name and the Value shown for example\.com/);
+	assert.match(here[1] ?? "", /Cloudflare → DNS → Records.*Fix these includes the record once your token has DNS Edit/);
+	assert.match(here[2] ?? "", /Check DNS record/);
+	assert.doesNotMatch(ownershipSteps({ domain: "example.com", onCloudflare: false })[1] ?? "", /Cloudflare/);
+});
+
+test("what is left is gathered by fix, worst and most widespread first, and the brief carries only what the page shows", () => {
+	const check = (id: string, severity: string, status = "failed", change?: string) => ({ id, title: `Title of ${id}`, severity, status, why: `Why ${id}`, fix: [`Do ${id}`], api: `PATCH ${id}`, ...(change ? { change } : {}) });
+	const groups = fixGroups([
+		{ name: "a.example", checks: [check("hsts", "medium"), check("spf", "low"), check("tls", "medium", "passed")] },
+		{ name: "b.example", checks: [check("hsts", "medium"), check("origin", "high"), check("https", "medium", "failed", "always-use-https")] },
+		{ name: "c.example", checks: [check("spf", "high"), check("waf", "low", "unknown")] },
+	]);
+	// A kind of problem is as bad as its worst case; passed and unknown checks are not problems.
+	assert.deepEqual(
+		groups.map((group) => [group.id, group.severity, group.zones, group.fixable]),
+		[
+			["spf", "high", ["a.example", "c.example"], 0],
+			["origin", "high", ["b.example"], 0],
+			["hsts", "medium", ["a.example", "b.example"], 0],
+			["https", "medium", ["b.example"], 1],
+		],
+	);
+	const brief = fixBrief(groups, "Nov 20, 2026");
+	assert.match(brief, /^These are the problems Porchlight's audit of my Cloudflare account found/);
+	assert.match(brief, /Before each change, tell me the exact change and wait for my yes/);
+	assert.match(brief, /1\. Title of spf \(high\), 2 domains\n {3}Domains: a\.example, c\.example\n {3}Why it matters: Why spf\n {3}Fix: Do spf\n {3}Cloudflare API: PATCH spf/);
+	assert.deepEqual(fixGroups([]), []);
 });
 
 test("a pasted web address is reduced to its domain name", () => {

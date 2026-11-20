@@ -6,6 +6,8 @@
 // to carry out a repair plan, the owner copies it to a coding assistant or follows it by hand.
 import { api } from "./api.js";
 import { generatedText } from "./assist.js";
+import { followUpBox } from "./discussion.js";
+import { answersPlace, retitle, showAnswer } from "./panel.js";
 import { banner, h, icon, replace, stepNodes, toast } from "./dom.js";
 import { isFiltering } from "./filter.js";
 import { paramsFromFilter } from "./list.js";
@@ -122,7 +124,7 @@ export function openSendDialog(target, initialContent = "roadmap") {
 	const dialog = /** @type {HTMLDialogElement} */ (h("dialog", { class: "dialog wide send", "aria-labelledby": "send-title", onclose: () => dialog.remove(),
 			// A link to Settings leaves the dialog for that page.
 			onclick: (/** @type {MouseEvent} */ event) => {
-				if (event.target instanceof Element && event.target.closest("a.crumb[href^='#']")) dialog.close();
+				if (event.target instanceof Element && event.target.closest("a[href^='#']")) dialog.close();
 			},
 		}, form));
 
@@ -154,8 +156,17 @@ export function openSendDialog(target, initialContent = "roadmap") {
 		};
 		tick();
 		const timer = setInterval(tick, 1000);
+		// With answers in the answers panel, the wait and the answer move there and the dialog closes,
+		// so the owner can go on reading the page.
+		const owner = {};
+		const inPanel = answersPlace() !== "below";
+		if (inPanel) {
+			showAnswer(owner, result, { title: `Sending to ${model.model}` });
+			dialog.close();
+		}
 		try {
 			const answer = await api("POST", "/repos/send", request);
+			if (inPanel) retitle(owner, { title: typeof answer.title === "string" ? answer.title : "Answer from the model", discussion: typeof answer.discussion === "string" ? answer.discussion : null });
 			const text = typeof answer.text === "string" ? answer.text : "";
 			const notes = [
 				typeof answer.partial === "string" ? `Sent only part of the scan: ${answer.partial}.` : undefined,
@@ -171,8 +182,11 @@ export function openSendDialog(target, initialContent = "roadmap") {
 					h("button", { type: "button", class: "button", onclick: () => void copy(saved) }, icon("copy"), "Copy"),
 					h("button", { type: "button", class: "button", onclick: () => save(saved, request.purpose) }, icon("download"), "Save as text"),
 				),
+				// Kept as a discussion: follow-up questions about this answer go to the same model.
+				typeof answer.discussion === "string" ? followUpBox({ id: answer.discussion, model: model.model, host: model.host, hosted: model.hosted }, { link: !inPanel }) : null,
 			);
 		} catch (err) {
+			if (inPanel) retitle(owner, { title: "The model could not answer" });
 			replace(result, banner("error", "The model could not answer", [err instanceof Error ? err.message : String(err)]));
 		} finally {
 			clearInterval(timer);

@@ -28,6 +28,8 @@ export interface FakeOptions {
 	accountToken?: boolean;
 	/** Whether free.example's challenge record holds the ownership token. */
 	owned?: boolean;
+	/** Answer 403 to every change of a zone setting, as for a token without "Zone Settings Write". */
+	denySettingWrites?: boolean;
 	now?: Date;
 }
 
@@ -112,7 +114,13 @@ export function fakeCloudflare(options: FakeOptions = {}) {
 		{ status: "accepted", user: { email: "alex@example.com", two_factor_authentication_enabled: false }, roles: [{ name: "Super Administrator - All Privileges" }] },
 		{ status: "accepted", user: { email: "sam@example.com", two_factor_authentication_enabled: true }, roles: [{ name: "Administrator" }] },
 	];
-	const pack = (hosts: string[], days: number) => [{ type: "universal", status: "active", hosts, certificates: [{ expires_on: iso(days), status: "active" }] }];
+	// As a real account answers with status=all: the certificate in use, the backup Cloudflare keeps beside every
+	// Universal one (issued, not deployed), and an old pack on its way out. Only the first is what visitors get.
+	const pack = (hosts: string[], days: number) => [
+		{ type: "universal", status: "backup_issued", hosts, certificates: [{ expires_on: iso(5), status: "backup_issued" }] },
+		{ type: "universal", status: "active", hosts, certificates: [{ expires_on: iso(days), status: "active" }] },
+		{ type: "universal", status: "pending_deletion", hosts, certificates: [{ expires_on: iso(-9), status: "expired" }] },
+	];
 
 	const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
 		const url = new URL(String(input instanceof Request ? input.url : input));
@@ -134,7 +142,8 @@ export function fakeCloudflare(options: FakeOptions = {}) {
 		const path = url.pathname.slice("/client/v4".length);
 
 		if (method !== "GET") {
-			const change = /^\/zones\/([0-9a-f]{32})\/(dns_records|settings\/[a-z_0-9]+)$/.exec(path);
+			const change = /^\/zones\/([0-9a-f]{32})\/(dns_records|settings\/[a-z_0-9]+|bot_management|dnssec)$/.exec(path);
+			if (change && options.denySettingWrites && change[2]?.startsWith("settings/")) return envelope(null, 403);
 			return change ? envelope({ id: "66666666666666666666666666666666", ...(body as object) }) : envelope(null, 404);
 		}
 		if (path === "/user/tokens/verify") return options.accountToken ? envelope(null, 401) : envelope({ id: SELF_TOKEN_ID, status: "active" });

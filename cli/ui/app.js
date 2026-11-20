@@ -1,7 +1,9 @@
 // @ts-check
+import { renderActivity } from "./activity.js";
 import { adoptSessionKey, api, ApiError, setSessionKey } from "./api.js";
 import { emptyState, formatWhen, h, icon, plural, replace, severityBadge, stepNodes, toast } from "./dom.js";
 import { renderCloudflare } from "./cloudflare.js";
+import { renderDiscussions } from "./discussions.js";
 import { renderDomains } from "./domains.js";
 import { renderFindings } from "./findings.js";
 import { renderInvestigate } from "./investigate.js";
@@ -10,6 +12,7 @@ import { applyLook, homeSection, rememberedLook } from "./appearance.js";
 import { buildHash, parseHash } from "./list.js";
 import { settingsAnchor } from "./paths.js";
 import { renderOverview } from "./overview.js";
+import { projectSwitcher } from "./projects.js";
 import { renderByRepo } from "./repos.js";
 import { renderRoadmap } from "./roadmap.js";
 import { renderSettings } from "./settings.js";
@@ -27,6 +30,8 @@ const SECTIONS = /** @type {const} */ ([
 	["cloudflare", "Cloudflare"],
 	["investigate", "Investigate"],
 	["host", "This Mac"],
+	["discussions", "Discussions"],
+	["activity", "Activity"],
 	["settings", "Settings"],
 ]);
 
@@ -42,7 +47,7 @@ let firstRoute = true;
 let announced = "";
 
 /** Says which of the two jobs a section belongs to, above the first section of each. */
-const GROUPS = /** @type {Record<string, string>} */ ({ findings: "Your code", domains: "Your websites", host: "Your computer", settings: "Porchlight" });
+const GROUPS = /** @type {Record<string, string>} */ ({ findings: "Your code", domains: "Your websites", host: "Your computer", discussions: "Porchlight" });
 const findingCount = h("span", { class: "count" });
 /** "This Mac", or "This computer" when Porchlight runs on something else. */
 const hostLabel = h("span", null, "This Mac");
@@ -54,6 +59,8 @@ replace(
 		h("a", { href: `#/${key}`, dataset: { nav: key } }, icon(key), key === "host" ? hostLabel : label, key === "findings" ? findingCount : null),
 	]),
 );
+// Which project saved exports, discussions and the log go to, above the sections.
+nav.before(projectSwitcher());
 /** Counts by severity in the sidebar; shown only by the "Severity dashboard" look. */
 const severityStrip = h("div", { class: "severity-strip", "aria-label": "Findings by severity" });
 scanStatus.before(severityStrip);
@@ -174,6 +181,8 @@ function page(section, context) {
 	if (section === "domains") return renderDomains(view, context.path[1]);
 	if (section === "cloudflare") return renderCloudflare(view);
 	if (section === "investigate") return renderInvestigate(view, context.path[1]);
+	if (section === "discussions") return renderDiscussions(view, context);
+	if (section === "activity") return renderActivity(view);
 	if (section === "settings") return renderSettings(view);
 	if (section === "host") return renderHost(view);
 	return renderOverview(view);

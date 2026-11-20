@@ -18,10 +18,12 @@ Find the keys and passwords committed to your code and the packages with known s
 - **Since the last scan.** Every scan is kept. The Overview says what is new and what was fixed. A finding counts as fixed only if the next scan really looked for it again; one that could not be checked is never shown as fixed.
 - **Your own status and note on each finding**: Open, In progress, Fixed, Accepted risk or False positive.
 - **Any model, or none.** A model can explain a finding, summarise the roadmap, answer questions about a scan, or judge each finding against your code. Run one on your Mac (Ollama, Unsloth Studio, LM Studio), on another computer, or use Claude, ChatGPT, Gemini or DeepSeek through their APIs; choose it in Settings. What a model says is shown as advice beside a finding. It never changes a severity, a count or the roadmap.
+- **Discussions.** Every answer a model gives is kept on your computer. Ask follow-up questions under it, and find it again on the Discussions page after Porchlight closes. See [Discussions](#discussions).
+- **Project folders.** Choose a folder for an audit or a scan, and the exports you save, the discussions and a daily log of what Porchlight did go into it, under names that say what each file is. See [Projects](#projects).
 - **Exports** in Markdown, HTML, CSV or JSON. HTML, Markdown and JSON exports can include a mural written by a model: what was found, what to fix and in what order, what has been done, and what to do next.
 - **Fetch repositories from GitHub**, public or private, and scan them along with the ones on disk.
 - **Watch your websites.** A Cloudflare Worker checks the domains you own every day for new hostnames, DNS changes, expiring certificates and missing security headers. It scans a domain only after you prove it is yours with a DNS record.
-- **Investigate with a model.** On a website you have proven is yours, a model plans an investigation step by step: DNS lookups, single HTTP requests, TCP connections. Each HTTP request and connection waits for your approval, ownership is checked again before every step, and every finding has to cite the request and response it rests on. See [Investigate with a model](#investigate-with-a-model).
+- **Investigate with a model.** On a website you have proven is yours, a model plans an investigation step by step: DNS lookups, single HTTP requests, TCP connections. HTTP requests and connections need your approval, one at a time or once for a whole run, ownership is checked again before every step, and every finding has to cite the request and response it rests on. See [Investigate with a model](#investigate-with-a-model).
 - **Audit your Cloudflare account.** Connect a read-only API token and Porchlight checks every domain in the account against built-in rules, no model needed: SSL/TLS mode, HTTPS, TLS versions, HSTS, certificates, DNSSEC, CAA, SPF, DKIM and DMARC, DNS records that expose your server or point at services that are gone, WAF managed rules, bot protection, members without two-factor authentication and API tokens with broad rights. The rules know each domain's plan. Porchlight can add its ownership record or fix a setting, but only once you approve the exact request. See [Audit your Cloudflare account](#audit-your-cloudflare-account).
 - **Check this Mac.** A read-only check of the computer Porchlight runs on: pending updates, FileVault, the firewall and macOS's other protections, what accepts connections from the network, credentials kept in plain-text files, and installed npm and Python packages with known vulnerabilities.
 - **A Mac app, twelve looks, and access from your other devices** over Tailscale.
@@ -42,7 +44,7 @@ The screenshots show made-up repositories, checked by the real scanners.
 - **To [OSV.dev](https://osv.dev)**: the names and versions of the packages your repositories use, so osv-scanner can look up their advisories. Never your code. **This Mac** sends the names and versions of the npm and Python packages installed on the computer, unless you turn that off.
 - **To Apple**: when **This Mac** checks for updates, macOS asks Apple's update servers, as it does on its own. You can turn that off and use macOS's last check instead.
 - **To a hosted model, if you choose one**: only what the page shows about the findings you ask about. Never a secret's value, a commit author or an email address. The page warns you before anything is sent.
-- **To your own websites, and to the model you choose, if you investigate one**: the DNS lookups, HTTP requests and TCP connections you approve go from this computer to the domain you verified and its subdomains. The model is sent the domain, your goal, the tool list and the results (your site's DNS records and HTTP responses, Set-Cookie values left out). DNS lookups and the ownership check go to Cloudflare's DNS-over-HTTPS resolver. The page says this before a run starts, and a hosted model is used only after you tick the box saying so. See [Investigate with a model](#investigate-with-a-model).
+- **To your own websites, and to the model you choose, if you investigate one**: the DNS lookups, HTTP requests and TCP connections you approve go from this computer to the domain you verified and its subdomains. The model is sent the domain, your goal, the tool list and the results (your site's DNS records and HTTP responses, Set-Cookie values left out). DNS lookups and the ownership check go to Cloudflare's DNS-over-HTTPS resolver. The page says this before a run starts, and with a hosted model the start button names it, so pressing it is your yes. See [Investigate with a model](#investigate-with-a-model).
 - **To GitHub**, only if you fetch repositories from it.
 - **To your own Cloudflare account**, if you deploy the monitor, or connect a token for the Cloudflare audit. The token goes only to Cloudflare's API. A change is sent only when you approve the exact request.
 
@@ -101,8 +103,10 @@ It prints a link. Open it to get both tools in the browser:
 - **Findings**: every finding in one list, most severe first, each with the repair that clears it. Switch to **By repository** to see them grouped. Filter by severity, type, repository or text; the filters are kept in the address, so a reload or a shared link shows the same view.
 - **Roadmap**: what to repair, in order. One action, such as upgrading a package, can clear many findings.
 - **This Mac**: check the computer Porchlight runs on; see [Check this Mac](#check-this-mac).
-- **Domains**: add a website by its domain name, prove it is yours with one DNS record, scan, and read what changed, with a suggested fix for each finding. Until the monitor is connected the page walks through setting it up. It needs `PORCHLIGHT_MONITOR_URL` and `PORCHLIGHT_ADMIN_TOKEN` set when you start the interface (see [Monitor domains](#monitor-domains)).
-- **Settings**: pick one of twelve looks under **Appearance** (Standard, Light, Severity dashboard, Top tabs, Split view, Roadmap first, Terminal, Native Mac, Repository cards, Model plan view, High contrast, Compact). The choice is saved beside the report (`ui-settings.json`) and used every time Porchlight opens. It also lists what Porchlight is connected to.
+- **Discussions**: every answer a model gave on these pages, with your follow-up questions; see [Discussions](#discussions).
+- **Project** (above the sections): which project folder saved exports, discussions and the log go to; see [Projects](#projects).
+- **Domains**: add a website by its domain name, prove it is yours with one DNS record, scan, and read what changed, with a suggested fix for each finding. Until the monitor is connected the page walks through setting it up, with each command to copy. Connect it under **Settings → Monitor**: paste the monitor's address and admin token, Porchlight asks the monitor whether they work, and the page becomes your list of websites with no restart. The two can also be given at start-up as `PORCHLIGHT_MONITOR_URL` and `PORCHLIGHT_ADMIN_TOKEN` (see [Monitor domains](#monitor-domains)); a connection saved in Settings comes first.
+- **Settings**: add project folders under **Projects** (see [Projects](#projects)), pick one of twelve looks under **Appearance** (Standard, Light, Severity dashboard, Top tabs, Split view, Roadmap first, Terminal, Native Mac, Repository cards, Model plan view, High contrast, Compact), and where a model's answers appear: in a panel on the right (the default), below what you asked about, or in a drawer at the bottom. Both are saved beside the report (`ui-settings.json`) and used every time Porchlight opens. It also lists what Porchlight is connected to.
 
 Every page with findings has an **Export** button; see [Export a repair roadmap](#export-a-repair-roadmap). Beside it, **Send to model** sends the roadmap or the findings to a model you choose; see [Send to a model](#send-to-a-model).
 
@@ -236,6 +240,17 @@ Open **Settings → Model** and pick where it runs:
 - Each hosted provider's key is kept for that provider only, so switching from Claude to a local model never sends Claude's key anywhere. A key for your own server is tied to the address it was saved with.
 - A ChatGPT or Claude subscription is not an API key. These need a key from the provider's developer console, billed per request.
 - Before you choose a hosted provider, the page says what would be sent there. Saving the choice sends nothing.
+
+### Download a local model
+
+Under the model form, **Download a model** finds a model that runs on your own computer and has [Ollama](https://ollama.com/download) download it. Porchlight runs no model itself, so Ollama has to be installed and open; the section says so, with a link, when it is not.
+
+- **Search Hugging Face** by words, kind (text and chat, reads images too, embeddings), order (most downloaded, most liked, trending, recently updated, newest), publisher and tag, and by format and size. The format is GGUF, which Ollama runs, or MLX, Apple's format for Apple silicon: Ollama cannot run MLX, so an MLX result gives its name to copy and a link to its page, to load in Unsloth Studio or LM Studio and then choose in the form above. Size is how many billion parameters the model's name says it has (up to 4B, 5B to 9B, and so on). The section says what this computer is (its processor and memory) and how large a model should run comfortably on it, about half its memory, and **Only models that fit this computer** keeps the search to those; a model whose name does not give its size is left out when a size is asked for. The search sends what you typed and chose to huggingface.co and nothing else: no key, and nothing from a scan.
+- **Download** asks Ollama to pull the model and shows how far it is. One download at a time; **Stop** ends it, and Ollama keeps what it already has. You can leave the page: the Activity page says when it is done.
+- **Use this model** makes it the model Porchlight uses, the same as choosing it in the form above.
+- You can also name one of Ollama's own models, such as `qwen3:8b`.
+
+Anyone can publish a model on Hugging Face, so prefer publishers you recognise. A model is several gigabytes. Models are searched for and downloaded only from the page on the Mac that runs Porchlight, never from another device or when it runs as a service.
 
 ### Or set it when Porchlight starts
 
@@ -410,7 +425,47 @@ It is written when you press Export, after any Deeper analysis has finished, and
 - **Deeper analysis**: overall risk, patterns across repositories, what looks real and what looks like noise, and what to do first.
 - **Repair plan**: for each repair, the file, the command or the edit, what could break and how to check it. Copy it into a coding assistant such as Claude Code to carry it out, or work through it by hand.
 
-Every model you have set up under Settings → Model is offered, so you can send to your own model one time and to Claude the next; the dialog says for each whether what is sent leaves your computer. A hosted model is sent far more of the scan than a small local one, and either is told when part had to be left out. The answer is shown as generated text with **Copy** and **Save as text**. As everywhere else, the model sees only what the pages show, never secret values, and Porchlight never acts on what it writes.
+Every model you have set up under Settings → Model is offered, so you can send to your own model one time and to Claude the next; the dialog says for each whether what is sent leaves your computer. A hosted model is sent far more of the scan than a small local one, and either is told when part had to be left out. The answer is shown as generated text with **Copy** and **Save as text**, and is kept as a discussion you can ask follow-up questions in; see [Discussions](#discussions). As everywhere else, the model sees only what the pages show, never secret values, and Porchlight never acts on what it writes.
+
+## Discussions
+
+Every answer from **Explain**, **Summarise**, **Ask**, **Send to a model** and the Cloudflare page's **Analyse with the model** opens in the **answers panel** on the right, so the page stays where it is. The panel stays open as you move between pages; **Wider** gives a long answer more room, **Close** (or Esc) puts it away, and **Show it** beside the button that asked brings that answer back. On a phone it covers the screen until you close it. Under Settings → Appearance you can have answers appear below what you asked about instead, as before, or in a drawer at the bottom.
+
+Every answer is also kept as a discussion, so closing Porchlight loses nothing. Under each answer is a box for a **follow-up question** (⌘↩ sends it), and **Open in Discussions** leads to the Discussions page. That page lists them all, newest first, with search and a filter by kind. Each discussion opens in full, with buttons to open what it was about (the finding, the roadmap or the domain), **Copy as text**, **Export** as Markdown, and **Delete**.
+
+- **The same model, the same data.** A follow-up goes to the model the discussion began with, even if you have chosen another since. It is sent the same data as the first answer, rebuilt from the report, then the conversation so far and your question. Once a newer scan replaces the one a discussion was about, you can still read the discussion, but you start a new one to ask about the new scan.
+- **Clear titles**, written by Porchlight from what you asked about, such as "Explain: AWS access key in api/config.ts (acme/api)". Never the model's words.
+- **Long discussions.** Model APIs keep nothing between requests, so each follow-up sends the whole conversation again. A discussion holds up to 20 answers. A model on your own machines is sent only the most recent answers that fit what it can read, and the page says when older ones were left out.
+- **Kept here, not in your Claude account.** Porchlight asks Claude and the other hosted models through their APIs, which keep no conversation, so discussions do not appear in the Claude app. Copy one with **Copy as text** to carry it there.
+
+Discussions are kept beside the report (`discussions/`, the last 200), readable only by you. They hold your questions, the model's answers and what each was about, never a key or a secret's value. Like a model's other answers, they never change a severity, a count, the roadmap or an export.
+
+## Projects
+
+A project is a name and a folder you choose, such as `~/Projects/acme-audit`, so you know where to look for what an audit or a scan produced. Add one under **Settings → Projects**: type the folder, or in the Mac app press **Choose…**. Before anything is made, Porchlight shows which folders it will create, and says so if the folder is inside a git repository or a folder it scans (exports name the files where secrets were found, so they should not be committed or scanned). The **Project** switcher above the sections moves between projects, or to none.
+
+Porchlight writes only inside a `Porchlight` folder within the one you chose:
+
+```
+~/Projects/acme-audit/
+  Porchlight/
+    Exports/
+      2026-11-19 15.30 Repair roadmap.md
+      2026-11-19 15.32 Findings.csv
+    Discussions/
+      2026-11-19 15.40 Explain a finding.md
+    Log/
+      2026-11-19.log
+```
+
+- **Exports.** With a project in use, the Export dialog saves the file into `Exports/` (**Download** is still there), and the message that follows offers **Show in Finder** in the Mac app, or **Copy path** in a browser. The Cloudflare audit's export and an investigation's report can be saved there too.
+- **Discussions.** A discussion begun while a project is in use is saved into `Discussions/` as Markdown, and written again after every follow-up. An older one can be added with **Save in** on its page.
+- **Log.** One plain-text file a day: projects started, scans started and finished with their counts, exports saved or downloaded, models asked (which model, whether it runs outside your machines, what kind of question, how long the answer took), Deeper analysis, investigations started and ended (the domain, the model, how its requests were approved, and how many actions and findings), Cloudflare audits with their counts, and Cloudflare changes you approved. It never holds a key, a token, a secret value, an email, your questions or a model's words.
+- **Names you can read, and only Porchlight's.** Every file is named with the date, the time and a title from Porchlight's own short list, such as "Repair roadmap" or "Explain a finding". Which repository or domain it covers is written inside. Nothing from a scan or a model's answer names a file, a file already there is never written over (a second in the same minute gets " 2"), and Porchlight never writes through a symbolic link. Its folders are readable only by you (0700, files 0600).
+- **Removing** a project takes it off the list; its folder and files stay as they are. If you move or delete the folder, Porchlight says so instead of making it again.
+- **Who can change them.** Only the page on the Mac that runs Porchlight adds or removes a project; another device over Tailscale can move between them. Under BoxPilot, project folders are kept in a `projects` folder inside Porchlight's data folder.
+
+The list is kept beside the report (`projects.json`).
 
 ## History, status and notes
 
@@ -420,7 +475,7 @@ Open a finding to give it a status (Open, In progress, Fixed, Accepted risk, Fal
 
 ## Investigate with a model
 
-**Investigate** (under "Your websites" in the sidebar) lets a model plan an investigation of a website you own: give it a goal, such as "can anyone reach an admin page on example.com?", and it chooses one step at a time, reads what came back, and decides the next, until it has an answer or runs out of turns. Unlike the monitor, which only looks, this sends requests the model chose to your site, so it is limited to domains you have proven are yours and every request waits for you.
+**Investigate** (under "Your websites" in the sidebar) lets a model plan an investigation of a website you own: give it a goal, such as "can anyone reach an admin page on example.com?", and it chooses one step at a time, reads what came back, and decides the next, until it has an answer or runs out of turns. Unlike the monitor, which only looks, this sends requests the model chose to your site, so it is limited to domains you have proven are yours and every request needs your approval.
 
 **Prove the domain is yours.** Add it on the page. Porchlight makes a random token and shows a DNS record to publish:
 
@@ -442,6 +497,13 @@ The record is looked up from this computer over DNS-over-HTTPS (Cloudflare's res
 
 The approval shows the exact tool and arguments, and the model's reason, before anything is sent. **Deny** tells the model to try something else; **Stop** ends the run at once, whatever it is waiting for.
 
+**Approving a whole run.** Answering every request gets tiring on a long run, so you can approve the rest at once, in two places:
+
+- On the start form, under "Requests to your site", choose **Approve them all for this run** instead of **Ask me before each one**.
+- At any request, press **Approve all the rest**.
+
+Either way the page first lists what the run may send. The model chooses each step as it goes, so this is not a list of requests: it is the limits every request is held to (which kinds, only to your domain and its subdomains, how many turns, how fast). Approving the run lifts the wait and nothing else. Scope, the ownership check before every action, the argument checks, the pace and the turn budget all still apply, and Stop still ends it. Each step records whether you approved it yourself or it ran under the run's approval, and the export says the same. The approval is for that run only: the next one asks again unless you choose otherwise. Without it, asking before each request stays the default.
+
 How it is kept safe:
 
 - **Scope.** Only the verified domain and its subdomains. Another domain, an IP address, a URL with a user name, an argument the tool does not take or a value of the wrong type is refused before it runs, and the model is told why. Nothing is guessed or repaired.
@@ -453,7 +515,7 @@ How it is kept safe:
 
 Runs, with every step, piece of evidence and finding, are kept in `investigations/` beside the report (the last 50), readable only by you. **Export as Markdown** or **Export as JSON** saves one; Set-Cookie values are left out of both, and everything taken from your site or the model is escaped for the format.
 
-Investigations are run from the page on the Mac that runs Porchlight. Opened from another device, the page shows them and its **Stop** button works, but nothing can be added, started or approved there.
+Investigations are run from the page on the Mac that runs Porchlight. Opened from another device, the page shows them and its **Stop** button works, but nothing can be added, started or approved there, neither one request nor a whole run.
 
 ## Check this Mac
 
@@ -512,9 +574,11 @@ How it is kept safe:
 - It only reads, through Cloudflare's API at `api.cloudflare.com`. The token is sent there as a header and nowhere else: never to the page after you paste it, a log, a report, an export or a model.
 - A domain's plan decides what is a problem: a Free domain is never told to turn on a paid feature. Something the token may not read is shown as **Could not check**, with the permission to add, never as passed.
 - Looking up where a CNAME record points (to find one left pointing at a deleted site that someone else could claim) happens only for a domain whose `_porchlight-challenge` record proves it is yours, checked in the same audit. You can turn it off.
+- **Changes that need a look.** Five fixes can affect how a site or its mail behaves: turning on HSTS (for 6 months), setting the encryption mode from Full to Full (strict), Bot Fight Mode, DNSSEC, and adding a DMARC record that only reports where there is none. Porchlight can make them too, but each is listed with what could go wrong, starts unticked, and is sent only if you tick it. Bot Fight Mode needs "Bot Management Write" on the token. Authenticated origin pulls, SPF, CAA and deleting records stay yours to do.
+- **Fix these.** With the write permissions on the token, **Fix these…** on a domain, or **Fix what Porchlight can** above the list, shows every change the audit offers as its exact request. Untick any you do not want and approve once: Porchlight sends them one after another, each once, and shows each answer as it arrives. If the token lacks a permission, the first request that needs it is refused and the rest that need it are not sent; the page then says which permission to add and where on Cloudflare to add it, and since editing a token keeps the token there is nothing to paste again. The same steps appear for a permission the audit could not read with. **Stop** ends it, leaving what was sent in place. The **Activity** page shows the same lines, with everything else Porchlight is doing since it was opened.
 - **Changes are yours to approve.** With DNS Write or Zone Settings Write added to the token, Porchlight can add its ownership record, turn on Always Use HTTPS, TLS 1.3, Automatic HTTPS Rewrites or Browser Integrity Check, or set the minimum TLS version to 1.2. It shows the exact request first, and sends it once, only when you choose **Approve and send** on the Mac that runs Porchlight. Every change is listed on the page and kept in `cloudflare-changes.json`.
 - Members are shown by a masked email (`a…@example.com`). The audit is kept in `cloudflare-audit.json`, readable only by you. Exports (Markdown, HTML, CSV, JSON) escape everything for their format.
-- **Analysis by a model** is optional. It reads the audit as the page shows it, never the token, members or token names, and changes no check.
+- **Analysis by a model** is optional. It reads the audit as the page shows it, never the token, members or token names, and changes no check. It is kept as a discussion, so you can ask follow-up questions until a newer audit replaces the one it read.
 
 Not covered: the Global API Key and how members sign in, your own firewall rules, Workers, Pages, R2, Zero Trust and Tunnel, your origin servers themselves, and your registrar's settings.
 
@@ -589,7 +653,11 @@ When you update Porchlight, run the `migrations apply` command again before `cf 
 
 To receive alerts, add `ALERT_WEBHOOK_URL=https://...` to `.secrets.production` before deploying. Alerts are POSTed as JSON with a `text` field holding the summary, plus the structured report. Without a webhook, alerts go to the Worker's log.
 
-Point the CLI at the URL `cf deploy` prints, with the same token:
+In the interface, paste the URL `cf deploy` prints and the token under **Settings → Monitor**. They are kept in `monitor-settings.json` beside the report, readable only by you; the token is sent only to that address and never back to the page. From another device, or when Porchlight runs as a service, the page cannot change them.
+
+Each domain on the Cloudflare page has **Watch in Domains**, which adds it to the monitor's list, and **Investigate**, which adds it to the domains a model can investigate. Either only adds the name: proving ownership and starting anything happen on that page.
+
+For the command line, point it at the same URL with the same token:
 
 ```bash
 export PORCHLIGHT_MONITOR_URL=https://<your worker URL>

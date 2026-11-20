@@ -9,6 +9,7 @@
 		"checkJs": true,
 		"strict": true,
 		"noEmit": true,
+		"allowUnreachableCode": false,
 		"allowImportingTsExtensions": true,
 		"skipLibCheck": true
 	},

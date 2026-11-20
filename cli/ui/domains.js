@@ -6,7 +6,6 @@ import { exportButton, openExportDialog } from "./export.js";
 import { domainFromInput, monitorSetupSteps } from "./hints.js";
 
 const WATCHES = "Watches the domains you own for new subdomains, DNS changes, expiring certificates and missing security headers. It only looks at what is public.";
-const README_MONITOR = "https://github.com/AES256Afro/Porchlight#monitor-domains";
 
 /**
  * @typedef {object} Domain
@@ -109,6 +108,18 @@ export async function renderDomains(view, selected) {
 		} catch (err) {
 			domains = [];
 			replace(list);
+			// The monitor answered, and said no: waiting will not help, the right token will.
+			if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+				replace(
+					detail,
+					banner("error", "Your monitor refused the admin token", [
+						"The token Porchlight sends is not the one the monitor was given when it was deployed, so it shows nothing.",
+						"The monitor's token is the ADMIN_TOKEN line of the file it was deployed with, .secrets.production in the project's monitor folder.",
+					]),
+					h("p", null, h("a", { class: "button primary", href: "#/settings/monitor" }, "Paste the right token in Settings")),
+				);
+				return false;
+			}
 			replace(detail, banner("error", "Could not load domains", [message(err), "Nothing is shown until the monitor answers. Try again in a moment."]));
 			return false;
 		}
@@ -342,7 +353,7 @@ function copyButton(text, what) {
 			onclick: async () => {
 				try {
 					await navigator.clipboard.writeText(text);
-					toast(`Copied the record ${what}`);
+					toast(what === "command" ? "Copied the command" : `Copied the record ${what}`);
 				} catch {
 					toast("Could not copy. Select the text and copy it by hand.", "error");
 				}
@@ -498,20 +509,18 @@ function notConnected(monitor, service) {
 			monitor.unset || !monitor.error ? null : banner("warning", "A monitor setting needs correcting", [monitor.error]),
 			h(
 				"ol",
-				{ class: "steps" },
-				...steps.map((step, index) =>
+				{ class: "steps setup-steps" },
+				...steps.map((step) =>
 					h(
 						"li",
 						null,
-						...stepNodes(step),
-						index === 0 ? h("span", null, " ", h("a", { href: README_MONITOR, target: "_blank", rel: "noreferrer" }, "Open the instructions")) : null,
-						!service && index === steps.length - 1
-							? h("pre", null, h("code", null, "export PORCHLIGHT_MONITOR_URL=<the monitor's address>\nexport PORCHLIGHT_ADMIN_TOKEN=<its admin token>\nporchlight ui"))
-							: null,
+						h("p", null, ...stepNodes(step.text)),
+						...(step.commands ?? []).map((command) => h("div", { class: "command-line" }, h("pre", { tabindex: "0" }, h("code", null, command)), copyButton(command, "command"))),
 					),
 				),
 			),
-			h("p", { class: "hint" }, "The token stays inside Porchlight. It is never sent to this page."),
+			service ? null : h("p", null, h("a", { class: "button primary", href: "#/settings/monitor" }, "Connect in Settings")),
+			h("p", { class: "hint" }, "Already have a monitor? Skip to the last step. The token stays inside Porchlight: once saved it is never sent back to this page."),
 			service ? h("p", { class: "hint" }, "Running the image some other way? Set PORCHLIGHT_MONITOR_URL and PORCHLIGHT_ADMIN_TOKEN in the container's environment and restart it.") : null,
 		),
 	);

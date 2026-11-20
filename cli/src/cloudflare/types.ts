@@ -47,7 +47,20 @@ export interface CfCheck {
 }
 
 /** The changes Porchlight can make. Each is built from a fixed template in `apply.ts`. */
-export const CF_CHANGES = ["ownership-record", "always-use-https", "min-tls-1.2", "tls-1.3", "automatic-https-rewrites", "browser-check"] as const;
+export const CF_CHANGES = [
+	"ownership-record",
+	"always-use-https",
+	"min-tls-1.2",
+	"tls-1.3",
+	"automatic-https-rewrites",
+	"browser-check",
+	// These can affect how a site or its mail behaves, so each carries a warning and is never chosen for the owner.
+	"bot-fight-mode",
+	"dnssec",
+	"dmarc-monitor",
+	"hsts",
+	"ssl-strict",
+] as const;
 export type CfChangeId = (typeof CF_CHANGES)[number];
 
 export interface CfZoneReport {

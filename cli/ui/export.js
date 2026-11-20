@@ -1,10 +1,11 @@
 // @ts-check
 import { api, download } from "./api.js";
-import { h, icon, toast } from "./dom.js";
+import { h, icon, stepNodes, toast } from "./dom.js";
 import { isFiltering } from "./filter.js";
 import { paramsFromFilter } from "./list.js";
+import { announceSaved } from "./projects.js";
 import { openSendDialog, sendTargets } from "./send.js";
-import { store } from "./store.js";
+import { currentProject, store } from "./store.js";
 
 /** @typedef {import("./filter.js").FindingFilter} FindingFilter */
 
@@ -50,6 +51,8 @@ export function openExportDialog(target, initialContent = "roadmap") {
 	const assistant = store.settings?.assistant;
 	const muralOffered = !forDomain && assistant?.configured === true;
 	const muralBox = /** @type {HTMLInputElement} */ (h("input", { type: "checkbox", name: "mural" }));
+	// With a project in use, the file goes into its folder; downloading stays a choice.
+	const project = currentProject();
 	const progress = h("p", { class: "hint", role: "status", hidden: true });
 	const error = h("p", { class: "form-error", role: "alert", hidden: true });
 	const submit = /** @type {HTMLButtonElement} */ (h("button", { type: "submit", class: "button primary" }, "Export"));
@@ -100,6 +103,21 @@ export function openExportDialog(target, initialContent = "roadmap") {
 						),
 					)
 				: null,
+			project
+				? h(
+						"fieldset",
+						null,
+						h("legend", null, "Where"),
+						...choices(
+							"where",
+							[
+								["project", `Save in ${project.name}`, `Into ${project.folder}/Porchlight/Exports, named with the date, the time and what it is.`],
+								["download", "Download", "Your browser saves it, usually to Downloads."],
+							],
+							"project",
+						),
+					)
+				: h("p", { class: "hint" }, ...stepNodes("To keep exports in one folder of your choosing, add a project under Settings → Projects.")),
 			progress,
 			error,
 			h(
@@ -153,6 +171,13 @@ export function openExportDialog(target, initialContent = "roadmap") {
 				settings.set("mural", "1");
 			}
 			const path = forDomain ? `/domains/${encodeURIComponent(target.domain)}/export?${settings}` : `/repos/export?${settings}`;
+			if (project && chosen.get("where") === "project") {
+				// The server writes it into the project's folder under a name of its own, and says where.
+				const { saved } = await api("POST", path);
+				dialog.close();
+				announceSaved(saved);
+				return;
+			}
 			const filename = await download(path);
 			dialog.close();
 			toast(`Saved ${filename}`);

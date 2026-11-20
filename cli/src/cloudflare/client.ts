@@ -88,7 +88,7 @@ export class CfClient {
 	}
 
 	/** A change. Only `apply.ts` calls this, and only once the owner has approved the exact request. */
-	send<T>(method: "POST" | "PATCH", path: string, body: unknown): Promise<CfAnswer<T>> {
+	send<T>(method: "POST" | "PATCH" | "PUT", path: string, body: unknown): Promise<CfAnswer<T>> {
 		return this.#call<T>(method, path, {}, body);
 	}
 

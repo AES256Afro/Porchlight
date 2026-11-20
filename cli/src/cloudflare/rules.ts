@@ -229,7 +229,8 @@ export function tlsChecks(zone: ZoneData, context: AccountContext): CfCheck[] {
 		];
 		const api = 'PATCH /zones/{zone_id}/settings/ssl with {"value":"strict"}';
 		if (mode === "strict" || mode === "origin_pull") out.push(check("ssl-mode", "tls", "SSL/TLS encryption mode", "passed", "high", `Full (strict): Cloudflare encrypts to your server and checks its certificate.${note}`, sslWhy));
-		else if (mode === "full") out.push(check("ssl-mode", "tls", "SSL/TLS encryption mode", "failed", "medium", `Full: Cloudflare encrypts to your server but accepts any certificate, even an expired or self-signed one.${note}`, sslWhy, { fix, api }));
+		// Offered from Full only: from Flexible or Off the server may not answer over HTTPS at all.
+		else if (mode === "full") out.push(check("ssl-mode", "tls", "SSL/TLS encryption mode", "failed", "medium", `Full: Cloudflare encrypts to your server but accepts any certificate, even an expired or self-signed one.${note}`, sslWhy, { fix, api, change: "ssl-strict" }));
 		else if (mode === "flexible") out.push(check("ssl-mode", "tls", "SSL/TLS encryption mode", "failed", "high", `Flexible: visitors connect to Cloudflare over HTTPS, but Cloudflare connects to your server over plain HTTP.${note}`, sslWhy, { fix, api }));
 		else if (mode === "off") out.push(check("ssl-mode", "tls", "SSL/TLS encryption mode", "failed", "critical", "Off: no encryption at all, between visitors and Cloudflare or between Cloudflare and your server.", sslWhy, { fix, api }));
 		else out.push(check("ssl-mode", "tls", "SSL/TLS encryption mode", "unknown", "high", `Cloudflare reported a mode Porchlight does not know: ${mode.slice(0, 40)}.`, sslWhy));
@@ -287,7 +288,7 @@ export function tlsChecks(zone: ZoneData, context: AccountContext): CfCheck[] {
 			"Turn on includeSubDomains only when every subdomain works over HTTPS, and preload only after that, with 12 months.",
 		];
 		const api = 'PATCH /zones/{zone_id}/settings/security_header with {"value":{"strict_transport_security":{"enabled":true,"max_age":15552000,"include_subdomains":false,"preload":false,"nosniff":true}}}';
-		if (!hsts || hsts.enabled !== true) out.push(check("hsts", "tls", "HTTP Strict Transport Security (HSTS)", "failed", "medium", "Off.", hstsWhy, { fix, api }));
+		if (!hsts || hsts.enabled !== true) out.push(check("hsts", "tls", "HTTP Strict Transport Security (HSTS)", "failed", "medium", "Off.", hstsWhy, { fix, api, change: "hsts" }));
 		else {
 			const age = typeof hsts.max_age === "number" ? hsts.max_age : 0;
 			const extras = [hsts.include_subdomains === true ? "includeSubDomains" : null, hsts.preload === true ? "preload" : null].filter(Boolean).join(", ");
@@ -338,9 +339,12 @@ function certificateCheck(zone: ZoneData, now: Date): CfCheck {
 	};
 	for (const pack of zone.certificatePacks.value) {
 		const hosts = (pack.hosts ?? []).slice(0, 3).join(", ") || "this zone";
-		if (pack.status && pack.status !== "active" && !pack.status.startsWith("pending") && pack.status !== "initializing") {
-			problems.push({ severity: "medium", line: `${pack.type ?? "certificate"} pack for ${hosts}: ${pack.status}` });
-		}
+		const serving = !pack.status || pack.status === "active";
+		// Cloudflare keeps a backup certificate beside every Universal one, issued and not deployed: that is its healthy state.
+		const waiting = pack.status === "backup_issued" || pack.status?.startsWith("pending") || pack.status === "initializing";
+		if (!serving && !waiting) problems.push({ severity: "medium", line: `${pack.type ?? "certificate"} pack for ${hosts}: ${pack.status}` });
+		// Only a pack that is serving decides what visitors get. A backup, or a pack on its way in or out, has dates that do not matter.
+		if (!serving) continue;
 		for (const cert of pack.certificates ?? []) {
 			const left = days(cert.expires_on);
 			if (left === null) continue;
@@ -443,6 +447,8 @@ function dnssecCheck(zone: ZoneData): CfCheck {
 			? ["Copy the DS record from Cloudflare → DNS → Settings and add it at your domain's registrar. Cloudflare Registrar adds it for you within a day or two."]
 			: ["Select Enable DNSSEC in Cloudflare → DNS → Settings, then add the DS record it shows at your domain's registrar."],
 		api: 'PATCH /zones/{zone_id}/dnssec with {"status":"active"}',
+		// Already turned on and waiting for the registrar: there is nothing more to send to Cloudflare.
+		...(pending ? {} : { change: "dnssec" as const }),
 	});
 }
 
@@ -639,6 +645,8 @@ export function emailChecks(zone: ZoneData): CfCheck[] {
 						: "Add a TXT record named _dmarc in Cloudflare → DNS → Records: `v=DMARC1; p=reject`.",
 				],
 				api: dmarcApi,
+				// Only where there is no record at all: a record that exists is the owner's to change.
+				change: "dmarc-monitor",
 			}),
 		);
 	} else {
@@ -752,6 +760,7 @@ function botCheck(zone: ZoneData): CfCheck {
 		return check("bot-fight-mode", "firewall", "Bot protection", on ? "passed" : "failed", "low", on ? "Bot Fight Mode is on." : "Bot Fight Mode is off.", why, {
 			fix: ["Turn on Bot fight mode in Cloudflare → Security → Settings, filtered by Bot traffic. It cannot be skipped for a path, so leave it off if it challenges an API client of yours."],
 			api: 'PUT /zones/{zone_id}/bot_management with {"fight_mode":true}',
+			// Not offered as a change: a real account answered this request with HTTP 400 (docs/CLOUDFLARE-AUDIT.md).
 		});
 	}
 	if (zone.plan === "unknown") return check("bot-fight-mode", "firewall", "Bot protection", "unknown", "low", "The zone's plan could not be read.", why);

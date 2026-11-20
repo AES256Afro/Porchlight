@@ -4,18 +4,22 @@
 // Porchlight can make is shown as the exact request and sent only when the owner approves it here
 // (invariant 21). Every element is built with h(): record names and values come from DNS, which
 // others can influence, and are never treated as HTML.
-import { api, download } from "./api.js";
+import { activityList } from "./activity.js";
+import { api, ApiError, download } from "./api.js";
 import { assistAction } from "./assist.js";
-import { banner, formatWhen, h, icon, plural, replace, severityBadge, statTile, stepNodes, toast } from "./dom.js";
-import { load, loadCloudflare, startCloudflareAudit, store, subscribe, updateCloudflare } from "./store.js";
+import { banner, formatWhen, h, icon, plural, replace, select, severityBadge, statTile, stepNodes, toast } from "./dom.js";
+import { fixBrief, fixGroups, tokenFixSteps } from "./hints.js";
+import { announceSaved } from "./projects.js";
+import { currentProject, load, loadCloudflare, startCloudflareAudit, store, subscribe, updateCloudflare } from "./store.js";
 
 /** @typedef {import("../src/cloudflare/types.ts").CfCheck} CfCheck */
+/** @typedef {ReturnType<typeof import("../src/cloudflare/apply.ts").describeChange>} PendingChange */
 /** @typedef {import("../src/cloudflare/types.ts").CfReport} CfReport */
 /** @typedef {import("../src/cloudflare/types.ts").CfZoneReport} CfZoneReport */
 /**
  * @typedef {(
  *   | { state: "loading" }
- *   | { state: "shown", pending: { id: string, title: string, permission: string, expiresAt: string, request: { method: string, url: string, headers: Record<string, string>, body: unknown } } }
+ *   | { state: "shown", pending: { id: string, title: string, permission: string, care?: string, expiresAt: string, request: { method: string, url: string, headers: Record<string, string>, body: unknown } } }
  *   | { state: "sending" }
  *   | { state: "done", ok: boolean, result: string }
  *   | { state: "failed", error: string }
@@ -44,6 +48,19 @@ export async function renderCloudflare(view) {
 	const statusSlot = h("div", { "aria-live": "polite" });
 	const intro = h("div");
 	const results = h("div");
+	/** With a project in use, exports go into its folder unless the owner chooses to download. */
+	let exportTo = "project";
+	/**
+	 * "Fix these": the changes shown and waiting for one answer, with the ones left unticked.
+	 *
+	 * @type {{ id: string, expiresAt: string, scope: string, changes: PendingChange[], left: Set<string> } | null}
+	 */
+	let batch = null;
+	let batchBusy = false;
+	const batchSlot = h("div");
+	/** The live activity under a set of changes being sent, from the moment they were approved. */
+	/** @type {ReturnType<typeof activityList> | null} */
+	let batchActivity = null;
 
 	replace(
 		view,
@@ -109,11 +126,204 @@ export async function renderCloudflare(view) {
 
 	draw();
 	const unsubscribe = subscribe((change) => {
-		if (change === "cloudflare" || change === "settings") draw();
+		if (change === "cloudflare" || change === "settings" || change === "projects") draw();
 	});
-	return () => unsubscribe();
+	return () => {
+		unsubscribe();
+		batchActivity?.stop();
+	};
+
+	/** @param {CfZoneReport | null} zone one domain, or null for every domain of the audit */
+	async function previewBatch(zone) {
+		if (batchBusy) return;
+		batchBusy = true;
+		try {
+			const answer = await api("POST", "/cloudflare/changes/batch/preview", zone ? { zone: zone.id } : {});
+			// A change that could affect the site starts unticked: it is the owner's to choose, never Porchlight's.
+			const careful = /** @type {PendingChange[]} */ (answer.batch.changes).filter((change) => change.care).map((change) => change.id);
+			batch = { ...answer.batch, scope: zone ? zone.name : "every domain", left: new Set(careful) };
+		} catch (err) {
+			toast(err instanceof Error ? err.message : String(err), "error");
+		} finally {
+			batchBusy = false;
+		}
+		if (batch) {
+			drawBatch();
+			batchSlot.scrollIntoView({ block: "start", behavior: "smooth" });
+		}
+	}
+
+	/** @param {boolean} approve */
+	async function answerBatch(approve) {
+		const waiting = batch;
+		if (!waiting || batchBusy) return;
+		batchBusy = true;
+		try {
+			const include = waiting.changes.filter((change) => !waiting.left.has(change.id)).map((change) => change.id);
+			const before = (await api("GET", "/activity?after=0")).last;
+			const reply = await api("POST", "/cloudflare/changes/batch/approve", { id: waiting.id, approve, ...(approve ? { include } : {}) });
+			batch = null;
+			if (reply.started) {
+				batchActivity?.stop();
+				batchActivity = activityList({ since: before, limit: 600 });
+				await loadCloudflare();
+			}
+		} catch (err) {
+			toast(err instanceof Error ? err.message : String(err), "error");
+			if (err instanceof ApiError && err.status === 409) batch = null;
+		} finally {
+			batchBusy = false;
+			drawBatch();
+		}
+	}
+
+	/**
+	 * What to do about permissions Cloudflare refused this token: the steps, with where to go.
+	 *
+	 * @param {string} title
+	 */
+	function permissionHelp(title) {
+		const lacking = store.cloudflare.lacking;
+		if (lacking.length === 0) return null;
+		return h(
+			"div",
+			{ class: "banner banner-warning cf-next", role: "note" },
+			icon("warning"),
+			h(
+				"div",
+				null,
+				h("strong", null, title),
+				h("p", null, "Your token is read-only for this, which is how Porchlight asks you to start. To let it make these changes:"),
+				h("ol", { class: "host-fix" }, ...tokenFixSteps(lacking.map((name) => ({ name, scope: "Zone" })), "change").map((step) => h("li", null, ...stepNodes(step)))),
+			),
+		);
+	}
+
+	/** The card for a set of changes: the requests to approve, then their progress, then what happened. */
+	function drawBatch() {
+		const status = store.cloudflare.batch;
+		if (batch) {
+			const waiting = batch;
+			const chosen = waiting.changes.length - waiting.left.size;
+			const permissions = [...new Set(waiting.changes.map((change) => change.permission))];
+			replace(
+				batchSlot,
+				h(
+					"div",
+					{ class: "card full cf-batch", role: "group", "aria-label": `Fix these: ${waiting.scope}` },
+					h("h2", null, `Fix these: ${waiting.scope}`),
+					h(
+						"p",
+						null,
+						`Porchlight will send exactly these ${plural(waiting.changes.length, "request", "requests")} to Cloudflare, one after another, each once, if you approve. Untick any you do not want. Nothing else is sent, and each is recorded below whether Cloudflare accepts it or not.`,
+					),
+					h("p", { class: "hint" }, `The token needs ${permissions.map((permission) => `"${permission}"`).join(" and ")}. If it lacks one, the first request that needs it is refused and the rest that need it are not sent.`),
+					waiting.changes.some((change) => change.care)
+						? banner("warning", `${plural(waiting.changes.filter((change) => change.care).length, "change needs", "changes need")} a look first, and start unticked`, [
+								"Each can affect how a site or its mail behaves, and says how under its name. Tick the ones you have decided on.",
+							])
+						: null,
+					waiting.changes.some((change) => change.care)
+						? h(
+								"div",
+								{ class: "actions" },
+								h(
+									"button",
+									{
+										type: "button",
+										class: "button quiet",
+										onclick: () => {
+											waiting.left.clear();
+											drawBatch();
+										},
+									},
+									"Tick all",
+								),
+								h(
+									"button",
+									{
+										type: "button",
+										class: "button quiet",
+										onclick: () => {
+											for (const change of waiting.changes) if (change.care) waiting.left.add(change.id);
+											drawBatch();
+										},
+									},
+									"Untick the ones with a warning",
+								),
+							)
+						: null,
+					h(
+						"ul",
+						{ class: "cf-batch-list" },
+						...waiting.changes.map((change) => {
+							const box = /** @type {HTMLInputElement} */ (h("input", { type: "checkbox", checked: !waiting.left.has(change.id) }));
+							box.addEventListener("change", () => {
+								if (box.checked) waiting.left.delete(change.id);
+								else waiting.left.add(change.id);
+								drawBatch();
+							});
+							return h(
+								"li",
+								null,
+								h("label", { class: "check-line" }, box, h(
+									"span",
+									null,
+									h("strong", null, change.title),
+									change.care ? h("span", { class: "hint block cf-care" }, icon("warning"), " ", change.care) : null,
+									h("code", { class: "hint block" }, `${change.request.method} ${change.request.url}  ${JSON.stringify(change.request.body)}`),
+								),
+							),
+							);
+						}),
+					),
+					h("p", { class: "hint" }, "Every request carries the header Authorization: Bearer (your saved token, not shown)."),
+					h(
+						"div",
+						{ class: "actions" },
+						h("button", { type: "button", class: "button primary", disabled: chosen === 0 || batchBusy, onclick: () => void answerBatch(true) }, `Approve and send ${chosen}`),
+						h("button", { type: "button", class: "button", disabled: batchBusy, onclick: () => void answerBatch(false) }, "Cancel"),
+						h("span", { class: "hint" }, `You can approve them until ${formatWhen(waiting.expiresAt)}.`),
+					),
+				),
+			);
+			return;
+		}
+		if (status.state === "idle") return replace(batchSlot);
+		// A set sent before this page was opened: its lines are still in the server's activity.
+		batchActivity ??= activityList({ limit: 600 });
+		const counts = `${status.applied} applied, ${status.failed} refused, ${status.skipped} not sent`;
+		replace(
+			batchSlot,
+			h(
+				"div",
+				{ class: "card full cf-batch" },
+				h("h2", null, status.state === "running" ? "Sending your changes" : status.stopped ? "Changes stopped" : "Changes sent"),
+				status.state === "running"
+					? h(
+							"div",
+							{ class: "host-progress" },
+							h("strong", null, `${Math.min(status.done + 1, status.total)} of ${status.total}: ${status.current || "starting"}`),
+							h("progress", { max: status.total, value: status.done, "aria-label": "Changes sent" }),
+						)
+					: h("p", null, h("span", { class: `severity ${status.failed + status.skipped === 0 ? "status-good" : "status-warning"}` }, icon(status.failed + status.skipped === 0 ? "good" : "warning"), `${counts}.`), " Audit again to see what changed."),
+				status.state === "running"
+					? h(
+							"div",
+							{ class: "actions" },
+							h("button", { type: "button", class: "button danger", onclick: () => void api("POST", "/cloudflare/changes/batch/stop").catch(() => {}) }, "Stop"),
+							h("span", { class: "hint" }, `${counts} so far. Stopping leaves what was already sent in place.`),
+						)
+					: null,
+				status.state === "finished" ? permissionHelp("Cloudflare refused these because of the token's permissions") : null,
+				batchActivity.node,
+				h("p", { class: "hint" }, "The same lines, with everything else Porchlight is doing, are on the ", h("a", { href: "#/activity" }, "Activity"), " page."),
+			),
+		);
+	}
 
 	function draw() {
+		drawBatch();
 		const state = store.cloudflare;
 		const running = state.status.state === "running";
 		button.disabled = running || !state.token.configured;
@@ -136,7 +346,7 @@ export async function renderCloudflare(view) {
 			replace(statusSlot);
 		}
 		replace(intro, state.token.configured ? form : connectCard(state.service));
-		replace(results, ...(state.report ? drawReport(state.report) : state.token.configured ? [h("p", { class: "sub" }, "Your account has not been audited yet.")] : []), changesCard());
+		replace(results, batchSlot, ...(state.report ? drawReport(state.report) : state.token.configured ? [h("p", { class: "sub" }, "Your account has not been audited yet.")] : []), changesCard());
 	}
 
 	/** @param {CfReport} report */
@@ -145,7 +355,11 @@ export async function renderCloudflare(view) {
 		const failed = checks.filter((item) => item.status === "failed");
 		const unknown = checks.filter((item) => item.status === "unknown");
 		const passed = checks.filter((item) => item.status === "passed");
-		const denied = report.permissions.filter((permission) => permission.granted === false);
+		const refused = report.permissions.filter((permission) => permission.granted === false);
+		// Reading the owner's own tokens is a permission of the user, not of an account or a zone, and a
+		// token given every account and zone permission still lacks it. It is said quietly, not as a fault.
+		const denied = refused.filter((permission) => !isOptional(permission));
+		const optional = refused.filter(isOptional);
 		const token = report.token;
 		return [
 			h(
@@ -169,13 +383,45 @@ export async function renderCloudflare(view) {
 					)
 				: null,
 			denied.length > 0
-				? banner(
-						"warning",
-						"This token could not read everything, so some checks say Could not check",
-						denied.map((permission) => `Add "${permission.name}" to read ${permission.purpose}.`),
+				? h(
+						"div",
+						null,
+						banner(
+							"warning",
+							"This token could not read everything, so some checks say Could not check",
+							denied.map((permission) => `"${permission.name}" is missing: it reads ${permission.purpose}.`),
+						),
+						h(
+							"details",
+							{ class: "cf-next-read", open: true },
+							h("summary", null, "How to add them"),
+							h("ol", { class: "host-fix" }, ...tokenFixSteps(denied, "read").map((step) => h("li", null, ...stepNodes(step)))),
+						),
+					)
+				: null,
+			optional.length > 0
+				? h(
+						"p",
+						{ class: "hint" },
+						`One optional check was not made: your own API tokens and how broad they are. It needs "User, API Tokens, Read", which belongs to your user and is not among a token's account or zone permissions. If Cloudflare's token editor does not offer it, leave it: every other check is complete.`,
 					)
 				: null,
 			report.zonesSkipped > 0 ? banner("warning", `${report.zonesSkipped} more domains were not audited`, ["An audit covers the first 200 domains of an account."]) : null,
+			fixable(report.zones) > 0 && store.cloudflare.canChange
+				? h(
+						"div",
+						{ class: "card full" },
+						h("h2", null, "Fix what Porchlight can"),
+						h(
+							"p",
+							{ class: "sub" },
+							`${plural(fixable(report.zones), "problem has", "problems have")} a change Porchlight can make for you, across ${plural(report.zones.filter((zone) => fixable([zone]) > 0).length, "domain", "domains")}. You see every request first and approve them once; each domain below also has its own Fix these.`,
+						),
+						h("button", { type: "button", class: "button primary", onclick: () => void previewBatch(null) }, icon("change"), "Fix these…"),
+						store.cloudflare.batch.state === "idle" ? permissionHelp("The last change was refused because of the token's permissions") : null,
+					)
+				: null,
+			remainingCard(report),
 			...report.zones.map((zone) => zoneCard(zone)),
 			...report.accounts.map((account) => groupCard(`Account: ${account.name}`, null, account.checks, null)),
 			report.userChecks.length > 0 ? groupCard("Your user", null, report.userChecks, null) : null,
@@ -191,6 +437,59 @@ export async function renderCloudflare(view) {
 		].filter((node) => node !== null);
 	}
 
+	/**
+	 * What is left, by fix: each kind of problem once, with the domains it affects, so the same repair
+	 * is read once and not twenty times. The whole list can be copied as a brief for a model.
+	 *
+	 * @param {CfReport} report
+	 */
+	function remainingCard(report) {
+		const groups = fixGroups(report.zones);
+		if (groups.length === 0) return null;
+		const mine = groups.reduce((count, group) => count + group.fixable, 0);
+		const applied = store.cloudflare.changes.filter((change) => change.ok).length;
+		const copy = async () => {
+			try {
+				await navigator.clipboard.writeText(fixBrief(groups, formatWhen(report.checkedAt)));
+				toast("Copied. Paste it into Claude, or any model that can act on your Cloudflare account.");
+			} catch {
+				toast("Could not copy. Use Export below instead.", "error");
+			}
+		};
+		return h(
+			"div",
+			{ class: "card full" },
+			h("h2", null, "What is left, by fix"),
+			h(
+				"p",
+				{ class: "sub" },
+				mine > 0
+					? `${plural(groups.length, "kind of problem", "kinds of problem")}. Porchlight can make ${plural(mine, "of these changes", "of these changes")} itself: use Fix these above. The rest need a decision from you or work on your server.`
+					: `${plural(groups.length, "kind of problem", "kinds of problem")}.${applied > 0 ? ` Porchlight has made every change it can make itself (${applied} so far), so there is no Fix these button now.` : ""} What is left needs a decision from you or work on your server, so Porchlight does not do it for you.`,
+			),
+			h(
+				"div",
+				{ class: "actions" },
+				h("button", { type: "button", class: "button primary", onclick: () => void copy() }, icon("copy"), "Copy all as a brief for a model"),
+				h("span", { class: "hint" }, "Plain text: each problem, its domains and its fix. No token, member or record value. Paste it where your model can reach Cloudflare."),
+			),
+			h(
+				"div",
+				{ class: "host-list" },
+				...groups.map((group) =>
+					h(
+						"div",
+						{ class: "host-check host-failed" },
+						h("div", { class: "host-check-head" }, severityBadge(/** @type {any} */ (group.severity)), h("strong", null, group.title), h("span", { class: "hint" }, plural(group.zones.length, "domain", "domains"))),
+						h("p", { class: "hint" }, group.why),
+						h("details", { class: "fix-details" }, h("summary", null, "Which domains"), h("ul", null, ...group.zones.map((name) => h("li", null, h("code", null, name))))),
+						group.fix.length > 0 ? h("ol", { class: "host-fix" }, ...group.fix.map((step) => h("li", null, ...stepNodes(step)))) : null,
+					),
+				),
+			),
+		);
+	}
+
 	/** @param {CfZoneReport} zone */
 	function zoneCard(zone) {
 		const failed = zone.checks.filter((item) => item.status === "failed");
@@ -202,8 +501,47 @@ export async function renderCloudflare(view) {
 			{ class: "cf-zone-head" },
 			h("span", { class: "cf-plan" }, `${zone.planName}${zone.paused ? ", paused" : ""}${zone.status !== "active" ? `, ${zone.status}` : ""}`),
 			...(counts.length > 0 ? counts : [h("span", { class: "severity status-good" }, icon("good"), "No problems")]),
+			zoneActions(zone),
 		);
 		return groupCard(zone.name, head, zone.checks, zone);
+	}
+
+	/**
+	 * Where else this domain can go: the monitor's watch list, and an investigation. Each only adds
+	 * the name to that page's list; proving ownership and starting anything happen there.
+	 *
+	 * @param {CfZoneReport} zone
+	 */
+	function zoneActions(zone) {
+		const watched = store.settings?.monitor.configured === true;
+		const watch = async () => {
+			try {
+				await api("POST", "/domains", { domain: zone.name });
+			} catch (err) {
+				// Already on the list is fine: show it there.
+				if (!(err instanceof ApiError && err.status === 409)) return toast(err instanceof Error ? err.message : String(err), "error");
+			}
+			location.hash = `#/domains/${encodeURIComponent(zone.name)}`;
+		};
+		const investigate = async () => {
+			try {
+				await api("POST", "/investigate/domains", { domain: zone.name });
+				location.hash = "#/investigate";
+			} catch (err) {
+				toast(err instanceof Error ? err.message : String(err), "error");
+			}
+		};
+		return h(
+			"span",
+			{ class: "cf-zone-actions" },
+			store.cloudflare.canChange && fixable([zone]) > 0
+				? h("button", { type: "button", class: "button quiet", title: `See every change Porchlight can make for ${zone.name}, and approve them once`, onclick: () => void previewBatch(zone) }, icon("change"), `Fix these (${fixable([zone])})…`)
+				: null,
+			watched
+				? h("button", { type: "button", class: "button quiet", title: `Add ${zone.name} to the websites the monitor watches`, onclick: () => void watch() }, icon("domains"), "Watch in Domains")
+				: h("a", { class: "button quiet", href: "#/domains", title: "Set up the monitor first" }, icon("domains"), "Set up watching"),
+			store.cloudflare.canChange ? h("button", { type: "button", class: "button quiet", title: `Add ${zone.name} to the domains a model can investigate`, onclick: () => void investigate() }, icon("investigate"), "Investigate") : null,
+		);
 	}
 
 	/**
@@ -286,7 +624,7 @@ export async function renderCloudflare(view) {
 				if (!reply.applied) changes.delete(key);
 				else {
 					changes.set(key, { state: "done", ok: reply.ok === true, result: String(reply.result ?? "") });
-					updateCloudflare({ changes: reply.changes });
+					updateCloudflare({ changes: reply.changes, lacking: reply.lacking });
 					toast(reply.ok ? "Change applied. Audit again to see it." : "Cloudflare refused the change", reply.ok ? "info" : "error");
 				}
 			} catch (err) {
@@ -312,6 +650,7 @@ export async function renderCloudflare(view) {
 			"div",
 			{ class: "cf-approval", role: "group", "aria-label": `Approve: ${pending.title}` },
 			h("p", null, h("strong", null, pending.title), h("span", { class: "hint block" }, `Porchlight will send exactly this request to Cloudflare, once, if you approve it. The token needs "${pending.permission}". It is recorded below either way.`)),
+			pending.care ? banner("warning", "Read this before you approve", [pending.care]) : null,
 			h("pre", { class: "cf-request", tabindex: "0" }, h("code", null, request)),
 			h(
 				"div",
@@ -324,9 +663,15 @@ export async function renderCloudflare(view) {
 	}
 
 	function exportCard() {
+		const project = currentProject();
 		/** @param {string} format */
 		const save = async (format) => {
 			try {
+				if (project && exportTo === "project") {
+					const { saved } = await api("POST", `/cloudflare/export?format=${format}`);
+					announceSaved(saved);
+					return;
+				}
 				const name = await download(`/cloudflare/export?format=${format}`);
 				toast(`Saved ${name}`);
 			} catch (err) {
@@ -341,6 +686,19 @@ export async function renderCloudflare(view) {
 			h(
 				"div",
 				{ class: "actions" },
+				project
+					? select(
+							"Where to export",
+							[
+								["project", `Save in ${project.name}`],
+								["download", "Download"],
+							],
+							exportTo,
+							(value) => {
+								exportTo = value;
+							},
+						)
+					: null,
 				...[
 					["md", "Markdown"],
 					["html", "HTML"],
@@ -393,6 +751,24 @@ export async function renderCloudflare(view) {
 			),
 		);
 	}
+}
+
+/**
+ * Whether a missing permission is one the audit is complete without: the one that reads the owner's own tokens.
+ *
+ * @param {{ name: string, scope: string }} permission
+ */
+export function isOptional(permission) {
+	return permission.scope === "User" && permission.name === "API Tokens Read";
+}
+
+/**
+ * How many problems in these zones come with a change Porchlight can make.
+ *
+ * @param {readonly CfZoneReport[]} zones
+ */
+export function fixable(zones) {
+	return zones.reduce((count, zone) => count + zone.checks.filter((check) => check.status === "failed" && check.change).length, 0);
 }
 
 /**

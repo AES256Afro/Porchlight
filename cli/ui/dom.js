@@ -73,6 +73,7 @@ const ICONS = {
 		["path", { d: "M10.5 3.5v-.5a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1H4", fill: "none", stroke: "currentColor", "stroke-width": 1.5 }],
 	],
 	plus: [["path", { d: "M8 3v10M3 8h10", fill: "none", stroke: "currentColor", "stroke-width": 2, "stroke-linecap": "round" }]],
+	close: [["path", { d: "M4 4l8 8M12 4l-8 8", fill: "none", stroke: "currentColor", "stroke-width": 1.8, "stroke-linecap": "round" }]],
 	minus: [["path", { d: "M3 8h10", fill: "none", stroke: "currentColor", "stroke-width": 2, "stroke-linecap": "round" }]],
 	change: [["path", { d: "M2.5 5.5h9l-2.5-2.5M13.5 10.5h-9l2.5 2.5", fill: "none", stroke: "currentColor", "stroke-width": 1.6, "stroke-linecap": "round", "stroke-linejoin": "round" }]],
 	download: [["path", { d: "M8 2.5v7.5M4.8 7 8 10.2 11.2 7M3 13h10", fill: "none", stroke: "currentColor", "stroke-width": 1.6, "stroke-linecap": "round", "stroke-linejoin": "round" }]],
@@ -101,11 +102,17 @@ const ICONS = {
 		["circle", { cx: 7, cy: 7, r: 4.5, fill: "none", stroke: "currentColor", "stroke-width": 1.5 }],
 		["path", { d: "m10.4 10.4 3.6 3.6", fill: "none", stroke: "currentColor", "stroke-width": 1.7, "stroke-linecap": "round" }],
 	],
+	activity: [["path", { d: "M1.5 8.5h3l2-5 3 9 2-4h3", fill: "none", stroke: "currentColor", "stroke-width": 1.5, "stroke-linecap": "round", "stroke-linejoin": "round" }]],
+	discussions: [
+		["path", { d: "M2.5 3.2h11v7.3H8.2L5 13v-2.5H2.5Z", fill: "none", stroke: "currentColor", "stroke-width": 1.5, "stroke-linejoin": "round" }],
+		["path", { d: "M5 6.2h6M5 8.2h4", fill: "none", stroke: "currentColor", "stroke-width": 1.4, "stroke-linecap": "round" }],
+	],
 	cloudflare: [["path", { d: "M4.5 12.5h7.2a2.8 2.8 0 0 0 .3-5.6 4 4 0 0 0-7.6-.8A3.2 3.2 0 0 0 4.5 12.5Z", fill: "none", stroke: "currentColor", "stroke-width": 1.5, "stroke-linejoin": "round" }]],
 	domains: [
 		["circle", { cx: 8, cy: 8, r: 6, fill: "none", stroke: "currentColor", "stroke-width": 1.5 }],
 		["path", { d: "M2 8h12M8 2c2 2 2.6 3.8 2.6 6S10 12 8 14c-2-2-2.6-3.8-2.6-6S6 4 8 2Z", fill: "none", stroke: "currentColor", "stroke-width": 1.3 }],
 	],
+	folder: [["path", { d: "M1.8 4.2c0-.7.5-1.2 1.2-1.2h3l1.4 1.6H13c.7 0 1.2.5 1.2 1.2v6.2c0 .7-.5 1.2-1.2 1.2H3c-.7 0-1.2-.5-1.2-1.2Z", fill: "none", stroke: "currentColor", "stroke-width": 1.5, "stroke-linejoin": "round" }]],
 };
 
 /**
@@ -158,13 +165,32 @@ export function plural(count, one, many) {
  *
  * @param {string} message
  * @param {"info" | "error"} [kind]
+ * @param {{ label: string, run: () => void }} [action] one button beside the message, such as "Show in Finder"; it stays longer
  */
-export function toast(message, kind = "info") {
+export function toast(message, kind = "info", action) {
 	const region = document.getElementById("toasts");
 	if (!region) return;
-	const item = h("div", { class: `toast toast-${kind}` }, message);
+	const item = h(
+		"div",
+		{ class: `toast toast-${kind}` },
+		message,
+		action
+			? h(
+					"button",
+					{
+						type: "button",
+						class: "toast-action",
+						onclick: () => {
+							action.run();
+							item.remove();
+						},
+					},
+					action.label,
+				)
+			: null,
+	);
 	region.append(item);
-	setTimeout(() => item.remove(), kind === "error" ? 8000 : 4000);
+	setTimeout(() => item.remove(), action ? 10_000 : kind === "error" ? 8000 : 4000);
 }
 
 /**
