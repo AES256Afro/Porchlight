@@ -1,12 +1,13 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { assistantConfig, isHosted } from "./assist/ollama.ts";
 import { callMonitor, monitorConfig } from "./monitor/client.ts";
 import { describeDomain } from "./monitor/describe.ts";
 import { exitCode, parseScanReport, renderMarkdown, renderSummary } from "./repos/report.ts";
-import { scanRepos } from "./repos/scan.ts";
+import { History } from "./repos/history.ts";
+import { scanRepos, type RepoDone } from "./repos/scan.ts";
 import { SEVERITIES, type Severity } from "./repos/types.ts";
 import type { MonitorReport } from "./roadmap/domains.ts";
 import { CONTENTS, exportDomain, exportRepos, parseFilter, type ExportFile } from "./roadmap/export.ts";
@@ -14,8 +15,10 @@ import { FORMATS } from "./roadmap/render.ts";
 import { tokenProblem } from "./github/github.ts";
 import { checkHost } from "./host/check.ts";
 import { renderHostText } from "./host/render.ts";
-import { run } from "./repos/exec.ts";
+import { run, type Runner } from "./repos/exec.ts";
 import { adoptOldSettings, dataFolder } from "./legacy.ts";
+import { renderDoctor, runDoctor, type DoctorOptions } from "./doctor.ts";
+import { asksForHelp, helpFor, usage } from "./help.ts";
 import { startUiServer } from "./ui/server.ts";
 import { auditCloudflare } from "./cloudflare/audit.ts";
 import { tokenShapeProblem } from "./cloudflare/client.ts";
@@ -23,69 +26,6 @@ import { renderCloudflareText } from "./cloudflare/export.ts";
 import { readSavedToken } from "./cloudflare/store.ts";
 import { readDomains, writePrivate } from "./investigate/ownership.ts";
 import { forTerminal, jsonText } from "./roadmap/escape.ts";
-
-const USAGE = `Porchlight
-
-Usage:
-  porchlight repos scan [path]      Scan git repositories under path (default: .)
-      --depth <n>                  Directory levels to search for repositories (default: 3)
-      --out <file>                 Write the Markdown report to a file instead of stdout
-      --json                       Print the report as JSON
-      --fail-on <severity>         Exit 2 if any finding is at or above: ${SEVERITIES.join(", ")}
-                                   Exit 1 if a scanner was missing or failed
-
-  porchlight repos export <report>  Turn a report written with --json into a repair roadmap
-      --content <what>             roadmap: repairs in order (default); findings: every finding with its fix
-      --format <format>            ${FORMATS.join(", ")} (default: md)
-      --out <file>                 Write to a file instead of stdout
-      --severity <list>            Only these severities, comma-separated
-      --kind <type>                Only secret or vulnerability findings
-      --match <text>               Only findings mentioning this text
-      --repo <name>                Only this repository
-
-  porchlight domains list           Domains registered with the monitor
-  porchlight domains add <domain>   Register a domain and show its verification record
-  porchlight domains verify <domain>
-  porchlight domains scan <domain>  Scan now and print what changed
-  porchlight domains show <domain>  Latest report
-  porchlight domains remove <domain>
-  porchlight domains export <domain>  Repair roadmap for a domain; takes --content, --format and --out
-
-  porchlight host check             Check this computer: updates, built-in protection, what accepts
-                                   connections, credentials in files, installed packages. Reads only
-      --json                       Print the result as JSON
-      --offline                    Do not ask Apple for updates or look packages up on OSV.dev
-
-  porchlight cloudflare audit       Check every domain in your Cloudflare account against built-in
-                                   rules: SSL/TLS, DNS, email records, firewall, members and tokens.
-                                   Reads only. Needs a read-only API token (see the README)
-      --json                       Print the result as JSON
-      --no-lookups                 Do not look up where CNAME records point, even for domains
-                                   whose Porchlight ownership record proves them
-
-  porchlight ui                     Open the local web interface for both tools
-      --port <n>                   Port to listen on (default: 4747, or the next free port)
-      --host <address>             Address to listen on (default: 127.0.0.1). Any other
-                                   address needs PORCHLIGHT_UI_KEY, a key of 32+ characters
-      --report <file>              Scan report to show and update (default: ~/.porchlight/repo-scan.json)
-      --root <dir>                 Folder offered in the scan form (default: .)
-
-The domains commands, and the Domains page of the interface, need
-PORCHLIGHT_MONITOR_URL and PORCHLIGHT_ADMIN_TOKEN.
-
-The interface's Explain, Summarise and Ask buttons use a local model served by
-Ollama, named by PORCHLIGHT_LLM_URL (its address) and PORCHLIGHT_LLM_MODEL.
-
-Other models, chosen with PORCHLIGHT_LLM_PROVIDER: "compatible" for a server
-that speaks OpenAI's format at PORCHLIGHT_LLM_URL (LM Studio, llama.cpp), or a
-hosted one ("anthropic", "openai", "deepseek") with PORCHLIGHT_LLM_API_KEY.
-
-The Cloudflare audit uses the token saved under Settings → Cloudflare in the
-interface, or PORCHLIGHT_CLOUDFLARE_TOKEN. It is sent only to Cloudflare's API.
-
-The interface can fetch repositories from GitHub to scan. Public ones need
-nothing; private ones need PORCHLIGHT_GITHUB_TOKEN, a token that can read them.
-`;
 
 /** Returns the process exit code: 0 ok, 1 error or incomplete scan under --fail-on, 2 findings at or above --fail-on. */
 /**
@@ -109,7 +49,17 @@ export async function main(argv: string[]): Promise<number> {
 	// Settings given under the earlier prefix still count (BoxPilot and older app.env files use it).
 	adoptOldSettings(process.env);
 	const [group, command, ...rest] = argv;
+	if (group === "--version" || group === "-v" || group === "version") {
+		say(`porchlight ${await installedVersion()}`);
+		return 0;
+	}
+	// Help for the command that was typed, before it is run: `porchlight repos scan --help`, or `porchlight help repos scan`.
+	if (asksForHelp(argv)) {
+		say((helpFor(group === "help" ? argv.slice(1) : argv) ?? usage()).trimEnd());
+		return 0;
+	}
 	try {
+		if (group === "doctor") return await doctor(argv.slice(1));
 		if (group === "repos" && command === "scan") return await reposScan(rest);
 		if (group === "repos" && command === "export") return await reposExport(rest);
 		if (group === "domains" && command === "export") return await domainsExport(rest);
@@ -121,12 +71,54 @@ export async function main(argv: string[]): Promise<number> {
 		warn(`porchlight: ${err instanceof Error ? err.message : String(err)}`);
 		return 1;
 	}
-	const asksForHelp = group === undefined || group === "help" || group === "--help" || group === "-h";
-	(asksForHelp ? say : warn)(USAGE);
-	return asksForHelp ? 0 : 1;
+	// Not a command: say so, then show the commands of the group that was meant, or all of them.
+	warn(`porchlight: unknown command: ${argv.join(" ")}\n`);
+	warn((helpFor(argv) ?? usage()).trimEnd());
+	return 1;
 }
 
-async function reposScan(args: string[]): Promise<number> {
+/** The version in this copy's package.json, which the Mac app and the container image carry too. */
+async function installedVersion(): Promise<string> {
+	try {
+		const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as { version?: unknown };
+		return typeof manifest.version === "string" ? manifest.version : "unknown";
+	} catch {
+		return "unknown";
+	}
+}
+
+/**
+ * Checks that Porchlight has what it needs. `deps` lets tests pass a scripted runner and network.
+ */
+export async function doctor(args: string[], deps: Partial<DoctorOptions> & { write?: (text: string) => void } = {}): Promise<number> {
+	const { values } = parseArgs({ args, options: { json: { type: "boolean", default: false }, offline: { type: "boolean", default: false } } });
+	const checks = await runDoctor({
+		run: deps.run ?? run,
+		env: deps.env ?? process.env,
+		// Looked at where it is: doctor moves and makes nothing.
+		dataDir: deps.dataDir ?? join(homedir(), ".porchlight"),
+		nodeVersion: deps.nodeVersion ?? process.versions.node,
+		...(values.offline ? {} : { fetchFn: deps.fetchFn ?? fetch }),
+	});
+	(deps.write ?? print)(values.json ? jsonText({ checks }) : renderDoctor(checks));
+	return checks.some((check) => check.status === "problem") ? 1 : 0;
+}
+
+/**
+ * "[3/17] shop  1.2s  4 findings": how far the scan is, which repository just finished, how long
+ * it took and what it found. A scanner that failed there is said too, as the report will say it.
+ */
+export function progressLine(done: RepoDone, root: string): string {
+	const width = String(done.total).length;
+	const name = done.path === root ? basename(root) : relative(root, done.path) || done.path;
+	const seconds = done.ms < 10_000 ? (done.ms / 1000).toFixed(1) : String(Math.round(done.ms / 1000));
+	const found = done.findings === 1 ? "1 finding" : `${done.findings} findings`;
+	const failed = done.errors > 0 ? `, ${done.errors === 1 ? "1 scanner" : `${done.errors} scanners`} failed` : "";
+	return `[${String(done.done).padStart(width)}/${done.total}] ${name}  ${seconds}s  ${found}${failed}`;
+}
+
+/** `deps` lets tests pass a scripted runner and their own folder. */
+export async function reposScan(args: string[], deps: { run?: Runner; dataDir?: string } = {}): Promise<number> {
 	const { values, positionals } = parseArgs({
 		args,
 		allowPositionals: true,
@@ -134,6 +126,7 @@ async function reposScan(args: string[]): Promise<number> {
 			depth: { type: "string", default: "3" },
 			out: { type: "string" },
 			json: { type: "boolean", default: false },
+			save: { type: "boolean", default: false },
 			"fail-on": { type: "string" },
 		},
 	});
@@ -145,10 +138,13 @@ async function reposScan(args: string[]): Promise<number> {
 	}
 	if (positionals.length > 1) throw new Error("Give at most one path");
 
+	const scanRoot = resolve(positionals[0] ?? ".");
 	const report = await scanRepos({
-		root: positionals[0] ?? ".",
+		...(deps.run ? { run: deps.run } : {}),
+		root: scanRoot,
 		depth,
-		onProgress: ({ path }) => warn(`Scanning ${path}`),
+		// One line a repository as it finishes, on the error stream so the report itself can be piped.
+		onRepoDone: (done) => warn(progressLine(done, scanRoot)),
 	});
 	if (report.repos.length === 0) throw new Error(`No git repositories found under ${report.root}`);
 	if (report.tools.every((tool) => tool.status === "missing")) {
@@ -162,6 +158,13 @@ async function reposScan(args: string[]): Promise<number> {
 		say(`Report written to ${values.out}`);
 	} else {
 		print(rendered);
+	}
+	if (values.save) {
+		// Where the interface reads it, and in its history, so `porchlight ui` shows this scan.
+		const dir = deps.dataDir ?? (await dataFolder(homedir()));
+		await writePrivate(join(dir, "repo-scan.json"), jsonText(report));
+		await new History(dir).add(report);
+		warn(`Saved for the interface: ${join(dir, "repo-scan.json")}`);
 	}
 	const code = exitCode(report, failOn as Severity | undefined);
 	if (code === 1) warn("porchlight: the scan was incomplete (see \"Not covered\"), so --fail-on cannot pass");
@@ -296,6 +299,8 @@ async function ui(args: string[]): Promise<number> {
 	const cloudflareToken = process.env.PORCHLIGHT_CLOUDFLARE_TOKEN?.trim() || undefined;
 	const cloudflareTokenError = cloudflareToken ? (tokenShapeProblem(cloudflareToken) ?? undefined) : undefined;
 	const reportPath = resolve(values.report ?? join(await dataFolder(homedir()), "repo-scan.json"));
+	const scanDepth = wholeNumberSetting("PORCHLIGHT_SCAN_DEPTH", 0, 6);
+	const scanEveryHours = wholeNumberSetting("PORCHLIGHT_SCAN_EVERY_HOURS", 1, 720);
 	// The address is the switch: BoxPilot fills the model setting with a default, so a model alone turns nothing on.
 	// Off, as opposed to a setting to correct: no provider chosen and no address given.
 	const assistantUnset = !process.env.PORCHLIGHT_LLM_PROVIDER?.trim() && !process.env.PORCHLIGHT_LLM_URL?.trim();
@@ -310,6 +315,8 @@ async function ui(args: string[]): Promise<number> {
 			github: { dir: join(dirname(reportPath), "github"), ...(githubToken && !githubError ? { token: githubToken } : {}) },
 			githubError,
 			defaultRoot: resolve(values.root),
+			...(scanDepth !== undefined ? { scanDepth } : {}),
+			...(scanEveryHours !== undefined ? { scanEveryHours } : {}),
 			monitor,
 			monitorError,
 			// BoxPilot passes an optional setting left empty as an empty variable, so empty counts as not given.
@@ -334,8 +341,22 @@ async function ui(args: string[]): Promise<number> {
 	if (inUse.config) say(`Model: ${inUse.config.model} at ${inUse.config.url.host}${from}${isHosted(inUse.config) ? " (hosted: what the pages show is sent there when you ask)" : ""}`);
 	else say(inUse.unset ? `Model: off${from} (choose one in Settings → Model)` : `Model: not connected${from} (${inUse.error})`);
 	say(githubError ? `GitHub: token not used (${githubError})` : githubToken ? "GitHub: token set, private repositories can be fetched" : "GitHub: no token, public repositories only (set PORCHLIGHT_GITHUB_TOKEN for private ones)");
+	if (scanEveryHours !== undefined) say(`Scans: ${resolve(values.root)} again every ${scanEveryHours === 1 ? "hour" : `${scanEveryHours} hours`}, ${scanDepth ?? 3} folder levels down`);
 	say("Press Ctrl+C to stop.");
 	return 0;
+}
+
+/**
+ * A whole number from the environment, or undefined when it is not set. BoxPilot passes an optional
+ * setting left empty as an empty variable, so empty counts as not set. Anything else that is not a
+ * number in range stops Porchlight with what to correct, rather than being quietly ignored.
+ */
+function wholeNumberSetting(name: string, least: number, most: number): number | undefined {
+	const raw = process.env[name]?.trim();
+	if (!raw) return undefined;
+	const value = Number(raw);
+	if (!Number.isInteger(value) || value < least || value > most) throw new Error(`${name} must be a whole number from ${least} to ${most}, or empty`);
+	return value;
 }
 
 const DEFAULT_UI_PORT = 4747;

@@ -26,25 +26,57 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
+          # npm's download cache, keyed by the three lockfiles, so an unchanged install fetches nothing.
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            monitor/package-lock.json
+            cli/package-lock.json
       - run: npm ci
       - run: npm --prefix monitor ci
       - run: npm --prefix cli ci
       - run: npm run check
         env:
           BOXPILOT_DIR: .boxpilot
-      - run: npm test
       - name: The tag names this tree's version
         if: startsWith(github.ref, 'refs/tags/v')
         run: node -e 'const v = require("./cli/package.json").version; if (process.env.GITHUB_REF_NAME !== `v${v}`) { console.error(`tag ${process.env.GITHUB_REF_NAME} but cli/package.json says ${v}`); process.exit(1); }'
 
-  # The image BoxPilot runs: it refuses to listen without a key, answers /healthz, keeps its API
-  # behind the key, and the real scanners find a secret in a repository owned by another user.
-  container:
-    needs: check
+  # The tests of both packages. Beside the checks and the image, not after them: the three jobs take
+  # about as long as the slowest, and publishing waits for all of them.
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - run: docker build -t porchlight:ci .
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            monitor/package-lock.json
+            cli/package-lock.json
+      - run: npm ci
+      - run: npm --prefix monitor ci
+      - run: npm --prefix cli ci
+      - run: npm test
+
+  # The image BoxPilot runs: it refuses to listen without a key, answers /healthz, keeps its API
+  # behind the key, and the real scanners find a secret in a repository owned by another user.
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # buildx, so the image's layers are kept between runs: a change to the CLI's sources rebuilds
+      # only the last layers, not the scanners' downloads.
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          load: true
+          tags: porchlight:ci
+          cache-from: type=gha,scope=image-amd64
+          cache-to: type=gha,scope=image-amd64,mode=max
       - run: sh scripts/container-smoke.sh porchlight:ci
 
   # A version tag publishes ghcr.io/aes256afro/porchlight:<version>, and the same image under the
@@ -54,7 +86,7 @@ jobs:
   # BaselineWatch's images, it is not signed with Sigstore yet.
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [check, container]
+    needs: [check, test, container]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -93,6 +125,11 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           provenance: mode=max
           sbom: true
+          # The amd64 layers the container job just built; the release's own layers are kept too.
+          cache-from: |
+            type=gha,scope=image-amd64
+            type=gha,scope=image-release
+          cache-to: type=gha,scope=image-release,mode=max
       - name: Digest for the BoxPilot manifest
         env:
           DIGEST: ${{ steps.build.outputs.digest }}

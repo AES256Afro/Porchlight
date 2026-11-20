@@ -1,9 +1,9 @@
 // @ts-check
-import { banner, emptyState, h, icon, pager, replace, severityBadge } from "./dom.js";
+import { banner, emptyState, formatWhen, h, icon, pager, replace, severityBadge, toast } from "./dom.js";
 import { coverageBanner, filterBar, findingDetail, findingsHeader, noScanYet, settingsBanner, severityTiles } from "./finding-parts.js";
 import { ALL_SEVERITIES, isFiltering, matchesFilter } from "./filter.js";
 import { filterFromParams, paginate, paramsFromFilter, repoSortFromParams, repoSortParams } from "./list.js";
-import { findingRows, load, store, subscribe } from "./store.js";
+import { findingRows, load, rescanRepo, store, subscribe } from "./store.js";
 
 /** @typedef {import("./filter.js").Severity} Severity */
 /** @typedef {import("./store.js").Repo} Repo */
@@ -37,6 +37,8 @@ export async function renderByRepo(view, route) {
 	draw();
 	return subscribe((change) => {
 		if (change === "report") draw();
+		// "Scan this repository again" follows whether a scan is running.
+		else if (change === "scan" && expanded.size > 0) update();
 	});
 
 	function draw() {
@@ -199,9 +201,33 @@ export async function renderByRepo(view, route) {
 	function findingsList(repo, findings) {
 		const paged = paginate(findings, pages.get(repo.path) ?? 1, DETAIL_PAGE);
 		const shown = paged.items;
+		const running = store.scan.state === "running";
 		return h(
 			"div",
 			{ class: "findings" },
+			h(
+				"p",
+				{ class: "repo-actions" },
+				// After a fix: check this repository alone, without waiting for a scan of them all.
+				h(
+					"button",
+					{
+						type: "button",
+						class: "button",
+						"aria-disabled": running ? "true" : null,
+						onclick: async () => {
+							if (store.scan.state === "running") return;
+							try {
+								await rescanRepo(repo.name);
+							} catch (err) {
+								toast(err instanceof Error ? err.message : String(err), "error");
+							}
+						},
+					},
+					store.scan.state === "running" && store.scan.current === repo.name ? "Scanning…" : "Scan this repository again",
+				),
+				repo.rescannedAt ? h("span", { class: "hint" }, `Scanned again ${formatWhen(repo.rescannedAt)}, after the scan of them all.`) : null,
+			),
 			repo.errors.length > 0
 				? banner(
 						"warning",

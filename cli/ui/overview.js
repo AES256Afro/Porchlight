@@ -5,9 +5,9 @@ import { askCard, localModelCard } from "./assist.js";
 import { banner, formatWhen, h, icon, PHASE_TITLES, plural, replace, severityBadge, statTile, stepNodes, tileRow, toast } from "./dom.js";
 import { coverageBanner } from "./finding-parts.js";
 import { githubPanel } from "./github.js";
-import { emptyScanHints, previewAdvice } from "./hints.js";
+import { emptyScanHints, previewAdvice, scheduleWords } from "./hints.js";
 import { buildHash } from "./list.js";
-import { findingRows, load, loadCloudflare, startScan, store, subscribe } from "./store.js";
+import { cancelScan, findingRows, load, loadCloudflare, startScan, store, subscribe } from "./store.js";
 import { changeSummary } from "./tracking.js";
 
 /** @typedef {import("../src/roadmap/types.ts").Roadmap} Roadmap */
@@ -47,7 +47,7 @@ export async function renderOverview(view) {
 	const rootInput = /** @type {HTMLInputElement} */ (
 		h("input", { type: "text", name: "root", value: store.report?.root ?? store.settings?.defaultRoot ?? "", spellcheck: false, autocomplete: "off", required: true })
 	);
-	const depthInput = /** @type {HTMLInputElement} */ (h("input", { type: "number", name: "depth", value: "3", min: "0", max: "6", class: "narrow" }));
+	const depthInput = /** @type {HTMLInputElement} */ (h("input", { type: "number", name: "depth", value: String(store.settings?.scanDepth ?? 3), min: "0", max: "6", class: "narrow" }));
 	const scanButton = /** @type {HTMLButtonElement} */ (h("button", { type: "submit", class: "button primary" }, "Check"));
 	// Fetching or removing a repository changes what a scan would cover.
 	const github = githubPanel(() => void look());
@@ -185,6 +185,22 @@ export async function renderOverview(view) {
 						known && scan.current ? h("span", { class: "path" }, scan.current) : null,
 					),
 					h("progress", { max: known ? scan.total : null, value: known ? scan.done : null, "aria-label": "Scan progress" }),
+					h(
+						"button",
+						{
+							type: "button",
+							class: "button",
+							onclick: async () => {
+								try {
+									await cancelScan();
+									toast("Scan stopped. The last scan is unchanged.");
+								} catch (err) {
+									toast(err instanceof Error ? err.message : String(err), "error");
+								}
+							},
+						},
+						"Stop",
+					),
 				),
 			);
 		} else if (scan.state === "failed") {
@@ -215,7 +231,12 @@ export async function renderOverview(view) {
 		const phases = h("div", { class: "card" }, h("h2", null, "What to repair first"), h("p", { class: "loading" }, "Working it out…"));
 		replace(
 			summary,
-			h("p", { class: "sub scan-line" }, `Last scan: ${plural(report.repos.length, "repository", "repositories")} under ${report.root}, ${formatWhen(report.scannedAt)}.`),
+			h(
+				"p",
+				{ class: "sub scan-line" },
+				`Last scan: ${plural(report.repos.length, "repository", "repositories")} under ${report.root}, ${formatWhen(report.scannedAt)}.`,
+				scheduleWords(store.settings?.scanEveryHours ?? 0) ? ` ${scheduleWords(store.settings?.scanEveryHours ?? 0)}` : null,
+			),
 			coverageBanner(),
 			tileRow(
 				// Each number opens the findings it counts.

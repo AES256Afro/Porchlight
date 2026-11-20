@@ -77,6 +77,19 @@ env:
     secret: true
     description: "Lets the Cloudflare page audit every domain in your Cloudflare account. Make an API token on Cloudflare with Read permissions only; the page lists them under Settings → Cloudflare. It is only ever sent to Cloudflare's API and never reaches the browser or a model. Here the audit only reads: a change to your account can be approved only on the page of a computer that runs Porchlight itself. Empty: the Cloudflare page says how to connect."
     default: ""
+  - name: PORCHLIGHT_SCAN_DEPTH
+    label: Folder levels to look through
+    description: "How far below the folder of repositories a scan looks for git repositories. 3 suits a folder of projects, or of folders of projects. Raise it for a deeper tree; a scan then takes longer to start."
+    options: ["0", "1", "2", "3", "4", "5", "6"]
+    default: "3"
+  - name: PORCHLIGHT_SCAN_EVERY_HOURS
+    label: Scan again by itself
+    description: "Scans the folder of repositories, and what the page fetched from GitHub, again once the last scan is this old. The page shows what is new and what was fixed since the scan before. Nothing is sent anywhere: open the page to see the result."
+    options:
+      - { value: "", label: "Only when I ask" }
+      - { value: "24", label: "Every day" }
+      - { value: "168", label: "Every week" }
+    default: ""
   - name: SECURITYX_LLM_PROVIDER
     label: Model provider (optional)
     description: "Which model explains and analyses findings. Empty or ollama: this server's Ollama app. compatible: another server that speaks OpenAI's format, such as LM Studio, at the model address below. anthropic, openai or deepseek: a hosted model, which needs the API key below and sends what the pages show to that company."

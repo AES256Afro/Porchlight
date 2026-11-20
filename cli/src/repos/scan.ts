@@ -1,6 +1,7 @@
+import { availableParallelism } from "node:os";
 import { resolve } from "node:path";
 import { discoverRepos } from "./discover.ts";
-import { run as defaultRun, ToolMissingError, type Runner } from "./exec.ts";
+import { CancelledError, run as defaultRun, ToolMissingError, type Runner } from "./exec.ts";
 import { runGitleaks } from "./gitleaks.ts";
 import { runOsvScanner } from "./osv.ts";
 import { scannerSettingFiles } from "./settings.ts";
@@ -18,7 +19,13 @@ const TOOLS: Tool[] = [
 	{ name: "osv-scanner", versionArgs: ["--version"], installHint: "brew install osv-scanner", scan: runOsvScanner },
 ];
 
-const REPO_CONCURRENCY = 4;
+/**
+ * Repositories scanned at once. Each runs both scanners together, and gitleaks uses several cores
+ * itself, so half the machine's cores, never fewer than two or more than eight.
+ */
+export function repoConcurrency(cores: number = availableParallelism()): number {
+	return Math.max(2, Math.min(8, Math.floor(cores / 2)));
+}
 
 export interface ScanProgress {
 	/** Repositories finished so far. */
@@ -26,6 +33,19 @@ export interface ScanProgress {
 	total: number;
 	/** The repository whose scan just started. */
 	path: string;
+}
+
+/** A repository whose scan has just ended. */
+export interface RepoDone {
+	/** Repositories finished, this one included. */
+	done: number;
+	total: number;
+	path: string;
+	/** How long its scanners took. */
+	ms: number;
+	findings: number;
+	/** Scanners that failed on it. */
+	errors: number;
 }
 
 export interface ScanOptions {
@@ -38,10 +58,19 @@ export interface ScanOptions {
 	/** Lists a repository's scanner setting files; tests replace it. */
 	settingFiles?: (repo: string) => Promise<string[]>;
 	onProgress?: (progress: ScanProgress) => void;
+	onRepoDone?: (done: RepoDone) => void;
+	/** Stops the scan when aborted: running scanners are stopped and scanRepos rejects with a CancelledError. */
+	signal?: AbortSignal;
+	/** Repositories scanned at once (default: by the machine's cores). */
+	concurrency?: number;
 }
 
 export async function scanRepos(options: ScanOptions): Promise<ScanReport> {
-	const run = options.run ?? defaultRun;
+	const { signal } = options;
+	const baseRun = options.run ?? defaultRun;
+	// Every program the scan starts can be stopped with it.
+	const run: Runner = signal ? (command, args, runOptions) => baseRun(command, args, { ...runOptions, signal }) : baseRun;
+	const now = options.now ?? (() => new Date());
 	const root = resolve(options.root);
 	const tools = await Promise.all(TOOLS.map((tool) => detect(tool, run)));
 	const available = TOOLS.filter((tool) => tools.some((status) => status.tool === tool.name && status.status === "ok"));
@@ -54,15 +83,36 @@ export async function scanRepos(options: ScanOptions): Promise<ScanReport> {
 	const queue = [...paths];
 	const worker = async () => {
 		for (let path = queue.shift(); path !== undefined; path = queue.shift()) {
+			if (signal?.aborted) throw new CancelledError();
 			options.onProgress?.({ done: repos.length, total: paths.length, path });
-			repos.push(await scanRepo(path, available, run, options.settingFiles ?? scannerSettingFiles));
+			const started = now().getTime();
+			const result = await scanRepo(path, available, run, options.settingFiles ?? scannerSettingFiles);
+			// A scanner stopped half way has not looked: its repository is not reported at all.
+			if (signal?.aborted) throw new CancelledError();
+			repos.push(result);
+			options.onRepoDone?.({ done: repos.length, total: paths.length, path, ms: now().getTime() - started, findings: result.findings.length, errors: result.errors.length });
 		}
 	};
-	await Promise.all(Array.from({ length: REPO_CONCURRENCY }, worker));
+	await Promise.all(Array.from({ length: Math.max(1, options.concurrency ?? repoConcurrency()) }, worker));
 	repos.sort((a, b) => a.path.localeCompare(b.path));
 
 	const otherRoots = others.map((other) => other.root);
-	return { root, ...(otherRoots.length > 0 ? { otherRoots } : {}), scannedAt: (options.now?.() ?? new Date()).toISOString(), tools, repos };
+	return { root, ...(otherRoots.length > 0 ? { otherRoots } : {}), scannedAt: now().toISOString(), tools, repos };
+}
+
+/**
+ * Scans one repository again with the scanners installed now, as a full scan would. For the
+ * interface's "Scan this repository again"; the caller puts the result in place of the old one.
+ */
+export async function rescanRepo(path: string, options: Pick<ScanOptions, "run" | "settingFiles" | "signal"> = {}): Promise<{ repo: RepoResult; tools: ToolStatus[] }> {
+	const { signal } = options;
+	const baseRun = options.run ?? defaultRun;
+	const run: Runner = signal ? (command, args, runOptions) => baseRun(command, args, { ...runOptions, signal }) : baseRun;
+	const tools = await Promise.all(TOOLS.map((tool) => detect(tool, run)));
+	const available = TOOLS.filter((tool) => tools.some((status) => status.tool === tool.name && status.status === "ok"));
+	const repo = await scanRepo(resolve(path), available, run, options.settingFiles ?? scannerSettingFiles);
+	if (signal?.aborted) throw new CancelledError();
+	return { repo, tools };
 }
 
 async function detect(tool: Tool, run: Runner): Promise<ToolStatus> {
@@ -81,12 +131,20 @@ async function scanRepo(path: string, tools: Tool[], run: Runner, settingFiles: 
 	const result: RepoResult = { path, findings: [], errors: [] };
 	const files = await settingFiles(path);
 	if (files.length > 0) result.settingFiles = files;
-	for (const tool of tools) {
-		try {
-			result.findings.push(...(await tool.scan(path, run)));
-		} catch (err) {
-			result.errors.push({ tool: tool.name, message: err instanceof Error ? err.message : String(err) });
-		}
+	// The scanners read the same files and write nothing, so they run together; their results are
+	// put in the scanners' own order, so a report does not depend on which finished first.
+	const outcomes = await Promise.all(
+		tools.map(async (tool) => {
+			try {
+				return { findings: await tool.scan(path, run) };
+			} catch (err) {
+				return { error: { tool: tool.name, message: err instanceof Error ? err.message : String(err) } };
+			}
+		}),
+	);
+	for (const outcome of outcomes) {
+		if (outcome.findings) result.findings.push(...outcome.findings);
+		else result.errors.push(outcome.error);
 	}
 	return result;
 }

@@ -6,6 +6,20 @@
 
 Find the keys and passwords committed to your code and the packages with known security holes, across every repository you have, and see what to fix first. Keep an eye on the websites you own as well. Porchlight runs on your own machine, as a page in your browser or as a Mac app.
 
+## Quick start
+
+```bash
+brew install node gitleaks osv-scanner
+git clone https://github.com/AES256Afro/Porchlight.git
+cd Porchlight
+npm run setup
+node cli/bin/porchlight.js ui --root ~/Projects
+```
+
+Open the link it prints, then choose **Check your code**. If something is missing, `node cli/bin/porchlight.js doctor` says what, and how to get it.
+
+On a Mac with Apple silicon you can skip all of that: download `Porchlight-<version>-arm64.dmg` from the [latest release](https://github.com/AES256Afro/Porchlight/releases/latest) and see [Mac app](#mac-app).
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/overview-dark.png">
   <img alt="The Overview: counts by severity, what to repair first, the most affected repositories, credentials that look live, and what was fixed since the last scan" src="docs/screenshots/overview.png">
@@ -50,20 +64,6 @@ The screenshots show made-up repositories, checked by the real scanners.
 
 Everything else, including the reports, stays on your machine, readable only by you.
 
-## Quick start
-
-```bash
-brew install node gitleaks osv-scanner
-git clone https://github.com/AES256Afro/Porchlight.git
-cd Porchlight
-npm run setup
-node cli/bin/porchlight.js ui --root ~/Projects
-```
-
-Open the link it prints, then choose **Check your code**.
-
-On a Mac with Apple silicon you can skip all of that: download `Porchlight-<version>-arm64.dmg` from the [latest release](https://github.com/AES256Afro/Porchlight/releases/latest) and see [Mac app](#mac-app).
-
 ## How it is built
 
 Two security tools behind one command line:
@@ -91,6 +91,14 @@ The examples below assume this alias, run from the project root:
 alias porchlight="node $PWD/cli/bin/porchlight.js"
 ```
 
+```bash
+porchlight doctor            # what Porchlight has and what it lacks, with the fix for each
+porchlight repos scan --help # the options of one command
+porchlight --version
+```
+
+`porchlight doctor` checks Node, git and the two scanners, the folder Porchlight keeps its files in, and the settings for the monitor, the model, GitHub and Cloudflare. It only reads and prints no secret. It asks the monitor and a local model whether they answer, unless you add `--offline`; a hosted model is never contacted. It exits 1 when something Porchlight cannot work without is missing.
+
 ## Web interface
 
 ```bash
@@ -99,8 +107,8 @@ porchlight ui
 
 It prints a link. Open it to get both tools in the browser:
 
-- **Overview**: the two jobs, "Check your code" and "Check your websites". Before a scan it names the repositories it found in the folder; when it finds none, or the monitor is not set up, it says what to do next in numbered steps. After a scan it shows where things stand and what needs doing first.
-- **Findings**: every finding in one list, most severe first, each with the repair that clears it. Switch to **By repository** to see them grouped. Filter by severity, type, repository or text; the filters are kept in the address, so a reload or a shared link shows the same view.
+- **Overview**: the two jobs, "Check your code" and "Check your websites". Before a scan it names the repositories it found in the folder; when it finds none, or the monitor is not set up, it says what to do next in numbered steps. After a scan it shows where things stand and what needs doing first. A scan that is running can be stopped; nothing is saved, and the last scan stays as it was.
+- **Findings**: every finding in one list, most severe first, each with the repair that clears it. Switch to **By repository** to see them grouped. Filter by severity, type, repository or text; the filters are kept in the address, so a reload or a shared link shows the same view. After a fix, open a repository under By repository and choose **Scan this repository again** to check it alone. Where a scanner is missing or fails that time, what it found before is kept.
 - **Roadmap**: what to repair, in order. One action, such as upgrading a package, can clear many findings.
 - **This Mac**: check the computer Porchlight runs on; see [Check this Mac](#check-this-mac).
 - **Discussions**: every answer a model gave on these pages, with your follow-up questions; see [Discussions](#discussions).
@@ -185,6 +193,8 @@ Porchlight is in the [BoxPilot](https://github.com/AES256Afro/BoxPilot) catalog:
 - **Cloudflare API token**: optional, `PORCHLIGHT_CLOUDFLARE_TOKEN`, a read-only token for the Cloudflare page (see [Audit your Cloudflare account](#audit-your-cloudflare-account)). On BoxPilot the audit only reads; changes to the account are approved only on a computer that runs Porchlight itself.
 - **Access key**: BoxPilot generates `PORCHLIGHT_UI_KEY`. The page asks for it once per browser tab.
 - **Monitor address and admin token**: optional, for the Domains page.
+- **Folder levels to look through**: `PORCHLIGHT_SCAN_DEPTH`, 0 to 6 (default 3).
+- **Scan again by itself**: `PORCHLIGHT_SCAN_EVERY_HOURS`. Empty scans only when you ask; 24 scans once the last scan is a day old. The page then shows what is new and what was fixed. Nothing is sent anywhere.
 - It starts on the tailnet only, because a report names the files and commits where secrets were found.
 
 Outside BoxPilot:
@@ -201,14 +211,7 @@ In the container, `porchlight ui --host 0.0.0.0` changes what protects it:
 - It answers to any host name (a Tailscale name, a LAN address), so the key on every request is what guards the data. A cross-site Origin is still refused; only its host part is compared, because Tailscale Serve puts HTTPS in front.
 - `GET /healthz` answers without the key, for the container's health check.
 
-Releasing:
-
-1. Set the new version in `cli/package.json` and its lockfile (`npm version <version> --no-git-tag-version` in `cli/`) and in `boxpilot/porchlight.yaml`: `image.version`, and `image.reference` as `ghcr.io/aes256afro/securityx:<version>` with no digest yet. `npm run check` fails if they disagree.
-2. Commit, then push a tag `v<version>`. CI stops if the tag does not match `cli/package.json`. Otherwise it runs the checks, smoke-tests the image (`scripts/container-smoke.sh`) and publishes it for amd64 and arm64, with an SBOM and build provenance.
-3. Add the digest the publish job prints in its run summary to `image.reference` in `boxpilot/porchlight.yaml`, and commit that.
-4. Copy the manifest to BoxPilot's `catalog/securityx.yaml` in a BoxPilot pull request. Servers offer the update once a BoxPilot release includes it.
-
-`boxpilot/porchlight.yaml` is the source of truth for BoxPilot's `catalog/securityx.yaml`. `npm run check` validates it with BoxPilot's own schema when a BoxPilot checkout is at `../BoxPilot` or `BOXPILOT_DIR`.
+Releasing a version, including the image, the Mac app and the BoxPilot manifest, is described in [RELEASING.md](RELEASING.md).
 
 ## Model
 
@@ -303,7 +306,10 @@ porchlight repos scan ~/Projects --out reports/repos.md
 | `--depth <n>` | Directory levels searched for repositories (default 3) |
 | `--out <file>` | Write the Markdown report to a file and print a summary |
 | `--json` | Emit the report as JSON |
+| `--save` | Also keep the scan where the interface reads it (`~/.porchlight`), and in its history, so `porchlight ui` shows it. It replaces the scan shown there |
 | `--fail-on <severity>` | Exit with code 2 if any finding is at or above `critical`, `high`, `medium` or `low`; exit with code 1 if a scanner was missing or failed, so an incomplete scan never passes |
+
+While it runs it prints one line a repository to the error stream, such as `[ 3/17] shop  1.2s  4 findings`, so the report itself can still be piped. A repository's two scanners run together, and several repositories at once, by how many cores the machine has.
 
 What it checks:
 

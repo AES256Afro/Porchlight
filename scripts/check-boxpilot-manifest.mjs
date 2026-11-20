@@ -37,6 +37,12 @@ if (githubToken && (githubToken.type !== "password" || githubToken.secret !== tr
 const cloudflareToken = raw.env?.find((entry) => entry.name === "PORCHLIGHT_CLOUDFLARE_TOKEN");
 if (!cloudflareToken) local.push("PORCHLIGHT_CLOUDFLARE_TOKEN is missing: the Cloudflare page tells a service to set it in Apps → Porchlight → Settings");
 else if (cloudflareToken.type !== "password" || cloudflareToken.secret !== true || cloudflareToken.generate === true || cloudflareToken.default !== "") local.push("PORCHLIGHT_CLOUDFLARE_TOKEN must be a secret password the owner supplies, empty by default");if (raw.defaultExposure !== "tailnet") local.push("defaultExposure must stay tailnet: a report names where secrets were found");
+// The app reads these two under these names and refuses to start on a value out of range (cli/src/main.ts).
+const depth = raw.env?.find((entry) => entry.name === "PORCHLIGHT_SCAN_DEPTH");
+if (!depth || !(depth.options ?? []).every((option) => /^[0-6]$/.test(option)) || !/^[0-6]$/.test(String(depth.default))) local.push("PORCHLIGHT_SCAN_DEPTH must offer whole numbers from 0 to 6, with one of them as its default");
+const every = raw.env?.find((entry) => entry.name === "PORCHLIGHT_SCAN_EVERY_HOURS");
+const hours = (every?.options ?? []).map((option) => (typeof option === "string" ? option : option.value));
+if (!every || every.default !== "" || !hours.every((value) => value === "" || (/^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= 720))) local.push("PORCHLIGHT_SCAN_EVERY_HOURS must be empty by default and offer hours from 1 to 720");
 // BoxPilot's catalog file is catalog/securityx.yaml, and a manifest's id must match its file name.
 // Servers have Porchlight installed under this id, so it stays.
 if (raw.id !== "securityx") local.push(`id is ${raw.id}: BoxPilot's catalog lists Porchlight as securityx`);

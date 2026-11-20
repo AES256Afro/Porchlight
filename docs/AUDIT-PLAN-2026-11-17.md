@@ -179,6 +179,16 @@ Pin the base image digest and the BoxPilot schema (S8). Fix the picomatch dev ad
 
 ### M5: Daily-use quality of life. Size: M
 
+**Status, 2026-11-20: built, not released.** Each item has tests; Stop, the rescan and the progress lines were also tried against the real scanners.
+- Command line: `porchlight <command> --help` prints that command's options (`cli/src/help.ts`), `--version` the installed version, and a mistyped command names itself and lists the commands. `porchlight doctor` (`cli/src/doctor.ts`) checks Node, git, the scanners, Porchlight's folder, the last scan and each setting. It only reads, prints no secret, never contacts a hosted model, and exits 1 only when something essential is missing.
+- Scans: one line a repository as it finishes (`[ 3/17] shop  1.2s  4 findings`). A repository's two scanners run together, and repositories by half the machine's cores (2 to 8). `repos scan --save` keeps the scan where the interface reads it, 0600, and in its history. It is opt-in, so a scan in CI writes nothing to the home folder.
+- Stop: a running scan can be stopped from the Overview (`POST /api/repos/scan/cancel`); its scanners are stopped and nothing is saved. A model's answer can be stopped where it is waited for; the server already stopped the model when the page let go. While one question is being answered the other ask buttons wait and say why, so the overlapping-click 409 is gone.
+- Scan one repository again, from By repository (`POST /api/repos/rescan`, by name). Where a scanner is missing or fails that time, what it found before is kept (invariant 5). The report keeps its scan time, history entry and judgements; the repository records `rescannedAt`.
+- BoxPilot: `PORCHLIGHT_SCAN_DEPTH` (0 to 6) and `PORCHLIGHT_SCAN_EVERY_HOURS` (empty, 24 or 168 in the manifest; 1 to 720 accepted). The schedule scans once the last scan is that old and nothing else is at work. Notifying the owner stays with M6.3.
+- Server: the parsed report is kept until its file changes, and frozen so no request can alter it. The request handler is a gate (`admit`) and a route table (`routes`).
+- CI: npm's cache by the three lockfiles; checks, tests and the image build run side by side; the image's layers are cached between runs. Not run here: the first push shows whether the cache steps behave.
+- Docs: `RELEASING.md` holds the release steps, including the Mac app and the monitor. The README opens with the quick start.
+
 - Per-command `--help`, `--version`, and `porchlight doctor`.
 - `[3/17]` progress lines with timings.
 - CLI scans saved where the UI reads them.

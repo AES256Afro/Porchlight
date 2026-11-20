@@ -49,10 +49,10 @@ import { coverageNotes, nameUnder, rank, rankRepos, repoName, settingNotes } fro
 import { History, readNotes, setNote } from "../repos/history.ts";
 import { checkHost, type HostCheckOptions } from "../host/check.ts";
 import type { HostReport } from "../host/types.ts";
-import { run as runCommand } from "../repos/exec.ts";
-import { scanRepos } from "../repos/scan.ts";
+import { CancelledError, run as runCommand } from "../repos/exec.ts";
+import { rescanRepo, scanRepos } from "../repos/scan.ts";
 import { findingKey, isStatus, MAX_NOTE } from "../../ui/tracking.js";
-import { SEVERITIES, type ScanReport, type Severity } from "../repos/types.ts";
+import { SEVERITIES, type RepoResult, type ScanReport, type Severity, type ToolName } from "../repos/types.ts";
 import { domainSuggestions, type MonitorReport } from "../roadmap/domains.ts";
 import { exportDomain, exportRepos, ExportError, parseFilter, type ExportFile } from "../roadmap/export.ts";
 import { buildRepoRoadmap, listRepoFindings, suggestionsFor } from "../roadmap/repos.ts";
@@ -139,6 +139,17 @@ export interface UiOptions {
 	/** A fixed key (PORCHLIGHT_UI_KEY). Without one, each start makes its own. */
 	sessionKey?: string;
 	scan?: typeof scanRepos;
+	/** Scans one repository again. Tests pass a fake. */
+	rescan?: typeof rescanRepo;
+	/** Folder levels a scan looks through unless the page asks otherwise (PORCHLIGHT_SCAN_DEPTH; default 3). */
+	scanDepth?: number;
+	/**
+	 * As a service: scan the folder again once the last scan is this many hours old
+	 * (PORCHLIGHT_SCAN_EVERY_HOURS). Absent: only when the owner asks.
+	 */
+	scanEveryHours?: number;
+	/** How often the schedule looks at the clock (default a minute). Tests pass a short one. */
+	scheduleTickMs?: number;
 	/** Used for the monitor and the local model alike. Tests pass a fake. */
 	fetchFn?: typeof fetch;
 	/** This machine's Tailscale address, for "Access from other devices". Tests pass their own. */
@@ -185,6 +196,21 @@ export interface AccessStatus {
 	url?: string;
 	error?: string;
 }
+
+/** A request that is past the gate: who sent it is settled, and its body is read. */
+interface Call {
+	req: IncomingMessage;
+	res: ServerResponse;
+	url: URL;
+	/** The method and the path, as in "GET /api/state". */
+	route: string;
+	/** The JSON body of a POST; undefined for anything else. */
+	body: unknown;
+	gate: Gate;
+}
+
+/** Which requests an entry of the route table answers, and what answers them. */
+type Route = [claims: (call: Call) => boolean, answer: (call: Call) => void | Promise<void>];
 
 /**
  * Who a request came in through. The page on this computer uses the per-run session key on loopback;
@@ -270,6 +296,7 @@ const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 const HOST_HEADER_PATTERN = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*|\[[0-9a-f:.]+\])(?::\d{1,5})?$/i;
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_DEPTH = 6;
+const DEFAULT_DEPTH = 3;
 /** Repositories named in a preview of what a scan would cover. The count is always the full one. */
 const PREVIEW_NAMES = 60;
 /** Findings one analysis run may judge, and how many it judges unless told otherwise. */
@@ -282,6 +309,8 @@ const GITHUB_DEPTH = 2;
 const DOMAIN_PATTERN = /^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/;
 /** What the local model can be asked for, one route each. */
 const ASSIST_ROUTES = ["finding", "roadmap", "domain", "ask", "cloudflare"];
+
+const DOMAIN_EXPORT = /^\/api\/domains\/([^/]+)\/export$/;
 
 class HttpError extends Error {
 	status: number;
@@ -312,6 +341,10 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	}
 	const sessionKey = options.sessionKey ?? randomBytes(24).toString("base64url");
 	const scan = options.scan ?? scanRepos;
+	const rescan = options.rescan ?? rescanRepo;
+	const defaultDepth = options.scanDepth ?? DEFAULT_DEPTH;
+	/** Stops the scan that is running, when there is one. */
+	let scanCancel: AbortController | null = null;
 	const github: GithubConfig = options.github ?? { dir: join(dirname(options.reportPath), "github") };
 	let status: ScanStatus = { state: "idle" };
 	let fetching: FetchStatus = { state: "idle" };
@@ -1738,7 +1771,24 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	};
 	const server = createServer(respond(localGate));
 
+	/**
+	 * Every request comes through here: first the gate, which decides whether it is answered at all,
+	 * then the first route in the table that claims it.
+	 */
 	async function handle(req: IncomingMessage, res: ServerResponse, gate: Gate): Promise<void> {
+		const call = await admit(req, res, gate);
+		if (!call) return;
+		for (const [claims, answer] of (routeTable ??= routes())) if (claims(call)) return answer(call);
+		throw new HttpError(404, "Not found");
+	}
+
+	/**
+	 * The gate. A request reaches the API only with this server's own Host (which defeats DNS
+	 * rebinding), no cross-site Origin, and the key of the listener it came in on. The health check
+	 * and the page's own files are answered here, without the key, and nothing else is. Returns null
+	 * when the request has been answered.
+	 */
+	async function admit(req: IncomingMessage, res: ServerResponse, gate: Gate): Promise<Call | null> {
 		const host = req.headers.host ?? "";
 		if (!hostAllowed(host, gate.port(), gate.loopbackOnly)) throw new HttpError(403, "Forbidden host");
 		const url = new URL(req.url ?? "/", `http://${host}`);
@@ -1748,7 +1798,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			if (req.method !== "GET") throw new HttpError(405, "Method not allowed");
 			res.writeHead(200, { ...SECURITY_HEADERS, "content-type": "text/plain; charset=utf-8" });
 			res.end("ok\n");
-			return;
+			return null;
 		}
 
 		if (!url.pathname.startsWith("/api/")) {
@@ -1757,179 +1807,189 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			if (!entry) throw new HttpError(404, "Not found");
 			res.writeHead(200, { ...SECURITY_HEADERS, "content-type": entry.type });
 			res.end(await readFile(join(UI_DIR, entry.file)));
-			return;
+			return null;
 		}
 
 		if (!originAllowed(req.headers.origin, host, gate.loopbackOnly)) throw new HttpError(403, "Cross-site request refused");
 		// Says where the reader's key is kept: a service's settings, or the Mac's Settings for another device.
 		if (!sessionMatches(req.headers[SESSION_HEADER], gate.key())) {
-			return sendJson(res, 401, { error: "Session key required", service: !gate.loopbackOnly && !gate.tailnet, tailnet: gate.tailnet });
+			sendJson(res, 401, { error: "Session key required", service: !gate.loopbackOnly && !gate.tailnet, tailnet: gate.tailnet });
+			return null;
 		}
 
 		const body = req.method === "POST" ? await readJsonBody(req) : undefined;
-		const route = `${req.method} ${url.pathname}`;
+		return { req, res, url, route: `${req.method} ${url.pathname}`, body, gate };
+	}
 
-		if (route === "GET /api/state") {
-			return sendJson(res, 200, {
-				defaultRoot: options.defaultRoot,
-				reportPath: options.reportPath,
-				scan: status,
-				...(await readUiSettings(settingsPath)),
-				// A service (a container, under BoxPilot) is configured where it is managed, not from a shell,
-				// so the page explains connecting the monitor in those terms.
-				service: !loopbackOnly,
-				// Opened from another device over the tailnet, rather than on this computer.
-				remote: gate.tailnet,
-				// The computer Porchlight runs on, so the page can call it "This Mac".
-				platform: process.platform,
-				monitor: monitorState(),
-				// Whether a token is set, never the token.
-				github: { token: github.token !== undefined, ...(options.githubError ? { error: options.githubError } : {}) },
-				assistant: assistantSummary(),
-				lastView: await readView(viewPath),
-				// The projects, and the one exports, discussions and the log go to.
-				projects: await projectsState(gate),
-				// Whether Cloudflare is connected and how, never the token.
-				cloudflare: await cloudflareTokenState(),
-				// What "Send to a model" offers. Never a key: only where each one runs and which model.
-				sendTargets: targets().map((target) => ({ id: target.id, label: target.label, model: target.config.model, host: target.config.url.host, hosted: target.hosted, current: target.current })),
-			});
-		}
-		if (route === "POST /api/repos/send") return sendRoute(res, body);
-		if (url.pathname === "/api/projects" || url.pathname.startsWith("/api/projects/")) return projectsRoute(res, route, url, body, gate);
-		if (url.pathname === "/api/discussions" || url.pathname.startsWith("/api/discussions/")) return discussionRoute(res, route, url, body);
-		if (url.pathname === "/api/host" || url.pathname === "/api/host/check") return hostRoute(res, route, body);
-		if (url.pathname === "/api/investigate" || url.pathname.startsWith("/api/investigate/")) return investigateRoute(res, route, url, body, gate);
-		if (url.pathname === "/api/cloudflare" || url.pathname.startsWith("/api/cloudflare/")) return cloudflareRoute(res, route, url, body, gate);
-		if (url.pathname === "/api/monitor" || url.pathname.startsWith("/api/monitor/")) return monitorRoute(res, route, body, gate);
-		if (route === "GET /api/activity") {
-			const after = Number(url.searchParams.get("after") ?? 0);
-			const from = Number.isInteger(after) && after >= 0 ? after : 0;
-			return sendJson(res, 200, { lines: activity.filter((line) => line.n > from), last: activityCount });
-		}
-		if (route === "GET /api/repos/history") {
-			const report = await readReport(options.reportPath);
-			const scans = (await history.list()).reverse();
-			return sendJson(res, 200, { scans, change: report ? await history.latestChange(report) : null });
-		}
-		if (route === "POST /api/findings/note") return noteRoute(res, body);
-		if (route === "GET /api/busy") return sendJson(res, 200, { busy: busyWork() });
-		if (route === "POST /api/view") {
-			const view = bodyObject(body).view;
-			// A place in the page, with its filters; never the session key, which lives only in the fragment it came in.
-			if (typeof view !== "string" || !/^#\/[^\s]{0,1000}$/.test(view) || /(?:^|[#&?])k=/.test(view)) throw new HttpError(400, "Not a place in the page");
-			await saveView(viewPath, view);
-			return sendJson(res, 200, { view });
-		}
-		if (route === "POST /api/settings") {
-			// Either preference, or both; whatever is left out stays as it was.
-			const fields = bodyObject(body);
-			if (fields.appearance === undefined && fields.answers === undefined) throw new HttpError(400, "Choose an appearance or where answers appear");
-			if (fields.appearance !== undefined && !isLook(fields.appearance)) throw new HttpError(400, "Unknown appearance");
-			if (fields.answers !== undefined && !isAnswerPlace(fields.answers)) throw new HttpError(400, "Unknown place for answers");
-			const next = { ...(await readUiSettings(settingsPath)) };
-			if (fields.appearance !== undefined) next.appearance = fields.appearance as string;
-			if (fields.answers !== undefined) next.answers = fields.answers as string;
-			await saveUiSettings(settingsPath, next);
-			return sendJson(res, 200, next);
-		}
-		if (url.pathname === "/api/model/local" || url.pathname.startsWith("/api/model/local/")) return downloadRoute(res, route, url, body, gate);
-		if (url.pathname === "/api/model" || url.pathname.startsWith("/api/model/")) return modelRoute(res, route, body);
-		if (url.pathname === "/api/access" || url.pathname.startsWith("/api/access/")) return accessRoute(res, route, body, gate);
-		if (url.pathname.startsWith("/api/assist/")) return assist(req, res, url.pathname.slice("/api/assist/".length), body);
-		if (route === "GET /api/repos/report") return sendJson(res, 200, { ...(await loadReport(options.reportPath, analysisPath)), findingNotes: await readNotes(notesPath) });
-		if (url.pathname === "/api/analysis" || url.pathname === "/api/analysis/stop") return analysisRoute(res, route, body);
-		if (route === "GET /api/repos/roadmap" || url.pathname === "/api/repos/export" || url.pathname === "/api/repos/mural") {
-			if (url.pathname === "/api/repos/export" && req.method !== "GET" && req.method !== "POST") throw new HttpError(405, "Method not allowed");
-			const report = await readReport(options.reportPath);
-			if (!report) throw new HttpError(404, "There is no scan yet. Scan a folder first.");
-			const query = url.searchParams;
-			const filter = parseFilter({ severity: query.get("severity"), kind: query.get("kind"), match: query.get("q"), repo: query.get("repo") });
-			if (route === "GET /api/repos/roadmap") return sendJson(res, 200, { roadmap: buildRepoRoadmap(report, filter) });
-			const key = muralKey(report, filter);
-			if (url.pathname === "/api/repos/mural") return muralRoute(res, route, report, filter, key);
-			let mural: Mural | undefined;
-			if (query.get("mural") === "1") {
-				if (muralJob.state !== "done" || muralJob.key !== key) throw new HttpError(409, "Write the mural first: it is made for this scan and these filters");
-				mural = muralJob.mural;
-			}
-			const file = exportRepos(report, exportChoice(query), filter, mural);
-			const title: FileTitle = `${exportChoice(query).content === "findings" ? "findings" : "roadmap"}${isFiltering(filter) ? "-partial" : ""}`;
-			// POST writes it into the project in use; GET hands it to the browser to save.
-			if (req.method === "POST") return saveExport(res, file, title);
-			log(`Exported ${FILE_TITLES[title]} (${file.extension}) as a download`);
-			return sendDownload(res, file);
-		}
-		if (route === "GET /api/repos/scan") return sendJson(res, 200, { scan: status });
-		if (route === "GET /api/repos/preview") {
-			return sendJson(res, 200, { preview: await previewScan(url.searchParams.get("root") ?? options.defaultRoot, url.searchParams.get("depth"), github.dir) });
-		}
-		if (url.pathname === "/api/github" || url.pathname.startsWith("/api/github/")) return githubRoute(res, route, url, body);
-		if (route === "POST /api/repos/scan") {
-			if (status.state === "running") throw new HttpError(409, "A scan is already running");
-			// A repository half fetched is not one to scan.
-			if (fetching.state === "running") throw new HttpError(409, "Repositories are still being fetched from GitHub. Scan when that has finished.");
-			if (analysing.state === "running") throw new HttpError(409, "The model is still analysing the last scan. Stop that first, or wait for it to finish.");
-			const { root, depth } = await scanRequest(body);
-			const also = (await fetchedRepos(github.dir)).length > 0 ? [{ root: github.dir, depth: GITHUB_DEPTH }] : undefined;
-			status = { state: "running", root, startedAt: new Date().toISOString(), done: 0, total: 0, current: null };
-			// The scan is logged in the project in use when it starts, even if the owner moves to another meanwhile.
-			const project = await projects.current();
-			log(`Scan started: ${root}, ${depth} ${depth === 1 ? "level" : "levels"} down`, project);
-			// Not awaited: the scan outlives this request and the UI polls for progress.
-			void scan({
-				root,
-				depth,
-				...(also ? { also } : {}),
-				onProgress: ({ done, total, path }) => {
-					if (status.state === "running") status = { ...status, done, total, current: nameUnder(root, also?.map((other) => other.root), path) };
+	let routeTable: Route[] | undefined;
+
+	/**
+	 * What answers what, in order: the first entry that claims a request answers it, so a narrower
+	 * path comes before the wider one that contains it (/api/model/local before /api/model, a
+	 * domain's export before /api/domains). Built on the first request, once everything it names exists.
+	 */
+	function routes(): Route[] {
+		const exact = (route: string) => (call: Call) => call.route === route;
+		/** A path and everything beneath it, whatever the method: the handler says which methods it takes. */
+		const under = (path: string) => (call: Call) => call.url.pathname === path || call.url.pathname.startsWith(`${path}/`);
+		const paths = (...names: string[]) => (call: Call) => names.includes(call.url.pathname);
+		return [
+			[exact("GET /api/state"), stateRoute],
+			[exact("POST /api/repos/send"), ({ res, body }) => sendRoute(res, body)],
+			[under("/api/projects"), ({ res, route, url, body, gate }) => projectsRoute(res, route, url, body, gate)],
+			[under("/api/discussions"), ({ res, route, url, body }) => discussionRoute(res, route, url, body)],
+			[paths("/api/host", "/api/host/check"), ({ res, route, body }) => hostRoute(res, route, body)],
+			[under("/api/investigate"), ({ res, route, url, body, gate }) => investigateRoute(res, route, url, body, gate)],
+			[under("/api/cloudflare"), ({ res, route, url, body, gate }) => cloudflareRoute(res, route, url, body, gate)],
+			[under("/api/monitor"), ({ res, route, body, gate }) => monitorRoute(res, route, body, gate)],
+			[exact("GET /api/activity"), activityRoute],
+			[exact("GET /api/repos/history"), historyRoute],
+			[exact("POST /api/findings/note"), ({ res, body }) => noteRoute(res, body)],
+			[exact("GET /api/busy"), ({ res }) => sendJson(res, 200, { busy: busyWork() })],
+			[exact("POST /api/view"), viewRoute],
+			[exact("POST /api/settings"), settingsRoute],
+			[under("/api/model/local"), ({ res, route, url, body, gate }) => downloadRoute(res, route, url, body, gate)],
+			[under("/api/model"), ({ res, route, body }) => modelRoute(res, route, body)],
+			[under("/api/access"), ({ res, route, body, gate }) => accessRoute(res, route, body, gate)],
+			[(call) => call.url.pathname.startsWith("/api/assist/"), ({ req, res, url, body }) => assist(req, res, url.pathname.slice("/api/assist/".length), body)],
+			[exact("GET /api/repos/report"), async ({ res }) => sendJson(res, 200, { ...(await loadReport(options.reportPath, analysisPath)), findingNotes: await readNotes(notesPath) })],
+			[paths("/api/analysis", "/api/analysis/stop"), ({ res, route, body }) => analysisRoute(res, route, body)],
+			[(call) => call.route === "GET /api/repos/roadmap" || call.url.pathname === "/api/repos/export" || call.url.pathname === "/api/repos/mural", roadmapRoute],
+			[exact("GET /api/repos/scan"), ({ res }) => sendJson(res, 200, { scan: status })],
+			[
+				exact("GET /api/repos/preview"),
+				async ({ res, url }) => sendJson(res, 200, { preview: await previewScan(url.searchParams.get("root") ?? options.defaultRoot, url.searchParams.get("depth"), github.dir) }),
+			],
+			[under("/api/github"), ({ res, route, url, body }) => githubRoute(res, route, url, body)],
+			[
+				exact("POST /api/repos/scan"),
+				async ({ res, body }) => {
+					const { root, depth } = await scanRequest(body, defaultDepth);
+					return sendJson(res, 202, { scan: await beginScan(root, depth) });
 				},
-			})
-				.then(async (report) => {
-					if (report.repos.length === 0) {
-						const error = `No git repositories found under ${root}`;
-						status = { state: "failed", root, finishedAt: new Date().toISOString(), error, noRepositories: true, depth };
-						log(`Scan found nothing to check: ${error}`, project);
-						return;
-					}
-					// A scan that checked nothing must not replace one that did.
-					if (report.tools.every((tool) => tool.status === "missing")) {
-						const error = `No scanner is installed. Install one: ${report.tools.map((tool) => tool.installHint).join("; ")}`;
-						status = { state: "failed", root, finishedAt: new Date().toISOString(), error };
-						log("Scan failed: no scanner is installed", project);
-						return;
-					}
-					await saveReport(options.reportPath, report);
-					await history.add(report).catch((err) => console.error(`porchlight ui: could not keep the scan in history: ${err instanceof Error ? err.message : String(err)}`));
-					status = { state: "done", root, finishedAt: new Date().toISOString() };
-					log(`Scan finished: ${scanCounts(report)}`, project);
-				})
-				.catch((err) => {
-					const error = err instanceof Error ? err.message : String(err);
-					status = { state: "failed", root, finishedAt: new Date().toISOString(), error };
-					log(`Scan failed: ${error}`, project);
-				});
-			return sendJson(res, 202, { scan: status });
-		}
+			],
+			[exact("POST /api/repos/scan/cancel"), cancelScanRoute],
+			[exact("POST /api/repos/rescan"), async ({ res, body }) => sendJson(res, 202, { scan: await beginRescan(textField(bodyObject(body), "repo", 1000)) })],
+			[(call) => DOMAIN_EXPORT.test(call.url.pathname), domainExportRoute],
+			[
+				under("/api/domains"),
+				async ({ req, res, url, body }) => {
+					const [code, answer] = await proxyToMonitor(req.method ?? "GET", url.pathname, body);
+					return sendJson(res, code, withSuggestions(answer));
+				},
+			],
+		];
+	}
 
-		const domainExport = /^\/api\/domains\/([^/]+)\/export$/.exec(url.pathname);
-		if (domainExport) {
-			if (req.method !== "GET" && req.method !== "POST") throw new HttpError(405, "Method not allowed");
-			const [code, answer] = await proxyToMonitor("GET", `/api/domains/${domainExport[1]}`, undefined);
-			const report = (answer as { report?: MonitorReport | null }).report;
-			if (code !== 200) throw new HttpError(code, (answer as { error?: string }).error ?? "The monitor refused the request");
-			if (!report) throw new HttpError(404, "This domain has not been scanned yet, so there is nothing to export.");
-			const file = exportDomain(report, exportChoice(url.searchParams));
-			const title: FileTitle = exportChoice(url.searchParams).content === "findings" ? "domain-findings" : "domain-roadmap";
-			if (req.method === "POST") return saveExport(res, file, title);
-			log(`Exported ${FILE_TITLES[title]} (${file.extension}) as a download`);
-			return sendDownload(res, file);
+	/** What the page needs to draw itself: where things are, what is set up, never a secret. */
+	async function stateRoute({ res, gate }: Call): Promise<void> {
+		return sendJson(res, 200, {
+			defaultRoot: options.defaultRoot,
+			reportPath: options.reportPath,
+			// What the scan form starts from, and how often a service scans by itself (0: only when asked).
+			scanDepth: defaultDepth,
+			scanEveryHours: options.scanEveryHours ?? 0,
+			scan: status,
+			...(await readUiSettings(settingsPath)),
+			// A service (a container, under BoxPilot) is configured where it is managed, not from a shell,
+			// so the page explains connecting the monitor in those terms.
+			service: !loopbackOnly,
+			// Opened from another device over the tailnet, rather than on this computer.
+			remote: gate.tailnet,
+			// The computer Porchlight runs on, so the page can call it "This Mac".
+			platform: process.platform,
+			monitor: monitorState(),
+			// Whether a token is set, never the token.
+			github: { token: github.token !== undefined, ...(options.githubError ? { error: options.githubError } : {}) },
+			assistant: assistantSummary(),
+			lastView: await readView(viewPath),
+			// The projects, and the one exports, discussions and the log go to.
+			projects: await projectsState(gate),
+			// Whether Cloudflare is connected and how, never the token.
+			cloudflare: await cloudflareTokenState(),
+			// What "Send to a model" offers. Never a key: only where each one runs and which model.
+			sendTargets: targets().map((target) => ({ id: target.id, label: target.label, model: target.config.model, host: target.config.url.host, hosted: target.hosted, current: target.current })),
+		});
+	}
+
+	function activityRoute({ res, url }: Call): void {
+		const after = Number(url.searchParams.get("after") ?? 0);
+		const from = Number.isInteger(after) && after >= 0 ? after : 0;
+		return sendJson(res, 200, { lines: activity.filter((line) => line.n > from), last: activityCount });
+	}
+
+	async function historyRoute({ res }: Call): Promise<void> {
+		const report = await readReport(options.reportPath);
+		const scans = (await history.list()).reverse();
+		return sendJson(res, 200, { scans, change: report ? await history.latestChange(report) : null });
+	}
+
+	/** Where the owner is in the page, kept so the app opens there again. */
+	async function viewRoute({ res, body }: Call): Promise<void> {
+		const view = bodyObject(body).view;
+		// A place in the page, with its filters; never the session key, which lives only in the fragment it came in.
+		if (typeof view !== "string" || !/^#\/[^\s]{0,1000}$/.test(view) || /(?:^|[#&?])k=/.test(view)) throw new HttpError(400, "Not a place in the page");
+		await saveView(viewPath, view);
+		return sendJson(res, 200, { view });
+	}
+
+	/** The look, and where a model's answers appear. */
+	async function settingsRoute({ res, body }: Call): Promise<void> {
+		// Either preference, or both; whatever is left out stays as it was.
+		const fields = bodyObject(body);
+		if (fields.appearance === undefined && fields.answers === undefined) throw new HttpError(400, "Choose an appearance or where answers appear");
+		if (fields.appearance !== undefined && !isLook(fields.appearance)) throw new HttpError(400, "Unknown appearance");
+		if (fields.answers !== undefined && !isAnswerPlace(fields.answers)) throw new HttpError(400, "Unknown place for answers");
+		const next = { ...(await readUiSettings(settingsPath)) };
+		if (fields.appearance !== undefined) next.appearance = fields.appearance as string;
+		if (fields.answers !== undefined) next.answers = fields.answers as string;
+		await saveUiSettings(settingsPath, next);
+		return sendJson(res, 200, next);
+	}
+
+	/** The roadmap for the page, an export of it or of the findings, and the mural an export can carry. */
+	async function roadmapRoute({ req, res, url, route }: Call): Promise<void> {
+		if (url.pathname === "/api/repos/export" && req.method !== "GET" && req.method !== "POST") throw new HttpError(405, "Method not allowed");
+		const report = await readReport(options.reportPath);
+		if (!report) throw new HttpError(404, "There is no scan yet. Scan a folder first.");
+		const query = url.searchParams;
+		const filter = parseFilter({ severity: query.get("severity"), kind: query.get("kind"), match: query.get("q"), repo: query.get("repo") });
+		if (route === "GET /api/repos/roadmap") return sendJson(res, 200, { roadmap: buildRepoRoadmap(report, filter) });
+		const key = muralKey(report, filter);
+		if (url.pathname === "/api/repos/mural") return muralRoute(res, route, report, filter, key);
+		let mural: Mural | undefined;
+		if (query.get("mural") === "1") {
+			if (muralJob.state !== "done" || muralJob.key !== key) throw new HttpError(409, "Write the mural first: it is made for this scan and these filters");
+			mural = muralJob.mural;
 		}
-		if (url.pathname === "/api/domains" || url.pathname.startsWith("/api/domains/")) {
-			const [code, answer] = await proxyToMonitor(req.method ?? "GET", url.pathname, body);
-			return sendJson(res, code, withSuggestions(answer));
-		}
-		throw new HttpError(404, "Not found");
+		const file = exportRepos(report, exportChoice(query), filter, mural);
+		const title: FileTitle = `${exportChoice(query).content === "findings" ? "findings" : "roadmap"}${isFiltering(filter) ? "-partial" : ""}`;
+		// POST writes it into the project in use; GET hands it to the browser to save.
+		if (req.method === "POST") return saveExport(res, file, title);
+		log(`Exported ${FILE_TITLES[title]} (${file.extension}) as a download`);
+		return sendDownload(res, file);
+	}
+
+	function cancelScanRoute({ res }: Call): void {
+		if (status.state !== "running" || !scanCancel) throw new HttpError(409, "No scan is running");
+		// The scanners are stopped; the scan's own ending (below, in beginScan) puts the status back.
+		scanCancel.abort();
+		return sendJson(res, 200, { scan: status });
+	}
+
+	/** A domain's repair roadmap or findings, from the monitor's latest report of it. */
+	async function domainExportRoute({ req, res, url }: Call): Promise<void> {
+		const domainExport = DOMAIN_EXPORT.exec(url.pathname)!;
+		if (req.method !== "GET" && req.method !== "POST") throw new HttpError(405, "Method not allowed");
+		const [code, answer] = await proxyToMonitor("GET", `/api/domains/${domainExport[1]}`, undefined);
+		const report = (answer as { report?: MonitorReport | null }).report;
+		if (code !== 200) throw new HttpError(code, (answer as { error?: string }).error ?? "The monitor refused the request");
+		if (!report) throw new HttpError(404, "This domain has not been scanned yet, so there is nothing to export.");
+		const file = exportDomain(report, exportChoice(url.searchParams));
+		const title: FileTitle = exportChoice(url.searchParams).content === "findings" ? "domain-findings" : "domain-roadmap";
+		if (req.method === "POST") return saveExport(res, file, title);
+		log(`Exported ${FILE_TITLES[title]} (${file.extension}) as a download`);
+		return sendDownload(res, file);
 	}
 
 	/**
@@ -2155,6 +2215,150 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		}
 	}
 
+	/** Refuses a scan while something else is reading or writing the same repositories or report. */
+	function scanMayStart(): void {
+		if (status.state === "running") throw new HttpError(409, "A scan is already running");
+		// A repository half fetched is not one to scan.
+		if (fetching.state === "running") throw new HttpError(409, "Repositories are still being fetched from GitHub. Scan when that has finished.");
+		if (analysing.state === "running") throw new HttpError(409, "The model is still analysing the last scan. Stop that first, or wait for it to finish.");
+	}
+
+	/**
+	 * Starts a scan of `root` and returns at once: the scan outlives the request, and the page polls
+	 * for progress. Used by the page's button and by the schedule.
+	 */
+	async function beginScan(root: string, depth: number): Promise<ScanStatus> {
+		scanMayStart();
+		const also = (await fetchedRepos(github.dir)).length > 0 ? [{ root: github.dir, depth: GITHUB_DEPTH }] : undefined;
+		const cancel = new AbortController();
+		scanCancel = cancel;
+		status = { state: "running", root, startedAt: new Date().toISOString(), done: 0, total: 0, current: null };
+		// The scan is logged in the project in use when it starts, even if the owner moves to another meanwhile.
+		const project = await projects.current();
+		log(`Scan started: ${root}, ${depth} ${depth === 1 ? "level" : "levels"} down`, project);
+		void scan({
+			root,
+			depth,
+			...(also ? { also } : {}),
+			signal: cancel.signal,
+			onProgress: ({ done, total, path }) => {
+				if (status.state === "running") status = { ...status, done, total, current: nameUnder(root, also?.map((other) => other.root), path) };
+			},
+		})
+			.then(async (report) => {
+				// Cancelled as it finished: the owner asked for it not to count.
+				if (cancel.signal.aborted) throw new CancelledError();
+				if (report.repos.length === 0) {
+					const error = `No git repositories found under ${root}`;
+					status = { state: "failed", root, finishedAt: new Date().toISOString(), error, noRepositories: true, depth };
+					log(`Scan found nothing to check: ${error}`, project);
+					return;
+				}
+				// A scan that checked nothing must not replace one that did.
+				if (report.tools.every((tool) => tool.status === "missing")) {
+					const error = `No scanner is installed. Install one: ${report.tools.map((tool) => tool.installHint).join("; ")}`;
+					status = { state: "failed", root, finishedAt: new Date().toISOString(), error };
+					log("Scan failed: no scanner is installed", project);
+					return;
+				}
+				await saveReport(options.reportPath, report);
+				await history.add(report).catch((err) => console.error(`porchlight ui: could not keep the scan in history: ${err instanceof Error ? err.message : String(err)}`));
+				status = { state: "done", root, finishedAt: new Date().toISOString() };
+				log(`Scan finished: ${scanCounts(report)}`, project);
+			})
+			.catch((err) => {
+				// A cancelled scan saved nothing: the last report stands, and the page goes back to it.
+				if (err instanceof CancelledError || cancel.signal.aborted) {
+					status = { state: "idle" };
+					log("Scan stopped before it finished. The last scan is unchanged", project);
+					return;
+				}
+				const error = err instanceof Error ? err.message : String(err);
+				status = { state: "failed", root, finishedAt: new Date().toISOString(), error };
+				log(`Scan failed: ${error}`, project);
+			})
+			.finally(() => {
+				if (scanCancel === cancel) scanCancel = null;
+			});
+		return status;
+	}
+
+	/**
+	 * Scans one repository of the stored report again and puts the result in its place. The
+	 * repository is found by its name in the report, never by a path from the request. Where a
+	 * scanner is missing or fails this time, what it found before is kept: not looking again never
+	 * clears a finding (invariant 5). The report keeps its scan time, so its history and a model's
+	 * judgements still belong to it; the repository records when it was scanned again.
+	 */
+	async function beginRescan(name: string): Promise<ScanStatus> {
+		scanMayStart();
+		const report = await storedReport();
+		const before = report.repos.find((repo) => repoName(report, repo) === name);
+		if (!before) throw new HttpError(404, "That repository is not in the latest scan. Reload the page to see the current one.");
+		const cancel = new AbortController();
+		scanCancel = cancel;
+		status = { state: "running", root: report.root, startedAt: new Date().toISOString(), done: 0, total: 1, current: name };
+		const project = await projects.current();
+		log(`Scanning ${name} again`, project);
+		void rescan(before.path, { signal: cancel.signal })
+			.then(async ({ repo, tools }) => {
+				if (cancel.signal.aborted) throw new CancelledError();
+				// Scanners that did not look this time: not installed any more, or failed on the repository.
+				const looked = (tool: ToolName) => tools.some((now) => now.tool === tool && now.status === "ok") && !repo.errors.some((error) => error.tool === tool);
+				const kept = before.findings.filter((finding) => !looked(finding.tool));
+				const merged: RepoResult = {
+					...repo,
+					findings: [...kept, ...repo.findings.filter((finding) => looked(finding.tool))],
+					// A scanner that failed before and did not run now is still a gap.
+					errors: [...repo.errors, ...before.errors.filter((error) => !tools.some((now) => now.tool === error.tool && now.status === "ok"))],
+					rescannedAt: new Date().toISOString(),
+				};
+				// Read again: the report may have been replaced while this ran.
+				const current = await storedReport();
+				if (current.scannedAt !== report.scannedAt) throw new Error("A new scan replaced the report while this repository was being scanned again");
+				const next: ScanReport = { ...current, repos: current.repos.map((entry) => (entry.path === before.path ? merged : entry)) };
+				await saveReport(options.reportPath, next);
+				status = { state: "done", root: report.root, finishedAt: new Date().toISOString() };
+				log(`Scanned ${name} again: ${merged.findings.length === 1 ? "1 finding" : `${merged.findings.length} findings`}`, project);
+			})
+			.catch((err) => {
+				if (err instanceof CancelledError || cancel.signal.aborted) {
+					status = { state: "idle" };
+					log(`Stopped scanning ${name} again. The last scan is unchanged`, project);
+					return;
+				}
+				const error = err instanceof Error ? err.message : String(err);
+				status = { state: "failed", root: report.root, finishedAt: new Date().toISOString(), error };
+				log(`Scanning ${name} again failed: ${error}`, project);
+			})
+			.finally(() => {
+				if (scanCancel === cancel) scanCancel = null;
+			});
+		return status;
+	}
+
+	/**
+	 * As a service with a schedule: once the last scan is old enough and nothing else is at work,
+	 * scan the folder again. A scan the schedule cannot start now (one is running, repositories are
+	 * being fetched) is simply tried at the next look.
+	 */
+	async function scheduledScan(): Promise<void> {
+		const hours = options.scanEveryHours;
+		if (!hours || status.state === "running") return;
+		const last = (await readReport(options.reportPath).catch(() => null))?.scannedAt;
+		const failedAt = status.state === "failed" ? status.finishedAt : undefined;
+		// A failed scan is not retried every minute: the schedule waits its full interval after it too.
+		const latest = [last, failedAt].filter((at): at is string => typeof at === "string").sort().at(-1);
+		if (latest && Date.now() - Date.parse(latest) < hours * 3_600_000) return;
+		try {
+			await beginScan(options.defaultRoot, defaultDepth);
+		} catch (err) {
+			if (!(err instanceof HttpError && err.status === 409)) console.error(`porchlight ui: the scheduled scan could not start: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+	const schedule = options.scanEveryHours ? setInterval(() => void scheduledScan(), options.scheduleTickMs ?? 60_000) : undefined;
+	schedule?.unref();
+
 	async function storedReport(): Promise<ScanReport> {
 		const report = await readReport(options.reportPath);
 		if (!report) throw new HttpError(404, "There is no scan yet. Scan a folder first.");
@@ -2225,6 +2429,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		url: `http://127.0.0.1:${port}/#k=${sessionKey}`,
 		close: async () => {
 			investigation?.stop.abort();
+			scanCancel?.abort();
+			clearInterval(schedule);
 			clearInterval(accessRetry);
 			await stopAccess();
 			await new Promise<void>((resolveClose) => {
@@ -2516,8 +2722,8 @@ async function previewScan(root: string, depthText: string | null, githubDir: st
 	return { root: absolute, exists: true, total: inFolder.length + fromGithub.length, repos: names, fetched: fromGithub.length, depth };
 }
 
-async function scanRequest(body: unknown): Promise<{ root: string; depth: number }> {
-	const { root, depth = 3 } = (body ?? {}) as { root?: unknown; depth?: unknown };
+async function scanRequest(body: unknown, defaultDepth: number): Promise<{ root: string; depth: number }> {
+	const { root, depth = defaultDepth } = (body ?? {}) as { root?: unknown; depth?: unknown };
 	if (typeof root !== "string" || root.trim() === "") throw new HttpError(400, "Choose a folder to scan");
 	if (typeof depth !== "number" || !Number.isInteger(depth) || depth < 0 || depth > MAX_DEPTH) {
 		throw new HttpError(400, `Depth must be a whole number from 0 to ${MAX_DEPTH}`);
@@ -2556,8 +2762,30 @@ async function loadReport(path: string, analysisPath: string): Promise<{ report:
 	};
 }
 
-/** The stored report as it was written, or null when there is none yet. */
+/** The report last parsed from each path, with what identified the file then. */
+const parsedReports = new Map<string, { stamp: string; report: ScanReport }>();
+
+/**
+ * The stored report as it was written, or null when there is none yet. Most requests read it, and a
+ * large one takes a while to parse, so the parsed report is kept until the file changes: every save
+ * writes a new file and renames it into place, which changes its identity, size or time. The kept
+ * report is frozen, so no caller can change what the next one is given.
+ */
 async function readReport(path: string): Promise<ScanReport | null> {
+	let stamp: string;
+	try {
+		const info = await stat(path, { bigint: true });
+		stamp = `${info.ino}:${info.size}:${info.mtimeNs}`;
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+			parsedReports.delete(path);
+			return null;
+		}
+		throw err;
+	}
+	const kept = parsedReports.get(path);
+	if (kept?.stamp === stamp) return kept.report;
+
 	let text: string;
 	try {
 		text = await readFile(path, "utf8");
@@ -2574,7 +2802,16 @@ async function readReport(path: string): Promise<ScanReport | null> {
 	if (!Array.isArray(report?.repos) || !Array.isArray(report?.tools) || typeof report.root !== "string") {
 		throw new HttpError(500, `The report file is not a Porchlight scan report: ${path}`);
 	}
+	parsedReports.set(path, { stamp, report: deepFreeze(report) });
 	return report;
+}
+
+function deepFreeze<T>(value: T): T {
+	if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
+		Object.freeze(value);
+		for (const inner of Object.values(value)) deepFreeze(inner);
+	}
+	return value;
 }
 
 /** The interface's own preferences: the look, and where a model's answers appear. */

@@ -41,6 +41,11 @@ export interface RepoResult {
 	 * (.gitleaks.toml). Missing from older reports.
 	 */
 	settingFiles?: string[];
+	/**
+	 * When this repository alone was scanned again, after the report's own scan time. Where a scanner
+	 * did not look that time, its earlier findings were kept.
+	 */
+	rescannedAt?: string;
 }
 
 export interface ScanReport {

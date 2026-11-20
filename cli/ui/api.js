@@ -115,13 +115,15 @@ export async function apiText(path) {
  * @param {string} method
  * @param {string} path
  * @param {unknown} [body]
+ * @param {{ signal?: AbortSignal }} [options] `signal` stops the request; the call then throws an ApiError with `body.stopped`
  * @returns {Promise<Record<string, any>>}
  */
-export async function api(method, path, body) {
+export async function api(method, path, body, options = {}) {
 	let response;
 	try {
 		response = await fetch(`/api${path}`, {
 			method,
+			signal: options.signal,
 			headers: {
 				"x-porchlight-session": sessionKey(),
 				...(body === undefined ? {} : { "content-type": "application/json" }),
@@ -129,6 +131,8 @@ export async function api(method, path, body) {
 			body: body === undefined ? undefined : JSON.stringify(body),
 		});
 	} catch {
+		// Stopped by the owner, which is not the same as Porchlight not answering.
+		if (options.signal?.aborted) throw new ApiError(0, "Stopped", { stopped: true });
 		throw new ApiError(0, offlineMessage, {});
 	}
 	/** @type {Record<string, any>} */

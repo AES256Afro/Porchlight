@@ -2,7 +2,7 @@
 // Asking the local model, and showing what it wrote. The answer is plain text, built with `h()` like
 // everything else, and always labelled as generated: the model reads attacker-controllable scan data,
 // so what it writes is never trusted as markup and never acted on.
-import { api } from "./api.js";
+import { api, ApiError } from "./api.js";
 import { followUpBox } from "./discussion.js";
 import { banner, h, icon, replace, stepNodes } from "./dom.js";
 import { generatedLabel, localModelSetup, MAX_QUESTION, paragraphs, questionProblem, waitingLabel } from "./generated.js";
@@ -60,6 +60,13 @@ export function redrawAnswers() {
 }
 
 /**
+ * The button whose question the model is answering, if any. The model answers one at a time, so
+ * the other buttons wait, saying why, instead of being pressed and refused.
+ */
+/** @type {HTMLButtonElement | null} */
+let answering = null;
+
+/**
  * @param {string} path
  * @param {AssistantSettings} assistant
  * @param {Labels} labels
@@ -70,6 +77,9 @@ export function redrawAnswers() {
 function createAssist(path, assistant, labels, body, submit) {
 	/** @type {AssistState} */
 	let state = { state: "idle" };
+	/** Stops the request that is waiting, when there is one. */
+	/** @type {AbortController | null} */
+	let stop = null;
 	/** The answers panel's heading for this answer: what is being done, then the discussion's title. */
 	/** @type {import("./panel.js").PanelHead} */
 	let head = { title: labels.busy };
@@ -85,13 +95,15 @@ function createAssist(path, assistant, labels, body, submit) {
 	return self;
 
 	async function run() {
-		if (state.state === "asking") return;
+		if (state.state === "asking" || answering) return;
 		state = { state: "asking" };
 		head = { title: labels.busy };
-		draw();
+		stop = new AbortController();
+		answering = button;
+		redrawAnswers();
 		if (answersPlace() !== "below") showAnswer(self, content, head);
 		try {
-			const answer = await api("POST", path, body());
+			const answer = await api("POST", path, body(), { signal: stop.signal });
 			const model = typeof answer.model === "string" ? answer.model : modelName(assistant);
 			const discussion = typeof answer.discussion === "string" ? answer.discussion : null;
 			state = {
@@ -106,18 +118,34 @@ function createAssist(path, assistant, labels, body, submit) {
 			};
 			head = { title: typeof answer.title === "string" ? answer.title : labels.again, discussion };
 		} catch (err) {
-			state = { state: "failed", error: err instanceof Error ? err.message : String(err) };
-			head = { title: "The model could not answer" };
+			if (err instanceof ApiError && err.body.stopped) {
+				// Stopped by the owner: back to how it was, with nothing to report. The server stops the model too.
+				state = { state: "idle" };
+				head = { title: labels.start };
+			} else {
+				state = { state: "failed", error: err instanceof Error ? err.message : String(err) };
+				head = { title: "The model could not answer" };
+			}
 		}
-		draw();
+		stop = null;
+		answering = null;
+		redrawAnswers();
 		retitle(self, head);
 	}
 
 	function draw() {
-		button.disabled = state.state === "asking";
+		// aria-disabled, so the button that was pressed keeps keyboard focus while it waits.
+		const waiting = state.state === "asking" || (answering !== null && answering !== button);
+		if (waiting) button.setAttribute("aria-disabled", "true");
+		else button.removeAttribute("aria-disabled");
+		button.title = answering !== null && answering !== button ? "The model is answering another question. This one can be asked when it has finished." : "";
 		replace(button, icon("spark"), state.state === "asking" ? labels.busy : state.state === "done" ? labels.again : labels.start);
 		if (state.state === "asking") {
-			replace(content, h("p", { class: "assist-wait" }, icon("pending"), waitingLabel(modelName(assistant))));
+			replace(
+				content,
+				h("p", { class: "assist-wait" }, icon("pending"), waitingLabel(modelName(assistant))),
+				h("button", { type: "button", class: "button", onclick: () => stop?.abort() }, "Stop"),
+			);
 		} else if (state.state === "done") {
 			replace(content, generatedText(state.text, state.model, [labels.note, state.cut]), state.follow);
 		} else if (state.state === "failed") {

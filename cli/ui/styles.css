@@ -3734,3 +3734,24 @@ fieldset.looks legend {
 .host-check code {
 	overflow-wrap: anywhere;
 }
+
+/* Stopping work in progress: a scan, or a model's answer. */
+.progress > .button,
+.assist-content > .assist-wait + .button {
+	margin-top: 12px;
+}
+
+/* "Scan this repository again", above a repository's findings. */
+.repo-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px 12px;
+	margin: 0;
+}
+
+/* Stop sits under the waiting line at its own width, not stretched across the panel. */
+.assist-content > .assist-wait + .button {
+	display: flex;
+	width: fit-content;
+}

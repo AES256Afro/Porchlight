@@ -7,7 +7,7 @@ import { assistantConfig } from "../src/assist/ollama.ts";
 import type { HostReport } from "../src/host/types.ts";
 import { listenOnFirstFree } from "../src/main.ts";
 import { monitorConfig } from "../src/monitor/client.ts";
-import type { Runner } from "../src/repos/exec.ts";
+import { CancelledError, type Runner } from "../src/repos/exec.ts";
 import type { ScanOptions } from "../src/repos/scan.ts";
 import type { ScanReport } from "../src/repos/types.ts";
 import { hostAllowed, MIN_KEY_LENGTH, originAllowed, SCRIPTS, startUiServer, type UiOptions, type UiServer } from "../src/ui/server.ts";
@@ -401,6 +401,116 @@ test("runs one scan at a time, reports progress, and stores the result privately
 		["critical", "high"],
 	);
 	assert.deepEqual(notes, ["Dependencies were not checked: osv-scanner is not installed (brew install osv-scanner)."]);
+});
+
+test("a scan can be stopped: its scanners get the signal, nothing is saved, and the last report stands", async (t) => {
+	let signal!: AbortSignal;
+	const server = await start(t, {
+		scan: (options) => {
+			signal = options.signal!;
+			// As the real scan does: it ends, cancelled, once its scanners have been stopped.
+			return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new CancelledError())));
+		},
+	});
+	await makeTree(server.dir, { "projects/": "", "state/": "" });
+	const reportPath = join(server.dir, "state", "repo-scan.json");
+	await writeFile(reportPath, JSON.stringify(sampleReport("/work")));
+
+	assert.equal((await send(server, "POST", "/api/repos/scan/cancel")).status, 409, "nothing to stop yet");
+	await send(server, "POST", "/api/repos/scan", { body: { root: join(server.dir, "projects") } });
+	assert.equal((await send(server, "POST", "/api/repos/scan/cancel")).status, 200);
+	assert.equal(signal.aborted, true);
+
+	await untilScan(server, "idle");
+	assert.deepEqual(JSON.parse(await readFile(reportPath, "utf8")), sampleReport("/work"));
+	assert.ok((await send(server, "GET", "/api/activity")).json.lines.some((line: { text: string }) => /Scan stopped before it finished/.test(line.text)));
+});
+
+test("scans one repository again, keeping what a scanner that did not look had found", async (t) => {
+	const asked: string[] = [];
+	let outcome: "fixed" | "gitleaks-failed" = "fixed";
+	const server = await start(t, {
+		rescan: async (path) => {
+			asked.push(path);
+			const tools: ScanReport["tools"] = [
+				{ tool: "gitleaks", status: "ok", version: "8.30.1", installHint: "brew install gitleaks" },
+				// osv-scanner was not installed for the scan either, and still is not.
+				{ tool: "osv-scanner", status: "missing", installHint: "brew install osv-scanner" },
+			];
+			if (outcome === "gitleaks-failed") return { repo: { path, findings: [], errors: [{ tool: "gitleaks", message: "fatal: bad object" }] }, tools };
+			return { repo: { path, findings: [], errors: [] }, tools };
+		},
+	});
+	await makeTree(server.dir, { "state/": "" });
+	const reportPath = join(server.dir, "state", "repo-scan.json");
+	await writeFile(reportPath, JSON.stringify(sampleReport("/work")));
+	const worst = async () => (JSON.parse(await readFile(reportPath, "utf8")) as ScanReport).repos.find((repo) => repo.path === "/work/group/worst")!;
+
+	// A path is never taken from the request: only a repository of the report, by its name.
+	assert.equal((await send(server, "POST", "/api/repos/rescan", { body: { repo: "/etc" } })).status, 404);
+	assert.equal((await send(server, "POST", "/api/repos/rescan", { body: {} })).status, 400);
+
+	// gitleaks fails this time: its secret stays, and the failure is recorded.
+	outcome = "gitleaks-failed";
+	assert.equal((await send(server, "POST", "/api/repos/rescan", { body: { repo: "group/worst" } })).status, 202);
+	await untilScan(server, "done");
+	assert.deepEqual((await worst()).findings.map((entry) => entry.severity).sort(), ["critical", "high"]);
+	assert.deepEqual((await worst()).errors, [{ tool: "gitleaks", message: "fatal: bad object" }]);
+
+	// gitleaks looks and finds the secret gone: that one clears. osv-scanner did not look, so its finding stays.
+	outcome = "fixed";
+	await send(server, "POST", "/api/repos/rescan", { body: { repo: "group/worst" } });
+	await untilScan(server, "done");
+	const after = await worst();
+	assert.deepEqual(after.findings.map((entry) => `${entry.tool} ${entry.severity}`), ["osv-scanner critical"]);
+	assert.deepEqual(after.errors, []);
+	assert.match(after.rescannedAt ?? "", /^\d{4}-/);
+
+	assert.deepEqual(asked, ["/work/group/worst", "/work/group/worst"]);
+	const stored = JSON.parse(await readFile(reportPath, "utf8")) as ScanReport;
+	assert.equal(stored.scannedAt, sampleReport("/work").scannedAt, "the report keeps its scan time");
+	assert.deepEqual(stored.repos.find((repo) => repo.path === "/work/mild"), sampleReport("/work").repos[1], "other repositories are untouched");
+	assert.equal((await stat(reportPath)).mode & 0o777, 0o600);
+});
+
+test("a schedule scans the folder again once the last scan is old enough, and not before", async (t) => {
+	const scans: { root: string; depth: number }[] = [];
+	const server = await start(t, {
+		scanDepth: 5,
+		scanEveryHours: 24,
+		scheduleTickMs: 20,
+		scan: async (options) => {
+			scans.push({ root: options.root, depth: options.depth });
+			return { ...sampleReport(options.root), scannedAt: new Date().toISOString() };
+		},
+	});
+
+	// No scan yet: the first look starts one, at the default depth. It is fresh, so no second one follows.
+	await untilScan(server, "done");
+	await new Promise((resolve) => setTimeout(resolve, 120));
+	assert.deepEqual(scans, [{ root: server.dir, depth: 5 }]);
+	assert.deepEqual(pick((await send(server, "GET", "/api/state")).json, ["scanDepth", "scanEveryHours"]), { scanDepth: 5, scanEveryHours: 24 });
+
+	// The stored scan is now two days old: the next look scans again.
+	await writeFile(join(server.dir, "state", "repo-scan.json"), JSON.stringify({ ...sampleReport(server.dir), scannedAt: new Date(Date.now() - 48 * 3_600_000).toISOString() }));
+	for (let i = 0; i < 100 && scans.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+	assert.equal(scans.length, 2);
+});
+
+test("reads a report that changed on disk, and serves the kept one until then", async (t) => {
+	const server = await start(t);
+	await makeTree(server.dir, { "state/": "" });
+	const reportPath = join(server.dir, "state", "repo-scan.json");
+	const names = async () => (await send(server, "GET", "/api/repos/report")).json.report.repos.map((repo: { name: string }) => repo.name);
+
+	await writeFile(reportPath, JSON.stringify(sampleReport("/work")));
+	assert.deepEqual(await names(), ["group/worst", "mild", "clean"]);
+	assert.deepEqual(await names(), ["group/worst", "mild", "clean"]);
+
+	const smaller = sampleReport("/work");
+	smaller.repos = smaller.repos.slice(0, 2);
+	await writeFile(reportPath, JSON.stringify(smaller));
+	assert.deepEqual(await names(), ["mild", "clean"]);
 });
 
 test("reports a failed scan, and a scan that found no repositories, as failures", async (t) => {

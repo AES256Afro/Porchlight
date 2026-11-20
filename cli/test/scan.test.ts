@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, readFile, writeFile } from "node:fs/promises";
+import { access, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { GIT_LOG_OPTIONS, GITLEAKS_CONFIG } from "../src/repos/gitleaks.ts";
 import { coverageNotes, exceeds, exitCode, renderMarkdown, renderSummary, repoName } from "../src/repos/report.ts";
-import { scanRepos } from "../src/repos/scan.ts";
+import { progressLine, reposScan } from "../src/main.ts";
+import { CancelledError, run as realRun, type Runner } from "../src/repos/exec.ts";
+import { History } from "../src/repos/history.ts";
+import { repoConcurrency, rescanRepo, scanRepos } from "../src/repos/scan.ts";
 import { scannerSettingFiles } from "../src/repos/settings.ts";
 import type { ScanReport } from "../src/repos/types.ts";
 import { fakeAwsKeyId, fakeRunner, git, installed, makeTree, tempDir } from "./helpers.ts";
@@ -305,4 +308,97 @@ test("scans a further folder in the same report and names its repositories apart
 	assert.deepEqual(report.repos.map((repo) => repoName({ ...report, otherRoots: [github] }, repo)), ["github/me/shop", "shop"]);
 	// A report from before this existed is named as it always was.
 	assert.equal((await scanRepos({ root, depth: 3, run: fakeRunner({}), settingFiles: async () => [] })).otherRoots, undefined);
+});
+
+test("runs a repository's scanners together, and still reports them in one order", async () => {
+	const root = await tempDir();
+	await makeTree(root, { "leaky/.git/": "" });
+	let running = 0;
+	let together = 0;
+	const slow = async <T>(value: T, ms: number): Promise<T> => {
+		running++;
+		together = Math.max(together, running);
+		await new Promise((done) => setTimeout(done, ms));
+		running--;
+		return value;
+	};
+	const run: Runner = async (command, args) => {
+		if (args[0] === "version" || args[0] === "--version") return { code: 0, stdout: "1.0.0\n", stderr: "" };
+		// gitleaks answers last, and is still listed first.
+		if (command === "gitleaks") return slow({ code: 0, stdout: JSON.stringify([gitleaksRow("app/settings.py")]), stderr: "" }, 40);
+		return slow({ code: 1, stdout: JSON.stringify(osvRow("9.8")), stderr: "" }, 5);
+	};
+
+	const report = await scanRepos({ root, depth: 2, run, now: NOW });
+
+	assert.equal(together, 2, "both scanners were running at once");
+	assert.deepEqual(report.repos[0]!.findings.map((finding) => finding.tool), ["gitleaks", "osv-scanner"]);
+});
+
+test("says when each repository finishes, how long it took and what it found", async () => {
+	const root = await twoRepos();
+	const run = fakeRunner({
+		gitleaks: (args) => (args[0] === "version" ? { stdout: "8.30.1\n" } : args.at(-1)!.endsWith("leaky") ? { stdout: JSON.stringify([gitleaksRow("a.py")]) } : { stdout: "[]" }),
+		"osv-scanner": (args) => (args[0] === "--version" ? { stdout: "2.7.1\n" } : { code: 127, stderr: "could not reach the database" }),
+	});
+	let clock = Date.parse("2026-11-17T12:00:00Z");
+	const lines: string[] = [];
+
+	await scanRepos({ root, depth: 2, run, concurrency: 1, now: () => new Date((clock += 700)), onRepoDone: (done) => lines.push(progressLine(done, root)) });
+
+	assert.deepEqual(lines, ["[1/2] clean  0.7s  0 findings, 1 scanner failed", "[2/2] leaky  0.7s  1 finding, 1 scanner failed"]);
+	assert.equal(progressLine({ done: 3, total: 17, path: join(root, "group/shop"), ms: 12_400, findings: 4, errors: 0 }, root), "[ 3/17] group/shop  12s  4 findings");
+	assert.deepEqual([1, 4, 8, 16, 64].map(repoConcurrency), [2, 2, 4, 8, 8]);
+});
+
+test("a cancelled scan stops its scanners and reports nothing", async () => {
+	const root = await twoRepos();
+	const cancel = new AbortController();
+	const signals: (AbortSignal | undefined)[] = [];
+	const run: Runner = async (_command, args, options) => {
+		if (args[0] === "version" || args[0] === "--version") return { code: 0, stdout: "1.0.0\n", stderr: "" };
+		signals.push(options?.signal);
+		// The owner cancels while the first scanners are at work; a real program is stopped by the signal.
+		cancel.abort();
+		throw new CancelledError();
+	};
+
+	await assert.rejects(scanRepos({ root, depth: 2, run, concurrency: 1, signal: cancel.signal }), CancelledError);
+	assert.ok(signals.length > 0 && signals.every((signal) => signal === cancel.signal), "every scanner was given the signal");
+	// The real runner refuses to start anything once cancelled.
+	await assert.rejects(realRun("git", ["--version"], { signal: cancel.signal }), CancelledError);
+});
+
+test("scans one repository again without touching the others", async () => {
+	const root = await twoRepos();
+	const scanned: string[] = [];
+	const run = fakeRunner({
+		gitleaks: (args) => (args[0] === "version" ? { stdout: "8.30.1\n" } : (scanned.push(args.at(-1)!), { stdout: "[]" })),
+		"osv-scanner": (args) => (args[0] === "--version" ? { stdout: "2.7.1\n" } : { code: 128, stderr: "No package sources found" }),
+	});
+
+	const { repo, tools } = await rescanRepo(join(root, "leaky"), { run });
+
+	assert.deepEqual(scanned, [join(root, "leaky")]);
+	assert.deepEqual([repo.path, repo.findings, repo.errors], [join(root, "leaky"), [], []]);
+	assert.deepEqual(tools.map((tool) => `${tool.tool} ${tool.status}`), ["gitleaks ok", "osv-scanner ok"]);
+});
+
+test("--save keeps a terminal scan where the interface reads it, readable only by its owner", async () => {
+	const root = await twoRepos();
+	const dataDir = await tempDir();
+	const run = fakeRunner({
+		gitleaks: (args) => (args[0] === "version" ? { stdout: "8.30.1\n" } : { stdout: "[]" }),
+		"osv-scanner": (args) => (args[0] === "--version" ? { stdout: "2.7.1\n" } : { code: 128, stderr: "No package sources found" }),
+	});
+	const out = join(await tempDir(), "report.md");
+
+	assert.equal(await reposScan([root, "--out", out], { run, dataDir }), 0);
+	await assert.rejects(access(join(dataDir, "repo-scan.json")), "nothing is kept without --save");
+
+	assert.equal(await reposScan([root, "--out", out, "--save"], { run, dataDir }), 0);
+	const saved = JSON.parse(await readFile(join(dataDir, "repo-scan.json"), "utf8")) as ScanReport;
+	assert.deepEqual([saved.root, saved.repos.length], [root, 2]);
+	assert.equal((await stat(join(dataDir, "repo-scan.json"))).mode & 0o777, 0o600);
+	assert.deepEqual((await new History(dataDir).list()).map((entry) => entry.scannedAt), [saved.scannedAt]);
 });

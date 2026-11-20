@@ -42,7 +42,7 @@ export const store = {
 	 *
 	 * `cloudflare`: whether a Cloudflare token is saved or given at start-up; never the token.
 	 *
-	 * @type {{ defaultRoot: string, reportPath: string, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean, source?: "settings", savedAt?: string }, github: { token: boolean, error?: string }, assistant: import("./generated.js").AssistantSettings, appearance: string, answers: string, remote: boolean, platform: string, sendTargets: import("./send-text.js").SendTarget[], lastView: string | null, cloudflare: CloudflareToken } | null}
+	 * @type {{ defaultRoot: string, reportPath: string, scanDepth: number, scanEveryHours: number, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean, source?: "settings", savedAt?: string }, github: { token: boolean, error?: string }, assistant: import("./generated.js").AssistantSettings, appearance: string, answers: string, remote: boolean, platform: string, sendTargets: import("./send-text.js").SendTarget[], lastView: string | null, cloudflare: CloudflareToken } | null}
 	 */
 	settings: null,
 	/** @type {ScanReport | null} */
@@ -118,6 +118,9 @@ export function load() {
 		store.settings = {
 			defaultRoot: state.defaultRoot,
 			reportPath: state.reportPath,
+			// Folder levels a scan looks through unless changed, and how often a service scans by itself (0: only when asked).
+			scanDepth: typeof state.scanDepth === "number" ? state.scanDepth : 3,
+			scanEveryHours: typeof state.scanEveryHours === "number" ? state.scanEveryHours : 0,
 			service: state.service === true,
 			monitor: state.monitor,
 			github: state.github ?? { token: false },
@@ -260,6 +263,28 @@ export async function startScan(root, depth) {
 		setScan(scan);
 	} catch (err) {
 		// Someone else, or another tab, started one: follow that scan instead.
+		if (!(err instanceof ApiError && err.status === 409)) throw err;
+	}
+	poll();
+}
+
+/**
+ * Scans one repository of the report again, by its name, and follows it like any scan.
+ *
+ * @param {string} repo
+ */
+export async function rescanRepo(repo) {
+	const { scan } = await api("POST", "/repos/rescan", { repo });
+	setScan(scan);
+	poll();
+}
+
+/** Stops the scan that is running. Nothing is saved; the last scan stays as it was. */
+export async function cancelScan() {
+	try {
+		await api("POST", "/repos/scan/cancel");
+	} catch (err) {
+		// It finished in the meantime: there is nothing left to stop.
 		if (!(err instanceof ApiError && err.status === 409)) throw err;
 	}
 	poll();

@@ -358,3 +358,15 @@ export function keyRejectedWords(why, where) {
 	if (where === "local") return "Porchlight has started again since this tab opened, so its old key no longer works. Open the new link it printed.";
 	return "This tab's key no longer works: it may have been replaced. Paste the current one.";
 }
+
+/**
+ * How often a service scans by itself, in words for the Overview, or "" when it scans only when asked.
+ *
+ * @param {number} hours
+ */
+export function scheduleWords(hours) {
+	if (!hours || hours <= 0) return "";
+	if (hours === 24) return "It is scanned again every day.";
+	if (hours % 24 === 0) return `It is scanned again every ${hours / 24} days.`;
+	return hours === 1 ? "It is scanned again every hour." : `It is scanned again every ${hours} hours.`;
+}
