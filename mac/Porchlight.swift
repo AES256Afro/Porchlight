@@ -4,11 +4,14 @@
 // waits for the link it prints, shows that page in its own window, and stops
 // the interface when the window closes. It adds nothing to the interface's
 // protections: the page is still served on 127.0.0.1 with a per-run key.
+//
+// The page can ask it for two things only (see "The page's bridge"): a folder the owner picks, for
+// a project, and showing one of Porchlight's own files in Finder.
 
 import AppKit
 import WebKit
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, WKScriptMessageHandlerWithReply {
 	private var window: NSWindow!
 	private var webView: WKWebView!
 	private var status: NSTextField!
@@ -111,6 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 	private func buildWindow() {
 		let config = WKWebViewConfiguration()
 		config.websiteDataStore = .nonPersistent()
+		config.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "porchlight")
 		webView = WKWebView(frame: .zero, configuration: config)
 		webView.navigationDelegate = self
 		webView.uiDelegate = self
@@ -317,6 +321,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 		alert.addButton(withTitle: "OK")
 		alert.addButton(withTitle: "Cancel")
 		alert.beginSheetModal(for: window) { completionHandler($0 == .alertFirstButtonReturn) }
+	}
+
+	// MARK: The page's bridge: a folder for a project, and Show in Finder
+
+	/// Answers the page's own main frame, nothing else. A folder chosen goes back as its path and
+	/// nothing more; the server checks it before anything is written. Show in Finder only selects a
+	/// file inside a folder named Porchlight (the one Porchlight writes in) and never opens it.
+	func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage,
+	                           replyHandler: @escaping (Any?, String?) -> Void) {
+		let from = message.frameInfo.securityOrigin
+		guard message.frameInfo.isMainFrame, let origin, from.protocol == origin.scheme, from.host == origin.host, from.port == origin.port ?? 0,
+		      let body = message.body as? [String: Any], let action = body["action"] as? String else {
+			replyHandler(nil, "Refused")
+			return
+		}
+		switch action {
+		case "chooseFolder":
+			chooseFolder { replyHandler($0, nil) }
+		case "reveal":
+			replyHandler(reveal(body["path"] as? String), nil)
+		default:
+			replyHandler(nil, "Unknown action")
+		}
+	}
+
+	private func chooseFolder(_ done: @escaping (String?) -> Void) {
+		let panel = NSOpenPanel()
+		panel.canChooseDirectories = true
+		panel.canChooseFiles = false
+		panel.allowsMultipleSelection = false
+		panel.canCreateDirectories = true
+		panel.prompt = "Choose"
+		panel.message = "Choose the project's folder. Porchlight writes only inside a Porchlight folder within it."
+		panel.beginSheetModal(for: window) { response in
+			done(response == .OK ? panel.url?.path : nil)
+		}
+	}
+
+	private func reveal(_ path: String?) -> Bool {
+		guard let path, path.hasPrefix("/") else { return false }
+		let url = URL(fileURLWithPath: path).standardizedFileURL
+		guard url.pathComponents.contains("Porchlight"), FileManager.default.fileExists(atPath: url.path) else { return false }
+		NSWorkspace.shared.activateFileViewerSelecting([url])
+		return true
 	}
 
 	// MARK: Exports are saved to Downloads

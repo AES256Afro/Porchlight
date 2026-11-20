@@ -6,6 +6,8 @@
 // model, so every element is built with h() and shown as text.
 import { api, ApiError, download } from "./api.js";
 import { emptyState, formatWhen, h, icon, plural, replace, stepNodes, toast } from "./dom.js";
+import { announceSaved } from "./projects.js";
+import { currentProject } from "./store.js";
 
 /** @typedef {import("../src/investigate/engine.ts").Run} Run */
 /** @typedef {import("../src/investigate/engine.ts").Step} Step */
@@ -369,6 +371,7 @@ export async function renderInvestigate(view, runId) {
 				: h(
 						"div",
 						{ class: "actions" },
+						saveToProjectButton(run),
 						exportButton(run, "md", "Export as Markdown"),
 						exportButton(run, "json", "Export as JSON"),
 					),
@@ -474,6 +477,29 @@ export async function renderInvestigate(view, runId) {
 						h("pre", { class: "investigate-pre" }, evidence.response),
 					)
 				: null,
+		);
+	}
+
+	/** With a project in use: the Markdown export written into its folder. @param {Run} run */
+	function saveToProjectButton(run) {
+		const project = currentProject();
+		if (!project) return null;
+		return h(
+			"button",
+			{
+				type: "button",
+				class: "button",
+				onclick: async () => {
+					try {
+						const { saved } = await api("POST", `/investigate/export?id=${encodeURIComponent(run.id)}&format=md`);
+						announceSaved(saved);
+					} catch (err) {
+						toast(err instanceof Error ? err.message : String(err), "error");
+					}
+				},
+			},
+			icon("folder"),
+			`Save in ${project.name}`,
 		);
 	}
 

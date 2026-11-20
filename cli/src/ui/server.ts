@@ -35,7 +35,7 @@ import {
 	type SendContent,
 	type SendPurpose,
 } from "../assist/prompts.ts";
-import { describeFilter } from "../../ui/filter.js";
+import { describeFilter, isFiltering } from "../../ui/filter.js";
 import { MAX_QUESTION } from "../../ui/generated.js";
 import { DEFAULT_ANSWER_PLACE, DEFAULT_LOOK, isAnswerPlace, isLook } from "../../ui/looks.js";
 import { fetchedRepos, fetchRepo, GithubError, listRepos, parseRepoName, removeFetched, validOwner, type GithubConfig } from "../github/github.ts";
@@ -66,6 +66,7 @@ import {
 	fingerprintOf,
 	followUpPrompt,
 	HOSTED_HISTORY_CAP,
+	KIND_WORDS,
 	LOCAL_HISTORY_CAP,
 	MAX_TURNS,
 	newDiscussion,
@@ -77,6 +78,22 @@ import {
 	type DiscussionTurn,
 } from "../discussions/discussions.ts";
 import type { SendTarget } from "../assist/settings.ts";
+import {
+	appendLog,
+	checkFolder,
+	cleanName,
+	FILE_TITLES,
+	isProjectId,
+	OWN_FOLDER,
+	prepareProject,
+	ProjectError,
+	ProjectStore,
+	rewriteFile,
+	saveFile,
+	type FileTitle,
+	type Project,
+	type Saved,
+} from "../projects/projects.ts";
 
 export interface UiOptions {
 	/** 0 picks a free port. */
@@ -203,7 +220,7 @@ export type AnalysisStatus =
 
 const UI_DIR = join(import.meta.dirname, "../../ui");
 /** The page's own modules. Nothing else in the folder is served. */
-const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths", "investigate", "discussions", "discussion", "discussion-links", "panel"];
+const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths", "investigate", "discussions", "discussion", "discussion-links", "panel", "projects"];
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
 	"/": { file: "index.html", type: "text/html; charset=utf-8" },
 	"/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
@@ -396,6 +413,119 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	/** Discussions waiting for a follow-up answer: one question at a time each. */
 	const answering = new Set<string>();
 
+	// Projects: a folder the owner chose, where exports, discussions and a daily log are written.
+	const dataDir = dirname(options.reportPath);
+	const projects = new ProjectStore(join(dataDir, "projects.json"));
+	// A service (a container) keeps project folders in its data volume, in a folder of their own.
+	const projectsWithin = loopbackOnly ? undefined : join(dataDir, "projects");
+	if (projectsWithin) await mkdir(projectsWithin, { recursive: true, mode: 0o700 }).catch(() => {});
+	let logging: Promise<void> = Promise.resolve();
+
+	/**
+	 * Adds a line to a project's log: the one given, or the one in use. Lines are written in order, and
+	 * a log that cannot be written never stops the work it records. Only Porchlight's own words and
+	 * figures go in: never a key, a token, a secret value or a model's text.
+	 */
+	function log(text: string, project?: Project | null): void {
+		const at = new Date();
+		logging = logging
+			.then(async () => {
+				const target = project === undefined ? await projects.current() : project;
+				if (target) await appendLog(target, text, at);
+			})
+			.catch((err) => console.error(`porchlight ui: could not write the project's log: ${err instanceof Error ? err.message : String(err)}`));
+	}
+
+	/** The model and where it runs, for the log: a hosted one is said to be outside the owner's machines. */
+	function modelWords(config: AssistantConfig): string {
+		return isHosted(config) ? `${config.model} (${HOSTED[config.provider as HostedProvider].name}, outside your machines)` : `${config.model} at ${config.url.host}`;
+	}
+
+	/** Writes a discussion's transcript into a project as a new file, and records where. */
+	async function newTranscript(discussion: Discussion, project: Project): Promise<Saved> {
+		const saved = await saveFile(project, "Discussions", `discussion-${discussion.kind}`, "md", exportDiscussion(discussion, "md").body);
+		discussion.saved = { project: project.id, name: saved.name };
+		await discussionStore.save(discussion);
+		return saved;
+	}
+
+	/** Writes a kept transcript again after a new answer, in the project it is kept in, if that is still listed. */
+	async function updateTranscript(discussion: Discussion): Promise<Saved | null> {
+		if (!discussion.saved) return null;
+		const project = await projects.get(discussion.saved.project);
+		if (!project) return null;
+		return rewriteFile(project, "Discussions", discussion.saved.name, exportDiscussion(discussion, "md").body);
+	}
+
+	/** The transcript is a copy: one that cannot be written is said in the server's output, never at the cost of the answer. */
+	function transcriptFailed(err: unknown): null {
+		console.error(`porchlight ui: could not save the discussion to the project: ${err instanceof Error ? err.message : String(err)}`);
+		return null;
+	}
+
+	/** An export written into the project in use instead of downloaded, and said in its log. */
+	async function saveExport(res: ServerResponse, file: { body: string; filename: string }, title: FileTitle): Promise<void> {
+		const project = await projects.current();
+		if (!project) throw new HttpError(409, "Choose a project first, under Settings → Projects, or download the file instead.");
+		const extension = /\.([a-z]+)$/.exec(file.filename)?.[1] ?? "txt";
+		const saved = await saveFile(project, "Exports", title, extension, file.body);
+		log(`Exported ${FILE_TITLES[title]} (${extension}) to ${OWN_FOLDER}/Exports/${saved.name}`, project);
+		return sendJson(res, 200, { saved: { ...saved, projectName: project.name } });
+	}
+
+	async function projectsState(gate: Gate) {
+		const file = await projects.read();
+		return {
+			current: file.current,
+			projects: file.projects,
+			// The page on this computer, or a service's own page; never another device over the tailnet.
+			canChange: !gate.tailnet,
+			// A service keeps its project folders inside its data folder.
+			...(projectsWithin ? { within: projectsWithin } : {}),
+		};
+	}
+
+	async function projectsRoute(res: ServerResponse, route: string, url: URL, body: unknown, gate: Gate): Promise<void> {
+		if (route === "GET /api/projects") return sendJson(res, 200, await projectsState(gate));
+		const fields = route.startsWith("POST ") ? bodyObject(body) : {};
+		// Moving between projects already chosen is open to any page with the key: it chooses no folder.
+		if (route === "POST /api/projects/use") {
+			const id = fields.id ?? null;
+			if (id !== null && !isProjectId(id)) throw new HttpError(400, "Choose a project");
+			const project = await projects.use(id);
+			if (project) log(`Using this project, ${project.name}`, project);
+			return sendJson(res, 200, await projectsState(gate));
+		}
+		if (gate.tailnet) throw new HttpError(403, "Projects are added and removed from the page on the Mac that runs Porchlight");
+		const checkOptions = async () => {
+			const report = await readReport(options.reportPath).catch(() => null);
+			return { home: homedir(), scanRoots: [options.defaultRoot, ...(report ? [report.root] : [])], ...(projectsWithin ? { within: projectsWithin } : {}) };
+		};
+		if (route === "GET /api/projects/preview") return sendJson(res, 200, { check: await checkFolder(url.searchParams.get("folder"), await checkOptions()) });
+		if (route === "POST /api/projects") {
+			const name = cleanName(fields.name);
+			if (!name) throw new HttpError(400, "Name the project in 1 to 60 characters, such as acme-audit");
+			const check = await checkFolder(fields.folder, await checkOptions());
+			if (check.error) throw new HttpError(400, check.error);
+			const project = await projects.add(name, check.folder);
+			try {
+				await prepareProject(project);
+			} catch (err) {
+				await projects.remove(project.id).catch(() => {});
+				throw err;
+			}
+			log(`Project started: ${project.name}, in ${project.folder}`, project);
+			return sendJson(res, 200, { ...(await projectsState(gate)), added: project.id });
+		}
+		if (route === "POST /api/projects/remove") {
+			if (!isProjectId(fields.id)) throw new HttpError(400, "Choose a project");
+			const project = await projects.remove(fields.id);
+			log("Project taken off Porchlight's list. Its folder and files are left as they are.", project);
+			return sendJson(res, 200, await projectsState(gate));
+		}
+		throw new HttpError(404, "Not found");
+	}
+
 	/**
 	 * Keeps a model's first answer as a discussion. Not keeping it never costs the owner the answer:
 	 * the page still shows it, only without a follow-up box.
@@ -413,6 +543,10 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			const discussion = newDiscussion({ kind, about, config, hosted: isHosted(config), target, cut, first });
 			await discussionStore.save(discussion);
 			await discussionStore.prune().catch(() => {});
+			// Begun while a project is in use: its transcript is kept there too, and written again after each answer.
+			const project = await projects.current();
+			if (project) await newTranscript(discussion, project).catch(transcriptFailed);
+			log(`Asked ${modelWords(config)}: ${KIND_WORDS[kind]}, answered in ${first.seconds} s`, project);
 			return { id: discussion.id, title: discussion.title };
 		} catch (err) {
 			console.error(`porchlight ui: could not keep the discussion: ${err instanceof Error ? err.message : String(err)}`);
@@ -491,6 +625,16 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			return sendJson(res, 200, { discussion: viewOf(discussion), followUp: state.ok ? { ok: true } : { ok: false, reason: state.reason } });
 		}
 		const fields = bodyObject(body);
+		// A copy of the transcript in the project in use: written again there after each answer from now on.
+		if (route === "POST /api/discussions/save") {
+			const discussion = await discussionStore.read(fields.id);
+			if (!discussion) throw new HttpError(404, "There is no such discussion");
+			const project = await projects.current();
+			if (!project) throw new HttpError(409, "Choose a project first, under Settings → Projects.");
+			const saved = discussion.saved?.project === project.id ? await updateTranscript(discussion) : await newTranscript(discussion, project);
+			if (saved) log(`Saved a discussion (${KIND_WORDS[discussion.kind]}) to ${OWN_FOLDER}/Discussions/${saved.name}`, project);
+			return sendJson(res, 200, { discussion: viewOf(discussion), saved: saved ? { ...saved, projectName: project.name } : null });
+		}
 		if (route === "POST /api/discussions/delete") {
 			if (typeof fields.id === "string" && answering.has(fields.id)) throw new HttpError(409, "This discussion is waiting for an answer. Delete it when the answer has come");
 			if (!(await discussionStore.remove(fields.id))) throw new HttpError(404, "There is no such discussion");
@@ -539,6 +683,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			discussion.turns.push(turn);
 			discussion.updatedAt = turn.at;
 			await discussionStore.save(discussion);
+			const kept = await updateTranscript(discussion).catch(transcriptFailed);
+			log(`Follow-up question to ${modelWords(target.config)}: ${KIND_WORDS[discussion.kind]}, answered in ${turn.seconds} s`, kept ? await projects.get(kept.project) : undefined);
 			sendJson(res, 200, { discussion: viewOf(discussion), turn });
 		} catch (err) {
 			if (err instanceof AssistantError) throw new HttpError(err.status, err.message);
@@ -936,13 +1082,16 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			if (!run) throw new HttpError(404, "There is no such investigation");
 			return sendJson(res, 200, { run });
 		}
-		if (route === "GET /api/investigate/export") {
+		if (route === "GET /api/investigate/export" || route === "POST /api/investigate/export") {
 			const id = url.searchParams.get("id");
 			const run = isRunId(id) ? await currentRun(id) : null;
 			if (!run) throw new HttpError(404, "There is no such investigation");
 			const format = url.searchParams.get("format") ?? "md";
 			if (!(INVESTIGATION_FORMATS as readonly string[]).includes(format)) throw new HttpError(400, `Choose a format: ${INVESTIGATION_FORMATS.join(" or ")}`);
-			return sendDownload(res, exportInvestigation(run, format as InvestigationFormat));
+			const file = exportInvestigation(run, format as InvestigationFormat);
+			if (route === "POST /api/investigate/export") return saveExport(res, file, "investigation");
+			log(`Exported ${FILE_TITLES.investigation} (${format}) as a download`);
+			return sendDownload(res, file);
 		}
 		if (!here) throw new HttpError(403, "Investigations are run from the page on the Mac that runs Porchlight");
 		const fields = bodyObject(body);
@@ -1082,9 +1231,10 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	const respond = (gate: Gate) => (req: IncomingMessage, res: ServerResponse) => {
 		handle(req, res, gate).catch((err) => {
 			// An export that cannot be made is the caller's mistake, and the message says what to change.
-			const known = err instanceof HttpError || err instanceof ExportError;
+			const known = err instanceof HttpError || err instanceof ExportError || err instanceof ProjectError;
 			if (!known) console.error(`porchlight ui: ${err instanceof Error ? err.message : String(err)}`);
-			sendJson(res, err instanceof HttpError ? err.status : known ? 400 : 500, { error: known ? err.message : "Internal error" });
+			// A project folder that cannot be written is a state to put right, said in the owner's terms.
+			sendJson(res, err instanceof HttpError ? err.status : err instanceof ProjectError ? 409 : known ? 400 : 500, { error: known ? err.message : "Internal error" });
 		});
 	};
 	const server = createServer(respond(localGate));
@@ -1145,11 +1295,14 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				github: { token: github.token !== undefined, ...(options.githubError ? { error: options.githubError } : {}) },
 				assistant: assistantSummary(),
 				lastView: await readView(viewPath),
+				// The projects, and the one exports, discussions and the log go to.
+				projects: await projectsState(gate),
 				// What "Send to a model" offers. Never a key: only where each one runs and which model.
 				sendTargets: targets().map((target) => ({ id: target.id, label: target.label, model: target.config.model, host: target.config.url.host, hosted: target.hosted, current: target.current })),
 			});
 		}
 		if (route === "POST /api/repos/send") return sendRoute(res, body);
+		if (url.pathname === "/api/projects" || url.pathname.startsWith("/api/projects/")) return projectsRoute(res, route, url, body, gate);
 		if (url.pathname === "/api/discussions" || url.pathname.startsWith("/api/discussions/")) return discussionRoute(res, route, url, body);
 		if (url.pathname === "/api/host" || url.pathname === "/api/host/check") return hostRoute(res, route, body);
 		if (url.pathname === "/api/investigate" || url.pathname.startsWith("/api/investigate/")) return investigateRoute(res, route, url, body, gate);
@@ -1184,7 +1337,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		if (url.pathname.startsWith("/api/assist/")) return assist(req, res, url.pathname.slice("/api/assist/".length), body);
 		if (route === "GET /api/repos/report") return sendJson(res, 200, { ...(await loadReport(options.reportPath, analysisPath)), findingNotes: await readNotes(notesPath) });
 		if (url.pathname === "/api/analysis" || url.pathname === "/api/analysis/stop") return analysisRoute(res, route, body);
-		if (route === "GET /api/repos/roadmap" || route === "GET /api/repos/export" || url.pathname === "/api/repos/mural") {
+		if (route === "GET /api/repos/roadmap" || url.pathname === "/api/repos/export" || url.pathname === "/api/repos/mural") {
+			if (url.pathname === "/api/repos/export" && req.method !== "GET" && req.method !== "POST") throw new HttpError(405, "Method not allowed");
 			const report = await readReport(options.reportPath);
 			if (!report) throw new HttpError(404, "There is no scan yet. Scan a folder first.");
 			const query = url.searchParams;
@@ -1197,7 +1351,12 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				if (muralJob.state !== "done" || muralJob.key !== key) throw new HttpError(409, "Write the mural first: it is made for this scan and these filters");
 				mural = muralJob.mural;
 			}
-			return sendDownload(res, exportRepos(report, exportChoice(query), filter, mural));
+			const file = exportRepos(report, exportChoice(query), filter, mural);
+			const title: FileTitle = `${exportChoice(query).content === "findings" ? "findings" : "roadmap"}${isFiltering(filter) ? "-partial" : ""}`;
+			// POST writes it into the project in use; GET hands it to the browser to save.
+			if (req.method === "POST") return saveExport(res, file, title);
+			log(`Exported ${FILE_TITLES[title]} (${file.extension}) as a download`);
+			return sendDownload(res, file);
 		}
 		if (route === "GET /api/repos/scan") return sendJson(res, 200, { scan: status });
 		if (route === "GET /api/repos/preview") {
@@ -1212,6 +1371,9 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			const { root, depth } = await scanRequest(body);
 			const also = (await fetchedRepos(github.dir)).length > 0 ? [{ root: github.dir, depth: GITHUB_DEPTH }] : undefined;
 			status = { state: "running", root, startedAt: new Date().toISOString(), done: 0, total: 0, current: null };
+			// The scan is logged in the project in use when it starts, even if the owner moves to another meanwhile.
+			const project = await projects.current();
+			log(`Scan started: ${root}, ${depth} ${depth === 1 ? "level" : "levels"} down`, project);
 			// Not awaited: the scan outlives this request and the UI polls for progress.
 			void scan({
 				root,
@@ -1225,33 +1387,41 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 					if (report.repos.length === 0) {
 						const error = `No git repositories found under ${root}`;
 						status = { state: "failed", root, finishedAt: new Date().toISOString(), error, noRepositories: true, depth };
+						log(`Scan found nothing to check: ${error}`, project);
 						return;
 					}
 					// A scan that checked nothing must not replace one that did.
 					if (report.tools.every((tool) => tool.status === "missing")) {
 						const error = `No scanner is installed. Install one: ${report.tools.map((tool) => tool.installHint).join("; ")}`;
 						status = { state: "failed", root, finishedAt: new Date().toISOString(), error };
+						log("Scan failed: no scanner is installed", project);
 						return;
 					}
 					await saveReport(options.reportPath, report);
 					await history.add(report).catch((err) => console.error(`porchlight ui: could not keep the scan in history: ${err instanceof Error ? err.message : String(err)}`));
 					status = { state: "done", root, finishedAt: new Date().toISOString() };
+					log(`Scan finished: ${scanCounts(report)}`, project);
 				})
 				.catch((err) => {
 					const error = err instanceof Error ? err.message : String(err);
 					status = { state: "failed", root, finishedAt: new Date().toISOString(), error };
+					log(`Scan failed: ${error}`, project);
 				});
 			return sendJson(res, 202, { scan: status });
 		}
 
 		const domainExport = /^\/api\/domains\/([^/]+)\/export$/.exec(url.pathname);
 		if (domainExport) {
-			if (req.method !== "GET") throw new HttpError(405, "Method not allowed");
+			if (req.method !== "GET" && req.method !== "POST") throw new HttpError(405, "Method not allowed");
 			const [code, answer] = await proxyToMonitor("GET", `/api/domains/${domainExport[1]}`, undefined);
 			const report = (answer as { report?: MonitorReport | null }).report;
 			if (code !== 200) throw new HttpError(code, (answer as { error?: string }).error ?? "The monitor refused the request");
 			if (!report) throw new HttpError(404, "This domain has not been scanned yet, so there is nothing to export.");
-			return sendDownload(res, exportDomain(report, exportChoice(url.searchParams)));
+			const file = exportDomain(report, exportChoice(url.searchParams));
+			const title: FileTitle = exportChoice(url.searchParams).content === "findings" ? "domain-findings" : "domain-roadmap";
+			if (req.method === "POST") return saveExport(res, file, title);
+			log(`Exported ${FILE_TITLES[title]} (${file.extension}) as a download`);
+			return sendDownload(res, file);
 		}
 		if (url.pathname === "/api/domains" || url.pathname.startsWith("/api/domains/")) {
 			const [code, answer] = await proxyToMonitor(req.method ?? "GET", url.pathname, body);
@@ -1307,6 +1477,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		const stop = new AbortController();
 		stopAnalysis = stop;
 		analysing = { state: "running", done: 0, total: queue.length, current: null, failed: 0 };
+		const project = await projects.current();
+		log(`Deeper analysis started: ${queue.length} ${queue.length === 1 ? "item" : "items"} for ${modelWords(assistant)}`, project);
 		// Not awaited: the analysis outlives this request and the page polls for progress.
 		void (async () => {
 			let done = 0;
@@ -1334,6 +1506,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				done++;
 			}
 			analysing = { state: stop.signal.aborted ? "stopped" : "done", finishedAt: new Date().toISOString(), done: done - failed, total: queue.length, failed, ...(lastError ? { lastError } : {}) };
+			log(`Deeper analysis ${stop.signal.aborted ? "stopped" : "finished"}: ${done - failed} judged, ${failed} failed`, project);
 		})();
 		return sendJson(res, 202, { status: analysing });
 	}
@@ -1734,6 +1907,21 @@ function sendDownload(res: ServerResponse, file: Pick<ExportFile, "contentType" 
 
 function exportChoice(query: URLSearchParams): { content?: string; format?: string } {
 	return { content: query.get("content") ?? undefined, format: query.get("format") ?? undefined };
+}
+
+/** A finished scan in figures, for a project's log: "3 repositories, 12 findings (1 critical, 4 high, 7 medium)". */
+export function scanCounts(report: ScanReport): string {
+	const counts = new Map<Severity, number>();
+	let total = 0;
+	for (const repo of report.repos) {
+		for (const finding of repo.findings) {
+			counts.set(finding.severity, (counts.get(finding.severity) ?? 0) + 1);
+			total++;
+		}
+	}
+	const repositories = `${report.repos.length} ${report.repos.length === 1 ? "repository" : "repositories"}`;
+	const bySeverity = SEVERITIES.filter((severity) => counts.has(severity)).map((severity) => `${counts.get(severity)} ${severity}`);
+	return `${repositories}, ${total} ${total === 1 ? "finding" : "findings"}${bySeverity.length > 0 ? ` (${bySeverity.join(", ")})` : ""}`;
 }
 
 /** Adds the repair for each open finding to a monitor answer that carries a scan report. */

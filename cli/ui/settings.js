@@ -1,5 +1,5 @@
 // @ts-check
-// Settings: the model, access from other devices, the look of the interface, and what Porchlight is connected to.
+// Settings: the model, projects, access from other devices, the look of the interface, and what Porchlight is connected to.
 import { api } from "./api.js";
 import { h, icon, replace, toast } from "./dom.js";
 import { applyLook, currentLook } from "./appearance.js";
@@ -8,6 +8,7 @@ import { ANSWER_PLACES, DEFAULT_ANSWER_PLACE, LOOKS } from "./looks.js";
 import { answersPlaceChanged } from "./panel.js";
 import { accessSection } from "./access-settings.js";
 import { modelSection } from "./model-settings.js";
+import { projectsSection } from "./projects.js";
 import { load, store } from "./store.js";
 
 /**
@@ -19,6 +20,7 @@ export async function renderSettings(view) {
 	// Kept across redraws, so changing the look leaves a half-filled model form as it is.
 	const model = store.settings?.service ? null : await modelSection();
 	const access = store.settings?.service ? null : await accessSection();
+	const projects = projectsSection();
 	let saving = Promise.resolve();
 
 	/** @param {string} id */
@@ -74,8 +76,9 @@ export async function renderSettings(view) {
 			h(
 				"section",
 				{ class: "page" },
-				h("div", { class: "page-head" }, h("div", null, h("h1", null, "Settings"), h("p", { class: "sub" }, "Which model Porchlight uses, how it looks, and what it's connected to."))),
+				h("div", { class: "page-head" }, h("div", null, h("h1", null, "Settings"), h("p", { class: "sub" }, "Which model Porchlight uses, where it keeps your files, how it looks, and what it's connected to."))),
 				model,
+				projects,
 				access,
 				h(
 					"fieldset",

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -540,7 +540,10 @@ test("refuses an export it cannot make, and says what to change", async (t) => {
 		assert.equal(reply.headers["content-disposition"], undefined);
 	}
 	assert.equal((await send(server, "GET", "/api/repos/export", { key: null })).status, 401);
-	assert.equal((await send(server, "POST", "/api/repos/export")).status, 404);
+	// POST saves into the project in use; with none, nothing is written anywhere.
+	const post = await send(server, "POST", "/api/repos/export");
+	assert.deepEqual([post.status, post.json.error], [409, "Choose a project first, under Settings → Projects, or download the file instead."]);
+	assert.equal((await send(server, "PUT", "/api/repos/export")).status, 405);
 });
 
 test("exports a domain's roadmap, and shows each of its findings with a fix", async (t) => {
@@ -578,7 +581,8 @@ test("exports a domain's roadmap, and shows each of its findings with a fix", as
 		[(await send(server, "GET", "/api/domains/unscanned.example/export")).status, (await send(server, "GET", "/api/domains/missing.example/export")).status],
 		[404, 404],
 	);
-	assert.equal((await send(server, "POST", "/api/domains/example.com/export")).status, 405);
+	assert.equal((await send(server, "POST", "/api/domains/example.com/export")).status, 409, "saving needs a project");
+	assert.equal((await send(server, "DELETE", "/api/domains/example.com/export")).status, 405);
 	assert.equal((await send(server, "GET", "/api/domains/..%2f..%2fadmin/export")).status, 400);
 });
 
@@ -916,6 +920,101 @@ test("keeps each answer as a discussion, and answers follow-up questions from th
 	assert.equal((await send(server, "GET", `/api/discussions/one?id=${id}`)).status, 404);
 	assert.equal((await send(server, "POST", "/api/discussions/delete", { body: { id } })).status, 404);
 	assert.deepEqual((await send(server, "GET", "/api/discussions")).json.discussions, []);
+});
+
+test("a project folder gets saved exports, discussions and a log, under Porchlight's own names and nowhere else", async (t) => {
+	const network = fakeNetwork({ model: (body) => Response.json({ message: { content: `Answer to ${body.messages.length} messages.` } }) });
+	const server = await start(t, { assistant, fetchFn: network.fetchFn, scan: async (options) => sampleReport(options.root) });
+	await withReport(server);
+	assert.deepEqual((await send(server, "GET", "/api/state")).json.projects, { current: null, projects: [], canChange: true });
+	assert.equal((await send(server, "POST", "/api/repos/export?content=roadmap&format=md")).status, 409, "no project: nothing is written anywhere");
+
+	// What choosing a folder would make is shown first, and nothing is made until the project is added.
+	const folder = join(server.dir, "work", "acme");
+	await makeTree(server.dir, { "work/": "" });
+	const preview = (await send(server, "GET", `/api/projects/preview?folder=${encodeURIComponent(folder)}`)).json.check;
+	assert.deepEqual(
+		preview.creates.map((path: string) => path.slice(preview.folder.length)),
+		["", "/Porchlight", "/Porchlight/Exports", "/Porchlight/Discussions", "/Porchlight/Log"],
+	);
+	assert.equal(await stat(folder).catch(() => null), null);
+	for (const body of [{ name: "", folder }, { name: "x".repeat(61), folder }, { name: "acme", folder: "work/acme" }, { name: "acme", folder: "/" }]) {
+		assert.equal((await send(server, "POST", "/api/projects", { body })).status, 400, JSON.stringify(body));
+	}
+	const added = await send(server, "POST", "/api/projects", { body: { name: "acme\naudit", folder } });
+	assert.equal(added.status, 200);
+	const id = added.json.added as string;
+	assert.deepEqual([added.json.current, added.json.projects[0].name], [id, "acme audit"]);
+	const own = join(preview.folder, "Porchlight");
+	assert.equal((await stat(join(own, "Exports"))).mode & 0o777, 0o700);
+	assert.equal((await stat(join(server.dir, "state", "projects.json"))).mode & 0o777, 0o600);
+
+	// Exports: written into Exports under a name from the fixed list, the same bytes a download gets.
+	const saved = (await send(server, "POST", "/api/repos/export?content=findings&format=csv")).json.saved;
+	assert.match(saved.name, /^\d{4}-\d{2}-\d{2} \d{2}\.\d{2} Findings\.csv$/);
+	assert.deepEqual([saved.project, saved.part, saved.projectName, saved.path], [id, "Exports", "acme audit", join(own, "Exports", saved.name)]);
+	assert.equal(await readFile(saved.path, "utf8"), (await send(server, "GET", "/api/repos/export?content=findings&format=csv")).text);
+	assert.equal((await stat(saved.path)).mode & 0o777, 0o600);
+	const again = (await send(server, "POST", "/api/repos/export?content=findings&format=csv")).json.saved;
+	assert.ok(again.name === saved.name.replace(".csv", " 2.csv") || again.name.endsWith(" Findings.csv"), "a second in the same minute never overwrites the first");
+	assert.match((await send(server, "POST", "/api/repos/export?content=roadmap&format=md&q=group")).json.saved.name, / Repair roadmap \(partial\)\.md$/);
+	assert.equal((await send(server, "POST", "/api/repos/export?content=roadmap&format=exe")).status, 400);
+
+	// A discussion begun in the project keeps its transcript there, written again after each answer.
+	const explained = await send(server, "POST", "/api/assist/finding", { body: { repo: "group/worst", ruleId: "rule-high", location: "package-lock.json" } });
+	const discussionId = explained.json.discussion as string;
+	const kept = (await send(server, "GET", `/api/discussions/one?id=${discussionId}`)).json.discussion.saved;
+	assert.equal(kept.project, id);
+	assert.match(kept.name, /^\d{4}-\d{2}-\d{2} \d{2}\.\d{2} Explain a finding\.md$/);
+	await send(server, "POST", "/api/discussions/ask", { body: { id: discussionId, question: "Is it only in a test file?" } });
+	const transcript = await readFile(join(own, "Discussions", kept.name), "utf8");
+	assert.match(transcript, /^# Explain: A high problem in package-lock\.json/);
+	assert.match(transcript, /Is it only in a test file\?[\s\S]*Answer to 4 messages\./);
+	assert.deepEqual((await send(server, "GET", "/api/discussions")).json.discussions.map((one: { project?: string }) => one.project), [id]);
+
+	// A scan is logged with its counts. The log never holds what the model wrote.
+	assert.equal((await send(server, "POST", "/api/repos/scan", { body: { root: server.dir } })).status, 202);
+	await untilScan(server, "done");
+	const logs = await readdir(join(own, "Log"));
+	assert.equal(logs.length, 1);
+	assert.match(logs[0]!, /^\d{4}-\d{2}-\d{2}\.log$/);
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	const log = await readFile(join(own, "Log", logs[0]!), "utf8");
+	for (const line of [
+		/^\d{2}:\d{2}:\d{2} {2}Project started: acme audit, in /m,
+		/ {2}Exported Findings \(csv\) to Porchlight\/Exports\/\d{4}-\d{2}-\d{2} \d{2}\.\d{2} Findings\.csv$/m,
+		/ {2}Exported Findings \(csv\) as a download$/m,
+		/ {2}Asked qwen-test:9b at ollama\.test:11434: Explain a finding, answered in [\d.]+ s$/m,
+		/ {2}Follow-up question to qwen-test:9b at ollama\.test:11434: Explain a finding, answered in [\d.]+ s$/m,
+		/ {2}Scan started: .*, 3 levels down$/m,
+		/ {2}Scan finished: 3 repositories, 4 findings \(1 critical, 1 high, 1 medium, 1 low\)$/m,
+	]) {
+		assert.match(log, line);
+	}
+	assert.ok(!log.includes("Answer to") && !log.includes("test file"), "neither the model's words nor the owner's question");
+	assert.equal((await stat(join(own, "Log", logs[0]!))).mode & 0o777, 0o600);
+
+	// No project: exports go back to downloads, and an older discussion can be saved into a project later.
+	assert.equal((await send(server, "POST", "/api/projects/use", { body: { id: null } })).json.current, null);
+	assert.equal((await send(server, "POST", "/api/repos/export?content=roadmap&format=md")).status, 409);
+	const asked = await send(server, "POST", "/api/assist/ask", { body: { question: "What first?" } });
+	const askId = asked.json.discussion as string;
+	assert.equal((await send(server, "GET", `/api/discussions/one?id=${askId}`)).json.discussion.saved, undefined);
+	assert.equal((await send(server, "POST", "/api/discussions/save", { body: { id: askId } })).status, 409);
+	await send(server, "POST", "/api/projects/use", { body: { id } });
+	const later = (await send(server, "POST", "/api/discussions/save", { body: { id: askId } })).json.saved;
+	assert.match(later.name, / Question about the scan\.md$/);
+
+	// Removing a project takes it off the list and leaves its folder as it was.
+	const before = await readdir(join(own, "Exports"));
+	assert.deepEqual((await send(server, "POST", "/api/projects/remove", { body: { id } })).json.projects, []);
+	assert.deepEqual(await readdir(join(own, "Exports")), before);
+	for (const [path, body] of [
+		["/api/projects/use", { id: "../x" }],
+		["/api/projects/remove", { id: "prj_0000000000000000" }],
+	] as const) {
+		assert.notEqual((await send(server, "POST", path, { body })).status, 200, path);
+	}
 });
 
 test("keeps an Ask question as the first turn and rebuilds it for a follow-up", async (t) => {
@@ -1284,6 +1383,12 @@ test("other devices get in only on the tailnet address, only with the access key
 	assert.equal((await send(device(key), "POST", "/api/access", { ...viaName, body: { enabled: false } })).status, 403);
 	assert.equal((await send(device(key), "POST", "/api/access/key", viaName)).status, 403);
 
+	// A device can move between projects, but only the Mac chooses a folder: it cannot add, look into or remove one.
+	assert.equal((await send(device(key), "GET", "/api/projects", viaName)).json.canChange, false);
+	assert.equal((await send(device(key), "GET", `/api/projects/preview?folder=${encodeURIComponent(server.dir)}`, viaName)).status, 403);
+	assert.equal((await send(device(key), "POST", "/api/projects", { ...viaName, body: { name: "x", folder: join(server.dir, "x") } })).status, 403);
+	assert.equal((await send(device(key), "POST", "/api/projects/use", { ...viaName, body: { id: null } })).status, 200);
+
 	// A new key turns the old one away.
 	const renewed = await send(server, "POST", "/api/access/key");
 	const newKey = new URL(renewed.json.link).hash.slice("#k=".length);
@@ -1315,6 +1420,22 @@ test("access waits for Tailscale, and a service never opens a second listener", 
 	const refused = await send(service, "POST", "/api/access", { key, body: { enabled: true } });
 	assert.equal(refused.status, 403);
 	assert.equal(service.access().listening, false);
+});
+
+test("a service keeps its project folders in a projects folder of its own data folder", async (t) => {
+	const key = "k".repeat(MIN_KEY_LENGTH);
+	const service = await start(t, { host: "0.0.0.0", sessionKey: key });
+	const within = join(service.dir, "state", "projects");
+	const state = (await send(service, "GET", "/api/projects", { key })).json;
+	assert.deepEqual([state.canChange, state.within], [true, within]);
+	assert.equal((await stat(within)).mode & 0o777, 0o700);
+	for (const folder of [join(service.dir, "elsewhere"), within, join(within, "..", "history")]) {
+		const reply = await send(service, "POST", "/api/projects", { key, body: { name: "acme", folder } });
+		assert.deepEqual([reply.status, /Choose one inside/.test(reply.json.error)], [400, true], folder);
+	}
+	const added = await send(service, "POST", "/api/projects", { key, body: { name: "acme", folder: join(within, "acme") } });
+	assert.equal(added.status, 200);
+	assert.ok((await stat(join(within, "acme", "Porchlight", "Exports"))).isDirectory());
 });
 
 test("a mural is written in the background for one scan and its filters, and an export carries it only when asked", async (t) => {

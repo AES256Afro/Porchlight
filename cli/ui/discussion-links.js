@@ -22,16 +22,18 @@ export function kindLabel(kind) {
 }
 
 /**
- * The discussions a kind and a search leave, in the order given. The search matches the title, the
- * model, the repository and the domain, ignoring case.
+ * The discussions a kind, a project and a search leave, in the order given. The search matches the
+ * title, the model, the repository and the domain, ignoring case. `project` is a project's id, or
+ * "none" for discussions kept in no project.
  *
  * @param {DiscussionSummary[]} discussions
- * @param {{ kind?: string | null, q?: string | null }} filter
+ * @param {{ kind?: string | null, project?: string | null, q?: string | null }} filter
  */
 export function filterDiscussions(discussions, filter) {
 	const query = (filter.q ?? "").trim().toLowerCase();
 	return discussions.filter((discussion) => {
 		if (filter.kind && discussion.kind !== filter.kind) return false;
+		if (filter.project === "none" ? discussion.project !== undefined : filter.project && discussion.project !== filter.project) return false;
 		if (!query) return true;
 		return [discussion.title, discussion.model, discussion.repo ?? "", discussion.domain ?? ""].some((field) => field.toLowerCase().includes(query));
 	});

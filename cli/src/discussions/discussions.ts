@@ -80,6 +80,8 @@ export interface Discussion {
 	fingerprint: string;
 	/** What was left out of the data to fit, said when the discussion began. */
 	cut?: string;
+	/** Where its transcript is kept in a project folder: the project's id and the file's name, one of Porchlight's own. */
+	saved?: { project: string; name: string };
 	createdAt: string;
 	updatedAt: string;
 	turns: DiscussionTurn[];
@@ -100,6 +102,8 @@ export interface DiscussionSummary {
 	answers: number;
 	repo?: string;
 	domain?: string;
+	/** The project its transcript is kept in. */
+	project?: string;
 }
 
 const DISCUSSION_ID = /^dsc_[0-9a-f]{16}$/;
@@ -193,6 +197,7 @@ export function summaryOf(discussion: Discussion): DiscussionSummary {
 		answers: discussion.turns.length,
 		...(discussion.about.repo ? { repo: discussion.about.repo } : {}),
 		...(discussion.about.domain ? { domain: discussion.about.domain } : {}),
+		...(discussion.saved ? { project: discussion.saved.project } : {}),
 	};
 }
 

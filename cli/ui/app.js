@@ -10,6 +10,7 @@ import { applyLook, homeSection, rememberedLook } from "./appearance.js";
 import { buildHash, parseHash } from "./list.js";
 import { settingsAnchor } from "./paths.js";
 import { renderOverview } from "./overview.js";
+import { projectSwitcher } from "./projects.js";
 import { renderByRepo } from "./repos.js";
 import { renderRoadmap } from "./roadmap.js";
 import { renderSettings } from "./settings.js";
@@ -54,6 +55,8 @@ replace(
 		h("a", { href: `#/${key}`, dataset: { nav: key } }, icon(key), key === "host" ? hostLabel : label, key === "findings" ? findingCount : null),
 	]),
 );
+// Which project saved exports, discussions and the log go to, above the sections.
+nav.before(projectSwitcher());
 /** Counts by severity in the sidebar; shown only by the "Severity dashboard" look. */
 const severityStrip = h("div", { class: "severity-strip", "aria-label": "Findings by severity" });
 scanStatus.before(severityStrip);

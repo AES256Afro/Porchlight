@@ -110,6 +110,7 @@ const ICONS = {
 		["circle", { cx: 8, cy: 8, r: 6, fill: "none", stroke: "currentColor", "stroke-width": 1.5 }],
 		["path", { d: "M2 8h12M8 2c2 2 2.6 3.8 2.6 6S10 12 8 14c-2-2-2.6-3.8-2.6-6S6 4 8 2Z", fill: "none", stroke: "currentColor", "stroke-width": 1.3 }],
 	],
+	folder: [["path", { d: "M1.8 4.2c0-.7.5-1.2 1.2-1.2h3l1.4 1.6H13c.7 0 1.2.5 1.2 1.2v6.2c0 .7-.5 1.2-1.2 1.2H3c-.7 0-1.2-.5-1.2-1.2Z", fill: "none", stroke: "currentColor", "stroke-width": 1.5, "stroke-linejoin": "round" }]],
 };
 
 /**
@@ -162,13 +163,32 @@ export function plural(count, one, many) {
  *
  * @param {string} message
  * @param {"info" | "error"} [kind]
+ * @param {{ label: string, run: () => void }} [action] one button beside the message, such as "Show in Finder"; it stays longer
  */
-export function toast(message, kind = "info") {
+export function toast(message, kind = "info", action) {
 	const region = document.getElementById("toasts");
 	if (!region) return;
-	const item = h("div", { class: `toast toast-${kind}` }, message);
+	const item = h(
+		"div",
+		{ class: `toast toast-${kind}` },
+		message,
+		action
+			? h(
+					"button",
+					{
+						type: "button",
+						class: "toast-action",
+						onclick: () => {
+							action.run();
+							item.remove();
+						},
+					},
+					action.label,
+				)
+			: null,
+	);
 	region.append(item);
-	setTimeout(() => item.remove(), kind === "error" ? 8000 : 4000);
+	setTimeout(() => item.remove(), action ? 10_000 : kind === "error" ? 8000 : 4000);
 }
 
 /**

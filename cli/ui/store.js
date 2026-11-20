@@ -15,7 +15,14 @@ import { findingKey } from "./tracking.js";
 /** @typedef {SuggestedFinding & { repo: string }} FindingRow */
 /** @typedef {import("../src/host/types.ts").HostReport} HostReport */
 /** @typedef {import("../src/ui/server.ts").HostStatus} HostStatus */
-/** @typedef {"report" | "scan" | "settings" | "notes" | "host"} Change */
+/** @typedef {"report" | "scan" | "settings" | "notes" | "host" | "projects"} Change */
+/** @typedef {import("../src/projects/projects.ts").Project} Project */
+/**
+ * The projects and the one in use. `canChange`: this page may add and remove them (not another device
+ * over the tailnet). `within`: a service keeps its project folders inside this folder.
+ *
+ * @typedef {{ current: string | null, projects: Project[], canChange: boolean, within?: string }} Projects
+ */
 
 const POLL_MS = 800;
 
@@ -55,6 +62,8 @@ export const store = {
 	 * @type {{ status: HostStatus, report: HostReport | null, service: boolean }}
 	 */
 	host: { status: { state: "idle" }, report: null, service: false },
+	/** @type {Projects} */
+	projects: { current: null, projects: [], canChange: false },
 };
 
 /** @type {Set<string>} */
@@ -105,6 +114,7 @@ export function load() {
 			lastView: typeof state.lastView === "string" ? state.lastView : null,
 		};
 		emit("settings");
+		if (state.projects) setProjects(state.projects);
 		store.scan = state.scan;
 		await loadReport();
 		if (store.scan.state === "running") poll();
@@ -132,6 +142,26 @@ export function setAssistant(assistant) {
 			emit("settings");
 		})
 		.catch(() => {});
+}
+
+/**
+ * The projects as the server last said, after a change on any page.
+ *
+ * @param {Projects} projects
+ */
+export function setProjects(projects) {
+	store.projects = {
+		current: typeof projects.current === "string" ? projects.current : null,
+		projects: Array.isArray(projects.projects) ? projects.projects : [],
+		canChange: projects.canChange === true,
+		...(typeof projects.within === "string" ? { within: projects.within } : {}),
+	};
+	emit("projects");
+}
+
+/** The project exports, discussions and the log go to, or null. */
+export function currentProject() {
+	return store.projects.projects.find((project) => project.id === store.projects.current) ?? null;
 }
 
 /** Forgets everything, so the next `load` starts again. Used after the session key changes. */

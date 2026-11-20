@@ -8,6 +8,8 @@ import { aboutLink, filterDiscussions, KIND_LABELS, kindLabel } from "./discussi
 import { followUpBox, turnNodes } from "./discussion.js";
 import { emptyState, formatWhen, h, icon, plural, replace, select, toast } from "./dom.js";
 import { debounce } from "./list.js";
+import { announceSaved, ownFolder, revealButton } from "./projects.js";
+import { currentProject, load, store } from "./store.js";
 
 /** @typedef {import("../src/discussions/discussions.ts").DiscussionSummary} DiscussionSummary */
 /** @typedef {import("../src/discussions/discussions.ts").DiscussionView} DiscussionView */
@@ -18,6 +20,8 @@ import { debounce } from "./list.js";
  * @returns {Promise<() => void>}
  */
 export async function renderDiscussions(view, context) {
+	// The projects come with the shared settings: which one a transcript is kept in, and the one in use.
+	await load();
 	const id = context.path[1];
 	return id ? renderOne(view, id) : renderList(view, context);
 }
@@ -30,9 +34,10 @@ async function renderList(view, context) {
 	const data = await api("GET", "/discussions");
 	const all = /** @type {DiscussionSummary[]} */ (Array.isArray(data.discussions) ? data.discussions : []);
 	let kind = context.params.get("kind") ?? "";
+	let project = context.params.get("project") ?? "";
 	let query = context.params.get("q") ?? "";
 	const results = h("div");
-	const remember = () => context.replace({ kind, q: query });
+	const remember = () => context.replace({ kind, project, q: query });
 	const search = /** @type {HTMLInputElement} */ (
 		h("input", {
 			type: "search",
@@ -51,6 +56,21 @@ async function renderList(view, context) {
 		remember();
 		draw();
 	});
+	// Which project a discussion's transcript is kept in, once there are projects to choose from.
+	const listed = store.projects.projects;
+	const projects =
+		listed.length > 0
+			? select(
+					"Project",
+					[["", "Every project"], ...listed.map((one) => /** @type {[string, string]} */ ([one.id, one.name])), ["none", "No project"]],
+					project,
+					(value) => {
+						project = value;
+						remember();
+						draw();
+					},
+				)
+			: null;
 
 	replace(
 		view,
@@ -71,7 +91,7 @@ async function renderList(view, context) {
 					),
 				),
 			),
-			all.length > 0 ? h("div", { class: "filters" }, h("div", { class: "field grow" }, search), kinds) : null,
+			all.length > 0 ? h("div", { class: "filters" }, h("div", { class: "field grow" }, search), kinds, projects) : null,
 			results,
 		),
 	);
@@ -90,11 +110,11 @@ async function renderList(view, context) {
 			);
 			return;
 		}
-		const shown = filterDiscussions(all, { kind, q: query });
+		const shown = filterDiscussions(all, { kind, project, q: query });
 		replace(
 			results,
 			shown.length === 0
-				? emptyState("Nothing matches", "Clear the search, or choose every kind.")
+				? emptyState("Nothing matches", "Clear the search, or choose every kind and every project.")
 				: h(
 						"ul",
 						{ class: "discussion-list" },
@@ -140,6 +160,37 @@ async function renderOne(view, id) {
 			`${kindLabel(discussion.kind)} · ${discussion.model} at ${discussion.host}${discussion.hosted ? " (hosted: what it read left this computer)" : ""} · started ${formatWhen(discussion.createdAt)} · ${plural(discussion.turns.length, "answer", "answers")}`,
 		);
 	drawMeta();
+	// Where its transcript is kept in a project folder, written again after every answer.
+	const keptIn = h("div", { class: "kept-in" });
+	const drawKept = () => {
+		const kept = discussion.saved;
+		const project = kept ? store.projects.projects.find((one) => one.id === kept.project) : undefined;
+		const here = currentProject();
+		replace(
+			keptIn,
+			kept
+				? h(
+						"p",
+						{ class: "hint" },
+						icon("folder"),
+						project ? ` Kept in ${project.name}: Porchlight/Discussions/${kept.name}. It is written again after every answer. ` : ` Kept in a project that is no longer listed, as ${kept.name}. `,
+						project ? revealButton(`${ownFolder(project)}/Discussions/${kept.name}`) : null,
+					)
+				: null,
+			here && kept?.project !== here.id ? h("button", { type: "button", class: "button", onclick: () => void keep() }, icon("folder"), `Save in ${here.name}`) : null,
+		);
+	};
+	const keep = async () => {
+		try {
+			const answer = /** @type {any} */ (await api("POST", "/discussions/save", { id: discussion.id }));
+			discussion.saved = answer.discussion.saved;
+			drawKept();
+			if (answer.saved) announceSaved(answer.saved);
+		} catch (err) {
+			toast(err instanceof Error ? err.message : String(err), "error");
+		}
+	};
+	drawKept();
 	const about = aboutLink(discussion);
 	let confirming = false;
 	const remove = /** @type {HTMLButtonElement} */ (
@@ -152,7 +203,7 @@ async function renderOne(view, id) {
 					// Two presses, so a stray click deletes nothing. It cannot be undone.
 					if (!confirming) {
 						confirming = true;
-						replace(remove, "Delete for good?");
+						replace(remove, discussion.saved ? "Delete here? The project's copy stays" : "Delete for good?");
 						setTimeout(() => {
 							confirming = false;
 							replace(remove, "Delete");
@@ -179,6 +230,7 @@ async function renderOne(view, id) {
 			{ class: "page discussion-page" },
 			h("p", null, h("a", { href: "#/discussions" }, "← All discussions")),
 			h("div", { class: "page-head" }, h("div", null, h("h1", null, discussion.title), meta)),
+			keptIn,
 			h(
 				"div",
 				{ class: "actions" },

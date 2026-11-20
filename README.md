@@ -15,6 +15,7 @@ Find the keys and passwords committed to your code and the packages with known s
 - **Your own status and note on each finding**: Open, In progress, Fixed, Accepted risk or False positive.
 - **Any model, or none.** A model can explain a finding, summarise the roadmap, answer questions about a scan, or judge each finding against your code. Run one on your Mac (Ollama, Unsloth Studio, LM Studio), on another computer, or use Claude, ChatGPT, Gemini or DeepSeek through their APIs; choose it in Settings. What a model says is shown as advice beside a finding. It never changes a severity, a count or the roadmap.
 - **Discussions.** Every answer a model gives is kept on your computer. Ask follow-up questions under it, and find it again on the Discussions page after Porchlight closes. See [Discussions](#discussions).
+- **Project folders.** Choose a folder for an audit or a scan, and the exports you save, the discussions and a daily log of what Porchlight did go into it, under names that say what each file is. See [Projects](#projects).
 - **Exports** in Markdown, HTML, CSV or JSON. HTML, Markdown and JSON exports can include a mural written by a model: what was found, what to fix and in what order, what has been done, and what to do next.
 - **Fetch repositories from GitHub**, public or private, and scan them along with the ones on disk.
 - **Watch your websites.** A Cloudflare Worker checks the domains you own every hour for new hostnames, DNS changes, expiring certificates and missing security headers. It scans a domain only after you prove it is yours with a DNS record.
@@ -98,8 +99,9 @@ It prints a link. Open it to get both tools in the browser:
 - **Roadmap**: what to repair, in order. One action, such as upgrading a package, can clear many findings.
 - **This Mac**: check the computer Porchlight runs on; see [Check this Mac](#check-this-mac).
 - **Discussions**: every answer a model gave on these pages, with your follow-up questions; see [Discussions](#discussions).
+- **Project** (above the sections): which project folder saved exports, discussions and the log go to; see [Projects](#projects).
 - **Domains**: add a website by its domain name, prove it is yours with one DNS record, scan, and read what changed, with a suggested fix for each finding. Until the monitor is connected the page walks through setting it up. It needs `PORCHLIGHT_MONITOR_URL` and `PORCHLIGHT_ADMIN_TOKEN` set when you start the interface (see [Monitor domains](#monitor-domains)).
-- **Settings**: pick one of twelve looks under **Appearance** (Standard, Light, Severity dashboard, Top tabs, Split view, Roadmap first, Terminal, Native Mac, Repository cards, Model plan view, High contrast, Compact), and where a model's answers appear: in a panel on the right (the default), below what you asked about, or in a drawer at the bottom. Both are saved beside the report (`ui-settings.json`) and used every time Porchlight opens. It also lists what Porchlight is connected to.
+- **Settings**: add project folders under **Projects** (see [Projects](#projects)), pick one of twelve looks under **Appearance** (Standard, Light, Severity dashboard, Top tabs, Split view, Roadmap first, Terminal, Native Mac, Repository cards, Model plan view, High contrast, Compact), and where a model's answers appear: in a panel on the right (the default), below what you asked about, or in a drawer at the bottom. Both are saved beside the report (`ui-settings.json`) and used every time Porchlight opens. It also lists what Porchlight is connected to.
 
 Every page with findings has an **Export** button; see [Export a repair roadmap](#export-a-repair-roadmap). Beside it, **Send to model** sends the roadmap or the findings to a model you choose; see [Send to a model](#send-to-a-model).
 
@@ -420,6 +422,33 @@ Every answer is also kept as a discussion, so closing Porchlight loses nothing. 
 - **Kept here, not in your Claude account.** Porchlight asks Claude and the other hosted models through their APIs, which keep no conversation, so discussions do not appear in the Claude app. Copy one with **Copy as text** to carry it there.
 
 Discussions are kept beside the report (`discussions/`, the last 200), readable only by you. They hold your questions, the model's answers and what each was about, never a key or a secret's value. Like a model's other answers, they never change a severity, a count, the roadmap or an export.
+
+## Projects
+
+A project is a name and a folder you choose, such as `~/Projects/acme-audit`, so you know where to look for what an audit or a scan produced. Add one under **Settings → Projects**: type the folder, or in the Mac app press **Choose…**. Before anything is made, Porchlight shows which folders it will create, and says so if the folder is inside a git repository or a folder it scans (exports name the files where secrets were found, so they should not be committed or scanned). The **Project** switcher above the sections moves between projects, or to none.
+
+Porchlight writes only inside a `Porchlight` folder within the one you chose:
+
+```
+~/Projects/acme-audit/
+  Porchlight/
+    Exports/
+      2026-11-19 15.30 Repair roadmap.md
+      2026-11-19 15.32 Findings.csv
+    Discussions/
+      2026-11-19 15.40 Explain a finding.md
+    Log/
+      2026-11-19.log
+```
+
+- **Exports.** With a project in use, the Export dialog saves the file into `Exports/` (**Download** is still there), and the message that follows offers **Show in Finder** in the Mac app, or **Copy path** in a browser. An investigation's report can be saved there too.
+- **Discussions.** A discussion begun while a project is in use is saved into `Discussions/` as Markdown, and written again after every follow-up. An older one can be added with **Save in** on its page.
+- **Log.** One plain-text file a day: projects started, scans started and finished with their counts, exports saved or downloaded, models asked (which model, whether it runs outside your machines, what kind of question, how long the answer took) and Deeper analysis. It never holds a key, a token, a secret value, an email, your questions or a model's words.
+- **Names you can read, and only Porchlight's.** Every file is named with the date, the time and a title from Porchlight's own short list, such as "Repair roadmap" or "Explain a finding". Which repository or domain it covers is written inside. Nothing from a scan or a model's answer names a file, a file already there is never written over (a second in the same minute gets " 2"), and Porchlight never writes through a symbolic link. Its folders are readable only by you (0700, files 0600).
+- **Removing** a project takes it off the list; its folder and files stay as they are. If you move or delete the folder, Porchlight says so instead of making it again.
+- **Who can change them.** Only the page on the Mac that runs Porchlight adds or removes a project; another device over Tailscale can move between them. Under BoxPilot, project folders are kept in a `projects` folder inside Porchlight's data folder.
+
+The list is kept beside the report (`projects.json`).
 
 ## History, status and notes
 

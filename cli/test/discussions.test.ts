@@ -116,12 +116,17 @@ test("exports escape what the scan and the model wrote, under a fixed name", () 
 	assert.ok(!/[\u0007\u001b]/.test(text.body), "no control characters reach a terminal");
 });
 
-test("the Discussions page filters by kind and search, and links back to what each was about", () => {
+test("the Discussions page filters by kind, project and search, and links back to what each was about", () => {
 	const summary = (fields: Record<string, unknown>) => ({ id: "dsc_0", kind: "finding", title: "", model: "m", host: "h", hosted: false, createdAt: "", updatedAt: "", answers: 1, ...fields }) as never;
-	const list = [summary({ id: "a", title: "Explain: key in api.ts", repo: "acme/api" }), summary({ id: "b", kind: "domain", title: "Domain: example.com", domain: "example.com" })];
+	const list = [
+		summary({ id: "a", title: "Explain: key in api.ts", repo: "acme/api", project: "prj_aaaaaaaaaaaaaaaa" }),
+		summary({ id: "b", kind: "domain", title: "Domain: example.com", domain: "example.com" }),
+	];
 	assert.deepEqual(filterDiscussions(list, { kind: "domain" }).map((entry: { id: string }) => entry.id), ["b"]);
 	assert.deepEqual(filterDiscussions(list, { q: "ACME" }).map((entry: { id: string }) => entry.id), ["a"]);
 	assert.deepEqual(filterDiscussions(list, {}).length, 2);
+	assert.deepEqual(filterDiscussions(list, { project: "prj_aaaaaaaaaaaaaaaa" }).map((entry: { id: string }) => entry.id), ["a"]);
+	assert.deepEqual(filterDiscussions(list, { project: "none" }).map((entry: { id: string }) => entry.id), ["b"]);
 	assert.equal(kindLabel("send"), "Sent to a model");
 
 	const view = (kind: string, about: Record<string, unknown>) => ({ kind, about }) as never;

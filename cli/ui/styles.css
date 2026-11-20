@@ -3048,3 +3048,214 @@ fieldset.looks legend {
 .investigate-run h3 {
 	margin-top: 18px;
 }
+
+/* Projects: the switcher above the sections, Settings → Projects, and where a file was kept. */
+
+.project-switcher {
+	display: grid;
+	gap: 4px;
+	padding: 0 8px;
+}
+
+.project-switcher label {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--muted);
+	font-size: 11.5px;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
+.project-switcher .icon {
+	width: 13px;
+	height: 13px;
+}
+
+.project-switcher select {
+	width: 100%;
+	max-width: none;
+	height: 30px;
+	font-size: 13px;
+}
+
+[data-look="tabs"] .project-switcher {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 0;
+}
+
+[data-look="tabs"] .project-switcher label span {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
+}
+
+[data-look="tabs"] .project-switcher select {
+	width: auto;
+	max-width: 180px;
+}
+
+.toast {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px 12px;
+}
+
+.toast-action {
+	padding: 2px 8px;
+	border: 1px solid currentColor;
+	border-radius: 5px;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: 12.5px;
+	cursor: pointer;
+}
+
+.project-list {
+	display: grid;
+	gap: 8px;
+	margin: 12px 0;
+	padding: 0;
+	list-style: none;
+}
+
+.project-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px 16px;
+	padding: 10px 12px;
+	border: 1px solid var(--hairline);
+	border-radius: 8px;
+}
+
+.project-row.current {
+	border-color: var(--accent-hover);
+}
+
+.project-what {
+	display: grid;
+	gap: 2px;
+	min-width: 0;
+}
+
+.project-what code {
+	color: var(--ink-2);
+	font-size: 12.5px;
+	overflow-wrap: anywhere;
+}
+
+.project-row .actions {
+	margin: 0;
+}
+
+.project-in-use {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--ink);
+	font-weight: 600;
+}
+
+.project-in-use .icon {
+	color: var(--good);
+}
+
+.project-form {
+	display: grid;
+	gap: 10px;
+	max-width: 760px;
+	margin-top: 18px;
+	padding-top: 14px;
+	border-top: 1px solid var(--hairline);
+}
+
+.project-form h3 {
+	margin: 0;
+	font-size: 14px;
+}
+
+.project-folder-row {
+	display: flex;
+	gap: 8px;
+}
+
+.project-folder-row .button {
+	flex: none;
+}
+
+.project-preview:empty {
+	display: none;
+}
+
+.project-preview p {
+	margin: 0;
+}
+
+.project-paths code {
+	overflow-wrap: anywhere;
+}
+
+.project-form .form-error,
+.project-preview .form-error {
+	margin: 0;
+	color: var(--critical-ink);
+}
+
+.kept-in {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+	margin: 0 0 12px;
+}
+
+.kept-in:empty {
+	display: none;
+}
+
+.kept-in p {
+	margin: 0;
+}
+
+.kept-in p > .icon {
+	width: 14px;
+	height: 14px;
+	vertical-align: -2px;
+}
+
+.kept-in p > .button {
+	margin-left: 4px;
+	vertical-align: middle;
+}
+
+@media (max-width: 900px) {
+	.project-switcher {
+		display: flex;
+		align-items: center;
+		padding: 0;
+	}
+
+	.project-switcher label span {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip: rect(0 0 0 0);
+		white-space: nowrap;
+	}
+
+	.project-switcher select {
+		width: auto;
+		max-width: 150px;
+	}
+}
