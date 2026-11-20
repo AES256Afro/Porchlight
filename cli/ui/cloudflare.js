@@ -410,7 +410,7 @@ function connectCard(service) {
 			null,
 			...stepNodes(
 				service
-					? "Make a read-only API token on Cloudflare (Settings → Cloudflare lists the permissions), then set it as PORCHLIGHT_CLOUDFLARE_TOKEN in Apps → Porchlight → Settings and restart the app."
+					? 'Make a read-only API token on Cloudflare (Settings → Cloudflare lists the permissions). In BoxPilot, open Apps → Porchlight → Settings, paste it into "Cloudflare API token" and confirm. Porchlight restarts with it.'
 					: "Make a read-only API token on Cloudflare and paste it in Settings → Cloudflare. That section lists the permissions it needs and opens Cloudflare's token page for you.",
 			),
 		),

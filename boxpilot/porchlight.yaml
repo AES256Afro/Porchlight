@@ -4,7 +4,8 @@
 # publishes, here and in BoxPilot's copy.
 # The id, the image path and the settings' names are the ones servers already have installed:
 # changing them would make BoxPilot treat Porchlight as a new app and lose its settings. The app
-# reads these settings under their current names too.
+# reads these settings under their current names too. A setting added since the rename has no
+# installed name to keep, so it takes the current one (PORCHLIGHT_…).
 # Port 4747 is free in the catalog (BoxPilot itself 8787, BaselineWatch 8790, TheySpy 8797).
 schemaVersion: 2
 id: securityx
@@ -70,6 +71,12 @@ env:
     secret: true
     description: "Lets the page fetch your private repositories to scan. Make a fine-grained token on GitHub with read-only access to Contents for the repositories you want checked. It is only ever sent to GitHub and never reaches the browser. Empty fetches public repositories only."
     default: ""
+  - name: PORCHLIGHT_CLOUDFLARE_TOKEN
+    label: Cloudflare API token (optional)
+    type: password
+    secret: true
+    description: "Lets the Cloudflare page audit every domain in your Cloudflare account. Make an API token on Cloudflare with Read permissions only; the page lists them under Settings → Cloudflare. It is only ever sent to Cloudflare's API and never reaches the browser or a model. Here the audit only reads: a change to your account can be approved only on the page of a computer that runs Porchlight itself. Empty: the Cloudflare page says how to connect."
+    default: ""
   - name: SECURITYX_LLM_PROVIDER
     label: Model provider (optional)
     description: "Which model explains and analyses findings. Empty or ollama: this server's Ollama app. compatible: another server that speaks OpenAI's format, such as LM Studio, at the model address below. anthropic, openai or deepseek: a hosted model, which needs the API key below and sends what the pages show to that company."
@@ -104,6 +111,8 @@ notes: >-
   the full commit history, so one deleted in a later commit is still reported and must be rotated;
   the report never holds the secret itself. Dependency scanning sends package names and versions
   to the OSV database (api.osv.dev). The Domains page needs the monitor's address and admin token:
-  the monitor runs on Cloudflare, not on this server. To have a local model explain findings and
+  the monitor runs on Cloudflare, not on this server. The Cloudflare page audits your Cloudflare
+  account's settings with a read-only API token set here; it never changes the account from this
+  server. To have a local model explain findings and
   answer questions, install the Ollama app, add the model in its Models tab, and set Local model
   address and Local model here.

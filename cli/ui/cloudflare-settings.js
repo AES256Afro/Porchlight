@@ -136,7 +136,7 @@ export async function cloudflareSection() {
 						"p",
 						{ class: "hint" },
 						...stepNodes(
-							"The token can be changed only on the page of the computer that runs Porchlight. When Porchlight runs as a service, set PORCHLIGHT_CLOUDFLARE_TOKEN in Apps → Porchlight → Settings.",
+							'The token can be changed only on the page of the computer that runs Porchlight. When Porchlight runs on BoxPilot, paste it into "Cloudflare API token" in Apps → Porchlight → Settings.',
 						),
 					),
 			result,
