@@ -1322,6 +1322,80 @@ table.nested {
 	color: var(--critical-ink);
 }
 
+/* A discussion: the owner's questions and the model's answers, in order, with a box for the next question. */
+
+.follow-up,
+.turns {
+	display: grid;
+	gap: 10px;
+	justify-self: stretch;
+}
+
+.follow-up {
+	margin-top: 10px;
+}
+
+.turns:empty {
+	display: none;
+}
+
+.turn-question {
+	justify-self: end;
+	max-width: min(80ch, 90%);
+	padding: 8px 12px;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+}
+
+.turn-who {
+	color: var(--ink-2);
+	font-size: 12.5px;
+}
+
+.turn-text {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.follow-up-form {
+	margin-top: 0;
+}
+
+.follow-up-status:empty {
+	display: none;
+}
+
+.follow-up-status {
+	display: grid;
+	gap: 10px;
+}
+
+.discussion-thread {
+	display: grid;
+	gap: 10px;
+}
+
+.discussion-list {
+	display: grid;
+	gap: 0;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.discussion-row {
+	display: grid;
+	gap: 2px;
+	padding: 10px 0;
+	border-bottom: 1px solid var(--border);
+}
+
+.discussion-title {
+	font-weight: 600;
+	overflow-wrap: anywhere;
+}
+
 textarea {
 	width: 100%;
 	min-height: 72px;

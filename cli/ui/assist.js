@@ -3,6 +3,7 @@
 // everything else, and always labelled as generated: the model reads attacker-controllable scan data,
 // so what it writes is never trusted as markup and never acted on.
 import { api } from "./api.js";
+import { followUpBox } from "./discussion.js";
 import { banner, h, icon, replace, stepNodes } from "./dom.js";
 import { generatedLabel, localModelSetup, MAX_QUESTION, paragraphs, questionProblem, waitingLabel } from "./generated.js";
 
@@ -12,7 +13,7 @@ import { generatedLabel, localModelSetup, MAX_QUESTION, paragraphs, questionProb
  * @typedef {(
  *   | { state: "idle" }
  *   | { state: "asking" }
- *   | { state: "done", text: string, model: string, cut?: string }
+ *   | { state: "done", text: string, model: string, cut?: string, follow: HTMLElement | null }
  *   | { state: "failed", error: string }
  * )} AssistState
  */
@@ -70,11 +71,17 @@ function createAssist(path, assistant, labels, body, submit) {
 		draw();
 		try {
 			const answer = await api("POST", path, body());
+			const model = typeof answer.model === "string" ? answer.model : modelName(assistant);
 			state = {
 				state: "done",
 				text: typeof answer.text === "string" ? answer.text : "",
-				model: typeof answer.model === "string" ? answer.model : modelName(assistant),
+				model,
 				cut: typeof answer.cut === "string" ? answer.cut : undefined,
+				// The answer is kept as a discussion: follow-up questions go under it, and it can be opened again later.
+				follow:
+					typeof answer.discussion === "string"
+						? followUpBox({ id: answer.discussion, model, host: assistant.host ?? "", hosted: assistant.hosted === true }, { link: true })
+						: null,
 			};
 		} catch (err) {
 			state = { state: "failed", error: err instanceof Error ? err.message : String(err) };
@@ -89,7 +96,7 @@ function createAssist(path, assistant, labels, body, submit) {
 		if (state.state === "asking") {
 			replace(panel, h("p", { class: "assist-wait" }, icon("pending"), waitingLabel(modelName(assistant))));
 		} else if (state.state === "done") {
-			replace(panel, generatedText(state.text, state.model, [labels.note, state.cut]));
+			replace(panel, generatedText(state.text, state.model, [labels.note, state.cut]), state.follow);
 		} else if (state.state === "failed") {
 			replace(panel, banner("error", "The local model could not answer", [state.error]), h("button", { type: "button", class: "button", onclick: () => void run() }, "Try again"));
 		} else {

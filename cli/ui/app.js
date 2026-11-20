@@ -1,6 +1,7 @@
 // @ts-check
 import { adoptSessionKey, api, ApiError, setSessionKey } from "./api.js";
 import { emptyState, formatWhen, h, icon, plural, replace, severityBadge, stepNodes, toast } from "./dom.js";
+import { renderDiscussions } from "./discussions.js";
 import { renderDomains } from "./domains.js";
 import { renderFindings } from "./findings.js";
 import { renderInvestigate } from "./investigate.js";
@@ -25,6 +26,7 @@ const SECTIONS = /** @type {const} */ ([
 	["domains", "Domains"],
 	["investigate", "Investigate"],
 	["host", "This Mac"],
+	["discussions", "Discussions"],
 	["settings", "Settings"],
 ]);
 
@@ -40,7 +42,7 @@ let firstRoute = true;
 let announced = "";
 
 /** Says which of the two jobs a section belongs to, above the first section of each. */
-const GROUPS = /** @type {Record<string, string>} */ ({ findings: "Your code", domains: "Your websites", host: "Your computer", settings: "Porchlight" });
+const GROUPS = /** @type {Record<string, string>} */ ({ findings: "Your code", domains: "Your websites", host: "Your computer", discussions: "Porchlight" });
 const findingCount = h("span", { class: "count" });
 /** "This Mac", or "This computer" when Porchlight runs on something else. */
 const hostLabel = h("span", null, "This Mac");
@@ -171,6 +173,7 @@ function page(section, context) {
 	if (section === "roadmap") return renderRoadmap(view, context);
 	if (section === "domains") return renderDomains(view, context.path[1]);
 	if (section === "investigate") return renderInvestigate(view, context.path[1]);
+	if (section === "discussions") return renderDiscussions(view, context);
 	if (section === "settings") return renderSettings(view);
 	if (section === "host") return renderHost(view);
 	return renderOverview(view);

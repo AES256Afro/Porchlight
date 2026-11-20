@@ -35,8 +35,9 @@ export function isHosted(config: AssistantConfig): boolean {
 	return config.provider !== undefined && config.provider in HOSTED;
 }
 
+/** "assistant": an earlier answer of the model's, sent back in a follow-up (a discussion). */
 export interface ChatMessage {
-	role: "system" | "user";
+	role: "system" | "user" | "assistant";
 	content: string;
 }
 
@@ -206,7 +207,8 @@ async function hostedChat(config: AssistantConfig, messages: ChatMessage[], fetc
 	const name = config.provider === "compatible" || config.provider === undefined || config.provider === "ollama" ? `The model server at ${config.url.host}` : HOSTED[config.provider].name;
 	const claude = config.provider === "anthropic";
 	const system = messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
-	const user = messages.filter((message) => message.role === "user").map((message) => ({ role: "user", content: message.content }));
+	// The conversation in order: the owner's turns and the model's earlier answers. A discussion's follow-up always ends with the owner's.
+	const user = messages.filter((message) => message.role !== "system").map((message) => ({ role: message.role, content: message.content }));
 	const fallback = claude && TAKES_FALLBACK.test(config.model);
 	const headers: Record<string, string> = claude
 		? { "content-type": "application/json", "x-api-key": config.apiKey ?? "", "anthropic-version": ANTHROPIC_VERSION, ...(fallback ? { "anthropic-beta": FALLBACK_BETA } : {}) }

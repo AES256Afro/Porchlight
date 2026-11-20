@@ -101,6 +101,10 @@ const ICONS = {
 		["circle", { cx: 7, cy: 7, r: 4.5, fill: "none", stroke: "currentColor", "stroke-width": 1.5 }],
 		["path", { d: "m10.4 10.4 3.6 3.6", fill: "none", stroke: "currentColor", "stroke-width": 1.7, "stroke-linecap": "round" }],
 	],
+	discussions: [
+		["path", { d: "M2.5 3.2h11v7.3H8.2L5 13v-2.5H2.5Z", fill: "none", stroke: "currentColor", "stroke-width": 1.5, "stroke-linejoin": "round" }],
+		["path", { d: "M5 6.2h6M5 8.2h4", fill: "none", stroke: "currentColor", "stroke-width": 1.4, "stroke-linecap": "round" }],
+	],
 	domains: [
 		["circle", { cx: 8, cy: 8, r: 6, fill: "none", stroke: "currentColor", "stroke-width": 1.5 }],
 		["path", { d: "M2 8h12M8 2c2 2 2.6 3.8 2.6 6S10 12 8 14c-2-2-2.6-3.8-2.6-6S6 4 8 2Z", fill: "none", stroke: "currentColor", "stroke-width": 1.3 }],

@@ -59,6 +59,24 @@ import { challengeName, challengeValue, checkOwnership, newToken, readDomains, s
 import { abortableSleep, parseDomain, RateLimiter } from "../investigate/scope.ts";
 import { isRunId, RunStore, settled } from "../investigate/store.ts";
 import { liveNet, TOOLS as INVESTIGATION_TOOLS, type Net } from "../investigate/tools.ts";
+import {
+	DISCUSSION_FORMATS,
+	DiscussionStore,
+	exportDiscussion,
+	fingerprintOf,
+	followUpPrompt,
+	HOSTED_HISTORY_CAP,
+	LOCAL_HISTORY_CAP,
+	MAX_TURNS,
+	newDiscussion,
+	viewOf,
+	type Discussion,
+	type DiscussionAbout,
+	type DiscussionFormat,
+	type DiscussionKind,
+	type DiscussionTurn,
+} from "../discussions/discussions.ts";
+import type { SendTarget } from "../assist/settings.ts";
 
 export interface UiOptions {
 	/** 0 picks a free port. */
@@ -185,7 +203,7 @@ export type AnalysisStatus =
 
 const UI_DIR = join(import.meta.dirname, "../../ui");
 /** The page's own modules. Nothing else in the folder is served. */
-const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths", "investigate"];
+const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths", "investigate", "discussions", "discussion", "discussion-links"];
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
 	"/": { file: "index.html", type: "text/html; charset=utf-8" },
 	"/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
@@ -373,6 +391,166 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		return sendTargets(savedModel, startup.config, startupKeys);
 	}
 
+	// Discussions: every answer a model gives on a page, kept so it can be read again and followed up.
+	const discussionStore = new DiscussionStore(join(dirname(options.reportPath), "discussions"));
+	/** Discussions waiting for a follow-up answer: one question at a time each. */
+	const answering = new Set<string>();
+
+	/**
+	 * Keeps a model's first answer as a discussion. Not keeping it never costs the owner the answer:
+	 * the page still shows it, only without a follow-up box.
+	 */
+	async function recordDiscussion(
+		kind: DiscussionKind,
+		about: DiscussionAbout,
+		config: AssistantConfig,
+		targetId: string | null,
+		cut: string | null,
+		first: DiscussionTurn,
+	): Promise<string | undefined> {
+		try {
+			const target = targetId ?? targets().find((candidate) => fingerprintOf(candidate.config) === fingerprintOf(config))?.id ?? "";
+			const discussion = newDiscussion({ kind, about, config, hosted: isHosted(config), target, cut, first });
+			await discussionStore.save(discussion);
+			await discussionStore.prune().catch(() => {});
+			return discussion.id;
+		} catch (err) {
+			console.error(`porchlight ui: could not keep the discussion: ${err instanceof Error ? err.message : String(err)}`);
+			return undefined;
+		}
+	}
+
+	const NEWER_SCAN = "A newer scan has replaced the one this discussion is about. Ask again from the page to start a new discussion about it.";
+
+	/**
+	 * Whether a discussion can take a follow-up now, and the model it goes to: the same one it began
+	 * with, never one swapped in since, and the same scan, never a newer one the model has not read.
+	 */
+	async function followUpState(discussion: Discussion): Promise<{ ok: true; target: SendTarget } | { ok: false; reason: string }> {
+		if (discussion.turns.length >= MAX_TURNS) {
+			return { ok: false, reason: `This discussion has ${MAX_TURNS} answers, the most one can hold. Ask again from the page to start a new one.` };
+		}
+		const target = targets().find((candidate) => candidate.id === discussion.target);
+		if (!target || fingerprintOf(target.config) !== discussion.fingerprint) {
+			return {
+				ok: false,
+				reason: `${discussion.model} at ${discussion.host}, the model this discussion used, is no longer set up. Set it up again under Settings → Model, or ask again from the page to start a new discussion.`,
+			};
+		}
+		if (discussion.kind !== "domain") {
+			const report = await readReport(options.reportPath).catch(() => null);
+			if (!report || report.scannedAt !== discussion.about.scannedAt) return { ok: false, reason: NEWER_SCAN };
+		}
+		return { ok: true, target };
+	}
+
+	/** The first prompt of a discussion, built again from this server's own data, exactly as it was sent (invariant 13). */
+	async function rebuildPrompt(discussion: Discussion, target: SendTarget): Promise<Prompt> {
+		const about = discussion.about;
+		if (discussion.kind === "domain") {
+			const report = await latestDomainReport(about.domain ?? "");
+			if (String(report.takenAt) !== about.takenAt) {
+				throw new HttpError(409, `A newer scan of ${about.domain} has replaced the one this discussion is about. Ask again from the Domains page to start a new discussion about it.`);
+			}
+			return domainPrompt(report);
+		}
+		const report = await storedReport();
+		if (report.scannedAt !== about.scannedAt) throw new HttpError(409, NEWER_SCAN);
+		if (discussion.kind === "finding") {
+			const found = locateFinding(report, { repo: about.repo ?? "", ruleId: about.ruleId ?? "", location: about.location ?? "", detail: about.detail });
+			if (!found) throw new HttpError(409, NEWER_SCAN);
+			return findingPrompt(report, found.repo, found.finding);
+		}
+		if (discussion.kind === "roadmap") return roadmapPrompt(report);
+		if (discussion.kind === "ask") return askPrompt(report, discussion.turns[0]?.question ?? "");
+		const filter = parseFilter({ severity: about.filter?.severity, kind: about.filter?.kind, match: about.filter?.q, repo: about.filter?.repo });
+		return sendPrompt(report, {
+			content: about.content === "findings" ? "findings" : "roadmap",
+			purpose: about.purpose === "repair" ? "repair" : "analyse",
+			filter,
+			cap: target.hosted ? HOSTED_DATA_CAP : DATA_CAP,
+		});
+	}
+
+	/**
+	 * Kept discussions: the list, one in full, a file of one, deleting one, and a follow-up question.
+	 * A follow-up sends the first prompt as built from this server's data, the conversation so far and
+	 * the owner's question, to the model the discussion began with. The answer is text for the page.
+	 */
+	async function discussionRoute(res: ServerResponse, route: string, url: URL, body: unknown): Promise<void> {
+		if (route === "GET /api/discussions") return sendJson(res, 200, { discussions: await discussionStore.list(), maxTurns: MAX_TURNS });
+		if (route === "GET /api/discussions/one" || route === "GET /api/discussions/export") {
+			const discussion = await discussionStore.read(url.searchParams.get("id"));
+			if (!discussion) throw new HttpError(404, "There is no such discussion");
+			if (route === "GET /api/discussions/export") {
+				const format = url.searchParams.get("format") ?? "md";
+				if (!(DISCUSSION_FORMATS as readonly string[]).includes(format)) throw new HttpError(400, `Choose a format: ${DISCUSSION_FORMATS.join(" or ")}`);
+				return sendDownload(res, exportDiscussion(discussion, format as DiscussionFormat));
+			}
+			const state = await followUpState(discussion);
+			return sendJson(res, 200, { discussion: viewOf(discussion), followUp: state.ok ? { ok: true } : { ok: false, reason: state.reason } });
+		}
+		const fields = bodyObject(body);
+		if (route === "POST /api/discussions/delete") {
+			if (typeof fields.id === "string" && answering.has(fields.id)) throw new HttpError(409, "This discussion is waiting for an answer. Delete it when the answer has come");
+			if (!(await discussionStore.remove(fields.id))) throw new HttpError(404, "There is no such discussion");
+			return sendJson(res, 200, { deleted: fields.id });
+		}
+		if (route !== "POST /api/discussions/ask") throw new HttpError(404, "Not found");
+
+		const question = fields.question;
+		if (typeof question !== "string" || question.trim() === "" || question.length > MAX_QUESTION) throw new HttpError(400, `Ask a question of 1 to ${MAX_QUESTION} characters`);
+		const discussion = await discussionStore.read(fields.id);
+		if (!discussion) throw new HttpError(404, "There is no such discussion");
+		if (answering.has(discussion.id)) throw new HttpError(409, "This discussion is still waiting for an answer to the last question");
+		const state = await followUpState(discussion);
+		if (!state.ok) throw new HttpError(409, state.reason);
+		const target = state.target;
+		const prompt = await rebuildPrompt(discussion, target);
+		const { messages, note } = followUpPrompt(prompt, discussion.turns, question.trim(), target.hosted ? HOSTED_HISTORY_CAP : LOCAL_HISTORY_CAP);
+
+		// As for "Send to a model": the owner's own model answers one request at a time, a hosted one many.
+		const local = !target.hosted;
+		if (local && modelBusy) throw new HttpError(409, "The model is still answering another request. Try again when it has finished.");
+		if (local) modelBusy = true;
+		answering.add(discussion.id);
+		sending += 1;
+		const cancel = new AbortController();
+		const onClose = () => {
+			if (!res.writableFinished) cancel.abort();
+		};
+		res.once("close", onClose);
+		const started = Date.now();
+		try {
+			const long = discussion.kind === "send";
+			const answer = await chat(target.config, messages, {
+				fetchFn: options.fetchFn,
+				signal: cancel.signal,
+				...(long ? { timeoutMs: SEND_TIMEOUT_MS, maxTokens: SEND_TOKENS } : {}),
+			});
+			const turn: DiscussionTurn = {
+				question: question.trim(),
+				answer,
+				model: target.config.model,
+				at: new Date().toISOString(),
+				seconds: Math.round((Date.now() - started) / 100) / 10,
+				...(note ? { note } : {}),
+			};
+			discussion.turns.push(turn);
+			discussion.updatedAt = turn.at;
+			await discussionStore.save(discussion);
+			sendJson(res, 200, { discussion: viewOf(discussion), turn });
+		} catch (err) {
+			if (err instanceof AssistantError) throw new HttpError(err.status, err.message);
+			throw err;
+		} finally {
+			res.off("close", onClose);
+			answering.delete(discussion.id);
+			sending -= 1;
+			if (local) modelBusy = false;
+		}
+	}
+
 	/**
 	 * "Send to a model": the roadmap or the findings, all or what the filters show, to the model the
 	 * owner picks, for a deeper analysis or a repair plan. The request names the model by Porchlight's
@@ -405,9 +583,28 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			if (!res.writableFinished) cancel.abort();
 		};
 		res.once("close", onClose);
+		const started = Date.now();
 		try {
 			const answer = await chat(target.config, prompt.messages, { fetchFn: options.fetchFn, signal: cancel.signal, timeoutMs: SEND_TIMEOUT_MS, maxTokens: SEND_TOKENS });
 			const partial = describeFilter(filter);
+			// What the page's filter was, in the request's own words, so a follow-up rebuilds the same data.
+			const filterWords = Object.fromEntries(
+				(["severity", "kind", "q", "repo"] as const).flatMap((name) => (text(name) === null ? [] : [[name, text(name) as string]])),
+			);
+			const about: DiscussionAbout = {
+				scannedAt: report.scannedAt,
+				content: fields.content as string,
+				purpose: fields.purpose as string,
+				...(Object.keys(filterWords).length > 0 ? { filter: filterWords } : {}),
+				...(partial ? { partial } : {}),
+			};
+			const discussion = await recordDiscussion("send", about, target.config, target.id, prompt.cut, {
+				question: null,
+				answer,
+				model: target.config.model,
+				at: new Date().toISOString(),
+				seconds: Math.round((Date.now() - started) / 100) / 10,
+			});
 			sendJson(res, 200, {
 				text: answer,
 				model: target.config.model,
@@ -415,6 +612,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				hosted: target.hosted,
 				...(prompt.cut ? { cut: prompt.cut } : {}),
 				...(partial ? { partial } : {}),
+				...(discussion ? { discussion } : {}),
 			});
 		} catch (err) {
 			if (err instanceof AssistantError) throw new HttpError(err.status, err.message);
@@ -952,6 +1150,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			});
 		}
 		if (route === "POST /api/repos/send") return sendRoute(res, body);
+		if (url.pathname === "/api/discussions" || url.pathname.startsWith("/api/discussions/")) return discussionRoute(res, route, url, body);
 		if (url.pathname === "/api/host" || url.pathname === "/api/host/check") return hostRoute(res, route, body);
 		if (url.pathname === "/api/investigate" || url.pathname.startsWith("/api/investigate/")) return investigateRoute(res, route, url, body, gate);
 		if (route === "GET /api/repos/history") {
@@ -1199,14 +1398,23 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		const fields = bodyObject(body);
 
 		let prompt: Prompt;
+		/** What the answer is about, kept with it as a discussion so it can be followed up. */
+		let about: DiscussionAbout;
+		let firstQuestion: string | null = null;
 		if (kind === "domain") {
-			prompt = domainPrompt(await latestDomainReport(domainField(fields)));
+			const domain = domainField(fields);
+			const report = await latestDomainReport(domain);
+			prompt = domainPrompt(report);
+			about = { domain, takenAt: String(report.takenAt) };
 		} else if (kind === "ask") {
 			const question = fields.question;
 			if (typeof question !== "string" || question.trim() === "" || question.length > MAX_QUESTION) {
 				throw new HttpError(400, `Ask a question of 1 to ${MAX_QUESTION} characters`);
 			}
-			prompt = askPrompt(await storedReport(), question);
+			const report = await storedReport();
+			prompt = askPrompt(report, question);
+			about = { scannedAt: report.scannedAt };
+			firstQuestion = question.trim();
 		} else if (kind === "finding") {
 			const target = {
 				repo: textField(fields, "repo", 1000),
@@ -1218,8 +1426,19 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			const found = locateFinding(report, target);
 			if (!found) throw new HttpError(404, "That finding is not in the latest scan. Reload the page to see the current one.");
 			prompt = findingPrompt(report, found.repo, found.finding);
+			about = {
+				scannedAt: report.scannedAt,
+				repo: target.repo,
+				ruleId: target.ruleId,
+				location: target.location,
+				detail: found.finding.detail,
+				title: found.finding.title,
+				severity: found.finding.severity,
+			};
 		} else {
-			prompt = roadmapPrompt(await storedReport());
+			const report = await storedReport();
+			prompt = roadmapPrompt(report);
+			about = { scannedAt: report.scannedAt };
 		}
 
 		if (modelBusy) throw new HttpError(409, "The model is still answering another request. Try again when it has finished.");
@@ -1230,9 +1449,17 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			if (!res.writableFinished) cancel.abort();
 		};
 		res.once("close", onClose);
+		const started = Date.now();
 		try {
 			const text = await chat(assistant, prompt.messages, { fetchFn: options.fetchFn, signal: cancel.signal });
-			sendJson(res, 200, { text, model: assistant.model, ...(prompt.cut ? { cut: prompt.cut } : {}) });
+			const discussion = await recordDiscussion(kind as DiscussionKind, about, assistant, null, prompt.cut, {
+				question: firstQuestion,
+				answer: text,
+				model: assistant.model,
+				at: new Date().toISOString(),
+				seconds: Math.round((Date.now() - started) / 100) / 10,
+			});
+			sendJson(res, 200, { text, model: assistant.model, ...(prompt.cut ? { cut: prompt.cut } : {}), ...(discussion ? { discussion } : {}) });
 		} catch (err) {
 			if (err instanceof AssistantError) throw new HttpError(err.status, err.message);
 			throw err;

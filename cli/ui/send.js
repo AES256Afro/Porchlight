@@ -6,6 +6,7 @@
 // to carry out a repair plan, the owner copies it to a coding assistant or follows it by hand.
 import { api } from "./api.js";
 import { generatedText } from "./assist.js";
+import { followUpBox } from "./discussion.js";
 import { banner, h, icon, replace, stepNodes, toast } from "./dom.js";
 import { isFiltering } from "./filter.js";
 import { paramsFromFilter } from "./list.js";
@@ -122,7 +123,7 @@ export function openSendDialog(target, initialContent = "roadmap") {
 	const dialog = /** @type {HTMLDialogElement} */ (h("dialog", { class: "dialog wide send", "aria-labelledby": "send-title", onclose: () => dialog.remove(),
 			// A link to Settings leaves the dialog for that page.
 			onclick: (/** @type {MouseEvent} */ event) => {
-				if (event.target instanceof Element && event.target.closest("a.crumb[href^='#']")) dialog.close();
+				if (event.target instanceof Element && event.target.closest("a[href^='#']")) dialog.close();
 			},
 		}, form));
 
@@ -171,6 +172,8 @@ export function openSendDialog(target, initialContent = "roadmap") {
 					h("button", { type: "button", class: "button", onclick: () => void copy(saved) }, icon("copy"), "Copy"),
 					h("button", { type: "button", class: "button", onclick: () => save(saved, request.purpose) }, icon("download"), "Save as text"),
 				),
+				// Kept as a discussion: follow-up questions about this answer go to the same model.
+				typeof answer.discussion === "string" ? followUpBox({ id: answer.discussion, model: model.model, host: model.host, hosted: model.hosted }, { link: true }) : null,
 			);
 		} catch (err) {
 			replace(result, banner("error", "The model could not answer", [err instanceof Error ? err.message : String(err)]));

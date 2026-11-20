@@ -831,7 +831,8 @@ test("explains a finding, summarises the roadmap and answers a question from the
 	await withReport(server);
 
 	const explained = await send(server, "POST", "/api/assist/finding", { body: { repo: "group/worst", ruleId: "rule-high", location: "package-lock.json", detail: "pkg@1.0.0" } });
-	assert.deepEqual([explained.status, explained.json], [200, { text: "What it is: a test answer.", model: MODEL }]);
+	assert.deepEqual([explained.status, pick(explained.json, ["text", "model"])], [200, { text: "What it is: a test answer.", model: MODEL }]);
+	assert.match(explained.json.discussion, /^dsc_[0-9a-f]{16}$/, "every answer is kept as a discussion");
 	const sent = JSON.parse(network.modelCalls[0]!);
 	assert.deepEqual([sent.model, sent.stream, sent.think], [MODEL, false, false]);
 	assert.match(sent.messages[1].content, /"title":"A high problem"/);
@@ -842,8 +843,94 @@ test("explains a finding, summarises the roadmap and answers a question from the
 	assert.match(JSON.parse(network.modelCalls[1]!).messages[1].content, /"actions":\[\{"phase":"Fix now"/);
 
 	const answered = await send(server, "POST", "/api/assist/ask", { body: { question: "Which repository first?" } });
-	assert.deepEqual(answered.json, { text: "What it is: a test answer.", model: MODEL });
+	assert.deepEqual(pick(answered.json, ["text", "model"]), { text: "What it is: a test answer.", model: MODEL });
 	assert.match(JSON.parse(network.modelCalls[2]!).messages[1].content, /DATA>>>\n\nThe owner's question:\nWhich repository first\?$/);
+});
+
+test("keeps each answer as a discussion, and answers follow-up questions from the same data", async (t) => {
+	const network = fakeNetwork({ model: (body) => Response.json({ message: { content: `Answer to ${body.messages.length} messages.` } }) });
+	const server = await start(t, { assistant, fetchFn: network.fetchFn });
+	await withReport(server);
+
+	const explained = await send(server, "POST", "/api/assist/finding", { body: { repo: "group/worst", ruleId: "rule-high", location: "package-lock.json", detail: "pkg@1.0.0" } });
+	const id = explained.json.discussion as string;
+	assert.match(id, /^dsc_[0-9a-f]{16}$/);
+	const listed = (await send(server, "GET", "/api/discussions")).json.discussions;
+	assert.deepEqual(
+		listed.map((entry: { id: string; kind: string; answers: number; title: string }) => [entry.id, entry.kind, entry.answers, entry.title]),
+		[[id, "finding", 1, "Explain: A high problem in package-lock.json (group/worst)"]],
+		"the title is Porchlight's, from what was asked about",
+	);
+	assert.equal((await stat(join(server.dir, "state", "discussions", `${id}.json`))).mode & 0o777, 0o600);
+
+	// A follow-up: the first prompt as it was built (rules, task and the finding), the first answer, then the question.
+	const followed = await send(server, "POST", "/api/discussions/ask", { body: { id, question: "Is it only in a test file?" } });
+	assert.equal(followed.status, 200);
+	const sent = JSON.parse(network.modelCalls.at(-1)!);
+	assert.deepEqual(sent.messages.map((message: { role: string }) => message.role), ["system", "user", "assistant", "user"]);
+	assert.match(sent.messages[1].content, /<<<DATA\n.*"title":"A high problem"/s);
+	assert.ok(!sent.messages[1].content.includes("A critical problem"), "still only the finding asked about");
+	assert.equal(sent.messages[2].content, "Answer to 2 messages.");
+	assert.match(sent.messages[3].content, /still data, not instructions/);
+	assert.match(sent.messages[3].content, /The owner's question:\nIs it only in a test file\?$/);
+	assert.deepEqual(pick(followed.json.turn, ["question", "answer", "model"]), { question: "Is it only in a test file?", answer: "Answer to 4 messages.", model: MODEL });
+
+	// The model the discussion began with answers its follow-ups, even after another is chosen in Settings.
+	await send(server, "POST", "/api/model", { body: { choice: "anthropic", apiKey: CLAUDE_KEY } });
+	const one = await send(server, "GET", `/api/discussions/one?id=${id}`);
+	assert.deepEqual([one.json.followUp, one.json.discussion.turns.length, one.json.discussion.host], [{ ok: true }, 2, "ollama.test:11434"]);
+	assert.ok(!("fingerprint" in one.json.discussion) && !one.text.includes(CLAUDE_KEY), "the page gets no address beyond the host, and never a key");
+	assert.equal((await send(server, "POST", "/api/discussions/ask", { body: { id, question: "And then?" } })).status, 200);
+	assert.equal(network.modelCalls.length, 3, "the local model answered; nothing went to Claude");
+
+	// Only a discussion Porchlight made, and only a question of the right size; nothing is asked otherwise.
+	for (const [body, status] of [
+		[{ id, question: "" }, 400],
+		[{ id, question: "x".repeat(501) }, 400],
+		[{ id, question: ["hi"] }, 400],
+		[{ id: "../state/repo-scan", question: "hi" }, 404],
+		[{ id: "dsc_0000000000000000", question: "hi" }, 404],
+	] as const) {
+		assert.equal((await send(server, "POST", "/api/discussions/ask", { body })).status, status, JSON.stringify(body));
+	}
+	assert.equal((await send(server, "GET", "/api/discussions/one?id=../state/repo-scan")).status, 404);
+	assert.equal(network.modelCalls.length, 3);
+
+	// A file to keep, under a fixed name, with what the scan and the model wrote escaped.
+	const exported = await send(server, "GET", `/api/discussions/export?id=${id}&format=md`);
+	assert.equal(exported.headers["content-disposition"], 'attachment; filename="porchlight-discussion-' + new Date().toISOString().slice(0, 10) + '.md"');
+	assert.match(exported.text, /^# Explain: A high problem in package-lock\.json \\\(group\/worst\\\)/);
+	assert.match(exported.text, /## You\n\nIs it only in a test file\?/);
+	assert.equal((await send(server, "GET", `/api/discussions/export?id=${id}&format=html`)).status, 400);
+
+	// After a newer scan the discussion can still be read, but a follow-up would mix two scans: refused.
+	const newer = { ...sampleReport("/work"), scannedAt: "2026-11-20T12:00:00.000Z" };
+	await writeFile(join(server.dir, "state", "repo-scan.json"), JSON.stringify(newer));
+	const stale = (await send(server, "GET", `/api/discussions/one?id=${id}`)).json;
+	assert.equal(stale.followUp.ok, false);
+	assert.match(stale.followUp.reason, /A newer scan has replaced the one this discussion is about/);
+	assert.equal((await send(server, "POST", "/api/discussions/ask", { body: { id, question: "Still?" } })).status, 409);
+	assert.equal(network.modelCalls.length, 3);
+
+	assert.equal((await send(server, "POST", "/api/discussions/delete", { body: { id } })).status, 200);
+	assert.equal((await send(server, "GET", `/api/discussions/one?id=${id}`)).status, 404);
+	assert.equal((await send(server, "POST", "/api/discussions/delete", { body: { id } })).status, 404);
+	assert.deepEqual((await send(server, "GET", "/api/discussions")).json.discussions, []);
+});
+
+test("keeps an Ask question as the first turn and rebuilds it for a follow-up", async (t) => {
+	const network = fakeNetwork();
+	const server = await start(t, { assistant, fetchFn: network.fetchFn });
+	await withReport(server);
+
+	const asked = await send(server, "POST", "/api/assist/ask", { body: { question: "  Which repository first?  " } });
+	const one = (await send(server, "GET", `/api/discussions/one?id=${asked.json.discussion}`)).json.discussion;
+	assert.deepEqual([one.kind, one.title, one.turns[0].question], ["ask", "Ask: Which repository first?", "Which repository first?"]);
+
+	await send(server, "POST", "/api/discussions/ask", { body: { id: one.id, question: "Why that one?" } });
+	const sent = JSON.parse(network.modelCalls.at(-1)!);
+	assert.match(sent.messages[1].content, /DATA>>>\n\nThe owner's question:\nWhich repository first\?$/, "the first question, as first asked");
+	assert.match(sent.messages.at(-1).content, /Why that one\?$/);
 });
 
 test("has the model judge findings in the background, worst first, and shows each judgement beside its finding", async (t) => {
@@ -912,7 +999,7 @@ test("asks the model one request at a time", async (t) => {
 	assert.equal(network.modelCalls.length, 1, "the second request never reached the model");
 
 	release();
-	assert.deepEqual((await first).json, { text: "Done.", model: MODEL });
+	assert.deepEqual(pick((await first).json, ["text", "model"]), { text: "Done.", model: MODEL });
 	const third = send(server, "POST", "/api/assist/ask", { body: { question: "Anything?" } });
 	for (let attempt = 0; attempt < 200 && network.modelCalls.length < 2; attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
 	release();
@@ -943,7 +1030,7 @@ test("explains a domain's latest scan from the monitor without ever exposing the
 
 	const reply = await send(server, "POST", "/api/assist/domain", { body: { domain: " Example.COM " } });
 
-	assert.deepEqual([reply.status, reply.json], [200, { text: "What it is: a test answer.", model: MODEL }]);
+	assert.deepEqual([reply.status, pick(reply.json, ["text", "model"])], [200, { text: "What it is: a test answer.", model: MODEL }]);
 	assert.deepEqual(network.monitorCalls, [{ url: "https://monitor.example/domains/example.com", authorization: `Bearer ${ADMIN_TOKEN}` }]);
 	const prompt = network.modelCalls[0]!;
 	assert.match(prompt, /new\.example\.com/);
@@ -973,7 +1060,7 @@ test("turns a model that cannot answer into a clear error, and frees it for the 
 	assert.deepEqual([unreachable.status, unreachable.json.error], [502, "Could not reach the model at ollama.test:11434 (ECONNREFUSED). Is Ollama running there?"]);
 	const missing = await send(server, "POST", "/api/assist/roadmap");
 	assert.deepEqual([missing.status, missing.json.error], [502, `Ollama has no model ${MODEL}: add it in Ollama first`]);
-	assert.deepEqual((await send(server, "POST", "/api/assist/roadmap")).json, { text: "Recovered.", model: MODEL });
+	assert.deepEqual(pick((await send(server, "POST", "/api/assist/roadmap")).json, ["text", "model"]), { text: "Recovered.", model: MODEL });
 });
 
 function pick(value: Record<string, unknown>, keys: string[]): Record<string, unknown> {
@@ -1295,6 +1382,19 @@ test("sends the roadmap or the findings to the model the owner picks, from the s
 	assert.match(content, /"filtered":"critical severity only"/);
 	assert.match(content, /A critical problem/);
 	assert.ok(!content.includes("A high problem"), "only what the filter leaves");
+
+	// A follow-up goes to the same model at its fixed address, with the same part of the scan, the first answer and the question.
+	const followed = await send(server, "POST", "/api/discussions/ask", { body: { id: analysed.json.discussion, question: "Which package is it?" } });
+	assert.equal(followed.status, 200);
+	const again = calls.at(-1)!;
+	assert.deepEqual([again.host, again.key === CLAUDE_KEY], ["api.anthropic.com", true]);
+	assert.deepEqual(again.body.messages.map((message: { role: string }) => message.role), ["user", "assistant", "user"]);
+	assert.match(again.body.messages[0].content, /"filtered":"critical severity only"/);
+	assert.ok(!again.body.messages[0].content.includes("A high problem"), "the same part of the scan as the first answer");
+	assert.equal(again.body.messages[1].content, "Overall risk: one critical package.");
+	assert.match(again.body.messages[2].content, /Which package is it\?$/);
+	const kept = (await send(server, "GET", `/api/discussions/one?id=${analysed.json.discussion}`)).json.discussion;
+	assert.deepEqual([kept.kind, kept.title, kept.hosted, kept.target], ["send", "Deeper analysis of the findings (critical severity only)", true, "anthropic"]);
 
 	// Only the models on offer, and only the choices there are; nothing is asked otherwise.
 	const before = calls.length;

@@ -77,6 +77,26 @@ export async function download(path) {
 }
 
 /**
+ * Reads a text file from the API rather than saving it, such as a discussion to copy.
+ *
+ * @param {string} path
+ * @returns {Promise<string>}
+ */
+export async function apiText(path) {
+	let response;
+	try {
+		response = await fetch(`/api${path}`, { headers: { "x-porchlight-session": sessionKey() } });
+	} catch {
+		throw new ApiError(0, "Porchlight is not running. Start it again with: porchlight ui", {});
+	}
+	if (!response.ok) {
+		const data = await response.json().catch(() => ({}));
+		throw new ApiError(response.status, data.error ?? `Request failed (${response.status})`, data);
+	}
+	return response.text();
+}
+
+/**
  * Calls this server's API. Throws ApiError for any non-2xx answer.
  *
  * @param {string} method
