@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { homedir, hostname, networkInterfaces } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { judge, readAnalysis, saveAnalysis, unitKey, unitsOf, VERDICTS, type AnalysisFile } from "../analysis/analyse.ts";
+import { DEFAULT_OLLAMA, DownloadError, HUB_HOST, HUB_SORTS, HUB_TASKS, installedModels, modelNameProblem, pullModel, searchHub } from "../assist/download.ts";
 import { AssistantError, chat, HOSTED, isHosted, listModels, type AssistantConfig, type HostedProvider } from "../assist/ollama.ts";
 import {
 	addressFromConfig,
@@ -239,7 +240,7 @@ export type AnalysisStatus =
 
 const UI_DIR = join(import.meta.dirname, "../../ui");
 /** The page's own modules. Nothing else in the folder is served. */
-const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths", "investigate", "discussions", "discussion", "discussion-links", "panel", "projects", "cloudflare", "cloudflare-settings", "monitor-settings", "activity"];
+const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths", "investigate", "discussions", "discussion", "discussion-links", "panel", "projects", "cloudflare", "cloudflare-settings", "monitor-settings", "activity", "model-download"];
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
 	"/": { file: "index.html", type: "text/html; charset=utf-8" },
 	"/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
@@ -893,6 +894,78 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		} catch (err) {
 			if (err instanceof ModelSettingError) throw new HttpError(400, err.message);
 			if (err instanceof AssistantError) throw new HttpError(err.status, err.message);
+			throw err;
+		}
+	}
+
+	// Downloading a local model: Ollama does it, at the address chosen under Settings → Model or on
+	// this computer. One at a time, and only from this computer's page: it fills a disk.
+	let download: DownloadStatus = { state: "idle" };
+	let downloadStop: AbortController | null = null;
+	function ollamaBase(): URL {
+		const config = model.config;
+		return config && (config.provider ?? "ollama") === "ollama" ? config.url : new URL(DEFAULT_OLLAMA);
+	}
+
+	async function downloadRoute(res: ServerResponse, route: string, url: URL, body: unknown, gate: Gate): Promise<void> {
+		const here = gate.loopbackOnly && !gate.tailnet;
+		try {
+			if (route === "GET /api/model/local") {
+				const base = ollamaBase();
+				let installed: Awaited<ReturnType<typeof installedModels>> = [];
+				let problem: string | undefined;
+				try {
+					installed = await installedModels(base, options.fetchFn);
+				} catch (err) {
+					problem = err instanceof Error ? err.message : String(err);
+				}
+				return sendJson(res, 200, { ollama: { host: base.host, reachable: problem === undefined, ...(problem ? { problem } : {}) }, installed, download, canChange: here, hub: HUB_HOST, tasks: HUB_TASKS, sorts: HUB_SORTS });
+			}
+			if (!here) throw new HttpError(403, "Models are searched for and downloaded from the page on the Mac that runs Porchlight");
+			if (route === "GET /api/model/local/search") {
+				const asked = (name: string) => url.searchParams.get(name) ?? "";
+				return sendJson(res, 200, { models: await searchHub({ q: asked("q"), task: asked("task"), sort: asked("sort"), author: asked("author"), tag: asked("tag") }, options.fetchFn) });
+			}
+			if (route === "POST /api/model/local/stop") {
+				downloadStop?.abort();
+				return sendJson(res, 200, { stopped: downloadStop !== null });
+			}
+			if (route !== "POST /api/model/local/download") throw new HttpError(404, "Not found");
+			if (download.state === "running") throw new HttpError(409, `${download.name} is being downloaded. Wait for it, or stop it first`);
+			const name = bodyObject(body).name;
+			const problem = modelNameProblem(name);
+			if (problem) throw new HttpError(400, problem);
+			const chosen = String(name).trim();
+			const base = ollamaBase();
+			const stop = new AbortController();
+			downloadStop = stop;
+			const startedAt = new Date().toISOString();
+			download = { state: "running", name: chosen, startedAt, step: "Asking Ollama", total: 0, completed: 0 };
+			log(`Model download started: ${chosen}, through Ollama at ${base.host}`);
+			// Not awaited: a model is gigabytes, and the page follows it.
+			void pullModel(base, chosen, {
+				fetchFn: options.fetchFn,
+				signal: stop.signal,
+				onProgress: (progress) => {
+					if (download.state === "running") download = { ...download, ...progress };
+				},
+			})
+				.then(() => {
+					download = { state: "done", name: chosen, startedAt, finishedAt: new Date().toISOString() };
+					log(`Model downloaded: ${chosen}`);
+				})
+				.catch((err) => {
+					const error = stop.signal.aborted ? "Stopped by you. Ollama keeps what it already has, so starting again picks up from there." : err instanceof Error ? err.message : String(err);
+					download = { state: "failed", name: chosen, startedAt, finishedAt: new Date().toISOString(), error };
+					log(stop.signal.aborted ? `Model download stopped: ${chosen}` : `Model download failed: ${chosen}`);
+					if (!stop.signal.aborted) note(error, "warning");
+				})
+				.finally(() => {
+					if (downloadStop === stop) downloadStop = null;
+				});
+			return sendJson(res, 202, { download });
+		} catch (err) {
+			if (err instanceof DownloadError) throw new HttpError(502, err.message);
 			throw err;
 		}
 	}
@@ -1749,6 +1822,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			await saveUiSettings(settingsPath, next);
 			return sendJson(res, 200, next);
 		}
+		if (url.pathname === "/api/model/local" || url.pathname.startsWith("/api/model/local/")) return downloadRoute(res, route, url, body, gate);
 		if (url.pathname === "/api/model" || url.pathname.startsWith("/api/model/")) return modelRoute(res, route, body);
 		if (url.pathname === "/api/access" || url.pathname.startsWith("/api/access/")) return accessRoute(res, route, body, gate);
 		if (url.pathname.startsWith("/api/assist/")) return assist(req, res, url.pathname.slice("/api/assist/".length), body);
@@ -2314,6 +2388,13 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 }
 
 /** Sends a file to save. Its name is built from a fixed stem and a date, never from request input. */
+/** A local model being downloaded through Ollama. `step` is Ollama's own word for what it is doing. */
+export type DownloadStatus =
+	| { state: "idle" }
+	| { state: "running"; name: string; startedAt: string; step: string; total: number; completed: number }
+	| { state: "done"; name: string; startedAt: string; finishedAt: string }
+	| { state: "failed"; name: string; startedAt: string; finishedAt: string; error: string };
+
 /** One line of the Activity view. `n` counts up, so the page asks only for what it has not seen. */
 export interface ActivityLine {
 	n: number;

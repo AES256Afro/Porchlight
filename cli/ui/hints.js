@@ -137,6 +137,30 @@ export function monitorSetupSteps(service) {
 	];
 }
 
+/** A size in bytes, in the unit a person would say. @param {number} bytes */
+export function formatBytes(bytes) {
+	if (!Number.isFinite(bytes) || bytes <= 0) return "size not given";
+	const units = ["bytes", "KB", "MB", "GB", "TB"];
+	let value = bytes;
+	let unit = 0;
+	while (value >= 1000 && unit < units.length - 1) {
+		value /= 1000;
+		unit += 1;
+	}
+	return `${unit === 0 ? value : value.toFixed(value >= 100 ? 0 : 1)} ${units[unit]}`;
+}
+
+/**
+ * One line for a download in progress: the model, how far, and what Ollama says it is doing.
+ *
+ * @param {{ name: string, step: string, total: number, completed: number }} download
+ */
+export function downloadLine(download) {
+	if (download.total <= 0) return `${download.name}: ${download.step || "starting"}`;
+	const percent = Math.min(100, Math.floor((download.completed / download.total) * 100));
+	return `${download.name}: ${percent}% of ${formatBytes(download.total)} (${download.step})`;
+}
+
 /**
  * A Cloudflare permission as its token page words it: where it is, what it is called, and the level.
  * "Zone Settings Write" on a zone is "Zone, Zone Settings, Edit".

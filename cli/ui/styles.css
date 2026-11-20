@@ -1824,6 +1824,30 @@ legend {
 	border-radius: 6px;
 }
 
+.model-list li {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 6px 0;
+	border-top: 1px solid var(--hairline);
+	overflow-wrap: anywhere;
+}
+
+.model-list li:first-child {
+	border-top: 0;
+}
+
+.model-search {
+	display: grid;
+	gap: 10px;
+	max-width: 820px;
+}
+
+.model-download h3 {
+	margin-top: 18px;
+}
+
 .monitor-form {
 	display: grid;
 	gap: 10px;

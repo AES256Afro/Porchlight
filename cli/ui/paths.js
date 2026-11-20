@@ -127,6 +127,6 @@ export function splitPaths(text) {
  * @param {string[]} path the address's path, as `parseHash` gives it
  */
 export function settingsAnchor(path) {
-	const sections = ["model", "projects", "access", "appearance", "cloudflare", "monitor"];
+	const sections = ["model", "download", "projects", "access", "appearance", "cloudflare", "monitor"];
 	return path[0] === "settings" && sections.includes(path[1] ?? "") ? `settings-${path[1]}` : null;
 }

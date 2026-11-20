@@ -237,6 +237,17 @@ Open **Settings → Model** and pick where it runs:
 - A ChatGPT or Claude subscription is not an API key. These need a key from the provider's developer console, billed per request.
 - Before you choose a hosted provider, the page says what would be sent there. Saving the choice sends nothing.
 
+### Download a local model
+
+Under the model form, **Download a model** finds a model that runs on your own computer and has [Ollama](https://ollama.com/download) download it. Porchlight runs no model itself, so Ollama has to be installed and open; the section says so, with a link, when it is not.
+
+- **Search Hugging Face** by words, kind (text and chat, reads images too, embeddings), order (most downloaded, most liked, trending, recently updated, newest), publisher and tag. It lists only models in the format Ollama reads (GGUF). The search sends what you typed and chose to huggingface.co and nothing else: no key, and nothing from a scan.
+- **Download** asks Ollama to pull the model and shows how far it is. One download at a time; **Stop** ends it, and Ollama keeps what it already has. You can leave the page: the Activity page says when it is done.
+- **Use this model** makes it the model Porchlight uses, the same as choosing it in the form above.
+- You can also name one of Ollama's own models, such as `qwen3:8b`.
+
+Anyone can publish a model on Hugging Face, so prefer publishers you recognise. A model is several gigabytes. Models are searched for and downloaded only from the page on the Mac that runs Porchlight, never from another device or when it runs as a service.
+
 ### Or set it when Porchlight starts
 
 The model can also be given in the environment when `porchlight ui` starts, never on the command line. A choice saved in Settings takes precedence. For Ollama, two settings:

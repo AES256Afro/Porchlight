@@ -8,6 +8,7 @@ import { ANSWER_PLACES, DEFAULT_ANSWER_PLACE, LOOKS } from "./looks.js";
 import { answersPlaceChanged } from "./panel.js";
 import { accessSection } from "./access-settings.js";
 import { cloudflareSection } from "./cloudflare-settings.js";
+import { modelDownloadSection } from "./model-download.js";
 import { monitorSection } from "./monitor-settings.js";
 import { modelSection } from "./model-settings.js";
 import { projectsSection } from "./projects.js";
@@ -21,6 +22,8 @@ export async function renderSettings(view) {
 	await load();
 	// Kept across redraws, so changing the look leaves a half-filled model form as it is.
 	const model = store.settings?.service ? null : await modelSection();
+	// A service's models are set where it is managed, so it offers no download.
+	const downloads = store.settings?.service ? null : await modelDownloadSection().catch(() => null);
 	const access = store.settings?.service ? null : await accessSection();
 	const projects = projectsSection();
 	const cloudflare = await cloudflareSection();
@@ -82,6 +85,7 @@ export async function renderSettings(view) {
 				{ class: "page" },
 				h("div", { class: "page-head" }, h("div", null, h("h1", null, "Settings"), h("p", { class: "sub" }, "Which model Porchlight uses, where it keeps your files, how it looks, and what it's connected to."))),
 				model,
+				downloads,
 				projects,
 				cloudflare,
 				monitor,
