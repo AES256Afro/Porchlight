@@ -15,8 +15,8 @@ Findings are ranked by severity and grouped into an ordered repair plan. A langu
 
 | | |
 | --- | --- |
-| Interfaces | macOS app, web interface on 127.0.0.1, command line, container image |
-| Platforms | macOS (the app needs macOS 13.5 or later on Apple silicon). Linux for the command line and the container |
+| Interfaces | Web interface on 127.0.0.1, command line, container image, and a desktop app for macOS |
+| Platforms | Linux and macOS: command line and web interface. Any host that runs Linux containers (amd64, arm64): the container image. macOS 13.5 or later on Apple silicon: the desktop app as well. Windows: planned in [docs/PLAN-WINDOWS.md](docs/PLAN-WINDOWS.md), not yet supported |
 | Requires | Node.js 22.18 or later, git, gitleaks, osv-scanner. The Mac app carries its own Node.js, gitleaks and osv-scanner |
 | Runtime dependencies | None. Node runs the TypeScript directly; the web interface is plain JavaScript with no build step |
 | Monitor | A Cloudflare Worker with a D1 database, deployed to the operator's own Cloudflare account. Optional |
@@ -34,7 +34,7 @@ Findings are ranked by severity and grouped into an ordered repair plan. A langu
 8. [Limits](#8-limits)
 9. [Interface](#9-interface)
 
-Reference: [Setup](#setup) · [Web interface](#web-interface) · [Mac app](#mac-app) · [Open it from other devices](#open-it-from-other-devices) · [Run on BoxPilot](#run-on-boxpilot) · [Model](#model) · [Scan repositories](#scan-repositories) · [Deeper analysis](#deeper-analysis-with-a-model) · [Fetch from GitHub](#fetch-repositories-from-github) · [Export](#export-a-repair-roadmap) · [Send to a model](#send-to-a-model) · [Discussions](#discussions) · [Projects](#projects) · [History](#history-status-and-notes) · [Investigate](#investigate-with-a-model) · [Check this Mac](#check-this-mac) · [Cloudflare audit](#audit-your-cloudflare-account) · [Monitor domains](#monitor-domains) · [Development](#development)
+Reference: [Setup](#setup) · [Web interface](#web-interface) · [Mac app](#mac-app) · [Open it from other devices](#open-it-from-other-devices) · [Run on BoxPilot](#run-on-boxpilot) · [Model](#model) · [Scan repositories](#scan-repositories) · [Deeper analysis](#deeper-analysis-with-a-model) · [Fetch from GitHub](#fetch-repositories-from-github) · [Export](#export-a-repair-roadmap) · [Send to a model](#send-to-a-model) · [Discussions](#discussions) · [Projects](#projects) · [History](#history-status-and-notes) · [Investigate](#investigate-with-a-model) · [Check the computer](#check-the-computer) · [Cloudflare audit](#audit-your-cloudflare-account) · [Monitor domains](#monitor-domains) · [Development](#development)
 
 ## 1. Quick start
 
@@ -47,6 +47,8 @@ node cli/bin/porchlight.js ui --root ~/Projects
 ```
 
 Open the link it prints and choose **Check your code**. `node cli/bin/porchlight.js doctor` lists anything missing and the command that installs it.
+
+The commands above use Homebrew, which runs on macOS and Linux. Without it, install Node.js 22.18 or later, git, gitleaks and osv-scanner from their own releases or the distribution's packages.
 
 On a Mac with Apple silicon, the alternative is `Porchlight-<version>-arm64.dmg` from the [latest release](https://github.com/AES256Afro/Porchlight/releases/latest); see [Mac app](#mac-app).
 
@@ -89,7 +91,7 @@ Porchlight is one Node.js process. The browser page and the Mac app are clients 
 | Scan history | Each finished scan | Findings matched across scans by repository, rule or advisory, file and detail | New, fixed, and "could not be checked again" | `cli/src/repos/history.ts` |
 | Domain monitor | Domains whose `_porchlight-challenge` TXT record holds their token | Certificate Transparency logs, DNS over HTTPS, one `GET /` per host without following redirects | Changes since the previous scan, findings, webhook alerts | `monitor/` |
 | Cloudflare audit | Every zone in the account | Fixed rules, no model. A feature the zone's plan lacks is reported as unavailable, not as a fault | Problems per zone; 11 fixed change templates, sent only after approval | `cli/src/cloudflare/` |
-| Host check | The computer Porchlight runs on | macOS's own tools, read-only, each with a time limit | Results in five areas, and the repair commands that need no decision gathered into one block | `cli/src/host/` |
+| Host check | The computer Porchlight runs on | The operating system's own tools, read-only, each with a time limit. macOS: five areas. Linux: credentials in files and installed packages | Results by area, and the repair commands that need no decision gathered into one block | `cli/src/host/` |
 | Investigation | One proven domain and its subdomains | A model proposes one action per turn from three tools (DNS lookup, one HTTP request, one TCP connect); code checks each action and asks for approval | Findings that cite evidence captured in the same run | `cli/src/investigate/` |
 | Model assistance | What the page shows | Explain, Summarise, Ask, Deeper analysis, Send to a model, an export mural | Labelled text beside findings, kept as discussions | `cli/src/assist/`, `cli/src/analysis/`, `cli/src/discussions/` |
 | Exports | A scan, an audit or an investigation | Markdown, HTML (no script), CSV, JSON; every value escaped for its format | Files under fixed names; optionally a project folder | `cli/src/roadmap/escape.ts`, `cli/src/projects/` |
@@ -111,7 +113,7 @@ Porchlight is one Node.js process. The browser page and the Mac app are clients 
 | Destination | What is sent | When |
 | --- | --- | --- |
 | OSV.dev | Names and versions of the packages in the repositories' lockfiles. With the host check, names and versions of installed npm and Python packages | Every repository scan. The host check's lookup can be turned off |
-| Apple | macOS's own software update query | Host check, unless turned off |
+| Apple | macOS's own software update query | Host check on macOS, unless turned off |
 | Cloudflare API (`api.cloudflare.com`) | Read requests with the operator's token as a header; a change only after the operator approves that exact request | Cloudflare audit |
 | Cloudflare DNS over HTTPS | `_porchlight-challenge` lookups; an investigation's DNS lookups; the targets of a proven zone's CNAME records | Investigation; Cloudflare audit |
 | The operator's monitor | Domain names and commands, with the admin token as a header | Domains page and `porchlight domains` |
@@ -210,7 +212,7 @@ The figures show made-up repositories checked by the real gitleaks and osv-scann
 | *Figure 4. Explain, answered in the panel on the right* | *Figure 5. Discussions* |
 | ![The Cloudflare audit: counts, the changes Porchlight can make after approval, and each kind of problem with its fix](docs/screenshots/cloudflare.png) | ![Domains: the monitor's latest report for one domain, with changes since the previous scan and findings](docs/screenshots/domains.png) |
 | *Figure 6. Cloudflare audit* | *Figure 7. Domains, from the monitor* |
-| ![Investigate: a proven domain with its ownership record, and the form that starts a run](docs/screenshots/investigate.png) | ![This Mac: updates, built-in protection, network listeners, credentials in files and packages, each with its repair](docs/screenshots/host.png) |
+| ![Investigate: a proven domain with its ownership record, and the form that starts a run](docs/screenshots/investigate.png) | ![The computer check on macOS, where the page is called This Mac: updates, built-in protection, network listeners, credentials in files and packages, each with its repair](docs/screenshots/host.png) |
 | *Figure 8. Investigate* | *Figure 9. The computer check* |
 | ![Findings by repository in the Severity dashboard look, with counts by severity in the sidebar](docs/screenshots/dashboard.png) | ![The Roadmap in the Terminal look: monospace, green on black](docs/screenshots/terminal.png) |
 | *Figure 10. By repository, in the Severity dashboard look* | *Figure 11. Roadmap, in the Terminal look* |
@@ -228,8 +230,8 @@ This installs both packages and enables the pre-commit hook that blocks commits 
 Requirements:
 
 - Node.js 22.18 or later. The `cf` CLI release candidate asks for 22.23+, 24.22+ or 26.12+ and warns on older versions.
-- [gitleaks](https://github.com/gitleaks/gitleaks) for secret scanning: `brew install gitleaks`
-- [osv-scanner](https://github.com/google/osv-scanner) for dependency scanning: `brew install osv-scanner`
+- [gitleaks](https://github.com/gitleaks/gitleaks) for secret scanning: `brew install gitleaks`, or a binary from its releases
+- [osv-scanner](https://github.com/google/osv-scanner) for dependency scanning: `brew install osv-scanner`, or a binary from its releases
 
 The examples below assume this alias, run from the project root:
 
@@ -256,7 +258,7 @@ It prints a link. Open it to get both tools in the browser:
 - **Overview**: the two jobs, "Check your code" and "Check your websites". Before a scan it names the repositories it found in the folder; when it finds none, or the monitor is not set up, it says what to do next in numbered steps. After a scan it shows where things stand and what needs doing first. A scan that is running can be stopped; nothing is saved, and the last scan stays as it was.
 - **Findings**: every finding in one list, most severe first, each with the repair that clears it. Switch to **By repository** to see them grouped. Filter by severity, type, repository or text; the filters are kept in the address, so a reload or a shared link shows the same view. After a fix, open a repository under By repository and choose **Scan this repository again** to check it alone. Where a scanner is missing or fails that time, what it found before is kept.
 - **Roadmap**: what to repair, in order. One action, such as upgrading a package, can clear many findings.
-- **This Mac**: check the computer Porchlight runs on; see [Check this Mac](#check-this-mac).
+- **This Mac** (**This computer** on Linux): check the computer Porchlight runs on; see [Check the computer](#check-the-computer).
 - **Discussions**: every answer a model gave on these pages, with your follow-up questions; see [Discussions](#discussions).
 - **Project** (above the sections): which project folder saved exports, discussions and the log go to; see [Projects](#projects).
 - **Domains**: add a website by its domain name, prove it is yours with one DNS record, scan, and read what changed, with a suggested fix for each finding. Until the monitor is connected the page walks through setting it up, with each command to copy. Connect it under **Settings → Monitor**: paste the monitor's address and admin token, Porchlight asks the monitor whether they work, and the page becomes your list of websites with no restart. The two can also be given at start-up as `PORCHLIGHT_MONITOR_URL` and `PORCHLIGHT_ADMIN_TOKEN` (see [Monitor domains](#monitor-domains)); a connection saved in Settings comes first.
@@ -316,19 +318,19 @@ Settings are read from `~/.porchlight/app.env` each time it starts (copy `mac/ap
 
 ## Open it from other devices
 
-Porchlight on your Mac can also be opened from your other computers, such as a Windows PC, over [Tailscale](https://tailscale.com). They use the same running copy: the same scans, settings and model.
+Porchlight can also be opened from your other devices, such as a Windows PC or a phone, over [Tailscale](https://tailscale.com). They use the same running copy: the same scans, settings and model.
 
-1. On the Mac, open **Settings → Access from other devices** and choose **Turn on**.
-2. Copy the link it shows. It looks like `http://your-mac.your-tailnet.ts.net:4747/#k=…` and carries the access key.
+1. On the computer that runs Porchlight, open **Settings → Access from other devices** and choose **Turn on**.
+2. Copy the link it shows. It looks like `http://your-computer.your-tailnet.ts.net:4747/#k=…` and carries the access key.
 3. Open that link on the other device. Bookmark it to skip pasting the key in each new tab.
 
 How it is protected:
 
-- Porchlight listens on the Mac's Tailscale address only, on port 4747. Your Wi-Fi network and the internet get no answer.
-- Other devices need the access key: 43 random characters, kept in `access.json` beside the report and readable only by you. It is a different key from the one the Mac's own page uses.
-- Only the Mac can turn access on or off, see the key, or **Make a new key**, which signs every device out.
-- Tailscale encrypts the connection. If other people share your tailnet, limit who can reach the Mac with Tailscale's access controls.
-- It works while Porchlight is running on the Mac. Closing the Mac app's window stops it for every device. If Tailscale isn't connected yet, Porchlight keeps checking every 30 seconds.
+- Porchlight listens on that computer's Tailscale address only, on port 4747. Your Wi-Fi network and the internet get no answer.
+- Other devices need the access key: 43 random characters, kept in `access.json` beside the report and readable only by you. It is a different key from the one that computer's own page uses.
+- Only the page on that computer can turn access on or off, see the key, or **Make a new key**, which signs every device out.
+- Tailscale encrypts the connection. If other people share your tailnet, limit who can reach that computer with Tailscale's access controls.
+- It works while Porchlight is running there. Stopping `porchlight ui`, or closing the Mac app's window, stops it for every device. If Tailscale isn't connected yet, Porchlight keeps checking every 30 seconds.
 
 ## Run on BoxPilot
 
@@ -399,7 +401,7 @@ Under the model form, **Download a model** finds a model that runs on your own c
 - **Use this model** makes it the model Porchlight uses, the same as choosing it in the form above.
 - You can also name one of Ollama's own models, such as `qwen3:8b`.
 
-Anyone can publish a model on Hugging Face, so prefer publishers you recognise. A model is several gigabytes. Models are searched for and downloaded only from the page on the Mac that runs Porchlight, never from another device or when it runs as a service.
+Anyone can publish a model on Hugging Face, so prefer publishers you recognise. A model is several gigabytes. Models are searched for and downloaded only from the page on the computer that runs Porchlight, never from another device or when it runs as a service.
 
 ### Or set it when Porchlight starts
 
@@ -615,7 +617,7 @@ Porchlight writes only inside a `Porchlight` folder within the one you chose:
 - **Log.** One plain-text file a day: projects started, scans started and finished with their counts, exports saved or downloaded, models asked (which model, whether it runs outside your machines, what kind of question, how long the answer took), Deeper analysis, investigations started and ended (the domain, the model, how its requests were approved, and how many actions and findings), Cloudflare audits with their counts, and Cloudflare changes you approved. It never holds a key, a token, a secret value, an email, your questions or a model's words.
 - **Names you can read, and only Porchlight's.** Every file is named with the date, the time and a title from Porchlight's own short list, such as "Repair roadmap" or "Explain a finding". Which repository or domain it covers is written inside. Nothing from a scan or a model's answer names a file, a file already there is never written over (a second in the same minute gets " 2"), and Porchlight never writes through a symbolic link. Its folders are readable only by you (0700, files 0600).
 - **Removing** a project takes it off the list; its folder and files stay as they are. If you move or delete the folder, Porchlight says so instead of making it again.
-- **Who can change them.** Only the page on the Mac that runs Porchlight adds or removes a project; another device over Tailscale can move between them. Under BoxPilot, project folders are kept in a `projects` folder inside Porchlight's data folder.
+- **Who can change them.** Only the page on the computer that runs Porchlight adds or removes a project; another device over Tailscale can move between them. Under BoxPilot, project folders are kept in a `projects` folder inside Porchlight's data folder.
 
 The list is kept beside the report (`projects.json`).
 
@@ -667,11 +669,11 @@ How it is kept safe:
 
 Runs, with every step, piece of evidence and finding, are kept in `investigations/` beside the report (the last 50), readable only by you. **Export as Markdown** or **Export as JSON** saves one; Set-Cookie values are left out of both, and everything taken from your site or the model is escaped for the format.
 
-Investigations are run from the page on the Mac that runs Porchlight. Opened from another device, the page shows them and its **Stop** button works, but nothing can be added, started or approved there, neither one request nor a whole run.
+Investigations are run from the page on the computer that runs Porchlight. Opened from another device, the page shows them and its **Stop** button works, but nothing can be added, started or approved there, neither one request nor a whole run.
 
-## Check this Mac
+## Check the computer
 
-**This Mac** (under "Your computer" in the sidebar) checks the computer Porchlight runs on. From a terminal:
+**This Mac** on macOS, **This computer** on Linux (under "Your computer" in the sidebar), checks the computer Porchlight runs on. On Linux it checks credentials in files and installed packages; the other areas use macOS's own tools. From a terminal:
 
 ```bash
 porchlight host check              # add --json for JSON, --offline to skip asking Apple and OSV.dev
@@ -728,7 +730,7 @@ How it is kept safe:
 - Looking up where a CNAME record points (to find one left pointing at a deleted site that someone else could claim) happens only for a domain whose `_porchlight-challenge` record proves it is yours, checked in the same audit. You can turn it off.
 - **Changes that need a look.** Five fixes can affect how a site or its mail behaves: turning on HSTS (for 6 months), setting the encryption mode from Full to Full (strict), Bot Fight Mode, DNSSEC, and adding a DMARC record that only reports where there is none. Porchlight can make them too, but each is listed with what could go wrong, starts unticked, and is sent only if you tick it. Bot Fight Mode needs "Bot Management Write" on the token. Authenticated origin pulls, SPF, CAA and deleting records stay yours to do.
 - **Fix these.** With the write permissions on the token, **Fix these…** on a domain, or **Fix what Porchlight can** above the list, shows every change the audit offers as its exact request. Untick any you do not want and approve once: Porchlight sends them one after another, each once, and shows each answer as it arrives. If the token lacks a permission, the first request that needs it is refused and the rest that need it are not sent; the page then says which permission to add and where on Cloudflare to add it, and since editing a token keeps the token there is nothing to paste again. The same steps appear for a permission the audit could not read with. **Stop** ends it, leaving what was sent in place. The **Activity** page shows the same lines, with everything else Porchlight is doing since it was opened.
-- **Changes are yours to approve.** With DNS Write or Zone Settings Write added to the token, Porchlight can add its ownership record, turn on Always Use HTTPS, TLS 1.3, Automatic HTTPS Rewrites or Browser Integrity Check, or set the minimum TLS version to 1.2. It shows the exact request first, and sends it once, only when you choose **Approve and send** on the Mac that runs Porchlight. Every change is listed on the page and kept in `cloudflare-changes.json`.
+- **Changes are yours to approve.** With DNS Write or Zone Settings Write added to the token, Porchlight can add its ownership record, turn on Always Use HTTPS, TLS 1.3, Automatic HTTPS Rewrites or Browser Integrity Check, or set the minimum TLS version to 1.2. It shows the exact request first, and sends it once, only when you choose **Approve and send** on the computer that runs Porchlight. Every change is listed on the page and kept in `cloudflare-changes.json`.
 - Members are shown by a masked email (`a…@example.com`). The audit is kept in `cloudflare-audit.json`, readable only by you. Exports (Markdown, HTML, CSV, JSON) escape everything for their format.
 - **Analysis by a model** is optional. It reads the audit as the page shows it, never the token, members or token names, and changes no check. It is kept as a discussion, so you can ask follow-up questions until a newer audit replaces the one it read.
 
