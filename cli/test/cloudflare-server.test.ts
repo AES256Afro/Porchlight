@@ -237,7 +237,7 @@ test("Fix these: a permission the token lacks is found once, and the rest that n
 	const settings = batch.changes.filter((change: { permission: string }) => change.permission === "Zone Settings Write").length;
 	const records = batch.changes.length - settings;
 	assert.ok(settings >= 2 && records >= 1);
-	await send(server, "POST", "/api/cloudflare/changes/batch/approve", { id: batch.id, approve: true });
+	await send(server, "POST", "/api/cloudflare/changes/batch/approve", { id: batch.id, approve: true, include: batch.changes.map((change: { id: string }) => change.id) });
 	const done = await until(() => send(server, "GET", "/api/cloudflare"), (reply) => reply.json.batch.state === "finished");
 	// One refusal says the token cannot change settings; the others are not tried. The ownership records still go.
 	assert.deepEqual([done.json.batch.applied, done.json.batch.failed, done.json.batch.skipped], [records, 1, settings - 1]);
@@ -245,6 +245,48 @@ test("Fix these: a permission the token lacks is found once, and the rest that n
 	assert.equal(done.json.changes.filter((change: { ok: boolean }) => !change.ok).length, 1, "only what was sent is recorded");
 	const lines: string[] = (await send(server, "GET", "/api/activity?after=0")).json.lines.map((line: { text: string }) => line.text);
 	assert.equal(lines.filter((line) => /^Not sent: .* The token lacks "Zone Settings Write"$/.test(line)).length, settings - 1);
+});
+
+test("Fix these: a change that could affect the site carries its warning and is sent only when it is named", async (t) => {
+	const { server, writes } = await audited(t);
+	const batch = (await send(server, "POST", "/api/cloudflare/changes/batch/preview", {})).json.batch;
+	const careful = batch.changes.filter((change: { care?: string }) => change.care);
+	const plain = batch.changes.filter((change: { care?: string }) => !change.care);
+	assert.ok(careful.length >= 2 && plain.length >= 1);
+	// Each says what could go wrong, and is one of the fixed requests.
+	const known: Record<string, [string, RegExp, unknown]> = {
+		hsts: ["PATCH", /\/settings\/security_header$/, { value: { strict_transport_security: { enabled: true, max_age: 15_552_000, include_subdomains: false, preload: false, nosniff: true } } }],
+		"ssl-strict": ["PATCH", /\/settings\/ssl$/, { value: "strict" }],
+		"bot-fight-mode": ["PUT", /\/bot_management$/, { fight_mode: true }],
+		dnssec: ["PATCH", /\/dnssec$/, { status: "active" }],
+	};
+	for (const change of careful) {
+		assert.ok(change.care.length > 40, change.change);
+		const expected = known[change.change];
+		if (expected) {
+			assert.deepEqual([change.request.method, expected[1].test(change.request.url), change.request.body], [expected[0], true, expected[2]], change.change);
+		} else {
+			assert.equal(change.change, "dmarc-monitor");
+			assert.deepEqual([change.request.method, change.request.body.type, change.request.body.content], ["POST", "TXT", '"v=DMARC1; p=none"']);
+			assert.match(change.request.body.name, /^_dmarc\./);
+		}
+	}
+	// A yes that names nothing sends only the changes without a warning.
+	await send(server, "POST", "/api/cloudflare/changes/batch/approve", { id: batch.id, approve: true });
+	await until(() => send(server, "GET", "/api/cloudflare"), (reply) => reply.json.batch.state === "finished");
+	assert.equal(writes().length, plain.length);
+
+	// Named, they are sent like any other, each once.
+	const second = (await send(server, "POST", "/api/cloudflare/changes/batch/preview", {})).json.batch;
+	const chosen = second.changes.filter((change: { care?: string }) => change.care).map((change: { id: string }) => change.id);
+	await send(server, "POST", "/api/cloudflare/changes/batch/approve", { id: second.id, approve: true, include: chosen });
+	await until(() => send(server, "GET", "/api/cloudflare"), (reply) => reply.json.batch.state === "finished" && reply.json.batch.total === chosen.length);
+	assert.equal(writes().length, plain.length + chosen.length);
+
+	// One at a time, the warning comes with the request too.
+	const zone = (await send(server, "GET", "/api/cloudflare")).json.report.zones.find((candidate: { checks: { change?: string }[] }) => candidate.checks.some((check) => check.change === "hsts"));
+	const single = await send(server, "POST", "/api/cloudflare/changes/preview", { zone: zone.id, change: "hsts" });
+	assert.match(single.json.pending.care, /refuse plain HTTP/);
 });
 
 test("Fix these: ten minutes to answer, and removing the token ends it", async (t) => {

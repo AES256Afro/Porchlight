@@ -19,7 +19,7 @@ import { currentProject, load, loadCloudflare, startCloudflareAudit, store, subs
 /**
  * @typedef {(
  *   | { state: "loading" }
- *   | { state: "shown", pending: { id: string, title: string, permission: string, expiresAt: string, request: { method: string, url: string, headers: Record<string, string>, body: unknown } } }
+ *   | { state: "shown", pending: { id: string, title: string, permission: string, care?: string, expiresAt: string, request: { method: string, url: string, headers: Record<string, string>, body: unknown } } }
  *   | { state: "sending" }
  *   | { state: "done", ok: boolean, result: string }
  *   | { state: "failed", error: string }
@@ -139,7 +139,9 @@ export async function renderCloudflare(view) {
 		batchBusy = true;
 		try {
 			const answer = await api("POST", "/cloudflare/changes/batch/preview", zone ? { zone: zone.id } : {});
-			batch = { ...answer.batch, scope: zone ? zone.name : "every domain", left: new Set() };
+			// A change that could affect the site starts unticked: it is the owner's to choose, never Porchlight's.
+			const careful = /** @type {PendingChange[]} */ (answer.batch.changes).filter((change) => change.care).map((change) => change.id);
+			batch = { ...answer.batch, scope: zone ? zone.name : "every domain", left: new Set(careful) };
 		} catch (err) {
 			toast(err instanceof Error ? err.message : String(err), "error");
 		} finally {
@@ -216,6 +218,41 @@ export async function renderCloudflare(view) {
 						`Porchlight will send exactly these ${plural(waiting.changes.length, "request", "requests")} to Cloudflare, one after another, each once, if you approve. Untick any you do not want. Nothing else is sent, and each is recorded below whether Cloudflare accepts it or not.`,
 					),
 					h("p", { class: "hint" }, `The token needs ${permissions.map((permission) => `"${permission}"`).join(" and ")}. If it lacks one, the first request that needs it is refused and the rest that need it are not sent.`),
+					waiting.changes.some((change) => change.care)
+						? banner("warning", `${plural(waiting.changes.filter((change) => change.care).length, "change needs", "changes need")} a look first, and start unticked`, [
+								"Each can affect how a site or its mail behaves, and says how under its name. Tick the ones you have decided on.",
+							])
+						: null,
+					waiting.changes.some((change) => change.care)
+						? h(
+								"div",
+								{ class: "actions" },
+								h(
+									"button",
+									{
+										type: "button",
+										class: "button quiet",
+										onclick: () => {
+											waiting.left.clear();
+											drawBatch();
+										},
+									},
+									"Tick all",
+								),
+								h(
+									"button",
+									{
+										type: "button",
+										class: "button quiet",
+										onclick: () => {
+											for (const change of waiting.changes) if (change.care) waiting.left.add(change.id);
+											drawBatch();
+										},
+									},
+									"Untick the ones with a warning",
+								),
+							)
+						: null,
 					h(
 						"ul",
 						{ class: "cf-batch-list" },
@@ -229,7 +266,14 @@ export async function renderCloudflare(view) {
 							return h(
 								"li",
 								null,
-								h("label", { class: "check-line" }, box, h("span", null, h("strong", null, change.title), h("code", { class: "hint block" }, `${change.request.method} ${change.request.url}  ${JSON.stringify(change.request.body)}`))),
+								h("label", { class: "check-line" }, box, h(
+									"span",
+									null,
+									h("strong", null, change.title),
+									change.care ? h("span", { class: "hint block cf-care" }, icon("warning"), " ", change.care) : null,
+									h("code", { class: "hint block" }, `${change.request.method} ${change.request.url}  ${JSON.stringify(change.request.body)}`),
+								),
+							),
 							);
 						}),
 					),
@@ -606,6 +650,7 @@ export async function renderCloudflare(view) {
 			"div",
 			{ class: "cf-approval", role: "group", "aria-label": `Approve: ${pending.title}` },
 			h("p", null, h("strong", null, pending.title), h("span", { class: "hint block" }, `Porchlight will send exactly this request to Cloudflare, once, if you approve it. The token needs "${pending.permission}". It is recorded below either way.`)),
+			pending.care ? banner("warning", "Read this before you approve", [pending.care]) : null,
 			h("pre", { class: "cf-request", tabindex: "0" }, h("code", null, request)),
 			h(
 				"div",

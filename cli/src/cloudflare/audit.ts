@@ -53,8 +53,9 @@ export const READ_PERMISSIONS: { name: string; scope: "Zone" | "Account" | "User
 
 /** Permissions that let Porchlight make a change, each only after you approve the exact request. Optional. */
 export const WRITE_PERMISSIONS: { name: string; scope: "Zone"; purpose: string }[] = [
-	{ name: "DNS Write", scope: "Zone", purpose: "add Porchlight's _porchlight-challenge ownership record" },
-	{ name: "Zone Settings Write", scope: "Zone", purpose: "turn on Always Use HTTPS, TLS 1.3, Automatic HTTPS Rewrites and Browser Integrity Check, and set the minimum TLS version to 1.2" },
+	{ name: "DNS Write", scope: "Zone", purpose: "add Porchlight's _porchlight-challenge ownership record, a DMARC record that only reports, and turn on DNSSEC" },
+	{ name: "Bot Management Write", scope: "Zone", purpose: "turn on Bot Fight Mode" },
+	{ name: "Zone Settings Write", scope: "Zone", purpose: "turn on Always Use HTTPS, TLS 1.3, Automatic HTTPS Rewrites, Browser Integrity Check and HSTS, set the minimum TLS version to 1.2, and set the encryption mode to Full (strict)" },
 ];
 
 /**

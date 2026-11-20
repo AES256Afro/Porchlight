@@ -1916,6 +1916,15 @@ legend {
 	list-style: none;
 }
 
+.cf-care {
+	color: var(--ink);
+}
+
+.cf-care > .icon {
+	color: var(--warning);
+	vertical-align: -2px;
+}
+
 .cf-batch-list code {
 	overflow-wrap: anywhere;
 }

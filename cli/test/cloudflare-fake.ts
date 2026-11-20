@@ -142,7 +142,7 @@ export function fakeCloudflare(options: FakeOptions = {}) {
 		const path = url.pathname.slice("/client/v4".length);
 
 		if (method !== "GET") {
-			const change = /^\/zones\/([0-9a-f]{32})\/(dns_records|settings\/[a-z_0-9]+)$/.exec(path);
+			const change = /^\/zones\/([0-9a-f]{32})\/(dns_records|settings\/[a-z_0-9]+|bot_management|dnssec)$/.exec(path);
 			if (change && options.denySettingWrites && change[2]?.startsWith("settings/")) return envelope(null, 403);
 			return change ? envelope({ id: "66666666666666666666666666666666", ...(body as object) }) : envelope(null, 404);
 		}

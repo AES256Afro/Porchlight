@@ -1619,7 +1619,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			}
 			if (typeof fields.approve !== "boolean") throw new HttpError(400, "Say whether to send them");
 			// Some may be left out; none can be added. Each name must be one of the requests that was shown.
-			let chosen = batch.changes;
+			// A change that carries a warning is sent only when it is named: a bare yes never covers it.
+			let chosen = batch.changes.filter((change) => !change.care);
 			if (fields.include !== undefined) {
 				const include = fields.include;
 				if (!Array.isArray(include) || !include.every((id) => typeof id === "string" && batch.changes.some((change) => change.id === id))) {
