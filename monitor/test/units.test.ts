@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
-import { latestCertFor, parseCtRows } from "../src/collect/ct.ts";
+import { latestCertFor, parseCtRows, readTextCapped } from "../src/collect/ct.ts";
+import { cnameChain } from "../src/collect/dns.ts";
 import { recordsOf, unquoteTxt } from "../src/doh.ts";
 import { isWithin, normalizeDomain } from "../src/domain.ts";
 
@@ -101,5 +102,37 @@ describe("certificate log parsing", () => {
 		expect(latestCertFor("api.example.com", certs)?.notAfter).toBe("2027-01-01T00:00:00.000Z");
 		expect(latestCertFor("www.example.com", certs)?.notAfter).toBe("2026-12-25T22:56:35.000Z");
 		expect(latestCertFor("a.b.example.com", certs)).toBeNull();
+	});
+});
+
+describe("alias chains", () => {
+	it("follows the chain from the host, whatever order the answer lists it in", () => {
+		const answers = [
+			{ name: "edge.vendor.example.", type: 5, data: "a-store.vendor.example." },
+			{ name: "Shop.Example.com.", type: 5, data: "edge.vendor.example." },
+		];
+		expect(cnameChain(answers, "shop.example.com")).toEqual([
+			"edge.vendor.example",
+			"a-store.vendor.example",
+		]);
+	});
+
+	it("stops at a loop and keeps hops it could not place", () => {
+		const loop = [
+			{ name: "a.example.com.", type: 5, data: "b.example.com." },
+			{ name: "b.example.com.", type: 5, data: "a.example.com." },
+		];
+		expect(cnameChain(loop, "a.example.com")).toEqual(["b.example.com", "a.example.com"]);
+		const stray = [{ name: "elsewhere.example.", type: 5, data: "target.example." }];
+		expect(cnameChain(stray, "a.example.com")).toEqual(["target.example"]);
+	});
+});
+
+describe("capped reads", () => {
+	it("reads a body within the cap and refuses one beyond it", async () => {
+		expect(await readTextCapped(new Response("[1,2,3]"), 16)).toBe("[1,2,3]");
+		await expect(readTextCapped(new Response("x".repeat(17)), 16)).rejects.toThrow(/larger than/);
+		const declared = new Response("small", { headers: { "content-length": "999999" } });
+		await expect(readTextCapped(declared, 16)).rejects.toThrow(/larger than/);
 	});
 });

@@ -94,7 +94,7 @@ Each milestone ships as its own release with tests that would have caught its bu
 
 ### M1: Trustworthy results (security and broken invariants). Size: M
 
-**Status, 2026-11-17: built, not committed.**
+**Status: shipped in 0.4.0.** Built 2026-11-17:
 - S1–S4 and B1–B5 are fixed, with tests that fail on the old code (DNS status, roadmap) or that run the real gitleaks against a hostile repository.
 - Invariant 14 has been added to CLAUDE.md.
 - Container smoke step 4 has been added, but no Docker daemon was available here, so it will first run in CI.
@@ -114,6 +114,19 @@ Add a CLAUDE.md invariant, subject to the owner's approval: **"A scanned reposit
 **Done when:** every [R] item has a failing-then-passing test, and the container smoke test scans a seeded hostile repo.
 
 ### M2: Monitor correctness. Size: M
+
+**Status, 2026-11-20: built, not released.** Every item below has a test that fails on the old code. The monitor needs migration `0002_scan_health.sql` applied before the deploy (README, "Deploy").
+- B6: "due" allows five minutes of slack (half a tick), so a scan recorded after its tick does not slip a tick each day.
+- B7: verifying a lapsed domain clears "Ownership check failed" and makes it due on the next tick.
+- B8: hosts beyond `MAX_HOSTS` take turns, never-probed names first; names the log lists but DNS shows gone are kept out of the inventory, at the back of the queue (`gone` in the snapshot).
+- B9: a 5xx or 429 neither raises nor clears header findings.
+- B10: a failed scan is retried after 1 h, then every 2 h; one alert at three failures in a row, one when scans recover. `errorStreak` is in the API, `domains list` and the Domains page.
+- B13: the CNAME chain is followed from the host, so the title names the last hop. Chains are compared as sets, so older (sorted) snapshots do not report a change.
+- B15: the CLI keeps a monitor URL's path prefix.
+- B16: malformed percent-encoding answers 404.
+- B17: an expiring certificate that expires is reported as newly expired, not also as resolved.
+- B18: a scan claims the domain first (`scan_claimed_at`, 15-minute lease); a second scan answers "busy" (409 from the API).
+- The cron runs `*/10`. crt.sh is asked with `deduplicate=Y`, and an answer over 16 MB is refused (the scan then notes the log could not be read).
 
 B6, B7, B8, B9, B10 (retry after 1–2 h, and alert after N errors in a row), B13, B16, B17, B18, and B15 on the client side.
 

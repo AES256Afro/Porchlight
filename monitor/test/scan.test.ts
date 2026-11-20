@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
-import { runDueScan } from "../src/scan.ts";
+import { runDueScan, runScan } from "../src/scan.ts";
+import { getDomain } from "../src/store.ts";
 import { fakeDeps, type FakeNet } from "./fake-net.ts";
 import {
 	appEnv,
@@ -115,6 +116,31 @@ describe("ownership gate", () => {
 			verified: true,
 			lastScanStatus: "error",
 		});
+	});
+
+	it("shows a lapsed domain as verified again once its record is back, and scans it on the next tick", async () => {
+		const deps = fakeDeps(healthyNet());
+		await registerVerified(deps, DOMAIN);
+		expect((await scan(deps)).status).toBe(200);
+		const record = deps.net.txt!;
+
+		deps.net.txt = {};
+		deps.clock = new Date("2026-11-17T13:00:00Z");
+		expect((await scan(deps)).status).toBe(403);
+		expect((await call(deps, "GET", `/domains/${DOMAIN}`)).body.domain.verified).toBe(false);
+
+		deps.net.txt = record;
+		deps.clock = new Date("2026-11-17T13:20:00Z");
+		const verified = await call(deps, "POST", `/domains/${DOMAIN}/verify`);
+		expect(verified.body.domain).toMatchObject({ verified: true, lastScanStatus: null });
+		expect((await call(deps, "GET", `/domains/${DOMAIN}`)).body.domain).toMatchObject({
+			verified: true,
+			lastScanStatus: null,
+		});
+
+		// Not a day later: the next tick.
+		deps.clock = new Date("2026-11-17T13:30:00Z");
+		expect((await runDueScan(appEnv(), deps))?.status).toBe("ok");
 	});
 });
 
@@ -246,7 +272,9 @@ describe("scanning", () => {
 		});
 
 		expect(body.report.hostCount).toBe(6);
-		expect(body.report.notes).toEqual(["3 known hosts were not probed because MAX_HOSTS is 3."]);
+		expect(body.report.notes).toEqual([
+			"3 known hosts were not probed this scan because MAX_HOSTS is 3; they take turns in later scans.",
+		]);
 		const probedSites = deps.requests.filter(
 			(url) =>
 				(url.startsWith(`https://`) && url.endsWith(`.${DOMAIN}/`)) || url === `https://${DOMAIN}/`,
@@ -258,6 +286,99 @@ describe("scanning", () => {
 		]);
 		// 1 challenge + 2 certificate log + 5 apex + 3 hosts x (DNS + HTTPS) + 1 alert.
 		expect(deps.requests).toHaveLength(15);
+	});
+});
+
+describe("findings that hold across scans", () => {
+	it("keeps header findings through a server error, without alerting", async () => {
+		const deps = fakeDeps(healthyNet());
+		deps.net.https![DOMAIN] = { headers: { "content-type": "text/html" } };
+		await registerVerified(deps, DOMAIN);
+		const first = (await scan(deps)).body.report;
+		expect(first.findings.length).toBeGreaterThan(0);
+		deps.alerts.length = 0;
+
+		// The site has an outage: a bare 503 with none of its usual headers.
+		deps.net.https![DOMAIN] = { status: 503 };
+		deps.clock = new Date("2026-11-18T12:00:00Z");
+		const during = (await scan(deps)).body.report;
+		expect(during.resolvedFindings).toEqual([]);
+		expect(during.newFindings).toEqual([]);
+		expect(during.findings).toEqual(first.findings);
+
+		deps.net.https![DOMAIN] = { headers: { "content-type": "text/html" } };
+		deps.clock = new Date("2026-11-19T12:00:00Z");
+		const after = (await scan(deps)).body.report;
+		expect(after.resolvedFindings).toEqual([]);
+		expect(after.newFindings).toEqual([]);
+		expect(deps.alerts).toEqual([]);
+	});
+
+	it("names the last hop of an alias chain that leads nowhere", async () => {
+		const deps = fakeDeps(healthyNet());
+		const shop = `shop.${DOMAIN}`;
+		deps.net.ct = [...(deps.net.ct as []), { names: [shop], ...VALID_CERT }];
+		// shop -> z-edge (the vendor's front) -> a-store (the deleted store).
+		deps.net.hosts![shop] = { cname: ["z-edge.vendor.example", "a-store.vendor.example"] };
+		await registerVerified(deps, DOMAIN);
+
+		const report = (await scan(deps)).body.report;
+
+		const dangling = report.findings.find(
+			(finding: { id: string }) => finding.id === `dangling-cname:${shop}`,
+		);
+		expect(dangling.title).toBe(
+			"CNAME target a-store.vendor.example does not resolve; check for subdomain takeover",
+		);
+	});
+
+	it("reports an expiring certificate that then expires as worse, not as resolved", async () => {
+		const deps = fakeDeps(healthyNet(), "2026-12-20T12:00:00.000Z");
+		await registerVerified(deps, DOMAIN);
+		const first = (await scan(deps)).body.report;
+		expect(first.findings.map((finding: { id: string }) => finding.id)).toContain(
+			`cert-expiring:${DOMAIN}`,
+		);
+
+		deps.clock = new Date("2026-12-31T12:00:00Z");
+		const second = (await scan(deps)).body.report;
+
+		expect(second.newFindings.map((finding: { id: string }) => finding.id)).toContain(
+			`cert-expired:${DOMAIN}`,
+		);
+		expect(second.resolvedFindings).toEqual([]);
+		expect(deps.alerts.at(-1)!.text).not.toContain("Resolved");
+	});
+
+	it("gives every known host a turn under MAX_HOSTS, so names that are gone cannot hold the slots", async () => {
+		const net = healthyNet();
+		const gone = ["a", "b"].map((label) => `${label}.${DOMAIN}`); // on a certificate, not in DNS
+		const live = ["c", "d"].map((label) => `${label}.${DOMAIN}`);
+		net.ct = [{ names: [DOMAIN, `www.${DOMAIN}`, ...gone, ...live], ...VALID_CERT }];
+		for (const host of live) {
+			net.hosts![host] = { a: ["203.0.113.30"] };
+			net.https![host] = { headers: HARDENED_HEADERS };
+		}
+		const deps = fakeDeps(net);
+		await registerVerified(deps, DOMAIN);
+
+		const looked = new Set<string>();
+		let report;
+		for (let day = 0; day < 4; day++) {
+			deps.clock = new Date(Date.UTC(2026, 10, 18 + day, 12));
+			deps.requests.length = 0;
+			report = (await call(deps, "POST", `/domains/${DOMAIN}/scan`, { env: { MAX_HOSTS: "3" } }))
+				.body.report;
+			for (const url of deps.requests) {
+				const name = new URL(url).searchParams.get("name");
+				if (url.startsWith("https://cloudflare-dns.com/") && name) looked.add(name);
+			}
+		}
+
+		for (const host of [...gone, ...live]) expect(looked).toContain(host);
+		// The names that are gone stay out of the inventory; the live ones are in it.
+		expect(report.hostCount).toBe(4);
+		expect(report.changes).toEqual([]);
 	});
 });
 
@@ -302,5 +423,90 @@ describe("schedule", () => {
 			"2026-11-20T00:00:00.000Z",
 			"2026-11-21T00:00:00.000Z",
 		]);
+	});
+
+	it("keeps each domain on a steady step, however long its scan takes", async () => {
+		const deps = fakeDeps(healthyNet(), "2026-11-17T11:55:00.000Z");
+		await registerVerified(deps, DOMAIN);
+		// Each request takes two seconds on the fake clock, so a scan ends well after its tick.
+		deps.latencyMs = 2_000;
+
+		const scannedAt: string[] = [];
+		for (
+			let tick = Date.parse("2026-11-17T12:00:00Z");
+			tick <= Date.parse("2026-11-19T12:00:00Z");
+			tick += 600_000
+		) {
+			deps.clock = new Date(tick);
+			if (await runDueScan(appEnv(), deps)) scannedAt.push(new Date(tick).toISOString());
+		}
+
+		expect(scannedAt).toEqual([
+			"2026-11-17T12:00:00.000Z",
+			"2026-11-18T12:00:00.000Z",
+			"2026-11-19T12:00:00.000Z",
+		]);
+	});
+
+	it("retries a failed scan within hours, alerts once it keeps failing, and says when it recovers", async () => {
+		const deps = fakeDeps(healthyNet(), "2026-11-17T12:00:00.000Z");
+		await registerVerified(deps, DOMAIN);
+		expect((await runDueScan(appEnv(), deps))?.status).toBe("ok");
+		deps.alerts.length = 0;
+
+		// From the next day DNS cannot be reached, so the ownership check cannot run.
+		deps.net.dnsDown = [`_porchlight-challenge.${DOMAIN}`];
+		const attempts: string[] = [];
+		const tick = async (at: number) => {
+			deps.clock = new Date(at);
+			const outcome = await runDueScan(appEnv(), deps);
+			if (outcome) attempts.push(`${new Date(at).toISOString().slice(11, 16)} ${outcome.status}`);
+		};
+		const start = Date.parse("2026-11-18T12:00:00Z");
+		for (let at = start; at < start + 5.5 * 3_600_000; at += 600_000) await tick(at);
+
+		expect(attempts).toEqual(["12:00 error", "13:00 error", "15:00 error", "17:00 error"]);
+		expect(deps.alerts).toHaveLength(1);
+		expect(deps.alerts[0]!.text).toContain(`3 scans of ${DOMAIN} in a row have failed`);
+		const listed = (await call(deps, "GET", "/domains")).body.domains[0];
+		expect(listed).toMatchObject({ lastScanStatus: "error", errorStreak: 4 });
+
+		deps.net.dnsDown = [];
+		for (let at = start + 5.5 * 3_600_000; at < start + 8 * 3_600_000; at += 600_000)
+			await tick(at);
+
+		expect(attempts.at(-1)).toBe("19:00 ok");
+		expect(deps.alerts).toHaveLength(2);
+		expect(deps.alerts[1]!.text).toContain(`scans of ${DOMAIN} are working again`);
+		expect((await call(deps, "GET", "/domains")).body.domains[0]).toMatchObject({
+			lastScanStatus: "ok",
+			errorStreak: 0,
+		});
+	});
+
+	it("runs one scan of a domain at a time, so a change is alerted once", async () => {
+		const deps = fakeDeps(healthyNet());
+		await registerVerified(deps, DOMAIN);
+		const domain = (await getDomain(env.DB, DOMAIN))!;
+
+		const outcomes = await Promise.all([
+			runScan(appEnv(), domain, deps),
+			runScan(appEnv(), domain, deps),
+		]);
+
+		expect(outcomes.map((outcome) => outcome.status).sort()).toEqual(["busy", "ok"]);
+		expect(deps.alerts).toHaveLength(1);
+		// The claim is released afterwards, so the next scan runs.
+		deps.clock = new Date("2026-11-18T12:00:00Z");
+		expect((await runScan(appEnv(), domain, deps)).status).toBe("ok");
+	});
+
+	it("asks the certificate log for each certificate once", async () => {
+		const deps = fakeDeps(healthyNet());
+		await registerVerified(deps, DOMAIN);
+		await scan(deps);
+		const ctQueries = deps.requests.filter((url) => url.startsWith("https://crt.sh/"));
+		expect(ctQueries).toHaveLength(2);
+		for (const url of ctQueries) expect(new URL(url).searchParams.get("deduplicate")).toBe("Y");
 	});
 });

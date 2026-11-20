@@ -49,6 +49,18 @@ describe("authentication", () => {
 		});
 	});
 
+	it("names the fix when the database is missing a newer migration", async () => {
+		const behind = {
+			prepare() {
+				throw new Error("D1_ERROR: no such column: error_streak: SQLITE_ERROR");
+			},
+		} as unknown as D1Database;
+		expect(await call(fakeDeps(), "GET", "/domains", { env: { DB: behind } })).toEqual({
+			status: 500,
+			body: { error: "The database is missing a migration. Apply the migrations; see the README." },
+		});
+	});
+
 	it("is enforced by the deployed entry point, not only the router", async () => {
 		const response = await exports.default.fetch("https://monitor.test/domains");
 		expect(response.status).toBe(401);
@@ -112,5 +124,7 @@ describe("domain management", () => {
 		await call(deps, "POST", "/domains", { body: { domain: "example.test" } });
 		expect((await call(deps, "GET", "/domains/example.test/scan")).status).toBe(405);
 		expect((await call(deps, "POST", "/domains/example.test/unknown")).status).toBe(404);
+		// A name that is not valid percent-encoding is simply not a registered domain.
+		expect((await call(deps, "GET", "/domains/%E0%A4%A")).status).toBe(404);
 	});
 });

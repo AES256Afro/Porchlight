@@ -1,19 +1,52 @@
-import { recordsOf, resolve } from "../doh.ts";
+import { recordsOf, resolve, TYPE_CODE, type DnsAnswer } from "../doh.ts";
 import type { FetchFn } from "../env.ts";
 
 export interface HostDns {
 	a: string[];
 	/** Only looked up when there are no A records, to tell "IPv6 only" from "gone". */
 	aaaa: string[];
+	/**
+	 * The alias chain in order, from the host's own alias to the last hop.
+	 * Older snapshots hold it sorted instead, so compare it as a set.
+	 */
 	cname: string[];
 }
 
 export async function lookupHost(host: string, fetchFn: FetchFn): Promise<HostDns> {
 	const answers = await resolve(host, "A", fetchFn);
 	const a = recordsOf(answers, "A");
-	const cname = recordsOf(answers, "CNAME");
+	const cname = cnameChain(answers, host);
 	const aaaa = a.length > 0 ? [] : recordsOf(await resolve(host, "AAAA", fetchFn), "AAAA");
 	return { a, aaaa, cname };
+}
+
+/**
+ * The aliases from `host` onward, following each record from the name that
+ * owns it, so the last entry is the last hop whatever order the answer used.
+ * Hops that cannot be placed in the chain are kept after it, so none is lost.
+ */
+export function cnameChain(answers: DnsAnswer[], host: string): string[] {
+	const bare = (name: string) => name.toLowerCase().replace(/\.$/, "");
+	const links = new Map<string, string>();
+	const targets: string[] = [];
+	for (const answer of answers) {
+		if (answer.type !== TYPE_CODE.CNAME || typeof answer.data !== "string") continue;
+		const target = bare(answer.data);
+		if (typeof answer.name === "string" && !links.has(bare(answer.name))) {
+			links.set(bare(answer.name), target);
+		}
+		targets.push(target);
+	}
+	const chain: string[] = [];
+	const seen = new Set([bare(host)]);
+	for (let at = bare(host), next = links.get(at); next !== undefined; next = links.get(at)) {
+		chain.push(next);
+		if (seen.has(next)) break; // A loop: the resolver gave up here too.
+		seen.add(next);
+		at = next;
+	}
+	for (const target of targets) if (!chain.includes(target)) chain.push(target);
+	return chain;
 }
 
 /**

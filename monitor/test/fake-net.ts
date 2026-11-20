@@ -4,7 +4,7 @@ import type { Deps } from "../src/env.ts";
 export interface FakeNet {
 	/** TXT records by name. */
 	txt?: Record<string, string[]>;
-	/** Host records. A host absent from here has no records at all. */
+	/** Host records; `cname` is the alias chain in order. A host absent from here has no records at all. */
 	hosts?: Record<string, { a?: string[]; aaaa?: string[]; cname?: string[] }>;
 	/** Other apex records by type, e.g. `{ CAA: ['0 issue "letsencrypt.org"'] }`. */
 	apex?: Partial<Record<"NS" | "MX" | "CAA", string[]>>;
@@ -25,6 +25,8 @@ export interface FakeDeps extends Deps {
 	/** Bodies POSTed to the alert webhook. */
 	alerts: { text: string; [key: string]: unknown }[];
 	clock: Date;
+	/** How far the clock moves during each request, so a scan ends later than it starts. */
+	latencyMs: number;
 }
 
 export const WEBHOOK = "https://hooks.example.test/alert";
@@ -37,10 +39,12 @@ export function fakeDeps(net: FakeNet = {}, start = "2026-11-17T12:00:00.000Z"):
 		requests: [],
 		alerts: [],
 		clock: new Date(start),
+		latencyMs: 0,
 		now: () => new Date(deps.clock),
 		fetch: async (input, init) => {
 			const url = new URL(input);
 			deps.requests.push(url.toString());
+			deps.clock = new Date(deps.clock.getTime() + deps.latencyMs);
 			if (url.toString() === WEBHOOK) {
 				deps.alerts.push(JSON.parse(init?.body as string));
 				return new Response("ok");
@@ -72,10 +76,12 @@ function dns(net: FakeNet, url: URL): Response {
 			(net.txt?.[name] ?? []).map((value) => `"${value}"`),
 		);
 	if (type === "A" || type === "AAAA") {
-		push(
-			"CNAME",
-			host?.cname?.map((target) => `${target}.`),
-		);
+		// An alias chain arrives as one record per hop, each owned by the previous name.
+		let owner = name;
+		for (const target of host?.cname ?? []) {
+			answers.push({ name: `${owner}.`, type: TYPE_CODE.CNAME, data: `${target}.` });
+			owner = target;
+		}
 		push(type, type === "A" ? host?.a : host?.aaaa);
 	}
 	if (type === "NS" || type === "MX" || type === "CAA") push(type, net.apex?.[type]);

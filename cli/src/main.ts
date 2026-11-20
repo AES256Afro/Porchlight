@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { assistantConfig, isHosted } from "./assist/ollama.ts";
 import { callMonitor, monitorConfig } from "./monitor/client.ts";
+import { describeDomain } from "./monitor/describe.ts";
 import { exitCode, parseScanReport, renderMarkdown, renderSummary } from "./repos/report.ts";
 import { scanRepos } from "./repos/scan.ts";
 import { SEVERITIES, type Severity } from "./repos/types.ts";
@@ -390,8 +391,3 @@ function describeChallenge(challenge: { type: string; name: string; value: strin
 	return `  Type:  ${challenge.type}\n  Name:  ${challenge.name}\n  Value: ${challenge.value}`;
 }
 
-function describeDomain(domain: { name: string; verified: boolean; lastScanAt: string | null; lastScanStatus: string | null }): string {
-	const state = domain.verified ? "verified" : "not verified";
-	const scan = domain.lastScanAt ? `last scan ${domain.lastScanAt} (${domain.lastScanStatus})` : "never scanned";
-	return `${domain.name}: ${state}, ${scan}`;
-}

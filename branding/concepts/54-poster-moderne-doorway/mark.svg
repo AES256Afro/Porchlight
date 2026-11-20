@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 200 200">
+<title>Porchlight</title>
+<defs><clipPath id="mt"><rect x="14" y="14" width="172" height="172" rx="20"/></clipPath>
+<linearGradient id="mcapL" gradientUnits="userSpaceOnUse" x1="25" y1="0" x2="62" y2="0"><stop offset="0" stop-color="#8aa7c0"/><stop offset="1" stop-color="#1f2f42"/></linearGradient>
+<linearGradient id="mcapR" gradientUnits="userSpaceOnUse" x1="62" y1="0" x2="99" y2="0"><stop offset="0" stop-color="#0c0e12"/><stop offset="1" stop-color="#2c445c"/></linearGradient>
+<linearGradient id="mgL" gradientUnits="userSpaceOnUse" x1="28" y1="0" x2="55" y2="0"><stop offset="0" stop-color="#ac742a"/><stop offset="1" stop-color="#dca63f"/></linearGradient>
+<linearGradient id="mgR" gradientUnits="userSpaceOnUse" x1="69" y1="0" x2="96" y2="0"><stop offset="0" stop-color="#f5ebd3"/><stop offset="1" stop-color="#dca63f"/></linearGradient>
+<linearGradient id="mgC" gradientUnits="userSpaceOnUse" x1="0" y1="57" x2="0" y2="112"><stop offset="0" stop-color="#fffaf0"/><stop offset="1" stop-color="#f5ebd3"/></linearGradient></defs>
+<rect x="10" y="10" width="180" height="180" rx="24" fill="#0c0e12"/>
+<g clip-path="url(#mt)">
+  <path d="M92,56L190,74V190H128L44,112Z" fill="#dca63f"/>
+  <path d="M92,60L190,118V190H152L56,112Z" fill="#f5ebd3"/>
+  <rect x="96" y="160" width="94" height="30" fill="#dca63f"/>
+  
+<rect x="123" y="83" width="46" height="77" fill="#0c0e12"/>
+<rect x="118.8" y="79.3" width="54.4" height="3.7" fill="#0c0e12"/>
+<rect x="118.8" y="79.3" width="54.4" height="1.1" fill="#8aa7c0"/>
+<rect x="126" y="86" width="40" height="9.6" fill="#fffaf0"/>
+<path d="M146,86V95.6" stroke="#0c0e12" stroke-width="1.4"/>
+<rect x="126" y="97.4" width="40" height="62.6" fill="#d8412a"/>
+<rect x="126" y="97.4" width="12" height="62.6" fill="#8f2618"/>
+<rect x="142.8" y="106" width="16.8" height="17.8" fill="none" stroke="#8f2618" stroke-width="1.2"/>
+<rect x="142.8" y="128.9" width="16.8" height="23.7" fill="none" stroke="#8f2618" stroke-width="1.2"/>
+<circle cx="134" cy="130.4" r="1.3" fill="#f5ebd3"/><rect x="114.8" y="160" width="62.4" height="8.1" fill="#fffaf0"/><rect x="114.8" y="165" width="62.4" height="3.1" fill="#0c0e12"/><rect x="106.8" y="168.1" width="78.4" height="8.1" fill="#f5ebd3"/><rect x="106.8" y="173.2" width="78.4" height="3.1" fill="#0c0e12"/>
+</g>
+<rect x="10" y="10" width="180" height="180" rx="24" fill="none" stroke="#f5ebd3" stroke-width="3.5"/>
+
+<path d="M62,22L25,51H62Z" fill="url(#mcapL)"/>
+<path d="M62,22L99,51H62Z" fill="url(#mcapR)"/>
+<path d="M21,51H103L101,57H23Z" fill="#d8412a"/>
+<path d="M62,51H103L101,57H62Z" fill="#8f2618"/>
+<path d="M28,57H51L56,112H43Z" fill="url(#mgL)"/>
+<path d="M51,57H73L68,112H56Z" fill="url(#mgC)"/>
+<path d="M73,57H96L81,112H68Z" fill="url(#mgR)"/>
+<path d="M51,57L56,112M73,57L68,112M28,57L43,112M96,57L81,112" stroke="#0c0e12" stroke-width="1.7" stroke-linecap="square"/>
+<path d="M40,112H84L80,118.5H44Z" fill="#0c0e12"/>
+<path d="M53,118.5H62V133Z" fill="#3f6080"/>
+<path d="M62,118.5H71L62,133Z" fill="#0c0e12"/>
+<circle cx="62" cy="136.5" r="3.8" fill="#d8412a"/>
+</svg>

@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+<title>Porchlight</title>
+<defs>
+<clipPath id="sq"><rect width="512" height="512" rx="112"/></clipPath>
+<linearGradient id="isky" gradientUnits="userSpaceOnUse" x1="330" y1="170" x2="420" y2="-40"><stop offset="0" stop-color="#0c0e12"/><stop offset="1" stop-color="#3f6080"/></linearGradient>
+<linearGradient id="idark" gradientUnits="userSpaceOnUse" x1="210" y1="400" x2="20" y2="540"><stop offset="0" stop-color="#0c0e12"/><stop offset="1" stop-color="#1f2f42"/></linearGradient>
+
+<linearGradient id="icapL" gradientUnits="userSpaceOnUse" x1="61.2" y1="0" x2="150" y2="0"><stop offset="0" stop-color="#8aa7c0"/><stop offset="1" stop-color="#1f2f42"/></linearGradient>
+<linearGradient id="icapR" gradientUnits="userSpaceOnUse" x1="150" y1="0" x2="238.8" y2="0"><stop offset="0" stop-color="#0c0e12"/><stop offset="1" stop-color="#2c445c"/></linearGradient>
+<linearGradient id="igL" gradientUnits="userSpaceOnUse" x1="68.4" y1="0" x2="133.2" y2="0"><stop offset="0" stop-color="#ac742a"/><stop offset="1" stop-color="#dca63f"/></linearGradient>
+<linearGradient id="igR" gradientUnits="userSpaceOnUse" x1="166.8" y1="0" x2="231.6" y2="0"><stop offset="0" stop-color="#f5ebd3"/><stop offset="1" stop-color="#dca63f"/></linearGradient>
+<linearGradient id="igC" gradientUnits="userSpaceOnUse" x1="0" y1="134" x2="0" y2="266"><stop offset="0" stop-color="#fffaf0"/><stop offset="1" stop-color="#f5ebd3"/></linearGradient>
+</defs>
+<g clip-path="url(#sq)">
+  <rect width="512" height="512" fill="url(#isky)"/>
+  <path d="M0,0H150V130L104,266L300,512H0Z" fill="url(#idark)"/>
+  <path d="M230,134L512,186V512H300L104,266Z" fill="#dca63f"/>
+  <path d="M230,146L512,300V512H366L140,266Z" fill="#f5ebd3"/>
+  <rect x="230" y="424" width="300" height="100" fill="#dca63f"/>
+  
+<rect x="309.6" y="199.6" width="128.8" height="204.4" fill="#0c0e12"/>
+<rect x="297.8" y="189.8" width="152.3" height="9.8" fill="#0c0e12"/>
+<rect x="297.8" y="189.8" width="152.3" height="2.9" fill="#8aa7c0"/>
+<rect x="318" y="208" width="112" height="25.5" fill="#fffaf0"/>
+<path d="M374,208V233.5" stroke="#0c0e12" stroke-width="3.8"/>
+<rect x="318" y="238.5" width="112" height="165.5" fill="#d8412a"/>
+<rect x="318" y="238.5" width="33.6" height="165.5" fill="#8f2618"/>
+<rect x="365" y="260.9" width="47" height="47" fill="none" stroke="#8f2618" stroke-width="3.4"/>
+<rect x="365" y="321.7" width="47" height="62.7" fill="none" stroke="#8f2618" stroke-width="3.4"/>
+<circle cx="340.4" cy="325.6" r="3.5" fill="#f5ebd3"/><rect x="286.6" y="404" width="174.7" height="21.6" fill="#fffaf0"/><rect x="286.6" y="417.4" width="174.7" height="8.2" fill="#0c0e12"/><rect x="264.2" y="425.6" width="219.5" height="21.6" fill="#f5ebd3"/><rect x="264.2" y="438.9" width="219.5" height="8.2" fill="#0c0e12"/>
+  <rect x="0" y="30" width="160" height="20" fill="#0c0e12"/>
+  <rect x="0" y="30" width="160" height="5" fill="#8aa7c0"/>
+  
+<path d="M150,50L61.2,119.6H150Z" fill="url(#icapL)"/>
+<path d="M150,50L238.8,119.6H150Z" fill="url(#icapR)"/>
+<path d="M51.6,119.6H248.4L243.6,134H56.4Z" fill="#d8412a"/>
+<path d="M150,119.6H248.4L243.6,134H150Z" fill="#8f2618"/>
+<path d="M68.4,134H123.6L135.6,266H104.4Z" fill="url(#igL)"/>
+<path d="M123.6,134H176.4L164.4,266H135.6Z" fill="url(#igC)"/>
+<path d="M176.4,134H231.6L195.6,266H164.4Z" fill="url(#igR)"/>
+<path d="M123.6,134L135.6,266M176.4,134L164.4,266M68.4,134L104.4,266M231.6,134L195.6,266" stroke="#0c0e12" stroke-width="4.1" stroke-linecap="square"/>
+<path d="M97.2,266H202.8L193.2,281.6H106.8Z" fill="#0c0e12"/>
+<path d="M128.4,281.6H150V316.4Z" fill="#3f6080"/>
+<path d="M150,281.6H171.6L150,316.4Z" fill="#0c0e12"/>
+<circle cx="150" cy="324.8" r="9" fill="#d8412a"/>
+</g>
+</svg>

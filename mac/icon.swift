@@ -1,9 +1,9 @@
-// Draws the app icon from cli/ui/favicon.svg: icon.swift <favicon.svg> <out.iconset>
+// Draws the app icon from mac/icon.png (the brand's full icon, 1024 pixels): icon.swift <icon.png> <out.iconset>
 import AppKit
 
 let args = CommandLine.arguments
 guard args.count == 3, let mark = NSImage(contentsOfFile: args[1]) else {
-	FileHandle.standardError.write("usage: icon <favicon.svg> <out.iconset>\n".data(using: .utf8)!)
+	FileHandle.standardError.write("usage: icon <icon.png> <out.iconset>\n".data(using: .utf8)!)
 	exit(1)
 }
 let out = URL(fileURLWithPath: args[2])
@@ -17,9 +17,10 @@ func render(_ px: Int) -> Data {
 	NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
 	let s = CGFloat(px)
 	let tile = NSRect(x: s * 0.1, y: s * 0.1, width: s * 0.8, height: s * 0.8)
-	NSColor(calibratedRed: 0.09, green: 0.11, blue: 0.15, alpha: 1).setFill()
-	NSBezierPath(roundedRect: tile, xRadius: s * 0.18, yRadius: s * 0.18).fill()
-	mark.draw(in: tile.insetBy(dx: s * 0.14, dy: s * 0.14))
+	// The artwork fills the tile; the tile's rounded corners clip it.
+	NSBezierPath(roundedRect: tile, xRadius: s * 0.18, yRadius: s * 0.18).addClip()
+	NSGraphicsContext.current?.imageInterpolation = .high
+	mark.draw(in: tile)
 	NSGraphicsContext.restoreGraphicsState()
 	return rep.representation(using: .png, properties: [:])!
 }

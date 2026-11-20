@@ -14,6 +14,7 @@ const WATCHES = "Watches the domains you own for new subdomains, DNS changes, ex
  * @property {string | null} verifiedAt
  * @property {string | null} lastScanAt
  * @property {"ok" | "unverified" | "error" | null} lastScanStatus
+ * @property {number} [errorStreak] Scans failed in a row; absent from a monitor deployed before it was added.
  * @property {{ type: string, name: string, value: string }} challenge
  */
 
@@ -151,7 +152,7 @@ export async function renderDomains(view, selected) {
 						{ class: "steps left" },
 						h("li", null, h("strong", null, "Add it."), " One domain covers its subdomains too."),
 						h("li", null, h("strong", null, "Prove it is yours."), " You are given one DNS record to add where the domain is managed. Nothing is checked before that."),
-						h("li", null, h("strong", null, "Scan."), " The first scan records how things are now. After that the monitor checks every hour and shows what changed."),
+						h("li", null, h("strong", null, "Scan."), " The first scan records how things are now. After that the monitor checks each domain once a day and shows what changed."),
 					),
 				),
 			);
@@ -303,7 +304,11 @@ function message(err) {
 function statusPill(domain) {
 	if (domain.lastScanStatus === "unverified") return h("span", { class: "severity status-warning" }, icon("warning"), "Ownership check failed");
 	if (!domain.verified) return h("span", { class: "severity status-pending" }, icon("pending"), "Awaiting verification");
-	if (domain.lastScanStatus === "error") return h("span", { class: "severity status-warning" }, icon("warning"), "Last scan failed");
+	if (domain.lastScanStatus === "error") {
+		const streak = domain.errorStreak ?? 0;
+		const text = streak > 1 ? `${streak} scans failed in a row` : "Last scan failed";
+		return h("span", { class: "severity status-warning" }, icon("warning"), text);
+	}
 	return h("span", { class: "severity status-good" }, icon("good"), "Verified");
 }
 
@@ -498,7 +503,7 @@ function notConnected(monitor, service) {
 				null,
 				"Websites are checked by the Porchlight monitor: a small service that runs on your own Cloudflare account, not on this ",
 				service ? "server" : "computer",
-				". That way it can check every hour and keep the history even when this page is closed. This page shows what it finds.",
+				". That way it can check every day and keep the history even when this page is closed. This page shows what it finds.",
 			),
 			// Nothing given yet is the usual state after installing, not a mistake to quote back.
 			monitor.unset || !monitor.error ? null : banner("warning", "A monitor setting needs correcting", [monitor.error]),
