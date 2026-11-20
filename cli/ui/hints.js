@@ -137,6 +137,17 @@ export function monitorSetupSteps(service) {
 	];
 }
 
+/**
+ * What this computer can run, in a sentence, for the model search.
+ *
+ * @param {{ memoryGb: number, chip: string, appleSilicon: boolean, fitsUpTo: number }} machine
+ */
+export function machineLine(machine) {
+	const chip = machine.chip ? `${machine.chip}, ` : "";
+	const mlx = machine.appleSilicon ? " It is Apple silicon, so MLX models run on it too." : " MLX models need Apple silicon, so choose GGUF here.";
+	return `This computer: ${chip}${machine.memoryGb} GB of memory. Models up to about ${machine.fitsUpTo}B should run comfortably; larger ones run slowly or not at all.${mlx}`;
+}
+
 /** A size in bytes, in the unit a person would say. @param {number} bytes */
 export function formatBytes(bytes) {
 	if (!Number.isFinite(bytes) || bytes <= 0) return "size not given";

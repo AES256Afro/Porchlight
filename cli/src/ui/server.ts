@@ -1,10 +1,10 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { homedir, hostname, networkInterfaces } from "node:os";
+import { cpus, homedir, hostname, networkInterfaces, totalmem } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { judge, readAnalysis, saveAnalysis, unitKey, unitsOf, VERDICTS, type AnalysisFile } from "../analysis/analyse.ts";
-import { DEFAULT_OLLAMA, DownloadError, HUB_HOST, HUB_SORTS, HUB_TASKS, installedModels, modelNameProblem, pullModel, searchHub } from "../assist/download.ts";
+import { DEFAULT_OLLAMA, describeMachine, DownloadError, HUB_FORMATS, HUB_HOST, HUB_SIZES, HUB_SORTS, HUB_TASKS, installedModels, modelNameProblem, pullModel, searchHub } from "../assist/download.ts";
 import { AssistantError, chat, HOSTED, isHosted, listModels, type AssistantConfig, type HostedProvider } from "../assist/ollama.ts";
 import {
 	addressFromConfig,
@@ -901,6 +901,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	// Downloading a local model: Ollama does it, at the address chosen under Settings → Model or on
 	// this computer. One at a time, and only from this computer's page: it fills a disk.
 	let download: DownloadStatus = { state: "idle" };
+	// What this computer can run, from its memory: read once, from the system, never from a request.
+	const machine = describeMachine(totalmem(), cpus()[0]?.model ?? "", process.platform, process.arch);
 	let downloadStop: AbortController | null = null;
 	function ollamaBase(): URL {
 		const config = model.config;
@@ -919,12 +921,19 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				} catch (err) {
 					problem = err instanceof Error ? err.message : String(err);
 				}
-				return sendJson(res, 200, { ollama: { host: base.host, reachable: problem === undefined, ...(problem ? { problem } : {}) }, installed, download, canChange: here, hub: HUB_HOST, tasks: HUB_TASKS, sorts: HUB_SORTS });
+				return sendJson(res, 200, { ollama: { host: base.host, reachable: problem === undefined, ...(problem ? { problem } : {}) }, installed, download, canChange: here, hub: HUB_HOST, tasks: HUB_TASKS, sorts: HUB_SORTS, formats: HUB_FORMATS, sizes: HUB_SIZES, machine });
 			}
 			if (!here) throw new HttpError(403, "Models are searched for and downloaded from the page on the Mac that runs Porchlight");
 			if (route === "GET /api/model/local/search") {
 				const asked = (name: string) => url.searchParams.get(name) ?? "";
-				return sendJson(res, 200, { models: await searchHub({ q: asked("q"), task: asked("task"), sort: asked("sort"), author: asked("author"), tag: asked("tag") }, options.fetchFn) });
+				const fits = asked("fits");
+				if (fits !== "" && fits !== "1") throw new HttpError(400, "fits is 1 or left out");
+				return sendJson(res, 200, {
+					models: await searchHub(
+						{ q: asked("q"), task: asked("task"), sort: asked("sort"), author: asked("author"), tag: asked("tag"), format: asked("format"), size: asked("size"), ...(fits === "1" ? { fitsUpTo: machine.fitsUpTo } : {}) },
+						options.fetchFn,
+					),
+				});
 			}
 			if (route === "POST /api/model/local/stop") {
 				downloadStop?.abort();

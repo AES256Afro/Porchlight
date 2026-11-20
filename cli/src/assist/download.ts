@@ -18,6 +18,8 @@ export const HUB_HOST = "huggingface.co";
 export const DEFAULT_OLLAMA = "http://127.0.0.1:11434";
 const MAX_QUERY = 80;
 const MAX_RESULTS = 20;
+/** How many are asked for when the answer is narrowed here by size. */
+const MAX_FETCHED = 100;
 const SEARCH_TIMEOUT_MS = 15_000;
 
 export class DownloadError extends Error {}
@@ -32,6 +34,9 @@ export interface HubModel {
 	task?: string;
 	/** When it was last changed, as an ISO date, when the Hub gives one. */
 	updated?: string;
+	format: HubFormat;
+	/** Billions of parameters, when the name says. */
+	params?: number;
 }
 
 /** The kinds of model the search can be narrowed to: the Hub's own names for them, and ours. */
@@ -41,6 +46,64 @@ export const HUB_TASKS = [
 	["image-text-to-text", "Reads images too"],
 	["feature-extraction", "Embeddings"],
 ] as const;
+
+/**
+ * The formats the search can be narrowed to. Ollama runs GGUF. MLX is Apple's format for Apple
+ * silicon: Ollama cannot run it, so an MLX model is found here and downloaded in LM Studio or mlx-lm.
+ */
+export const HUB_FORMATS = [
+	["gguf", "GGUF, for Ollama"],
+	["mlx", "MLX, for Apple silicon"],
+] as const;
+export type HubFormat = (typeof HUB_FORMATS)[number][0];
+
+/** Sizes to narrow to, by how many billion parameters the model's name says it has: the most each allows. */
+export const HUB_SIZES = [
+	["", "Any size"],
+	["4", "Up to 4B"],
+	["9", "5B to 9B"],
+	["16", "10B to 16B"],
+	["35", "17B to 35B"],
+	["1000", "Over 35B"],
+] as const;
+const SIZE_FLOORS: Record<string, number> = { "4": 0, "9": 4, "16": 9, "35": 16, "1000": 35 };
+
+/**
+ * How many billion parameters a model has, read from its name (`Qwen3-8B`, `gemma-3-270m`), or null
+ * when the name does not say. The Hub's search does not filter by this, so the name is what there is.
+ */
+export function paramsFromName(id: string): number | null {
+	const name = id.slice(id.indexOf("/") + 1);
+	const found = /(?:^|[-_.])(\d{1,4}(?:\.\d{1,2})?)([bBmM])(?![A-Za-z0-9])/.exec(name);
+	if (!found) return null;
+	const value = Number(found[1]) / (found[2]!.toLowerCase() === "m" ? 1000 : 1);
+	return value > 0 && value < 2000 ? value : null;
+}
+
+/** The computer Porchlight runs on, as far as choosing a model goes. */
+export interface Machine {
+	/** Memory, in gigabytes. */
+	memoryGb: number;
+	/** The processor as the system names it, such as "Apple M3 Max". */
+	chip: string;
+	appleSilicon: boolean;
+	/** The largest model, in billions of parameters, that should run comfortably here. */
+	fitsUpTo: number;
+}
+
+/**
+ * The largest model that should run comfortably in this much memory. A model at the usual 4-bit
+ * size takes a little over half a gigabyte for each billion parameters, and the system and
+ * everything else open need the rest, so about half the memory is counted. A guide, not a promise.
+ */
+export function fitsUpTo(memoryGb: number): number {
+	return Math.max(1, Math.floor(memoryGb * 0.55));
+}
+
+export function describeMachine(memoryBytes: number, chip: string, platform: string, arch: string): Machine {
+	const memoryGb = Math.max(1, Math.round(memoryBytes / 1024 ** 3));
+	return { memoryGb, chip: chip.replace(/\s+/g, " ").trim().slice(0, 80), appleSilicon: platform === "darwin" && arch === "arm64", fitsUpTo: fitsUpTo(memoryGb) };
+}
 
 /** The orders the search can come back in. */
 export const HUB_SORTS = [
@@ -60,6 +123,12 @@ export interface HubQuery {
 	author?: unknown;
 	/** One of the Hub's tags, such as `conversational`, `code` or `license:apache-2.0`. */
 	tag?: unknown;
+	/** One of `HUB_FORMATS`. GGUF when not given. */
+	format?: unknown;
+	/** One of `HUB_SIZES`. */
+	size?: unknown;
+	/** Keep only models whose name gives a size this large or smaller, in billions of parameters. */
+	fitsUpTo?: number;
 }
 
 const HUB_AUTHOR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/;
@@ -100,10 +169,17 @@ export async function searchHub(query: HubQuery, fetchFn: typeof fetch = fetch):
 	if (!HUB_SORTS.some(([id]) => id === sort)) throw new DownloadError("Choose one of the orders listed");
 	if (author && !HUB_AUTHOR.test(author)) throw new DownloadError("A publisher is one name, such as unsloth, with no spaces or slashes");
 	if (tag && !HUB_TAG.test(tag)) throw new DownloadError("A tag is one word, such as conversational or license:apache-2.0");
-	if (words.length < 2 && !task && !author && !tag) throw new DownloadError("Type at least two letters, or choose a kind, a publisher or a tag");
+	const format = text(query.format) || "gguf";
+	const size = text(query.size);
+	if (!HUB_FORMATS.some(([id]) => id === format)) throw new DownloadError("Choose one of the formats listed");
+	if (!HUB_SIZES.some(([id]) => id === size)) throw new DownloadError("Choose one of the sizes listed");
+	const fits = typeof query.fitsUpTo === "number" && query.fitsUpTo > 0 ? query.fitsUpTo : null;
+	const narrowed = size !== "" || fits !== null;
+	if (words.length < 2 && !task && !author && !tag && !narrowed) throw new DownloadError("Type at least two letters, or choose a kind, a size, a publisher or a tag");
 	const url = new URL(HUB_SEARCH);
-	// Always the format Ollama reads; a tag the owner names is asked for as well.
-	const params = new URLSearchParams({ filter: "gguf", sort, direction: "-1", limit: String(MAX_RESULTS) });
+	// Always one format; a tag the owner names is asked for as well. Size is not something the Hub
+	// filters by, so more are asked for and the ones whose name gives another size are left out here.
+	const params = new URLSearchParams({ filter: format, sort, direction: "-1", limit: String(narrowed ? MAX_FETCHED : MAX_RESULTS) });
 	if (tag) params.append("filter", tag);
 	if (words) params.set("search", words);
 	if (task) params.set("pipeline_tag", task);
@@ -120,15 +196,23 @@ export async function searchHub(query: HubQuery, fetchFn: typeof fetch = fetch):
 	}
 	if (!response.ok || !Array.isArray(body)) throw new DownloadError(`${HUB_HOST} did not answer the search (HTTP ${response.status})`);
 	const found: HubModel[] = [];
-	for (const item of body.slice(0, MAX_RESULTS)) {
+	for (const item of body.slice(0, MAX_FETCHED)) {
+		if (found.length >= MAX_RESULTS) break;
 		const id = (item as { id?: unknown })?.id;
 		// A name that does not look like owner/name is left out, never repaired.
 		if (typeof id !== "string" || !HUB_ID.test(id) || id.includes("..")) continue;
 		const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0);
 		const kind = (item as { pipeline_tag?: unknown }).pipeline_tag;
 		const changed = (item as { lastModified?: unknown }).lastModified;
+		const billions = paramsFromName(id);
+		// With a size asked for, a model whose name gives none is left out: it cannot be said to fit.
+		if (narrowed && billions === null) continue;
+		if (billions !== null && size !== "" && (billions > Number(size) || billions <= (SIZE_FLOORS[size] ?? 0))) continue;
+		if (billions !== null && fits !== null && billions > fits) continue;
 		found.push({
 			id,
+			format: format as HubFormat,
+			...(billions !== null ? { params: billions } : {}),
 			pull: `hf.co/${id}`,
 			downloads: count((item as { downloads?: unknown }).downloads),
 			likes: count((item as { likes?: unknown }).likes),

@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { request } from "node:http";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import { DownloadError, HUB_SEARCH, installedModels, modelNameProblem, pullModel, searchHub } from "../src/assist/download.ts";
+import { describeMachine, DownloadError, fitsUpTo, HUB_SEARCH, installedModels, modelNameProblem, paramsFromName, pullModel, searchHub } from "../src/assist/download.ts";
 import { startUiServer, type UiServer } from "../src/ui/server.ts";
-import { downloadLine, formatBytes } from "../ui/hints.js";
+import { downloadLine, formatBytes, machineLine } from "../ui/hints.js";
 import { tempDir } from "./helpers.ts";
 
 const OLLAMA = new URL("http://127.0.0.1:11434");
@@ -56,8 +56,8 @@ test("the search asks Hugging Face only for what was typed and chosen, and keeps
 		["qwen security", "text-generation", "likes", "unsloth", "20"],
 	);
 	assert.deepEqual(found, [
-		{ id: "unsloth/Qwen3-8B-GGUF", pull: "hf.co/unsloth/Qwen3-8B-GGUF", downloads: 1200, likes: 30, task: "text-generation", updated: "2026-10-01T10:00:00.000Z" },
-		{ id: "odd/Model", pull: "hf.co/odd/Model", downloads: 0, likes: 0 },
+		{ id: "unsloth/Qwen3-8B-GGUF", format: "gguf", params: 8, pull: "hf.co/unsloth/Qwen3-8B-GGUF", downloads: 1200, likes: 30, task: "text-generation", updated: "2026-10-01T10:00:00.000Z" },
+		{ id: "odd/Model", format: "gguf", pull: "hf.co/odd/Model", downloads: 0, likes: 0 },
 	]);
 	// Every name the search gives is one the download accepts.
 	assert.ok(found.every((model) => modelNameProblem(model.pull) === null));
@@ -66,11 +66,47 @@ test("the search asks Hugging Face only for what was typed and chosen, and keeps
 	await searchHub({ q: "", task: "image-text-to-text" }, fetchFn);
 	assert.equal(asked[1]!.searchParams.get("search"), null);
 	const before = asked.length;
-	for (const bad of [{ q: "q" }, {}, { q: "qwen", task: "anything" }, { q: "qwen", sort: "random" }, { q: "qwen", author: "a/b" }, { q: "qwen", author: "a b" }, { q: "qwen", tag: "x&filter=y" }, { q: "qwen", tag: "two words" }]) {
+	for (const bad of [{ q: "qwen", format: "exe" }, { q: "qwen", size: "huge" }, { q: "q" }, {}, { q: "qwen", task: "anything" }, { q: "qwen", sort: "random" }, { q: "qwen", author: "a/b" }, { q: "qwen", author: "a b" }, { q: "qwen", tag: "x&filter=y" }, { q: "qwen", tag: "two words" }]) {
 		await assert.rejects(searchHub(bad, fetchFn), DownloadError, JSON.stringify(bad));
 	}
 	assert.equal(asked.length, before, "a search that is refused asks nobody");
 	await assert.rejects(searchHub({ q: "qwen" }, (async () => new Response("down", { status: 503 })) as unknown as typeof fetch), /did not answer the search/);
+});
+
+test("the search narrows by format, by the size in a model's name, and by what this computer can run", async () => {
+	assert.deepEqual(
+		["unsloth/Qwen3-8B-GGUF", "google/gemma-3-270m-it", "a/Llama-3.2-3B-Instruct-mlx-4bit", "b/Model-27b-it", "c/phi-4", "d/Mixtral-8x7B", "e/model-q4_k_m", "f/Thing-1.5B"].map(paramsFromName),
+		// A name that gives its size some other way (8x7B) is left as not known, never guessed.
+		[8, 0.27, 3, 27, null, null, null, 1.5],
+	);
+	// About half the memory, a little over half a gigabyte for each billion parameters.
+	assert.deepEqual([8, 16, 36, 64].map(fitsUpTo), [4, 8, 19, 35]);
+	const mac = describeMachine(36 * 1024 ** 3, "Apple   M3 Max", "darwin", "arm64");
+	assert.deepEqual(mac, { memoryGb: 36, chip: "Apple M3 Max", appleSilicon: true, fitsUpTo: 19 });
+	assert.equal(machineLine(mac), "This computer: Apple M3 Max, 36 GB of memory. Models up to about 19B should run comfortably; larger ones run slowly or not at all. It is Apple silicon, so MLX models run on it too.");
+	assert.match(machineLine(describeMachine(16 * 1024 ** 3, "Intel Xeon", "linux", "x64")), /MLX models need Apple silicon, so choose GGUF here\.$/);
+
+	const asked: URL[] = [];
+	const fetchFn = (async (input: URL) => {
+		asked.push(new URL(input));
+		return Response.json([{ id: "a/Small-3B" }, { id: "a/Mid-8B" }, { id: "a/Large-27B" }, { id: "a/Huge-70B" }, { id: "a/Unsized" }]);
+	}) as unknown as typeof fetch;
+	const ids = async (query: Parameters<typeof searchHub>[0]) => (await searchHub(query, fetchFn)).map((model) => model.id);
+
+	// A size is a search of its own. More are asked for, since the Hub does not filter by it.
+	assert.deepEqual(await ids({ size: "9" }), ["a/Mid-8B"]);
+	assert.deepEqual([asked[0]!.searchParams.get("limit"), asked[0]!.searchParams.getAll("filter")], ["100", ["gguf"]]);
+	assert.deepEqual(await ids({ q: "llama", size: "4" }), ["a/Small-3B"]);
+	assert.deepEqual(await ids({ q: "llama", size: "1000" }), ["a/Huge-70B"]);
+	// What fits: nothing larger, and nothing whose name does not say.
+	assert.deepEqual(await ids({ q: "llama", fitsUpTo: 19 }), ["a/Small-3B", "a/Mid-8B"]);
+	assert.deepEqual(await ids({ q: "llama", size: "35", fitsUpTo: 19 }), [], "a size this computer cannot run gives nothing, not something larger");
+	// Without a size, every name is kept, sized or not.
+	assert.equal((await ids({ q: "llama" })).length, 5);
+
+	const mlx = await searchHub({ q: "llama", format: "mlx" }, fetchFn);
+	assert.deepEqual(asked.at(-1)!.searchParams.getAll("filter"), ["mlx"]);
+	assert.ok(mlx.every((model) => model.format === "mlx"));
 });
 
 test("a download follows Ollama to the end, and anything short of success is a failure", async () => {
@@ -174,6 +210,11 @@ test("Settings downloads a model through Ollama, one at a time, and says what ha
 	assert.deepEqual(local.installed, [{ name: "old:1b", size: 700_000_000 }]);
 	assert.deepEqual(local.download, { state: "idle" });
 	assert.ok(local.tasks.some(([id]: [string]) => id === "text-generation") && local.sorts.some(([id]: [string]) => id === "downloads"));
+	assert.ok(local.formats.some(([id]: [string]) => id === "mlx") && local.sizes.some(([id]: [string]) => id === "9"));
+	// This computer, read from the system: a size it can run, never one a request names.
+	assert.ok(local.machine.memoryGb >= 1 && local.machine.fitsUpTo >= 1 && typeof local.machine.appleSilicon === "boolean");
+	assert.equal((await send(server, "GET", "/api/model/local/search?q=qwen&fits=64")).status, 400);
+	assert.equal((await send(server, "GET", "/api/model/local/search?q=qwen&format=mlx&size=9&fits=1")).status, 200);
 
 	const found = await send(server, "GET", "/api/model/local/search?q=qwen&task=text-generation&sort=likes");
 	assert.deepEqual(found.json.models.map((model: { pull: string }) => model.pull), ["hf.co/unsloth/Qwen3-8B-GGUF"]);

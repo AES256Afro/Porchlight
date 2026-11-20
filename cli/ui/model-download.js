@@ -4,13 +4,13 @@
 // and nothing else; the names and numbers it returns are someone else's text, shown as text.
 import { api } from "./api.js";
 import { banner, formatWhen, h, icon, replace, select, toast } from "./dom.js";
-import { downloadLine, formatBytes } from "./hints.js";
+import { downloadLine, formatBytes, machineLine } from "./hints.js";
 import { setAssistant } from "./store.js";
 
 /** @typedef {import("../src/assist/download.ts").HubModel} HubModel */
 /** @typedef {import("../src/assist/download.ts").InstalledModel} InstalledModel */
 /** @typedef {import("../src/ui/server.ts").DownloadStatus} DownloadStatus */
-/** @typedef {{ ollama: { host: string, reachable: boolean, problem?: string }, installed: InstalledModel[], download: DownloadStatus, canChange: boolean, hub: string, tasks: [string, string][], sorts: [string, string][] }} LocalModels */
+/** @typedef {{ ollama: { host: string, reachable: boolean, problem?: string }, installed: InstalledModel[], download: DownloadStatus, canChange: boolean, hub: string, tasks: [string, string][], sorts: [string, string][], formats: [string, string][], sizes: [string, string][], machine: import("../src/assist/download.ts").Machine }} LocalModels */
 
 const POLL_MS = 1000;
 
@@ -30,7 +30,8 @@ export async function modelDownloadSection() {
 	const author = /** @type {HTMLInputElement} */ (h("input", { type: "text", name: "model-author", autocomplete: "off", spellcheck: false, placeholder: "unsloth", "aria-label": "Publisher" }));
 	const tag = /** @type {HTMLInputElement} */ (h("input", { type: "text", name: "model-tag", autocomplete: "off", spellcheck: false, placeholder: "conversational", "aria-label": "Tag" }));
 	/** The filters as chosen; kept across redraws. */
-	const filters = { task: "", sort: "downloads" };
+	const filters = { task: "", sort: "downloads", format: "gguf", size: "" };
+	const fits = /** @type {HTMLInputElement} */ (h("input", { type: "checkbox", name: "model-fits", checked: true }));
 	const named = /** @type {HTMLInputElement} */ (h("input", { type: "text", name: "model-name", autocomplete: "off", spellcheck: false, placeholder: "qwen3:8b", "aria-label": "Model name" }));
 
 	async function refresh() {
@@ -77,7 +78,7 @@ export async function modelDownloadSection() {
 		problem = "";
 		draw();
 		try {
-			const asked = new URLSearchParams({ q: query.value, task: filters.task, sort: filters.sort, author: author.value, tag: tag.value });
+			const asked = new URLSearchParams({ q: query.value, task: filters.task, sort: filters.sort, author: author.value, tag: tag.value, format: filters.format, size: filters.size, ...(fits.checked ? { fits: "1" } : {}) });
 			found = (await api("GET", `/model/local/search?${asked}`)).models;
 		} catch (err) {
 			problem = err instanceof Error ? err.message : String(err);
@@ -90,6 +91,7 @@ export async function modelDownloadSection() {
 	/** What the Hub says about a model, in one line. @param {HubModel} model */
 	const resultLine = (model) =>
 		[
+			model.params ? `${model.params}B` : "size not in the name",
 			state.tasks.find(([id]) => id === model.task)?.[1],
 			`${model.downloads.toLocaleString()} downloads`,
 			`${model.likes.toLocaleString()} likes`,
@@ -105,6 +107,29 @@ export async function modelDownloadSection() {
 	function getButton(name, label = "Download") {
 		if (has(name)) return h("button", { type: "button", class: "button", onclick: () => void use(name) }, "Use this model");
 		return h("button", { type: "button", class: "button", disabled: state.download.state === "running" || !state.ollama.reachable, onclick: () => void start(name) }, icon("download"), label);
+	}
+
+	/**
+	 * An MLX model is not Ollama's to download. Its name is copied for the program that runs it, and
+	 * its page on the Hub is one click away; the address is built here from a name the server checked.
+	 *
+	 * @param {HubModel} model
+	 */
+	function mlxActions(model) {
+		const copy = async () => {
+			try {
+				await navigator.clipboard.writeText(model.id);
+				toast("Copied the model's name. Load it in Unsloth Studio or LM Studio, then choose that program in the model form above.");
+			} catch {
+				toast("Could not copy. Select the name and copy it by hand.", "error");
+			}
+		};
+		return h(
+			"span",
+			{ class: "actions" },
+			h("button", { type: "button", class: "button", onclick: () => void copy() }, icon("copy"), "Copy name"),
+			h("a", { class: "button quiet", href: `https://${state.hub}/${model.id}`, target: "_blank", rel: "noopener noreferrer", title: `Opens ${state.hub} in your browser` }, "Open its page"),
+		);
 	}
 
 	function progress() {
@@ -167,7 +192,8 @@ export async function modelDownloadSection() {
 						"div",
 						null,
 						h("h3", null, "Search Hugging Face"),
-						h("p", { class: "hint" }, `Sends only what you type and choose here to ${state.hub}. It lists models in the format Ollama reads (GGUF). Anyone can publish one there, so prefer publishers you recognise.`),
+						h("p", { class: "hint" }, `Sends only what you type and choose here to ${state.hub}. Anyone can publish a model there, so prefer publishers you recognise.`),
+						h("p", null, machineLine(state.machine)),
 						h(
 							"form",
 							{
@@ -181,6 +207,12 @@ export async function modelDownloadSection() {
 							h(
 								"div",
 								{ class: "filters" },
+								select("Format", state.formats, filters.format, (value) => {
+									filters.format = value;
+								}),
+								select("Size", state.sizes, filters.size, (value) => {
+									filters.size = value;
+								}),
 								select("Kind", state.tasks, filters.task, (value) => {
 									filters.task = value;
 								}),
@@ -190,8 +222,12 @@ export async function modelDownloadSection() {
 								h("label", { class: "field" }, h("span", null, "Publisher"), author),
 								h("label", { class: "field" }, h("span", null, "Tag"), tag),
 							),
+							h("label", { class: "check-line" }, fits, `Only models that fit this computer (up to about ${state.machine.fitsUpTo}B). Sizes are read from each model's name, so one that does not give its size is left out.`),
 							h("div", { class: "actions" }, h("button", { type: "submit", class: "button primary", disabled: searching }, searching ? "Searching…" : "Search")),
 						),
+						found !== null && filters.format === "mlx"
+							? h("p", { class: "hint" }, "Ollama cannot run MLX models. Load one in Unsloth Studio, which can also train it, or in LM Studio, then choose that program in the model form above. Porchlight talks to either once the model is loaded.")
+							: null,
 						found === null
 							? null
 							: found.length === 0
@@ -200,7 +236,7 @@ export async function modelDownloadSection() {
 										"ul",
 										{ class: "plain-list model-list" },
 										...found.map((model) =>
-											h("li", null, h("span", null, h("strong", null, model.id), h("span", { class: "hint block" }, resultLine(model))), getButton(model.pull)),
+											h("li", null, h("span", null, h("strong", null, model.id), h("span", { class: "hint block" }, resultLine(model))), model.format === "mlx" ? mlxActions(model) : getButton(model.pull)),
 										),
 									),
 						h("h3", null, "Or name one"),
