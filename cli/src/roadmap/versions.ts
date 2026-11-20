@@ -51,6 +51,22 @@ export function bumpKind(from: string, to: string): "major" | "minor" | "patch" 
 	return "patch";
 }
 
+/**
+ * Whether an upgrade may break things, read the way npm's and Cargo's caret
+ * ranges read it: the first non-zero part is the one that promises
+ * compatibility. So 1.2 to 2.0 may break, and so does 0.4 to 0.5 (or 0.0.3 to
+ * 0.0.4), since before 1.0 a minor release can change anything.
+ */
+export function mayBreak(from: string, to: string): boolean {
+	const numbers = (version: string) => parts(version).filter((part) => typeof part === "number");
+	const [a, b] = [numbers(from), numbers(to)];
+	const length = Math.max(a.length, b.length, 3);
+	const firstNonZero = a.findIndex((part) => part !== 0);
+	const promise = firstNonZero === -1 ? length - 1 : firstNonZero;
+	const firstChange = Array.from({ length }, (_, i) => i).find((i) => (a[i] ?? 0) !== (b[i] ?? 0));
+	return firstChange !== undefined && firstChange <= promise;
+}
+
 /** The highest of `versions`, or undefined for an empty list. */
 export function highestVersion(versions: string[]): string | undefined {
 	return versions.reduce<string | undefined>((best, version) => (best === undefined || compareVersions(version, best) > 0 ? version : best), undefined);

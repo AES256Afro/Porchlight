@@ -1,7 +1,11 @@
 # Porchlight for BoxPilot: the web interface with both scanners. Repositories to scan are mounted
 # read-only at /repos, or fetched from GitHub into /data/github; the latest scan report lives in /data. The attack-surface monitor itself
 # stays a Cloudflare Worker; this image only talks to it as a client.
-FROM node:24-alpine
+#
+# Pinned by digest, so a release is built from exactly the base image it was tested on. To move to a
+# newer node:24-alpine, look up its index digest (`docker buildx imagetools inspect node:24-alpine`)
+# and replace it here; CI's container smoke test checks the result.
+FROM node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5
 
 # gitleaks reads history with git. The repositories are someone else's files mounted read-only,
 # and git refuses to read a repository owned by another user unless told it is safe: only those

@@ -136,6 +136,16 @@ Also run the cron `*/10` (24 domains a day today). Add `deduplicate=Y` to the cr
 
 ### M3: Output hygiene. Size: S
 
+**Status, 2026-11-20: built, not released.** Each item has a test that fails on the old code (`cli/test/output.test.ts` and additions to the parser, version and roadmap tests).
+- S5: `stripControls` in `escape.ts` replaces C0 (except tab and line breaks), a bare carriage return, DEL, C1 and the bidirectional overrides with U+FFFD. Every export format uses it. The CLI prints everything through `forTerminal`, and JSON output (`jsonText`) escapes those characters instead, so the data is unchanged. The scan's own Markdown report (`renderMarkdown`) now escapes names, paths and titles; it did not before.
+- S6: Markdown text escapes the colon of `://` and `mailto:`, `www.` and `@`, and shows `@name` and `@org/team` as code, because GitHub mentions ignore a backslash.
+- S7: `--out` reports and exports are written 0600 through `writePrivate`, an older file included.
+- B12: `severity=none` exports an empty selection that says "no severity selected".
+- B14: `mayBreak` reads versions like npm's and Cargo's caret: before 1.0, a minor (or before 0.1, a patch) change gets the changelog warning.
+- B19: gitleaks matches are told apart by rule, line and entropy, which is never kept, so two secrets on one line stay two findings. A second one in the same commit gets the column in its detail.
+- S8: the base image is pinned by digest and CI's BoxPilot checkout to the `v1.253.0` commit (its catalog schema is unchanged since).
+- picomatch: nothing left to do; `npm audit` finds no advisory in any of the three packages.
+
 S5, S6, S7, B12, B14, B19.
 
 Pin the base image digest and the BoxPilot schema (S8). Fix the picomatch dev advisory.

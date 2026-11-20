@@ -5,7 +5,7 @@
  * nothing. The file name is a fixed stem and the audit's date. The token is never in a report, so it
  * cannot be in an export.
  */
-import { csvRow, html, mdCode, mdText } from "../roadmap/escape.ts";
+import { csvRow, html, jsonText, mdCode, mdText } from "../roadmap/escape.ts";
 import { allChecks, cfCounts } from "./audit.ts";
 import type { CfCheck, CfReport, CfZoneReport } from "./types.ts";
 
@@ -33,7 +33,7 @@ export function forZone(report: CfReport, zoneId: string | null): { report: CfRe
 export function exportCloudflare(full: CfReport, format: CfFormat, zoneId: string | null = null): CfExportFile {
 	const { report, partial } = forZone(full, zoneId);
 	const stem = `porchlight-cloudflare-${report.checkedAt.slice(0, 10).replace(/[^0-9-]/g, "")}`;
-	if (format === "json") return { filename: `${stem}.json`, contentType: "application/json; charset=utf-8", body: `${JSON.stringify(partial ? { partial, ...report } : report, null, "\t")}\n` };
+	if (format === "json") return { filename: `${stem}.json`, contentType: "application/json; charset=utf-8", body: jsonText(partial ? { partial, ...report } : report) };
 	if (format === "csv") return { filename: `${stem}.csv`, contentType: "text/csv; charset=utf-8", body: csv(report) };
 	if (format === "html") return { filename: `${stem}.html`, contentType: "text/html; charset=utf-8", body: htmlDoc(report, partial) };
 	return { filename: `${stem}.md`, contentType: "text/markdown; charset=utf-8", body: markdown(report, partial) };

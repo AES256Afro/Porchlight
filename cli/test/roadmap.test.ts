@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { Finding, ScanReport } from "../src/repos/types.ts";
 import { buildDomainRoadmap } from "../src/roadmap/domains.ts";
 import { csvCell, html, mdCode, mdText } from "../src/roadmap/escape.ts";
+import { exportRepos, parseFilter } from "../src/roadmap/export.ts";
 import { fileStem, renderFindings, renderRoadmap } from "../src/roadmap/render.ts";
 import { buildRepoRoadmap, listRepoFindings } from "../src/roadmap/repos.ts";
 import { noFilter } from "../ui/filter.js";
@@ -239,13 +240,29 @@ test("hostile text in a scan cannot become markup, a link or a formula in any fo
 	const prose = renderRoadmap(roadmap, "md").body.replace(/(?<!\\)(`+)[\s\S]*?[^`]\1(?!`)/g, "");
 	assert.ok(!prose.includes("![x](http") && !/\]\(http/.test(prose), "no live image or link outside a code span");
 	assert.ok(!/(?<!\\)<(script|img)/.test(prose), "no raw HTML outside a code span");
-	assert.ok(prose.includes("\\!\\[x\\]\\(http://evil.example/p.png\\)"), "the text is still there, escaped");
+	assert.ok(prose.includes("\\!\\[x\\]\\(http\\://evil.example/p.png\\)"), "the text is still there, escaped");
 
 	const cells = renderRoadmap(roadmap, "csv").body.split("\r\n").slice(1).join("\n");
 	assert.ok(!/(^|,)"?[=+\-@]/m.test(cells), "no cell starts with a formula character");
 	assert.ok(cells.includes(`'=cmd|' /C calc'!A0`) && cells.includes(`'=HYPERLINK`));
 
 	assert.doesNotThrow(() => JSON.parse(renderRoadmap(roadmap, "json").body));
+});
+
+test("an upgrade before 1.0 that may break says so", () => {
+	const report = sampleReport();
+	report.repos[1]!.findings.push(vuln("GHSA-z", "high", "tinyorm@0.4.1", "0.5.0"));
+	const actions = buildRepoRoadmap(report).phases.flatMap((phase) => phase.groups.flatMap((group) => group.actions));
+	const tinyorm = actions.find((action) => action.title.startsWith("Upgrade tinyorm"))!;
+	assert.match(tinyorm.how.join(" "), /Before version 1\.0, this change can break things like a major version/);
+});
+
+test("the page's \"no severity\" filter can be exported", () => {
+	const filter = parseFilter({ severity: "none" });
+	assert.deepEqual(filter.severities, []);
+	const file = exportRepos(sampleReport(), { content: "findings", format: "md" }, filter);
+	assert.match(file.body, /no severity selected/);
+	assert.throws(() => parseFilter({ severity: "none,high" }), /Unknown severity "none"/);
 });
 
 test("escaping helpers", () => {
@@ -299,7 +316,7 @@ test("renders the findings list in every format", () => {
 
 	const markdown = renderFindings(list, "md").body;
 	assert.ok(markdown.startsWith("# Findings and suggested fixes\n\nSource: `/work`, scanned 2026-11-17.\n\n11 findings (1 critical, 4 high, 4 medium, 2 low) across 1 place, most severe first."));
-	assert.ok(markdown.includes("| critical | GHSA-d: Problem GHSA-d \\(next@15.2.6\\) | package-lock.json | Upgrade next from 15.2.6 to 16.0.1 or later | Fix now |"));
+	assert.ok(markdown.includes("| critical | GHSA-d: Problem GHSA-d \\(next\\@15.2.6\\) | package-lock.json | Upgrade next from 15.2.6 to 16.0.1 or later | Fix now |"));
 
 	const rows = renderFindings(list, "csv").body.trimEnd().split("\r\n");
 	assert.equal(rows[0], "Severity,Type,Place,ID,Finding,Where,Detail,When,Suggested fix,How,Note");

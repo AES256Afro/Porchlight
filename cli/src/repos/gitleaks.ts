@@ -64,30 +64,43 @@ export function parseGitleaks(output: string): Finding[] {
 	const rows: unknown = JSON.parse(output.trim() || "[]");
 	if (!Array.isArray(rows)) throw new Error("gitleaks: unexpected report shape");
 
-	// The same line is reported once per commit that touched it; keep the first.
-	const byLocation = new Map<string, Finding>();
+	// The same secret is reported again by each commit that rewrote its line; keep the first.
+	// Which secret a match is cannot be told by its value (gitleaks runs with --redact), but its
+	// entropy is a property of the value: equal for the same secret, all but never for two others.
+	// It is used only to tell matches apart here and is never kept.
+	const bySecret = new Map<string, Finding>();
+	const details = new Set<string>();
 	for (const row of rows) {
 		if (typeof row !== "object" || row === null) continue;
-		const { RuleID, Description, File, StartLine, Commit, Date: date } = row as Record<string, unknown>;
+		const { RuleID, Description, File, StartLine, StartColumn, Entropy, Commit, Date: date } = row as Record<string, unknown>;
 		if (typeof RuleID !== "string" || typeof File !== "string") continue;
 		const location = typeof StartLine === "number" ? `${File}:${StartLine}` : File;
-		const key = `${RuleID}\n${location}`;
-		if (byLocation.has(key)) continue;
+		const key = `${RuleID}\n${location}\n${typeof Entropy === "number" ? Entropy : ""}`;
+		if (bySecret.has(key)) continue;
 		const commit = typeof Commit === "string" && Commit ? `commit ${Commit.slice(0, 8)}` : "working tree";
 		const day = typeof date === "string" ? ` on ${date.slice(0, 10)}` : "";
-		byLocation.set(key, {
+		// Two secrets on one line in one commit would otherwise read the same, and share one note and status.
+		let detail = `${commit}${day}`;
+		const place = `${RuleID}\n${location}\n`;
+		if (details.has(place + detail)) {
+			let extra = typeof StartColumn === "number" ? `, column ${StartColumn}` : ", another match";
+			for (let n = 2; details.has(place + detail + extra); n++) extra = `, match ${n}`;
+			detail += extra;
+		}
+		details.add(place + detail);
+		bySecret.set(key, {
 			tool: "gitleaks",
 			kind: "secret",
 			ruleId: RuleID,
 			title: typeof Description === "string" ? firstSentence(Description) : RuleID,
 			location,
-			detail: `${commit}${day}`,
+			detail,
 			// A committed credential is exposed and must be rotated: high, unless
 			// triage finds reasons to doubt that this match is a live one.
 			...triageSecret(RuleID, File),
 		});
 	}
-	return [...byLocation.values()];
+	return [...bySecret.values()];
 }
 
 function firstSentence(text: string): string {

@@ -1,6 +1,6 @@
 import { MURAL_COLUMNS, type Mural } from "../assist/mural.ts";
 import { SEVERITIES } from "../repos/types.ts";
-import { csvRow, html, mdCode, mdText } from "./escape.ts";
+import { csvRow, html, jsonText, mdCode, mdText } from "./escape.ts";
 import { emptyCounts, phaseTitle, sumCounts, totalOf, type Action, type Counts, type FindingRow, type FindingsList, type Phase, type Roadmap } from "./types.ts";
 
 export const FORMATS = ["md", "html", "csv", "json"] as const;
@@ -26,7 +26,7 @@ export function renderRoadmap(roadmap: Roadmap, format: Format, mural?: Mural): 
 		case "csv":
 			return { body: csv(roadmap), contentType: "text/csv; charset=utf-8", extension: "csv" };
 		case "json":
-			return { body: `${JSON.stringify(mural ? { ...roadmap, mural } : roadmap, null, "\t")}\n`, contentType: "application/json; charset=utf-8", extension: "json" };
+			return { body: jsonText(mural ? { ...roadmap, mural } : roadmap), contentType: "application/json; charset=utf-8", extension: "json" };
 	}
 }
 
@@ -39,7 +39,7 @@ export function renderFindings(list: FindingsList, format: Format, mural?: Mural
 		case "csv":
 			return { body: findingsCsv(list), contentType: "text/csv; charset=utf-8", extension: "csv" };
 		case "json":
-			return { body: `${JSON.stringify(mural ? { ...list, mural } : list, null, "\t")}\n`, contentType: "application/json; charset=utf-8", extension: "json" };
+			return { body: jsonText(mural ? { ...list, mural } : list), contentType: "application/json; charset=utf-8", extension: "json" };
 	}
 }
 

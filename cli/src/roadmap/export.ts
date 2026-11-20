@@ -33,7 +33,10 @@ export function checkFormat(value: string): Format {
  */
 export function parseFilter(input: { severity?: string | null; kind?: string | null; match?: string | null; repo?: string | null }): FindingFilter {
 	const filter = noFilter();
-	if (input.severity != null) {
+	// The page writes "none" when every severity is unticked (cli/ui/list.js), so a link to that view exports it too.
+	if (input.severity === "none") {
+		filter.severities = [];
+	} else if (input.severity != null) {
 		const wanted = input.severity.split(",").map((part) => part.trim()).filter(Boolean);
 		const unknown = wanted.filter((part) => !(ALL_SEVERITIES as string[]).includes(part));
 		if (unknown.length > 0) throw new ExportError(`Unknown severity "${unknown[0]}". Choose from: ${ALL_SEVERITIES.join(", ")}`);

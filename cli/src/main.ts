@@ -1,4 +1,4 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -21,7 +21,8 @@ import { auditCloudflare } from "./cloudflare/audit.ts";
 import { tokenShapeProblem } from "./cloudflare/client.ts";
 import { renderCloudflareText } from "./cloudflare/export.ts";
 import { readSavedToken } from "./cloudflare/store.ts";
-import { readDomains } from "./investigate/ownership.ts";
+import { readDomains, writePrivate } from "./investigate/ownership.ts";
+import { forTerminal, jsonText } from "./roadmap/escape.ts";
 
 const USAGE = `Porchlight
 
@@ -87,6 +88,23 @@ nothing; private ones need PORCHLIGHT_GITHUB_TOKEN, a token that can read them.
 `;
 
 /** Returns the process exit code: 0 ok, 1 error or incomplete scan under --fail-on, 2 findings at or above --fail-on. */
+/**
+ * Everything the CLI prints goes through these. Names, paths and titles come
+ * from scanned repositories, DNS and advisories, and can carry terminal escape
+ * sequences, so control characters are replaced before they reach a terminal.
+ */
+function print(text: string): void {
+	process.stdout.write(forTerminal(text));
+}
+
+function say(text: string): void {
+	print(`${text}\n`);
+}
+
+function warn(text: string): void {
+	process.stderr.write(`${forTerminal(text)}\n`);
+}
+
 export async function main(argv: string[]): Promise<number> {
 	// Settings given under the earlier prefix still count (BoxPilot and older app.env files use it).
 	adoptOldSettings(process.env);
@@ -100,11 +118,11 @@ export async function main(argv: string[]): Promise<number> {
 		if (group === "cloudflare" && command === "audit") return await cloudflareAudit(rest);
 		if (group === "ui") return await ui(argv.slice(1));
 	} catch (err) {
-		console.error(`porchlight: ${err instanceof Error ? err.message : String(err)}`);
+		warn(`porchlight: ${err instanceof Error ? err.message : String(err)}`);
 		return 1;
 	}
 	const asksForHelp = group === undefined || group === "help" || group === "--help" || group === "-h";
-	(asksForHelp ? console.log : console.error)(USAGE);
+	(asksForHelp ? say : warn)(USAGE);
 	return asksForHelp ? 0 : 1;
 }
 
@@ -130,23 +148,23 @@ async function reposScan(args: string[]): Promise<number> {
 	const report = await scanRepos({
 		root: positionals[0] ?? ".",
 		depth,
-		onProgress: ({ path }) => console.error(`Scanning ${path}`),
+		onProgress: ({ path }) => warn(`Scanning ${path}`),
 	});
 	if (report.repos.length === 0) throw new Error(`No git repositories found under ${report.root}`);
 	if (report.tools.every((tool) => tool.status === "missing")) {
 		throw new Error(`No scanner is installed. Install one: ${report.tools.map((tool) => tool.installHint).join("; ")}`);
 	}
 
-	const rendered = values.json ? `${JSON.stringify(report, null, "\t")}\n` : renderMarkdown(report);
+	const rendered = values.json ? jsonText(report) : renderMarkdown(report);
 	if (values.out) {
-		await writeFile(values.out, rendered);
-		console.log(renderSummary(report));
-		console.log(`Report written to ${values.out}`);
+		await writePrivate(values.out, rendered);
+		say(renderSummary(report));
+		say(`Report written to ${values.out}`);
 	} else {
-		process.stdout.write(rendered);
+		print(rendered);
 	}
 	const code = exitCode(report, failOn as Severity | undefined);
-	if (code === 1) console.error("porchlight: the scan was incomplete (see \"Not covered\"), so --fail-on cannot pass");
+	if (code === 1) warn("porchlight: the scan was incomplete (see \"Not covered\"), so --fail-on cannot pass");
 	return code;
 }
 
@@ -157,10 +175,10 @@ async function hostCheck(args: string[]): Promise<number> {
 		askApple: !values.offline,
 		lookUpPackages: !values.offline,
 		onProgress: ({ done, total, current }) => {
-			if (current) console.error(`Checking ${done + 1} of ${total}: ${current}`);
+			if (current) warn(`Checking ${done + 1} of ${total}: ${current}`);
 		},
 	});
-	process.stdout.write(values.json ? `${JSON.stringify(report, null, "\t")}\n` : renderHostText(report));
+	print(values.json ? jsonText(report) : renderHostText(report));
 	return 0;
 }
 
@@ -185,10 +203,10 @@ export async function cloudflareAudit(args: string[], deps: { fetchFn?: typeof f
 		lookups: !values["no-lookups"],
 		ownershipTokens: Object.fromEntries(Object.entries(domains.domains).map(([name, entry]) => [name, entry.token])),
 		onProgress: ({ done, total, current }) => {
-			if (current) console.error(`Reading ${Math.min(done + 1, total)} of ${total}: ${current}`);
+			if (current) warn(`Reading ${Math.min(done + 1, total)} of ${total}: ${current}`);
 		},
 	});
-	(deps.write ?? ((text: string) => void process.stdout.write(text)))(values.json ? `${JSON.stringify(report, null, "\t")}\n` : renderCloudflareText(report));
+	(deps.write ?? print)(values.json ? jsonText(report) : renderCloudflareText(report));
 	return 0;
 }
 
@@ -228,11 +246,11 @@ async function domainsExport(args: string[]): Promise<number> {
 
 async function deliver(file: ExportFile, out: string | undefined): Promise<number> {
 	if (!out) {
-		process.stdout.write(file.body);
+		print(file.body);
 		return 0;
 	}
-	await writeFile(out, file.body);
-	console.log(`Written to ${out}`);
+	await writePrivate(out, file.body);
+	say(`Written to ${out}`);
 	return 0;
 }
 
@@ -303,20 +321,20 @@ async function ui(args: string[]): Promise<number> {
 			cloudflareTokenError,
 		}),
 	);
-	if (server.port !== port && port !== 0) console.log(`Port ${port} is in use, so this copy is on ${server.port}.`);
+	if (server.port !== port && port !== 0) say(`Port ${port} is in use, so this copy is on ${server.port}.`);
 	if (fixedKey) {
-		console.log(`Porchlight is listening on ${values.host} port ${server.port}. Sign in with the key in PORCHLIGHT_UI_KEY.`);
+		say(`Porchlight is listening on ${values.host} port ${server.port}. Sign in with the key in PORCHLIGHT_UI_KEY.`);
 	} else {
-		console.log(`Porchlight is running. Open this link (it carries this session's key):\n\n  ${server.url}\n`);
+		say(`Porchlight is running. Open this link (it carries this session's key):\n\n  ${server.url}\n`);
 	}
-	console.log(monitor ? `Monitor: ${monitor.url.host}` : `Monitor: not connected (${monitorError})`);
+	say(monitor ? `Monitor: ${monitor.url.host}` : `Monitor: not connected (${monitorError})`);
 	// A model chosen in Settings → Model replaces the one given here.
 	const inUse = server.model();
 	const from = inUse.source === "settings" ? ", chosen in Settings" : "";
-	if (inUse.config) console.log(`Model: ${inUse.config.model} at ${inUse.config.url.host}${from}${isHosted(inUse.config) ? " (hosted: what the pages show is sent there when you ask)" : ""}`);
-	else console.log(inUse.unset ? `Model: off${from} (choose one in Settings → Model)` : `Model: not connected${from} (${inUse.error})`);
-	console.log(githubError ? `GitHub: token not used (${githubError})` : githubToken ? "GitHub: token set, private repositories can be fetched" : "GitHub: no token, public repositories only (set PORCHLIGHT_GITHUB_TOKEN for private ones)");
-	console.log("Press Ctrl+C to stop.");
+	if (inUse.config) say(`Model: ${inUse.config.model} at ${inUse.config.url.host}${from}${isHosted(inUse.config) ? " (hosted: what the pages show is sent there when you ask)" : ""}`);
+	else say(inUse.unset ? `Model: off${from} (choose one in Settings → Model)` : `Model: not connected${from} (${inUse.error})`);
+	say(githubError ? `GitHub: token not used (${githubError})` : githubToken ? "GitHub: token set, private repositories can be fetched" : "GitHub: no token, public repositories only (set PORCHLIGHT_GITHUB_TOKEN for private ones)");
+	say("Press Ctrl+C to stop.");
 	return 0;
 }
 
@@ -356,32 +374,32 @@ async function domains(command: string, args: string[]): Promise<number> {
 
 	const { status, body } = await request();
 	if (status >= 400) {
-		console.error(`porchlight: ${body.error ?? `HTTP ${status}`}`);
-		if (body.challenge) console.error(describeChallenge(body.challenge));
+		warn(`porchlight: ${body.error ?? `HTTP ${status}`}`);
+		if (body.challenge) warn(describeChallenge(body.challenge));
 		return 1;
 	}
 
 	switch (command) {
 		case "list":
-			if (body.domains.length === 0) console.log("No domains registered.");
-			for (const entry of body.domains) console.log(describeDomain(entry));
+			if (body.domains.length === 0) say("No domains registered.");
+			for (const entry of body.domains) say(describeDomain(entry));
 			break;
 		case "add":
-			console.log(`Registered ${body.domain.name}. Publish this DNS record, then run: porchlight domains verify ${body.domain.name}`);
-			console.log(describeChallenge(body.domain.challenge));
+			say(`Registered ${body.domain.name}. Publish this DNS record, then run: porchlight domains verify ${body.domain.name}`);
+			say(describeChallenge(body.domain.challenge));
 			break;
 		case "verify":
-			console.log(`${body.domain.name} is verified. Keep the TXT record in place: it is re-checked before every scan.`);
+			say(`${body.domain.name} is verified. Keep the TXT record in place: it is re-checked before every scan.`);
 			break;
 		case "scan":
-			console.log(body.text);
+			say(body.text);
 			break;
 		case "show":
-			console.log(describeDomain(body.domain));
-			console.log(body.text ?? "No scan yet.");
+			say(describeDomain(body.domain));
+			say(body.text ?? "No scan yet.");
 			break;
 		case "remove":
-			console.log(`Removed ${body.deleted} and its scan history.`);
+			say(`Removed ${body.deleted} and its scan history.`);
 			break;
 	}
 	return 0;

@@ -81,7 +81,7 @@ test("a mural in an export is labelled, escaped for each format, and never fits 
 
 	const markdown = exportRepos(scan, { format: "md" }, noFilter(), board).body;
 	assert.match(markdown, /## Mural/);
-	assert.ok(markdown.includes("\\[click\\]\\(https://evil.example\\)"), "a link from the model stays text");
+	assert.ok(markdown.includes("\\[click\\]\\(https\\://evil.example\\)"), "a link from the model stays text, and the address is not linked on its own");
 	assert.ok(!markdown.includes("<script>"));
 
 	const json = JSON.parse(exportRepos(scan, { format: "json", content: "findings" }, noFilter(), board).body);

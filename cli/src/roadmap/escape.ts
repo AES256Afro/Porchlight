@@ -2,9 +2,44 @@
 // someone else may control. Each output format has its own way of turning
 // text into something active, and each is closed off here.
 
+/**
+ * Characters a terminal acts on rather than shows: C0 controls other than
+ * tab, line feed and carriage return (ESC starts an escape sequence), DEL, C1
+ * controls (CSI is a one-character ESC [), and the bidirectional overrides and
+ * isolates that make a name read differently from what it is.
+ */
+const CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f‪-‮⁦-⁩]/g;
+/** A carriage return that does not end a line moves back to its start, so later text overwrites what is there. */
+const BARE_RETURN = /\r(?!\n)/g;
+/** Shown in place of a removed character, so the reader can tell something was there. */
+const REPLACEMENT = "�";
+
+/** Text with every control character a terminal or viewer would act on replaced. Tabs and line breaks stay. */
+export function stripControls(text: string): string {
+	return text.replace(CONTROLS, REPLACEMENT).replace(BARE_RETURN, REPLACEMENT);
+}
+
+/** What the CLI writes to a terminal. Data from a scan can carry escape sequences, so none reaches it. */
+export function forTerminal(text: string): string {
+	return stripControls(text);
+}
+
+/** Characters JSON.stringify leaves as they are that a terminal or viewer would act on. */
+const JSON_UNESCAPED = /[\u007f-\u009f‪-‮⁦-⁩]/g;
+
+/**
+ * JSON for a file or a terminal. JSON.stringify already writes C0 controls as
+ * escapes, but not DEL, C1 or bidirectional controls; these are escaped too,
+ * so the data is unchanged and nothing in it acts on a terminal.
+ */
+export function jsonText(value: unknown): string {
+	const text = JSON.stringify(value, null, "\t").replace(JSON_UNESCAPED, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+	return `${text}\n`;
+}
+
 /** Text for an HTML document. */
 export function html(text: string): string {
-	return text.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
+	return stripControls(text).replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
 }
 
 /**
@@ -13,7 +48,7 @@ export function html(text: string): string {
  * they show as text.
  */
 export function csvCell(value: string | number): string {
-	let text = String(value);
+	let text = stripControls(String(value));
 	if (typeof value === "string" && /^[=+\-@\t\r]/.test(text)) text = `'${text}`;
 	return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
@@ -23,17 +58,38 @@ export function csvRow(cells: (string | number)[]): string {
 }
 
 /**
+ * A name GitHub would turn into a mention that notifies someone (`@name`, or
+ * `@org/team`). It does so even when the @ is escaped, but leaves code spans
+ * alone, so such a name is shown as code.
+ */
+const MENTION = /((?<![\w@])@\w[\w./-]*)/;
+
+/**
  * Plain text inside Markdown: every character that could start a link, an
  * image, emphasis, a heading, a table cell or raw HTML is escaped, and line
- * breaks are flattened so one field cannot begin a new block.
+ * breaks are flattened so one field cannot begin a new block. Text that
+ * GitHub turns into a link by itself is broken up too: the colon of `://`
+ * and of `mailto:`, `www.`, an @ (an email address), and a mention, which
+ * becomes code.
  */
 export function mdText(text: string): string {
-	return text.replace(/\s*[\r\n]+\s*/g, " ").replace(/[\\`*_{}[\]()#+!|<>~]/g, "\\$&");
+	const flat = stripControls(text).replace(/\s*[\r\n]+\s*/g, " ");
+	return flat
+		.split(MENTION)
+		.map((part, index) => (index % 2 === 1 ? mdCode(part) : escapeMarkdown(part)))
+		.join("");
+}
+
+function escapeMarkdown(text: string): string {
+	return text
+		.replace(/[\\`*_{}[\]()#+!|<>~@]/g, "\\$&")
+		.replace(/:(?=\/\/)|(?<=\b(?:mailto|xmpp)):/gi, "\\:")
+		.replace(/\b(www)\./gi, "$1\\.");
 }
 
 /** A code span, fenced with more backticks than the text contains so it cannot close early. */
 export function mdCode(text: string): string {
-	const flat = text.replace(/\s*[\r\n]+\s*/g, " ");
+	const flat = stripControls(text).replace(/\s*[\r\n]+\s*/g, " ");
 	const longestRun = Math.max(0, ...(flat.match(/`+/g) ?? []).map((run) => run.length));
 	const fence = "`".repeat(longestRun + 1);
 	const pad = flat.startsWith("`") || flat.endsWith("`") ? " " : "";
@@ -45,7 +101,8 @@ export function mdCode(text: string): string {
  * than any run of backticks inside, so nothing in the text can close it.
  */
 export function mdBlock(text: string): string {
-	const longestRun = Math.max(0, ...(text.match(/`+/g) ?? []).map((run) => run.length));
+	const clean = stripControls(text.replace(/\r\n?/g, "\n"));
+	const longestRun = Math.max(0, ...(clean.match(/`+/g) ?? []).map((run) => run.length));
 	const fence = "`".repeat(Math.max(3, longestRun + 1));
-	return `${fence}text\n${text.replace(/\r\n?/g, "\n")}\n${fence}`;
+	return `${fence}text\n${clean}\n${fence}`;
 }

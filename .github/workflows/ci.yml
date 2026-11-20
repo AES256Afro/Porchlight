@@ -15,11 +15,13 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # BoxPilot's catalog validator checks boxpilot/porchlight.yaml. If the repository is not
-      # reachable the step is skipped and the manifest still gets its local checks.
+      # reachable the step is skipped and the manifest still gets its local checks. The check runs
+      # BoxPilot's code, so it is pinned to a release's commit, not whatever its default branch holds.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         continue-on-error: true
         with:
           repository: AES256Afro/BoxPilot
+          ref: 20e5b7696d75a9520e8c824e96917c48ea8f9b1b # v1.253.0
           path: .boxpilot
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:

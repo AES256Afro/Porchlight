@@ -1,4 +1,5 @@
 import { basename, isAbsolute, relative } from "node:path";
+import { mdCode, mdText } from "../roadmap/escape.ts";
 import { SEVERITIES, severityRank, type Finding, type RepoResult, type ScanReport, type Severity } from "./types.ts";
 
 export type Counts = Record<Severity, number>;
@@ -102,13 +103,18 @@ export function settingNotes(report: ScanReport): string[] {
 	return notes;
 }
 
+/**
+ * The scan as Markdown, for `repos scan` and its --out file. Names, paths and
+ * titles come from the scanned repositories and from advisories, so each goes
+ * through the Markdown escaping in escape.ts (invariant 11).
+ */
 export function renderMarkdown(report: ScanReport): string {
 	const all = report.repos.flatMap((repo) => repo.findings);
 	const totals = countBySeverity(all);
 	const lines = [
 		"# Porchlight repository scan",
 		"",
-		`Scanned ${repoCount(report)} under \`${report.root}\` on ${report.scannedAt.slice(0, 10)}: ` +
+		`Scanned ${repoCount(report)} under ${mdCode(report.root)} on ${report.scannedAt.slice(0, 10)}: ` +
 			`${all.length === 1 ? "1 finding" : `${all.length} findings`} ` +
 			`(${SEVERITIES.map((severity) => `${totals[severity]} ${severity}`).join(", ")}).`,
 		"",
@@ -116,28 +122,28 @@ export function renderMarkdown(report: ScanReport): string {
 
 	const notes = coverageNotes(report);
 	if (notes.length > 0) {
-		lines.push("## Not covered", "", ...notes.map((note) => `- ${note}`), "");
+		lines.push("## Not covered", "", ...notes.map((note) => `- ${mdText(note)}`), "");
 	}
 	const settings = settingNotes(report);
 	if (settings.length > 0) {
-		lines.push("## Left out by repository settings", "", ...settings.map((note) => `- ${note}`), "");
+		lines.push("## Left out by repository settings", "", ...settings.map((note) => `- ${mdText(note)}`), "");
 	}
 
 	const ranked = rankRepos(report.repos);
 	lines.push("## Summary", "", "| Repository | Critical | High | Medium | Low |", "| --- | ---: | ---: | ---: | ---: |");
 	for (const repo of ranked) {
 		const counts = countBySeverity(repo.findings);
-		lines.push(`| ${repoName(report, repo)} | ${SEVERITIES.map((severity) => counts[severity]).join(" | ")} |`);
+		lines.push(`| ${mdText(repoName(report, repo))} | ${SEVERITIES.map((severity) => counts[severity]).join(" | ")} |`);
 	}
 	lines.push("");
 
 	for (const repo of ranked) {
 		if (repo.findings.length === 0) continue;
-		lines.push(`## ${repoName(report, repo)}`, "");
+		lines.push(`## ${mdText(repoName(report, repo))}`, "");
 		for (const finding of rank(repo.findings)) {
 			lines.push(
-				`- **${finding.severity}** ${finding.kind} \`${finding.ruleId}\` in \`${finding.location}\` ` +
-					`(${finding.detail}): ${finding.title}${finding.note ? `. ${finding.note}` : ""}`,
+				`- **${finding.severity}** ${finding.kind} ${mdCode(finding.ruleId)} in ${mdCode(finding.location)} ` +
+					`(${mdText(finding.detail)}): ${mdText(finding.title)}${finding.note ? `. ${mdText(finding.note)}` : ""}`,
 			);
 		}
 		lines.push("");

@@ -82,6 +82,30 @@ test("gitleaks: reports a line once however many commits touched it", () => {
 	);
 });
 
+test("gitleaks: keeps different secrets on the same line apart, without their values", () => {
+	const findings = parseGitleaks(
+		JSON.stringify([
+			leak({ Entropy: 3.91, StartColumn: 10 }),
+			// A second key on the same line, in the same commit.
+			leak({ Entropy: 4.42, StartColumn: 40 }),
+			// A different key written to the same line later.
+			leak({ Entropy: 4.17, Commit: "2222222222222222222222222222222222222222", Date: "2026-11-18T09:00:00Z" }),
+			// The first key again, after the line was edited around it: the same secret, so no new finding.
+			leak({ Entropy: 3.91, StartColumn: 12, Commit: "3333333333333333333333333333333333333333" }),
+		]),
+	);
+
+	assert.deepEqual(
+		findings.map((finding) => `${finding.location} ${finding.detail}`),
+		[
+			"config.ini:1 commit 7b8cd884 on 2026-11-17",
+			"config.ini:1 commit 7b8cd884 on 2026-11-17, column 40",
+			"config.ini:1 commit 22222222 on 2026-11-18",
+		],
+	);
+	assert.ok(!JSON.stringify(findings).includes("3.91"), "the entropy only tells matches apart; it is not reported");
+});
+
 test("gitleaks: accepts an empty report and rejects a malformed one", () => {
 	assert.deepEqual(parseGitleaks("[]"), []);
 	assert.deepEqual(parseGitleaks(""), []);

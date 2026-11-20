@@ -3,7 +3,7 @@ import { describeFilter, matchesFilter, noFilter, type FindingFilter } from "../
 import { coverageNotes, rankRepos, repoName } from "../repos/report.ts";
 import { severityRank, type Finding, type ScanReport, type Severity } from "../repos/types.ts";
 import { assemble, emptyCounts, type Action, type FindingRow, type FindingsList, type PhaseKey, type Planned, type Roadmap } from "./types.ts";
-import { bumpKind, highestVersion } from "./versions.ts";
+import { bumpKind, highestVersion, mayBreak } from "./versions.ts";
 
 const SUMMARIES: Record<PhaseKey, string> = {
 	now: "Credentials that look live, and critical vulnerabilities.",
@@ -146,6 +146,7 @@ function upgradeAction(findings: Finding[]): Action {
 	}
 	const how = [upgradeHint(name, target, first.location)];
 	if (bumpKind(version, target) === "major") how.push("This is a major version change: read the changelog for breaking changes before upgrading.");
+	else if (mayBreak(version, target)) how.push("Before version 1.0, this change can break things like a major version: read the changelog before upgrading.");
 	if (unfixed.length > 0) {
 		how.push(`${unfixed.length} of these have no fixed release yet and will remain: ${unfixed.map((finding) => finding.ruleId).join(", ")}.`);
 	}

@@ -3,7 +3,7 @@
  * target or from the model, so it is escaped for the format (invariant 11). Set-Cookie values are
  * left out; the rest of each exchange is kept as evidence. The name is a fixed stem and a date.
  */
-import { mdBlock, mdCode, mdText } from "../roadmap/escape.ts";
+import { jsonText, mdBlock, mdCode, mdText } from "../roadmap/escape.ts";
 import { withoutCookieValues, type Run } from "./engine.ts";
 
 export const INVESTIGATION_FORMATS = ["md", "json"] as const;
@@ -21,7 +21,7 @@ export function exportInvestigation(run: Run, format: InvestigationFormat): Inve
 	const stem = `porchlight-investigation-${run.startedAt.slice(0, 10).replace(/[^0-9-]/g, "")}`;
 	if (format === "json") {
 		const redacted = { ...run, evidence: run.evidence.map((evidence) => ({ ...evidence, response: withoutCookieValues(evidence.response) })) };
-		return { filename: `${stem}.json`, contentType: "application/json; charset=utf-8", body: `${JSON.stringify(redacted, null, "\t")}\n` };
+		return { filename: `${stem}.json`, contentType: "application/json; charset=utf-8", body: jsonText(redacted) };
 	}
 	return { filename: `${stem}.md`, contentType: "text/markdown; charset=utf-8", body: markdown(run) };
 }
