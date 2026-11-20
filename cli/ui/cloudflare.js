@@ -45,6 +45,8 @@ export async function renderCloudflare(view) {
 	const statusSlot = h("div", { "aria-live": "polite" });
 	const intro = h("div");
 	const results = h("div");
+	/** With a project in use, exports go into its folder unless the owner chooses to download. */
+	let exportTo = "project";
 
 	replace(
 		view,
@@ -323,9 +325,6 @@ export async function renderCloudflare(view) {
 			),
 		);
 	}
-
-	/** With a project in use, exports go into its folder unless the owner chooses to download. */
-	let exportTo = "project";
 
 	function exportCard() {
 		const project = currentProject();
