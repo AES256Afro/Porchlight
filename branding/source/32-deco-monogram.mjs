@@ -193,7 +193,7 @@ ${nest({ x: cx - 130, y: fy - 129, w: 260, h: 260, vb: '0 0 200 200', body: `<g 
 <path d="M${cx - 250},490H${cx - 18}M${cx + 18},490H${cx + 250}" stroke="${C.gold}" stroke-width="1.5"/>
 ${diamond(cx, 490, 6)}
 <text x="${cx}" y="538" text-anchor="middle" font-family="DidotI" font-size="32" fill="${C.ivory}">Know what’s on your doorstep.</text>
-<text x="${cx + 4}" y="582" text-anchor="middle" font-family="Copperplate" font-size="12" letter-spacing="8" fill="${C.gold}">YOUR CODE · YOUR DOMAINS · YOUR MAC</text>`;
+<text x="${cx + 4}" y="582" text-anchor="middle" font-family="Copperplate" font-size="12" letter-spacing="8" fill="${C.gold}">YOUR REPOS · YOUR SERVERS · YOUR COMPUTER</text>`;
 }
 const heroSvg = svg({ w: 1280, h: 640, vb: '0 0 1280 640', fonts: FONTS, body: hero() });
 

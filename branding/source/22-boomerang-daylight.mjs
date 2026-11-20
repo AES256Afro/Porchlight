@@ -281,7 +281,7 @@ ${lineStar(634, 200, 19, C.tomato, 2.6, 0)}
 <path d="M114,412H480L506,441L480,470H114L88,441Z" fill="${C.char}" transform="translate(5 5)"/>
 <path d="M114,412H480L506,441L480,470H114L88,441Z" fill="${C.tomato}"/>
 <text x="297" y="450" text-anchor="middle" font-family="Futura" font-weight="700" font-size="25" letter-spacing="4.2" fill="${C.cream}">LEAVE THE LIGHT ON.</text>
-<text x="94" y="514" font-family="Futura" font-weight="500" font-size="13.5" letter-spacing="4.8" fill="${C.char}">YOUR CODE · YOUR DOMAINS · YOUR MAC</text>`;
+<text x="94" y="514" font-family="Futura" font-weight="500" font-size="13.5" letter-spacing="4.8" fill="${C.char}">YOUR REPOS · YOUR SERVERS · YOUR COMPUTER</text>`;
 
   return `
 <rect width="1280" height="640" fill="${C.cream}"/>
