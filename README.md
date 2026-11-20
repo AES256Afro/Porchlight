@@ -1,5 +1,9 @@
 # Porchlight
 
+<picture>
+  <img alt="Porchlight: a lantern beside a front door throws a hard beam across the wall, the door and the steps. Nothing left out in the open. Your repos, your servers, your computer." src="docs/brand/hero.png">
+</picture>
+
 Find the keys and passwords committed to your code and the packages with known security holes, across every repository you have, and see what to fix first. Keep an eye on the websites you own as well. Porchlight runs on your own machine, as a page in your browser or as a Mac app.
 
 <picture>

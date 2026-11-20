@@ -1,4 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-	<path fill="#2a78d6" d="M12 1.5 3.5 4.6v6.6c0 5.2 3.5 9.6 8.5 11.3 5-1.7 8.5-6.1 8.5-11.3V4.6L12 1.5Z" />
-	<path fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="m8 12.2 2.8 2.8L16.2 9" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+	<!-- The Porchlight mark, drawn for small sizes: a lantern, its beam, and the door it lights. -->
+	<clipPath id="tile"><rect width="32" height="32" rx="7" /></clipPath>
+	<g clip-path="url(#tile)">
+		<rect width="32" height="32" fill="#15202e" />
+		<path fill="#dca63f" d="M9 11 32 12v20H14Z" />
+		<path fill="#f5ebd3" d="M9 11 32 16v12l-9 4h-6Z" />
+		<path fill="#0c0e12" d="M19 15h10v14H19Z" />
+		<path fill="#d8412a" d="M20.5 16.5h7V29h-7Z" />
+		<path fill="#f5ebd3" d="M17 29h14v3H17Z" />
+		<path fill="#8aa7c0" d="M9 1.5 15.5 7h-13Z" />
+		<path fill="#d8412a" d="M2 6.5h14v2H2Z" />
+		<path fill="#fff6dc" d="M3.5 8.5h11L12 16H6Z" />
+		<path fill="#0c0e12" d="M6 16h6l-3 3.5Z" />
+	</g>
 </svg>

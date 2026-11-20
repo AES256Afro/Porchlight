@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+<title>Porchlight</title>
+<style>@font-face{font-family:'Block';src:local('Futura-CondensedExtraBold')}@font-face{font-family:'FutB';src:local('Futura-Bold')}@font-face{font-family:'FutM';src:local('Futura-Medium')}</style>
+<defs>
+
+<linearGradient id="sky" gradientUnits="userSpaceOnUse" x1="900" y1="150" x2="930" y2="-70"><stop offset="0" stop-color="#0c0e12"/><stop offset="0.35" stop-color="#15202d"/><stop offset="1" stop-color="#3f6080"/></linearGradient>
+<linearGradient id="dark" gradientUnits="userSpaceOnUse" x1="470" y1="430" x2="180" y2="740"><stop offset="0" stop-color="#0c0e12"/><stop offset="1" stop-color="#1f2f42"/></linearGradient>
+<linearGradient id="beam" gradientUnits="userSpaceOnUse" x1="330" y1="172" x2="1280" y2="520"><stop offset="0" stop-color="#fffaf0"/><stop offset="0.3" stop-color="#f5ebd3"/><stop offset="0.8" stop-color="#dca63f"/><stop offset="1" stop-color="#c98f33"/></linearGradient>
+<linearGradient id="ground" gradientUnits="userSpaceOnUse" x1="0" y1="506" x2="0" y2="640"><stop offset="0" stop-color="#e3b352"/><stop offset="1" stop-color="#ac742a"/></linearGradient>
+<clipPath id="inbeam"><path d="M387,128.2L1280,176V640H549.6L295,227.6Z"/></clipPath>
+<clipPath id="outbeam"><path clip-rule="evenodd" d="M0,0H1280V640H0ZM387,128.2L1280,176V640H549.6L295,227.6Z"/></clipPath>
+<clipPath id="frame"><rect x="21" y="21" width="1238" height="598"/></clipPath>
+
+<linearGradient id="hcapL" gradientUnits="userSpaceOnUse" x1="261.9" y1="0" x2="330" y2="0"><stop offset="0" stop-color="#8aa7c0"/><stop offset="1" stop-color="#1f2f42"/></linearGradient>
+<linearGradient id="hcapR" gradientUnits="userSpaceOnUse" x1="330" y1="0" x2="398.1" y2="0"><stop offset="0" stop-color="#0c0e12"/><stop offset="1" stop-color="#2c445c"/></linearGradient>
+<linearGradient id="hgL" gradientUnits="userSpaceOnUse" x1="267.4" y1="0" x2="317.1" y2="0"><stop offset="0" stop-color="#ac742a"/><stop offset="1" stop-color="#dca63f"/></linearGradient>
+<linearGradient id="hgR" gradientUnits="userSpaceOnUse" x1="342.9" y1="0" x2="392.6" y2="0"><stop offset="0" stop-color="#f5ebd3"/><stop offset="1" stop-color="#dca63f"/></linearGradient>
+<linearGradient id="hgC" gradientUnits="userSpaceOnUse" x1="0" y1="126.4" x2="0" y2="227.6"><stop offset="0" stop-color="#fffaf0"/><stop offset="1" stop-color="#f5ebd3"/></linearGradient>
+</defs>
+<rect width="1280" height="640" fill="#0c0e12"/>
+<g clip-path="url(#frame)">
+<path d="M0,0H1280V176L387,128.2L336,52H0Z" fill="url(#sky)"/>
+<path d="M0,52H336L295,227.6L549.6,640H0Z" fill="url(#dark)"/>
+<path d="M21,506H466.9" stroke="#3f6080" stroke-width="2"/>
+<path d="M387,128.2L1280,176V640H549.6L295,227.6Z" fill="url(#beam)"/>
+<g clip-path="url(#inbeam)">
+  <path d="M0,150H1280M0,194H1280M0,238H1280M0,282H1280M0,326H1280M0,370H1280M0,414H1280M0,458H1280M0,502H1280" stroke="#ac742a" stroke-width="1.4" opacity="0.5"/>
+  <rect x="0" y="506" width="1280" height="134" fill="url(#ground)"/>
+  <path d="M0,506H1280" stroke="#ac742a" stroke-width="2"/>
+  <path d="M1182,506L1400,566V616L1102,506Z" fill="#0c0e12" opacity="0.85"/>
+</g>
+
+<rect x="960.8" y="184.8" width="172.5" height="267.3" fill="#0c0e12"/>
+<rect x="945" y="172" width="204" height="12.8" fill="#0c0e12"/>
+<rect x="945" y="172" width="204" height="3.8" fill="#8aa7c0"/>
+<rect x="972" y="196" width="150" height="33.3" fill="#fffaf0"/>
+<path d="M1047,196V229.3" stroke="#0c0e12" stroke-width="5.1"/>
+<rect x="972" y="236" width="150" height="216" fill="#d8412a"/>
+<rect x="972" y="236" width="45" height="216" fill="#8f2618"/>
+<rect x="1035" y="265.1" width="63" height="61.4" fill="none" stroke="#8f2618" stroke-width="4.5"/>
+<rect x="1035" y="344.5" width="63" height="81.9" fill="none" stroke="#8f2618" stroke-width="4.5"/>
+<circle cx="1002" cy="349.6" r="4.7" fill="#f5ebd3"/><rect x="942.6" y="452" width="208.8" height="18" fill="#fffaf0"/><rect x="942.6" y="463.2" width="208.8" height="6.8" fill="#0c0e12"/><rect x="921.6" y="470" width="250.8" height="18" fill="#f5ebd3"/><rect x="921.6" y="481.2" width="250.8" height="6.8" fill="#0c0e12"/><rect x="900.6" y="488" width="292.8" height="18" fill="#fffaf0"/><rect x="900.6" y="499.2" width="292.8" height="6.8" fill="#0c0e12"/>
+
+<g font-family="Block" font-size="158" text-anchor="start">
+  <text x="46" y="598" textLength="800" lengthAdjust="spacing" fill="#f5ebd3" clip-path="url(#outbeam)">PORCHLIGHT</text>
+  <text x="46" y="598" textLength="800" lengthAdjust="spacing" fill="#0c0e12" clip-path="url(#inbeam)">PORCHLIGHT</text>
+</g>
+
+<rect x="60" y="34" width="26" height="170" fill="#3f6080"/>
+<rect x="82" y="34" width="4" height="170" fill="#8aa7c0"/>
+<path d="M86,170V196L262,60H232Z" fill="#2a4159"/>
+<path d="M86,170L232,60H239L86,176Z" fill="#8aa7c0"/>
+<rect x="60" y="44" width="282" height="16" fill="#2a4159"/>
+<rect x="60" y="44" width="282" height="3.5" fill="#8aa7c0"/>
+<rect x="325" y="58" width="10" height="8" fill="#2a4159"/>
+
+<path d="M330,62L261.9,115.4H330Z" fill="url(#hcapL)"/>
+<path d="M330,62L398.1,115.4H330Z" fill="url(#hcapR)"/>
+<path d="M254.6,115.4H405.4L401.8,126.4H258.2Z" fill="#d8412a"/>
+<path d="M330,115.4H405.4L401.8,126.4H330Z" fill="#8f2618"/>
+<path d="M267.4,126.4H309.8L319,227.6H295Z" fill="url(#hgL)"/>
+<path d="M309.8,126.4H350.2L341,227.6H319Z" fill="url(#hgC)"/>
+<path d="M350.2,126.4H392.6L365,227.6H341Z" fill="url(#hgR)"/>
+<path d="M309.8,126.4L319,227.6M350.2,126.4L341,227.6M267.4,126.4L295,227.6M392.6,126.4L365,227.6" stroke="#0c0e12" stroke-width="3.1" stroke-linecap="square"/>
+<path d="M289.5,227.6H370.5L363.1,239.6H296.9Z" fill="#0c0e12"/>
+<path d="M313.4,239.6H330V266.2Z" fill="#3f6080"/>
+<path d="M330,239.6H346.6L330,266.2Z" fill="#0c0e12"/>
+<circle cx="330" cy="272.7" r="6.9" fill="#d8412a"/>
+<path d="M1170,58H1214" stroke="#d8412a" stroke-width="5"/>
+<text x="1214" y="92" text-anchor="end" font-family="FutM" font-size="22" letter-spacing="6.4" fill="#f5ebd3">NOTHING LEFT OUT IN THE OPEN.</text>
+<text x="1214" y="120" text-anchor="end" font-family="FutM" font-size="12.5" letter-spacing="4.2" fill="#8aa7c0">YOUR REPOS · YOUR SERVERS · YOUR COMPUTER</text>
+</g>
+<rect x="21" y="21" width="1238" height="598" fill="none" stroke="#f5ebd3" stroke-width="3"/>
+</svg>
