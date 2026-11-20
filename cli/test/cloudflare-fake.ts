@@ -28,6 +28,8 @@ export interface FakeOptions {
 	accountToken?: boolean;
 	/** Whether free.example's challenge record holds the ownership token. */
 	owned?: boolean;
+	/** Answer 403 to every change of a zone setting, as for a token without "Zone Settings Write". */
+	denySettingWrites?: boolean;
 	now?: Date;
 }
 
@@ -141,6 +143,7 @@ export function fakeCloudflare(options: FakeOptions = {}) {
 
 		if (method !== "GET") {
 			const change = /^\/zones\/([0-9a-f]{32})\/(dns_records|settings\/[a-z_0-9]+)$/.exec(path);
+			if (change && options.denySettingWrites && change[2]?.startsWith("settings/")) return envelope(null, 403);
 			return change ? envelope({ id: "66666666666666666666666666666666", ...(body as object) }) : envelope(null, 404);
 		}
 		if (path === "/user/tokens/verify") return options.accountToken ? envelope(null, 401) : envelope({ id: SELF_TOKEN_ID, status: "active" });

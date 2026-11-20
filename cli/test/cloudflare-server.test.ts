@@ -164,6 +164,101 @@ test("a change is sent only after the owner approves the exact request, once, an
 	assert.equal(page.json.changes[0].change, "ownership-record", "newest first");
 });
 
+async function audited(t: TestContext, options: Parameters<typeof fakeCloudflare>[0] = {}) {
+	const world = fakeCloudflare(options);
+	const started = await start(t, { fetchFn: world.fetchFn });
+	await send(started.server, "POST", "/api/cloudflare/token", { token: fakeCloudflareToken() });
+	await send(started.server, "POST", "/api/cloudflare/audit", { lookups: false });
+	await until(() => send(started.server, "GET", "/api/cloudflare"), (reply) => reply.json.status.state === "done");
+	return { ...started, world, writes: () => world.sent.filter((sent) => sent.method !== "GET") };
+}
+
+test("Fix these: every change the audit offers is shown as its exact request, and one approval sends each once", async (t) => {
+	const { server, state, writes } = await audited(t);
+	const page = (await send(server, "GET", "/api/cloudflare")).json;
+	const offered = page.report.zones.flatMap((zone: { name: string; checks: { status: string; change?: string }[] }) => zone.checks.filter((check) => check.status === "failed" && check.change).map((check) => `${zone.name} ${check.change}`));
+	assert.ok(offered.length >= 3, "the fake account has several problems with a change");
+	assert.deepEqual(page.batch, { state: "idle" });
+
+	// Only a zone of the latest audit can be named; nothing else in the request chooses anything.
+	assert.equal((await send(server, "POST", "/api/cloudflare/changes/batch/preview", { zone: "../../user" })).status, 404);
+	const preview = await send(server, "POST", "/api/cloudflare/changes/batch/preview", {});
+	assert.equal(preview.status, 200);
+	const batch = preview.json.batch;
+	assert.deepEqual(batch.changes.map((change: { zone: string; change: string }) => `${change.zone} ${change.change}`), offered, "the audit's own list, in its order");
+	assert.ok(batch.changes.every((change: { request: { url: string; headers: { Authorization: string } } }) => change.request.url.startsWith("https://api.cloudflare.com/client/v4/zones/") && /not shown/.test(change.request.headers.Authorization)));
+	assert.ok(!preview.text.includes(fakeCloudflareToken()));
+	assert.equal(writes().length, 0, "showing the requests sends nothing");
+
+	// An answer is yes or no; a change that was not shown cannot be slipped in; none chosen is not a yes.
+	const ids = batch.changes.map((change: { id: string }) => change.id);
+	assert.equal((await send(server, "POST", "/api/cloudflare/changes/batch/approve", { id: batch.id })).status, 400);
+	assert.equal((await send(server, "POST", "/api/cloudflare/changes/batch/approve", { id: batch.id, approve: true, include: [...ids, "0".repeat(24)] })).status, 400);
+	assert.equal((await send(server, "POST", "/api/cloudflare/changes/batch/approve", { id: batch.id, approve: true, include: "all" })).status, 400);
+	assert.equal((await send(server, "POST", "/api/cloudflare/changes/batch/approve", { id: batch.id, approve: true, include: [] })).status, 400);
+	assert.equal((await send(server, "POST", "/api/cloudflare/changes/batch/approve", { id: "0".repeat(24), approve: true })).status, 409);
+	assert.equal(writes().length, 0);
+
+	// One left out: the rest are sent, each once, in order.
+	const left = ids[0];
+	const approved = await send(server, "POST", "/api/cloudflare/changes/batch/approve", { id: batch.id, approve: true, include: ids.slice(1) });
+	assert.equal(approved.status, 202);
+	const done = await until(() => send(server, "GET", "/api/cloudflare"), (reply) => reply.json.batch.state === "finished");
+	assert.deepEqual([done.json.batch.total, done.json.batch.applied, done.json.batch.failed, done.json.batch.skipped, done.json.batch.stopped], [ids.length - 1, ids.length - 1, 0, 0, false]);
+	const expected = batch.changes.filter((change: { id: string }) => change.id !== left).map((change: { request: { method: string; url: string } }) => `${change.request.method} ${new URL(change.request.url).pathname}`);
+	assert.deepEqual(writes().map((sent) => `${sent.method} ${sent.path}`), expected);
+	assert.ok(writes().every((sent) => sent.authorization === `Bearer ${fakeCloudflareToken()}`));
+	// The same answer again sends nothing more.
+	assert.equal((await send(server, "POST", "/api/cloudflare/changes/batch/approve", { id: batch.id, approve: true })).status, 409);
+	assert.equal(writes().length, ids.length - 1);
+
+	// Every change is recorded, and the Activity view shows each as it was sent, without the token or a request's body.
+	const recorded = JSON.parse(await readFile(join(state, "cloudflare-changes.json"), "utf8")).changes;
+	assert.equal(recorded.length, ids.length - 1);
+	const activity = await send(server, "GET", "/api/activity?after=0");
+	const lines: string[] = activity.json.lines.map((line: { text: string }) => line.text);
+	assert.equal(lines.filter((line) => line.startsWith("Sending: ")).length, ids.length - 1);
+	assert.ok(lines.some((line) => new RegExp(`^Cloudflare changes finished: ${ids.length - 1} applied, 0 refused, 0 not sent$`).test(line)));
+	assert.ok(!activity.text.includes(fakeCloudflareToken()) && !activity.text.includes("porchlight-verify="));
+	// Asked again from where it left off, there is nothing new.
+	assert.deepEqual((await send(server, "GET", `/api/activity?after=${activity.json.last}`)).json.lines, []);
+
+	// Cancelled: nothing is sent, and it cannot be approved afterwards.
+	const second = (await send(server, "POST", "/api/cloudflare/changes/batch/preview", { zone: FREE_ZONE })).json.batch;
+	assert.ok(second.changes.every((change: { zone: string }) => change.zone === "free.example"));
+	assert.deepEqual((await send(server, "POST", "/api/cloudflare/changes/batch/approve", { id: second.id, approve: false })).json, { started: false });
+	assert.equal((await send(server, "POST", "/api/cloudflare/changes/batch/approve", { id: second.id, approve: true })).status, 409);
+	assert.equal(writes().length, ids.length - 1);
+});
+
+test("Fix these: a permission the token lacks is found once, and the rest that need it are not sent", async (t) => {
+	const { server, writes } = await audited(t, { denySettingWrites: true });
+	const batch = (await send(server, "POST", "/api/cloudflare/changes/batch/preview", {})).json.batch;
+	const settings = batch.changes.filter((change: { permission: string }) => change.permission === "Zone Settings Write").length;
+	const records = batch.changes.length - settings;
+	assert.ok(settings >= 2 && records >= 1);
+	await send(server, "POST", "/api/cloudflare/changes/batch/approve", { id: batch.id, approve: true });
+	const done = await until(() => send(server, "GET", "/api/cloudflare"), (reply) => reply.json.batch.state === "finished");
+	// One refusal says the token cannot change settings; the others are not tried. The ownership records still go.
+	assert.deepEqual([done.json.batch.applied, done.json.batch.failed, done.json.batch.skipped], [records, 1, settings - 1]);
+	assert.equal(writes().filter((sent) => sent.path.includes("/settings/")).length, 1);
+	assert.equal(done.json.changes.filter((change: { ok: boolean }) => !change.ok).length, 1, "only what was sent is recorded");
+	const lines: string[] = (await send(server, "GET", "/api/activity?after=0")).json.lines.map((line: { text: string }) => line.text);
+	assert.equal(lines.filter((line) => /^Not sent: .* The token lacks "Zone Settings Write"$/.test(line)).length, settings - 1);
+});
+
+test("Fix these: ten minutes to answer, and removing the token ends it", async (t) => {
+	const { server, writes } = await audited(t);
+	t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+	const late = (await send(server, "POST", "/api/cloudflare/changes/batch/preview", {})).json.batch;
+	t.mock.timers.tick(APPROVAL_WINDOW_MS + 1);
+	assert.equal((await send(server, "POST", "/api/cloudflare/changes/batch/approve", { id: late.id, approve: true })).status, 409);
+	const waiting = (await send(server, "POST", "/api/cloudflare/changes/batch/preview", {})).json.batch;
+	await send(server, "POST", "/api/cloudflare/token/remove");
+	assert.equal((await send(server, "POST", "/api/cloudflare/changes/batch/approve", { id: waiting.id, approve: true })).status, 409);
+	assert.equal(writes().length, 0);
+});
+
 test("removing the token forgets it and any change waiting for an answer", async (t) => {
 	const { server, state } = await start(t);
 	await send(server, "POST", "/api/cloudflare/token", { token: fakeCloudflareToken() });
@@ -197,6 +292,8 @@ test("another device on the tailnet reads the audit, but only the page on this M
 	assert.equal((await send(device, "POST", "/api/cloudflare/token", { token: fakeCloudflareToken() })).status, 403);
 	assert.equal((await send(device, "POST", "/api/cloudflare/token/remove")).status, 403);
 	assert.equal((await send(device, "POST", "/api/cloudflare/changes/preview", { zone: FREE_ZONE, change: "min-tls-1.2" })).status, 403);
+	assert.equal((await send(device, "POST", "/api/cloudflare/changes/batch/preview", {})).status, 403, "nor a set of them");
+	assert.equal((await send(device, "POST", "/api/cloudflare/changes/batch/approve", { id: "0".repeat(24), approve: true })).status, 403);
 	assert.equal(verifies(), checked, "a token sent from another device is never even checked with Cloudflare");
 	await stat(join(state, "cloudflare-settings.json"));
 	assert.equal((await send(server, "GET", "/api/cloudflare")).json.token.configured, true, "and the saved token is not forgotten");
@@ -222,6 +319,7 @@ test("run as a service, Porchlight audits with the token it was given but never 
 	assert.equal((await send(server, "POST", "/api/cloudflare/token/remove")).status, 403);
 	assert.equal((await send(server, "POST", "/api/cloudflare/changes/preview", { zone: FREE_ZONE, change: "min-tls-1.2" })).status, 403);
 	assert.equal((await send(server, "POST", "/api/cloudflare/changes/approve", { id: "0".repeat(24), approve: true })).status, 403);
+	assert.equal((await send(server, "POST", "/api/cloudflare/changes/batch/preview", {})).status, 403);
 	assert.equal(world.sent.filter((sent) => sent.method !== "GET").length, 0);
 	await assert.rejects(stat(join(state, "cloudflare-settings.json")));
 	await assert.rejects(stat(join(state, "cloudflare-changes.json")));

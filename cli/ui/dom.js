@@ -102,6 +102,7 @@ const ICONS = {
 		["circle", { cx: 7, cy: 7, r: 4.5, fill: "none", stroke: "currentColor", "stroke-width": 1.5 }],
 		["path", { d: "m10.4 10.4 3.6 3.6", fill: "none", stroke: "currentColor", "stroke-width": 1.7, "stroke-linecap": "round" }],
 	],
+	activity: [["path", { d: "M1.5 8.5h3l2-5 3 9 2-4h3", fill: "none", stroke: "currentColor", "stroke-width": 1.5, "stroke-linecap": "round", "stroke-linejoin": "round" }]],
 	discussions: [
 		["path", { d: "M2.5 3.2h11v7.3H8.2L5 13v-2.5H2.5Z", fill: "none", stroke: "currentColor", "stroke-width": 1.5, "stroke-linejoin": "round" }],
 		["path", { d: "M5 6.2h6M5 8.2h4", fill: "none", stroke: "currentColor", "stroke-width": 1.4, "stroke-linecap": "round" }],

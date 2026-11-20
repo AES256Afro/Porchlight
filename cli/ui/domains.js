@@ -107,6 +107,18 @@ export async function renderDomains(view, selected) {
 		} catch (err) {
 			domains = [];
 			replace(list);
+			// The monitor answered, and said no: waiting will not help, the right token will.
+			if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+				replace(
+					detail,
+					banner("error", "Your monitor refused the admin token", [
+						"The token Porchlight sends is not the one the monitor was given when it was deployed, so it shows nothing.",
+						"The monitor's token is the ADMIN_TOKEN line of the file it was deployed with, .secrets.production in the project's monitor folder.",
+					]),
+					h("p", null, h("a", { class: "button primary", href: "#/settings/monitor" }, "Paste the right token in Settings")),
+				);
+				return false;
+			}
 			replace(detail, banner("error", "Could not load domains", [message(err), "Nothing is shown until the monitor answers. Try again in a moment."]));
 			return false;
 		}

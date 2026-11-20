@@ -4,6 +4,7 @@
 // Porchlight can make is shown as the exact request and sent only when the owner approves it here
 // (invariant 21). Every element is built with h(): record names and values come from DNS, which
 // others can influence, and are never treated as HTML.
+import { activityList } from "./activity.js";
 import { api, ApiError, download } from "./api.js";
 import { assistAction } from "./assist.js";
 import { banner, formatWhen, h, icon, plural, replace, select, severityBadge, statTile, stepNodes, toast } from "./dom.js";
@@ -11,6 +12,7 @@ import { announceSaved } from "./projects.js";
 import { currentProject, load, loadCloudflare, startCloudflareAudit, store, subscribe, updateCloudflare } from "./store.js";
 
 /** @typedef {import("../src/cloudflare/types.ts").CfCheck} CfCheck */
+/** @typedef {ReturnType<typeof import("../src/cloudflare/apply.ts").describeChange>} PendingChange */
 /** @typedef {import("../src/cloudflare/types.ts").CfReport} CfReport */
 /** @typedef {import("../src/cloudflare/types.ts").CfZoneReport} CfZoneReport */
 /**
@@ -47,6 +49,17 @@ export async function renderCloudflare(view) {
 	const results = h("div");
 	/** With a project in use, exports go into its folder unless the owner chooses to download. */
 	let exportTo = "project";
+	/**
+	 * "Fix these": the changes shown and waiting for one answer, with the ones left unticked.
+	 *
+	 * @type {{ id: string, expiresAt: string, scope: string, changes: PendingChange[], left: Set<string> } | null}
+	 */
+	let batch = null;
+	let batchBusy = false;
+	const batchSlot = h("div");
+	/** The live activity under a set of changes being sent, from the moment they were approved. */
+	/** @type {ReturnType<typeof activityList> | null} */
+	let batchActivity = null;
 
 	replace(
 		view,
@@ -114,9 +127,135 @@ export async function renderCloudflare(view) {
 	const unsubscribe = subscribe((change) => {
 		if (change === "cloudflare" || change === "settings" || change === "projects") draw();
 	});
-	return () => unsubscribe();
+	return () => {
+		unsubscribe();
+		batchActivity?.stop();
+	};
+
+	/** @param {CfZoneReport | null} zone one domain, or null for every domain of the audit */
+	async function previewBatch(zone) {
+		if (batchBusy) return;
+		batchBusy = true;
+		try {
+			const answer = await api("POST", "/cloudflare/changes/batch/preview", zone ? { zone: zone.id } : {});
+			batch = { ...answer.batch, scope: zone ? zone.name : "every domain", left: new Set() };
+		} catch (err) {
+			toast(err instanceof Error ? err.message : String(err), "error");
+		} finally {
+			batchBusy = false;
+		}
+		if (batch) {
+			drawBatch();
+			batchSlot.scrollIntoView({ block: "start", behavior: "smooth" });
+		}
+	}
+
+	/** @param {boolean} approve */
+	async function answerBatch(approve) {
+		const waiting = batch;
+		if (!waiting || batchBusy) return;
+		batchBusy = true;
+		try {
+			const include = waiting.changes.filter((change) => !waiting.left.has(change.id)).map((change) => change.id);
+			const before = (await api("GET", "/activity?after=0")).last;
+			const reply = await api("POST", "/cloudflare/changes/batch/approve", { id: waiting.id, approve, ...(approve ? { include } : {}) });
+			batch = null;
+			if (reply.started) {
+				batchActivity?.stop();
+				batchActivity = activityList({ since: before, limit: 600 });
+				await loadCloudflare();
+			}
+		} catch (err) {
+			toast(err instanceof Error ? err.message : String(err), "error");
+			if (err instanceof ApiError && err.status === 409) batch = null;
+		} finally {
+			batchBusy = false;
+			drawBatch();
+		}
+	}
+
+	/** The card for a set of changes: the requests to approve, then their progress, then what happened. */
+	function drawBatch() {
+		const status = store.cloudflare.batch;
+		if (batch) {
+			const waiting = batch;
+			const chosen = waiting.changes.length - waiting.left.size;
+			const permissions = [...new Set(waiting.changes.map((change) => change.permission))];
+			replace(
+				batchSlot,
+				h(
+					"div",
+					{ class: "card full cf-batch", role: "group", "aria-label": `Fix these: ${waiting.scope}` },
+					h("h2", null, `Fix these: ${waiting.scope}`),
+					h(
+						"p",
+						null,
+						`Porchlight will send exactly these ${plural(waiting.changes.length, "request", "requests")} to Cloudflare, one after another, each once, if you approve. Untick any you do not want. Nothing else is sent, and each is recorded below whether Cloudflare accepts it or not.`,
+					),
+					h("p", { class: "hint" }, `The token needs ${permissions.map((permission) => `"${permission}"`).join(" and ")}. If it lacks one, the first request that needs it is refused and the rest that need it are not sent.`),
+					h(
+						"ul",
+						{ class: "cf-batch-list" },
+						...waiting.changes.map((change) => {
+							const box = /** @type {HTMLInputElement} */ (h("input", { type: "checkbox", checked: !waiting.left.has(change.id) }));
+							box.addEventListener("change", () => {
+								if (box.checked) waiting.left.delete(change.id);
+								else waiting.left.add(change.id);
+								drawBatch();
+							});
+							return h(
+								"li",
+								null,
+								h("label", { class: "check-line" }, box, h("span", null, h("strong", null, change.title), h("code", { class: "hint block" }, `${change.request.method} ${change.request.url}  ${JSON.stringify(change.request.body)}`))),
+							);
+						}),
+					),
+					h("p", { class: "hint" }, "Every request carries the header Authorization: Bearer (your saved token, not shown)."),
+					h(
+						"div",
+						{ class: "actions" },
+						h("button", { type: "button", class: "button primary", disabled: chosen === 0 || batchBusy, onclick: () => void answerBatch(true) }, `Approve and send ${chosen}`),
+						h("button", { type: "button", class: "button", disabled: batchBusy, onclick: () => void answerBatch(false) }, "Cancel"),
+						h("span", { class: "hint" }, `You can approve them until ${formatWhen(waiting.expiresAt)}.`),
+					),
+				),
+			);
+			return;
+		}
+		if (status.state === "idle") return replace(batchSlot);
+		// A set sent before this page was opened: its lines are still in the server's activity.
+		batchActivity ??= activityList({ limit: 600 });
+		const counts = `${status.applied} applied, ${status.failed} refused, ${status.skipped} not sent`;
+		replace(
+			batchSlot,
+			h(
+				"div",
+				{ class: "card full cf-batch" },
+				h("h2", null, status.state === "running" ? "Sending your changes" : status.stopped ? "Changes stopped" : "Changes sent"),
+				status.state === "running"
+					? h(
+							"div",
+							{ class: "host-progress" },
+							h("strong", null, `${Math.min(status.done + 1, status.total)} of ${status.total}: ${status.current || "starting"}`),
+							h("progress", { max: status.total, value: status.done, "aria-label": "Changes sent" }),
+						)
+					: h("p", null, h("span", { class: `severity ${status.failed + status.skipped === 0 ? "status-good" : "status-warning"}` }, icon(status.failed + status.skipped === 0 ? "good" : "warning"), `${counts}.`), " Audit again to see what changed."),
+				status.state === "running"
+					? h(
+							"div",
+							{ class: "actions" },
+							h("button", { type: "button", class: "button danger", onclick: () => void api("POST", "/cloudflare/changes/batch/stop").catch(() => {}) }, "Stop"),
+							h("span", { class: "hint" }, `${counts} so far. Stopping leaves what was already sent in place.`),
+						)
+					: null,
+				batchActivity.node,
+				h("p", { class: "hint" }, "The same lines, with everything else Porchlight is doing, are on the ", h("a", { href: "#/activity" }, "Activity"), " page."),
+			),
+		);
+	}
 
 	function draw() {
+		drawBatch();
 		const state = store.cloudflare;
 		const running = state.status.state === "running";
 		button.disabled = running || !state.token.configured;
@@ -139,7 +278,7 @@ export async function renderCloudflare(view) {
 			replace(statusSlot);
 		}
 		replace(intro, state.token.configured ? form : connectCard(state.service));
-		replace(results, ...(state.report ? drawReport(state.report) : state.token.configured ? [h("p", { class: "sub" }, "Your account has not been audited yet.")] : []), changesCard());
+		replace(results, batchSlot, ...(state.report ? drawReport(state.report) : state.token.configured ? [h("p", { class: "sub" }, "Your account has not been audited yet.")] : []), changesCard());
 	}
 
 	/** @param {CfReport} report */
@@ -179,6 +318,19 @@ export async function renderCloudflare(view) {
 					)
 				: null,
 			report.zonesSkipped > 0 ? banner("warning", `${report.zonesSkipped} more domains were not audited`, ["An audit covers the first 200 domains of an account."]) : null,
+			fixable(report.zones) > 0 && store.cloudflare.canChange
+				? h(
+						"div",
+						{ class: "card full" },
+						h("h2", null, "Fix what Porchlight can"),
+						h(
+							"p",
+							{ class: "sub" },
+							`${plural(fixable(report.zones), "problem has", "problems have")} a change Porchlight can make for you, across ${plural(report.zones.filter((zone) => fixable([zone]) > 0).length, "domain", "domains")}. You see every request first and approve them once; each domain below also has its own Fix these.`,
+						),
+						h("button", { type: "button", class: "button primary", onclick: () => void previewBatch(null) }, icon("change"), "Fix these…"),
+					)
+				: null,
 			...report.zones.map((zone) => zoneCard(zone)),
 			...report.accounts.map((account) => groupCard(`Account: ${account.name}`, null, account.checks, null)),
 			report.userChecks.length > 0 ? groupCard("Your user", null, report.userChecks, null) : null,
@@ -238,6 +390,9 @@ export async function renderCloudflare(view) {
 		return h(
 			"span",
 			{ class: "cf-zone-actions" },
+			store.cloudflare.canChange && fixable([zone]) > 0
+				? h("button", { type: "button", class: "button quiet", title: `See every change Porchlight can make for ${zone.name}, and approve them once`, onclick: () => void previewBatch(zone) }, icon("change"), `Fix these (${fixable([zone])})…`)
+				: null,
 			watched
 				? h("button", { type: "button", class: "button quiet", title: `Add ${zone.name} to the websites the monitor watches`, onclick: () => void watch() }, icon("domains"), "Watch in Domains")
 				: h("a", { class: "button quiet", href: "#/domains", title: "Set up the monitor first" }, icon("domains"), "Set up watching"),
@@ -451,6 +606,15 @@ export async function renderCloudflare(view) {
 			),
 		);
 	}
+}
+
+/**
+ * How many problems in these zones come with a change Porchlight can make.
+ *
+ * @param {readonly CfZoneReport[]} zones
+ */
+export function fixable(zones) {
+	return zones.reduce((count, zone) => count + zone.checks.filter((check) => check.status === "failed" && check.change).length, 0);
 }
 
 /**

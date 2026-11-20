@@ -76,9 +76,9 @@ export const store = {
 	 * The audit of the owner's Cloudflare account. `canChange`: this page may save the token and approve
 	 * changes (only the page on the computer Porchlight runs on).
 	 *
-	 * @type {{ loaded: boolean, token: CloudflareToken, status: CloudflareStatus, report: CfReport | null, changes: AppliedChange[], canChange: boolean, service: boolean, guide: CloudflareGuide | null }}
+	 * @type {{ loaded: boolean, token: CloudflareToken, status: CloudflareStatus, report: CfReport | null, changes: AppliedChange[], batch: import("../src/ui/server.ts").BatchStatus, canChange: boolean, service: boolean, guide: CloudflareGuide | null }}
 	 */
-	cloudflare: { loaded: false, token: { configured: false, source: null }, status: { state: "idle" }, report: null, changes: [], canChange: false, service: false, guide: null },
+	cloudflare: { loaded: false, token: { configured: false, source: null }, status: { state: "idle" }, report: null, changes: [], batch: { state: "idle" }, canChange: false, service: false, guide: null },
 };
 
 /** @type {Set<string>} */
@@ -340,6 +340,7 @@ function setCloudflare(data) {
 		status: data.status ?? { state: "idle" },
 		report: data.report ?? null,
 		changes: Array.isArray(data.changes) ? data.changes : [],
+		batch: data.batch ?? { state: "idle" },
 		canChange: data.canChange === true,
 		service: data.service === true,
 		guide: data.guide ?? null,
@@ -351,7 +352,7 @@ function setCloudflare(data) {
 /** Reads the latest Cloudflare audit and the token's state, and follows an audit that is running. */
 export async function loadCloudflare() {
 	setCloudflare(await api("GET", "/cloudflare"));
-	if (store.cloudflare.status.state === "running") pollCloudflare();
+	if (store.cloudflare.status.state === "running" || store.cloudflare.batch.state === "running") pollCloudflare();
 }
 
 /**
@@ -401,7 +402,7 @@ function pollCloudflare() {
 	cloudflareTimer = setTimeout(async () => {
 		try {
 			setCloudflare(await api("GET", "/cloudflare"));
-			if (store.cloudflare.status.state === "running") pollCloudflare();
+			if (store.cloudflare.status.state === "running" || store.cloudflare.batch.state === "running") pollCloudflare();
 		} catch (err) {
 			store.cloudflare.status = { state: "failed", finishedAt: "", error: err instanceof Error ? err.message : String(err) };
 			emit("cloudflare");

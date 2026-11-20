@@ -86,6 +86,7 @@ import {
 	cleanName,
 	FILE_TITLES,
 	isProjectId,
+	oneLine,
 	OWN_FOLDER,
 	prepareProject,
 	ProjectError,
@@ -96,7 +97,7 @@ import {
 	type Project,
 	type Saved,
 } from "../projects/projects.ts";
-import { APPROVAL_WINDOW_MS, describeChange, isChangeId, planChange, sendChange, type PlannedChange } from "../cloudflare/apply.ts";
+import { APPROVAL_WINDOW_MS, describeChange, isChangeId, planBatch, planChange, sendChange, type PlannedChange } from "../cloudflare/apply.ts";
 import { auditCloudflare, READ_PERMISSIONS, TOKEN_TEMPLATE_URL, WRITE_PERMISSIONS } from "../cloudflare/audit.ts";
 import { CfClient, tokenShapeProblem } from "../cloudflare/client.ts";
 import { CF_FORMATS, exportCloudflare, type CfFormat } from "../cloudflare/export.ts";
@@ -238,7 +239,7 @@ export type AnalysisStatus =
 
 const UI_DIR = join(import.meta.dirname, "../../ui");
 /** The page's own modules. Nothing else in the folder is served. */
-const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths", "investigate", "discussions", "discussion", "discussion-links", "panel", "projects", "cloudflare", "cloudflare-settings", "monitor-settings"];
+const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths", "investigate", "discussions", "discussion", "discussion-links", "panel", "projects", "cloudflare", "cloudflare-settings", "monitor-settings", "activity"];
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
 	"/": { file: "index.html", type: "text/html; charset=utf-8" },
 	"/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
@@ -447,12 +448,26 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	 */
 	function log(text: string, project?: Project | null): void {
 		const at = new Date();
+		note(text);
 		logging = logging
 			.then(async () => {
 				const target = project === undefined ? await projects.current() : project;
 				if (target) await appendLog(target, text, at);
 			})
 			.catch((err) => console.error(`porchlight ui: could not write the project's log: ${err instanceof Error ? err.message : String(err)}`));
+	}
+
+	/**
+	 * What Porchlight is doing, as it happens, for the page's Activity view: the last MAX_ACTIVITY lines,
+	 * kept in memory only. Like the project log it holds Porchlight's own words and figures, one line
+	 * each: never a key, a token, a secret value, a request's body or a model's text.
+	 */
+	const activity: ActivityLine[] = [];
+	let activityCount = 0;
+	function note(text: string, kind: ActivityLine["kind"] = "info"): void {
+		activityCount += 1;
+		activity.push({ n: activityCount, at: new Date().toISOString(), kind, text: oneLine(text).slice(0, 400) });
+		if (activity.length > MAX_ACTIVITY) activity.splice(0, activity.length - MAX_ACTIVITY);
 	}
 
 	/** The model and where it runs, for the log: a hosted one is said to be outside the owner's machines. */
@@ -1261,6 +1276,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 
 		const run = newRun({ domain: name, goal: goal.trim(), model: config.model, modelHost: config.url.host, hosted, maxTurns, minGapMs: options.investigateMinGapMs ?? DEFAULT_MIN_GAP_MS, approveAll });
 		const stop = new AbortController();
+		const stepsNoted = new Set<string>();
+		const waitingNoted = new Set<string>();
 		const active: InvestigationJob = { run, stop, approval: null };
 		investigation = active;
 		await saveActive(run);
@@ -1299,7 +1316,21 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 					active.approval = { stepId: request.stepId, resolve: done };
 				}),
 			limiter: new RateLimiter(run.minGapMs),
-			onChange: (changed) => saveActive(changed),
+			onChange: (changed) => {
+				for (const step of changed.steps) {
+					if (step.outcome === "waiting" && !waitingNoted.has(step.id)) {
+						waitingNoted.add(step.id);
+						note(`Investigation of ${name}, turn ${step.turn}: ${step.description ?? "an action"} is waiting for your approval`, "warning");
+					}
+					if (step.outcome === "waiting" || stepsNoted.has(step.id)) continue;
+					// A step that ran under the run's approval is saved once more when it finishes; noted then.
+					if (step.outcome === "refused" && step.reason === undefined) continue;
+					stepsNoted.add(step.id);
+					const what = step.description ?? (step.tool ? `${step.tool} (not a valid action)` : "no action");
+					note(`Investigation of ${name}, turn ${step.turn}: ${what}: ${step.outcome}`, step.outcome === "ran" ? "good" : step.outcome === "no action" ? "info" : "warning");
+				}
+				return saveActive(changed);
+			},
 		}, stop.signal)
 			.catch(() => {})
 			.finally(async () => {
@@ -1327,6 +1358,10 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	let cloudflareVerified: { status: string; kind: "user" | "account"; expiresOn?: string; checkedAt: string } | null = null;
 	/** Changes shown to the owner and waiting for their answer, by their random id. */
 	const pendingChanges = new Map<string, PlannedChange>();
+	/** The set of changes shown to the owner and waiting for one answer; a new preview replaces it. */
+	let pendingBatch: { id: string; createdAt: number; changes: PlannedChange[] } | null = null;
+	let batchStatus: BatchStatus = { state: "idle" };
+	let batchStop: AbortController | null = null;
 
 	/** The token in use: the one saved under Settings → Cloudflare, else the one given at start-up. */
 	async function cloudflareToken(): Promise<{ token: string; source: "settings" | "startup" } | null> {
@@ -1362,6 +1397,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				status: cloudflareStatus,
 				report: await readAudit(cloudflareAuditPath),
 				changes: changes.slice(-50).reverse(),
+				batch: batchStatus,
 				canChange: here,
 				service: !loopbackOnly,
 				guide: cloudflareGuide(),
@@ -1433,6 +1469,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			await forgetToken(cloudflareTokenPath);
 			cloudflareVerified = null;
 			pendingChanges.clear();
+			pendingBatch = null;
+			batchStop?.abort();
 			return sendJson(res, 200, { token: await cloudflareTokenState() });
 		}
 		if (route === "POST /api/cloudflare/changes/preview") {
@@ -1462,34 +1500,133 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			if (!fields.approve) return sendJson(res, 200, { applied: false });
 			const token = await cloudflareToken();
 			if (!token) throw new HttpError(409, "Connect Cloudflare first: paste an API token in Settings → Cloudflare");
-			if (planned.change === "ownership-record") {
-				const entry = (await readDomains(investigateDomainsPath)).domains[planned.zone];
-				if (entry && entry.token !== planned.ownershipToken) throw new HttpError(409, "The token for this domain changed since the request was shown. Ask for it again.");
-			}
-			const outcome = await sendChange(new CfClient(token.token, options.fetchFn ?? fetch), planned);
-			// Kept for the investigation and the audit: the record now holds this token.
-			if (outcome.ok && planned.change === "ownership-record" && planned.ownershipToken) {
-				const file = await readDomains(investigateDomainsPath);
-				if (!file.domains[planned.zone]) {
-					file.domains[planned.zone] = { token: planned.ownershipToken, addedAt: new Date().toISOString(), source: "local" };
-					await saveDomains(investigateDomainsPath, file);
-				}
-			}
-			// The change's title is Porchlight's, from its own list; the request and the token stay out of the log.
-			log(`Cloudflare change ${outcome.ok ? "applied" : "failed"}: ${planned.title}, on ${planned.zone}`);
-			const changes = await recordChange(cloudflareChangesPath, {
-				at: new Date().toISOString(),
-				zone: planned.zone,
-				zoneId: planned.zoneId,
-				change: planned.change,
-				title: planned.title,
-				request: { method: planned.method, url: planned.url, body: planned.body },
-				ok: outcome.ok,
-				result: outcome.result,
-			});
+			if (await ownershipTokenChanged(planned)) throw new HttpError(409, "The token for this domain changed since the request was shown. Ask for it again.");
+			const { outcome, changes } = await applyPlanned(planned, token.token);
 			return sendJson(res, 200, { applied: true, ok: outcome.ok, result: outcome.result, changes: changes.slice(-50).reverse() });
 		}
+
+		// "Fix these": every change the latest audit offers, for one zone or all, shown as the exact
+		// requests and sent after one approval. The same fixed templates, each sent once and recorded.
+		if (route === "POST /api/cloudflare/changes/batch/stop") {
+			// What was already sent stays sent; the rest are not.
+			batchStop?.abort();
+			return sendJson(res, 200, { stopped: batchStop !== null });
+		}
+		if (route === "POST /api/cloudflare/changes/batch/preview") {
+			if (batchStatus.state === "running") throw new HttpError(409, "Changes are being sent now. Wait for them to finish, or stop them");
+			const report = await readAudit(cloudflareAuditPath);
+			if (!report) throw new HttpError(404, "There is no Cloudflare audit yet. Run one first.");
+			let zones = report.zones;
+			if (fields.zone !== undefined) {
+				zones = report.zones.filter((candidate) => candidate.id === fields.zone);
+				if (zones.length === 0) throw new HttpError(404, "That zone is not in the latest audit. Run the audit again.");
+			}
+			const domains = (await readDomains(investigateDomainsPath)).domains;
+			const planned = planBatch(zones, (name) => domains[name]?.token ?? newToken());
+			if (planned.length === 0) throw new HttpError(409, "The latest audit found nothing here that Porchlight can change");
+			pendingBatch = { id: randomBytes(12).toString("hex"), createdAt: Date.now(), changes: planned };
+			return sendJson(res, 200, { batch: { id: pendingBatch.id, expiresAt: new Date(pendingBatch.createdAt + APPROVAL_WINDOW_MS).toISOString(), changes: planned.map(describeChange) } });
+		}
+		if (route === "POST /api/cloudflare/changes/batch/approve") {
+			const batch = pendingBatch;
+			if (!batch || batch.id !== fields.id || Date.now() - batch.createdAt > APPROVAL_WINDOW_MS) {
+				if (batch && batch.id === fields.id) pendingBatch = null;
+				throw new HttpError(409, "Those changes are no longer waiting. Ask for them again to see the requests.");
+			}
+			if (typeof fields.approve !== "boolean") throw new HttpError(400, "Say whether to send them");
+			// Some may be left out; none can be added. Each name must be one of the requests that was shown.
+			let chosen = batch.changes;
+			if (fields.include !== undefined) {
+				const include = fields.include;
+				if (!Array.isArray(include) || !include.every((id) => typeof id === "string" && batch.changes.some((change) => change.id === id))) {
+					throw new HttpError(400, "Choose among the changes that were shown");
+				}
+				chosen = batch.changes.filter((change) => include.includes(change.id));
+			}
+			if (fields.approve && chosen.length === 0) throw new HttpError(400, "Choose at least one change to send");
+			if (batchStatus.state === "running") throw new HttpError(409, "Changes are being sent now");
+			pendingBatch = null;
+			if (!fields.approve) return sendJson(res, 200, { started: false });
+			const token = await cloudflareToken();
+			if (!token) throw new HttpError(409, "Connect Cloudflare first: paste an API token in Settings → Cloudflare");
+			const startedAt = new Date().toISOString();
+			const stop = new AbortController();
+			batchStop = stop;
+			batchStatus = { state: "running", startedAt, total: chosen.length, done: 0, applied: 0, failed: 0, skipped: 0, current: "" };
+			const logTo = await projects.current();
+			log(`Cloudflare changes approved together: ${chosen.length}, on ${new Set(chosen.map((change) => change.zone)).size} ${new Set(chosen.map((change) => change.zone)).size === 1 ? "domain" : "domains"}`, logTo);
+			// Not awaited: the page follows it in the Activity view.
+			void (async () => {
+				let applied = 0;
+				let failed = 0;
+				let skipped = 0;
+				// A permission the token turned out to lack: the rest that need it are not sent, only said.
+				const lacking = new Set<string>();
+				for (const planned of chosen) {
+					if (stop.signal.aborted) break;
+					if (batchStatus.state === "running") batchStatus = { ...batchStatus, current: planned.title };
+					if (lacking.has(planned.permission)) {
+						skipped += 1;
+						note(`Not sent: ${planned.title}. The token lacks "${planned.permission}"`, "warning");
+					} else if (await ownershipTokenChanged(planned)) {
+						skipped += 1;
+						note(`Not sent: ${planned.title}. The token for this domain changed since the request was shown`, "warning");
+					} else {
+						note(`Sending: ${planned.title}`);
+						try {
+							const { outcome } = await applyPlanned(planned, token.token, logTo);
+							if (outcome.ok) applied += 1;
+							else failed += 1;
+							if (outcome.denied) lacking.add(planned.permission);
+						} catch (err) {
+							failed += 1;
+							note(`Could not send: ${planned.title}. ${err instanceof Error ? err.message : String(err)}`.split(token.token).join("[token]"), "warning");
+						}
+					}
+					if (batchStatus.state === "running") batchStatus = { ...batchStatus, done: applied + failed + skipped, applied, failed, skipped };
+				}
+				const stopped = stop.signal.aborted;
+				batchStatus = { state: "finished", startedAt, finishedAt: new Date().toISOString(), total: chosen.length, applied, failed, skipped, stopped };
+				if (batchStop === stop) batchStop = null;
+				log(`Cloudflare changes ${stopped ? "stopped" : "finished"}: ${applied} applied, ${failed} refused, ${skipped + (stopped ? chosen.length - applied - failed - skipped : 0)} not sent`, logTo);
+			})();
+			return sendJson(res, 202, { started: true, batch: batchStatus });
+		}
 		throw new HttpError(404, "Not found");
+	}
+
+	/** For the ownership record: whether this computer's token for the domain changed after the request was shown. */
+	async function ownershipTokenChanged(planned: PlannedChange): Promise<boolean> {
+		if (planned.change !== "ownership-record") return false;
+		const entry = (await readDomains(investigateDomainsPath)).domains[planned.zone];
+		return entry !== undefined && entry.token !== planned.ownershipToken;
+	}
+
+	/** Sends one approved change, exactly as planned, and records it whether Cloudflare accepted it or not. */
+	async function applyPlanned(planned: PlannedChange, token: string, project?: Project | null) {
+		const outcome = await sendChange(new CfClient(token, options.fetchFn ?? fetch), planned);
+		// Kept for the investigation and the audit: the record now holds this token.
+		if (outcome.ok && planned.change === "ownership-record" && planned.ownershipToken) {
+			const file = await readDomains(investigateDomainsPath);
+			if (!file.domains[planned.zone]) {
+				file.domains[planned.zone] = { token: planned.ownershipToken, addedAt: new Date().toISOString(), source: "local" };
+				await saveDomains(investigateDomainsPath, file);
+			}
+		}
+		// The change's title is Porchlight's, from its own list; the request and the token stay out of the log.
+		log(`Cloudflare change ${outcome.ok ? "applied" : "failed"}: ${planned.title}, on ${planned.zone}`, project);
+		if (!outcome.ok) note(`Cloudflare refused: ${planned.title}. ${outcome.result}`, "warning");
+		const changes = await recordChange(cloudflareChangesPath, {
+			at: new Date().toISOString(),
+			zone: planned.zone,
+			zoneId: planned.zoneId,
+			change: planned.change,
+			title: planned.title,
+			request: { method: planned.method, url: planned.url, body: planned.body },
+			ok: outcome.ok,
+			result: outcome.result,
+		});
+		return { outcome, changes };
 	}
 
 	const localGate: Gate = { loopbackOnly, key: () => sessionKey, port: () => port, tailnet: false };
@@ -1568,6 +1705,11 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		if (url.pathname === "/api/investigate" || url.pathname.startsWith("/api/investigate/")) return investigateRoute(res, route, url, body, gate);
 		if (url.pathname === "/api/cloudflare" || url.pathname.startsWith("/api/cloudflare/")) return cloudflareRoute(res, route, url, body, gate);
 		if (url.pathname === "/api/monitor" || url.pathname.startsWith("/api/monitor/")) return monitorRoute(res, route, body, gate);
+		if (route === "GET /api/activity") {
+			const after = Number(url.searchParams.get("after") ?? 0);
+			const from = Number.isInteger(after) && after >= 0 ? after : 0;
+			return sendJson(res, 200, { lines: activity.filter((line) => line.n > from), last: activityCount });
+		}
 		if (route === "GET /api/repos/history") {
 			const report = await readReport(options.reportPath);
 			const scans = (await history.list()).reverse();
@@ -2159,6 +2301,21 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 }
 
 /** Sends a file to save. Its name is built from a fixed stem and a date, never from request input. */
+/** One line of the Activity view. `n` counts up, so the page asks only for what it has not seen. */
+export interface ActivityLine {
+	n: number;
+	at: string;
+	kind: "info" | "good" | "warning";
+	text: string;
+}
+const MAX_ACTIVITY = 400;
+
+/** A set of Cloudflare changes the owner approved at once, as it is sent. */
+export type BatchStatus =
+	| { state: "idle" }
+	| { state: "running"; startedAt: string; total: number; done: number; applied: number; failed: number; skipped: number; current: string }
+	| { state: "finished"; startedAt: string; finishedAt: string; total: number; applied: number; failed: number; skipped: number; stopped: boolean };
+
 /** How a run ended, in the project log's words. */
 const RUN_ENDINGS: Partial<Record<Run["status"], string>> = { done: "finished", stopped: "stopped", failed: "failed" };
 

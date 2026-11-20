@@ -1,4 +1,5 @@
 // @ts-check
+import { renderActivity } from "./activity.js";
 import { adoptSessionKey, api, ApiError, setSessionKey } from "./api.js";
 import { emptyState, formatWhen, h, icon, plural, replace, severityBadge, stepNodes, toast } from "./dom.js";
 import { renderCloudflare } from "./cloudflare.js";
@@ -30,6 +31,7 @@ const SECTIONS = /** @type {const} */ ([
 	["investigate", "Investigate"],
 	["host", "This Mac"],
 	["discussions", "Discussions"],
+	["activity", "Activity"],
 	["settings", "Settings"],
 ]);
 
@@ -180,6 +182,7 @@ function page(section, context) {
 	if (section === "cloudflare") return renderCloudflare(view);
 	if (section === "investigate") return renderInvestigate(view, context.path[1]);
 	if (section === "discussions") return renderDiscussions(view, context);
+	if (section === "activity") return renderActivity(view);
 	if (section === "settings") return renderSettings(view);
 	if (section === "host") return renderHost(view);
 	return renderOverview(view);

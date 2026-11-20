@@ -85,10 +85,32 @@ export function describeChange(planned: PlannedChange) {
 	};
 }
 
-/** Sends one approved change, exactly as planned. */
-export async function sendChange(client: CfClient, planned: PlannedChange): Promise<{ ok: boolean; result: string }> {
+/** Sends one approved change, exactly as planned. `denied`: the token lacks the permission for it. */
+export async function sendChange(client: CfClient, planned: PlannedChange): Promise<{ ok: boolean; result: string; denied?: boolean }> {
 	const answer = await client.send<unknown>(planned.method, planned.path, planned.body);
 	if (answer.ok) return { ok: true, result: "Cloudflare accepted the change." };
 	const hint = answer.denied ? ` The token needs "${planned.permission}" for this.` : "";
-	return { ok: false, result: `${answer.message}.${hint}` };
+	return { ok: false, result: `${answer.message}.${hint}`, ...(answer.denied ? { denied: true } : {}) };
+}
+
+/** The most changes one approval may cover. */
+export const MAX_BATCH = 300;
+
+/**
+ * Every change the latest audit offers, for one zone or for all of them: one fixed template per
+ * problem that has one, in the audit's own order. Nothing from a request chooses a change; a
+ * request can only name a zone of the audit, or leave some of these out.
+ */
+export function planBatch(
+	zones: readonly { id: string; name: string; checks: readonly { status: string; change?: CfChangeId }[] }[],
+	ownershipToken: (zone: string) => string,
+): PlannedChange[] {
+	const planned: PlannedChange[] = [];
+	for (const zone of zones) {
+		for (const check of zone.checks) {
+			if (check.status !== "failed" || !check.change || planned.length >= MAX_BATCH) continue;
+			planned.push(planChange(zone, check.change, check.change === "ownership-record" ? ownershipToken(zone.name) : undefined));
+		}
+	}
+	return planned;
 }
