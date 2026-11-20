@@ -101,6 +101,7 @@ const ICONS = {
 		["circle", { cx: 7, cy: 7, r: 4.5, fill: "none", stroke: "currentColor", "stroke-width": 1.5 }],
 		["path", { d: "m10.4 10.4 3.6 3.6", fill: "none", stroke: "currentColor", "stroke-width": 1.7, "stroke-linecap": "round" }],
 	],
+	cloudflare: [["path", { d: "M4.5 12.5h7.2a2.8 2.8 0 0 0 .3-5.6 4 4 0 0 0-7.6-.8A3.2 3.2 0 0 0 4.5 12.5Z", fill: "none", stroke: "currentColor", "stroke-width": 1.5, "stroke-linejoin": "round" }]],
 	domains: [
 		["circle", { cx: 8, cy: 8, r: 6, fill: "none", stroke: "currentColor", "stroke-width": 1.5 }],
 		["path", { d: "M2 8h12M8 2c2 2 2.6 3.8 2.6 6S10 12 8 14c-2-2-2.6-3.8-2.6-6S6 4 8 2Z", fill: "none", stroke: "currentColor", "stroke-width": 1.3 }],

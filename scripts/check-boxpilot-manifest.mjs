@@ -33,7 +33,10 @@ if (!flag("--report")?.startsWith(`${volume("data")?.container}/`)) local.push(`
 if (key?.type !== "password" || key?.generate !== true) local.push("SECURITYX_UI_KEY must be a generated password");
 const githubToken = raw.env?.find((entry) => entry.name === "SECURITYX_GITHUB_TOKEN");
 if (githubToken && (githubToken.type !== "password" || githubToken.secret !== true || githubToken.generate === true)) local.push("SECURITYX_GITHUB_TOKEN must be a secret password the owner supplies");
-if (raw.defaultExposure !== "tailnet") local.push("defaultExposure must stay tailnet: a report names where secrets were found");
+// The app reads the Cloudflare token under this name (cli/src/main.ts), and the pages tell the owner where to paste it.
+const cloudflareToken = raw.env?.find((entry) => entry.name === "PORCHLIGHT_CLOUDFLARE_TOKEN");
+if (!cloudflareToken) local.push("PORCHLIGHT_CLOUDFLARE_TOKEN is missing: the Cloudflare page tells a service to set it in Apps → Porchlight → Settings");
+else if (cloudflareToken.type !== "password" || cloudflareToken.secret !== true || cloudflareToken.generate === true || cloudflareToken.default !== "") local.push("PORCHLIGHT_CLOUDFLARE_TOKEN must be a secret password the owner supplies, empty by default");if (raw.defaultExposure !== "tailnet") local.push("defaultExposure must stay tailnet: a report names where secrets were found");
 // BoxPilot's catalog file is catalog/securityx.yaml, and a manifest's id must match its file name.
 // Servers have Porchlight installed under this id, so it stays.
 if (raw.id !== "securityx") local.push(`id is ${raw.id}: BoxPilot's catalog lists Porchlight as securityx`);
