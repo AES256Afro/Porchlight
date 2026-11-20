@@ -760,7 +760,7 @@ function botCheck(zone: ZoneData): CfCheck {
 		return check("bot-fight-mode", "firewall", "Bot protection", on ? "passed" : "failed", "low", on ? "Bot Fight Mode is on." : "Bot Fight Mode is off.", why, {
 			fix: ["Turn on Bot fight mode in Cloudflare → Security → Settings, filtered by Bot traffic. It cannot be skipped for a path, so leave it off if it challenges an API client of yours."],
 			api: 'PUT /zones/{zone_id}/bot_management with {"fight_mode":true}',
-			change: "bot-fight-mode",
+			// Not offered as a change: a real account answered this request with HTTP 400 (docs/CLOUDFLARE-AUDIT.md).
 		});
 	}
 	if (zone.plan === "unknown") return check("bot-fight-mode", "firewall", "Bot protection", "unknown", "low", "The zone's plan could not be read.", why);
