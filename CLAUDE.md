@@ -8,7 +8,8 @@ An attack-surface monitor (Cloudflare Worker, `monitor/`) and a repository scann
 - `node cli/bin/porchlight.js doctor` says what a machine lacks; `<command> --help` lists one command's options (`cli/src/help.ts`). Releasing is in `RELEASING.md`.
 - Monitor: `npm run dev`, `npm run db:migrate:local`, `npx cf deploy --dry-run` (builds and validates; needs no login).
 - Mac app: `sh mac/build.sh --install` builds one for this machine. `sh mac/build.sh --dmg` builds the download attached to a release: the CLI from the last commit, never uncommitted changes, plus copies of `node`, gitleaks and osv-scanner with their licences. The DMG must hold nothing of the machine that built it (no path, name, setting or token), and each bundled program must link only to macOS's own libraries; the script checks the latter. Search a mounted DMG for the owner's paths and names before attaching it to a release.
-- Cloudflare work goes through the `cf` CLI and `monitor/cloudflare.config.ts`. Do not add Wrangler or a Wrangler config file.
+- Cloudflare work goes through the `cf` CLI and `monitor/cloudflare.config.ts` (`demo/cloudflare.config.ts` for the demo). Do not add Wrangler or a Wrangler config file.
+- Demo (`demo/`): a Worker that serves `cli/ui` as it ships at porchlight.theengineers.xyz, answering from `demo/src/recorded.json`, which `node demo/record.ts` records from Porchlight's own server over made-up data (`make-demo-report.mjs`, and `stand-in-monitor.mjs` in place of the network). Record again before `cd demo && npx cf deploy` whenever the page or the server changed. It holds made-up data only (the recorder refuses a local path or this computer's user name) and refuses every change, scan or send.
 
 ## Invariants
 

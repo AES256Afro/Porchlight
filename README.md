@@ -20,6 +20,7 @@ Findings are ranked by severity and grouped into an ordered repair plan. A langu
 | Requires | Node.js 22.18 or later, git, gitleaks, osv-scanner. The Mac app carries its own Node.js, gitleaks and osv-scanner |
 | Runtime dependencies | None. Node runs the TypeScript directly; the web interface is plain JavaScript with no build step |
 | Monitor | A Cloudflare Worker with a D1 database, deployed to the operator's own Cloudflare account. Optional |
+| Demo | [porchlight.theengineers.xyz](https://porchlight.theengineers.xyz): the web interface over made-up repositories and domains. Nothing there can be scanned, changed or sent |
 | Stored data | `~/.porchlight/`: reports, history, settings, keys and results, written readable only by the operator (0600) |
 
 ## Contents
