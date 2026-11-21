@@ -108,6 +108,8 @@ try {
 		"/api/model-tasks",
 		"/api/repos/osv-database",
 		"/api/repos/roadmap",
+		// Since 0.11.0: the GitHub settings audit's state (none run in the demo).
+		"/api/github/audit",
 		"/api/domains",
 		...DOMAINS.flatMap((domain) => [`/api/domains/${domain}`, `/api/domains/${domain}/history`]),
 		...["roadmap", "findings"].flatMap((content) =>
