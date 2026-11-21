@@ -1,4 +1,7 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { delimiter, isAbsolute } from "node:path";
+import { makeTempSync } from "./temp.ts";
 
 export interface ExecResult {
 	code: number;
@@ -7,13 +10,13 @@ export interface ExecResult {
 }
 
 export interface RunOptions {
-	/** Added to this process's environment for the one command. */
+	/** Added to the child's environment (see childEnv) for the one command. */
 	env?: Record<string, string>;
 	/** Stop the command after this long (default 10 minutes). */
 	timeoutMs?: number;
 	/** Stops the command when aborted; the run then rejects with a CancelledError. */
 	signal?: AbortSignal;
-	/** The folder the command runs in (default: this process's own). */
+	/** The folder the command runs in (default: a private empty folder of Porchlight's own, see runFolder). */
 	cwd?: string;
 	/** Read the output byte for byte, one character a byte, for content that is not text: `Buffer.from(stdout, "latin1")` gives the bytes back. */
 	latin1?: boolean;
@@ -41,14 +44,92 @@ const TIMEOUT_MS = 10 * 60_000;
 const MAX_OUTPUT_BYTES = 256 * 1024 * 1024;
 
 /**
+ * What a child process inherits from this one: what tools need to run, find their files and reach
+ * the network through the owner's proxy. Never Porchlight's own keys and tokens (the admin token, model,
+ * GitHub and Cloudflare keys, the UI key, the notice address): a scanner or a tool the host check runs
+ * has no use for them, and code a repository manages to run must not find them.
+ */
+const PASSED_ON = [
+	"HOME",
+	"USER",
+	"LOGNAME",
+	"LANG",
+	"LC_ALL",
+	"LC_CTYPE",
+	"LC_MESSAGES",
+	"TZ",
+	"TMPDIR",
+	"TMP",
+	"TEMP",
+	"SYSTEMROOT",
+	"DEVELOPER_DIR",
+	"SSL_CERT_FILE",
+	"SSL_CERT_DIR",
+	"XDG_CACHE_HOME",
+	"XDG_CONFIG_HOME",
+	"XDG_DATA_HOME",
+	"HTTP_PROXY",
+	"HTTPS_PROXY",
+	"NO_PROXY",
+	"ALL_PROXY",
+	"http_proxy",
+	"https_proxy",
+	"no_proxy",
+	"all_proxy",
+];
+
+/**
+ * PATH with only its absolute entries. An empty entry or "." means the folder a command runs in, so a
+ * repository holding a program named like a scanner could otherwise be run in its place.
+ */
+export function safePath(path: string | undefined): string {
+	return (path ?? "")
+		.split(delimiter)
+		.filter((dir) => dir !== "" && isAbsolute(dir))
+		.join(delimiter);
+}
+
+/**
+ * The environment every child process starts from, before a caller's own additions.
+ * PYTHONSAFEPATH keeps Python from putting the folder it runs in first on its import path (`python3 -m
+ * pip` would otherwise run a repository's own `pip/`), and npm's update notifier, which asks the npm
+ * registry about npm itself, stays off.
+ */
+export function childEnv(extra: Record<string, string> = {}, from: NodeJS.ProcessEnv = process.env): Record<string, string> {
+	const env: Record<string, string> = {};
+	for (const name of PASSED_ON) {
+		const value = from[name];
+		if (value !== undefined) env[name] = value;
+	}
+	env.PATH = safePath(from.PATH);
+	env.PYTHONSAFEPATH = "1";
+	env.NPM_CONFIG_UPDATE_NOTIFIER = "false";
+	return { ...env, ...extra };
+}
+
+let folder: string | undefined;
+
+/**
+ * An empty folder only this user can open, where a command runs unless it names its own: never the
+ * folder Porchlight was started in, which may be a repository it is about to scan. Made again if a
+ * clean-up removed it.
+ */
+export function runFolder(): string {
+	if (folder === undefined || !existsSync(folder)) folder = makeTempSync("run");
+	return folder;
+}
+
+/**
  * Arguments are passed as an array and no shell is involved, so repository
- * paths cannot be interpreted as commands.
+ * paths cannot be interpreted as commands. The program is looked up on the
+ * child's PATH, which holds absolute folders only (see childEnv).
  */
 export const run: Runner = (command, args, options) =>
 	new Promise((resolve, reject) => {
-		const env = options?.env ? { ...process.env, ...options.env } : undefined;
+		const env = childEnv(options?.env);
 		if (options?.signal?.aborted) return reject(new CancelledError());
-		execFile(command, args, { timeout: options?.timeoutMs ?? TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES, env, signal: options?.signal, cwd: options?.cwd, encoding: options?.latin1 ? "latin1" : "utf8" }, (error, stdout, stderr) => {
+		const cwd = options?.cwd ?? runFolder();
+		execFile(command, args, { timeout: options?.timeoutMs ?? TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES, env, signal: options?.signal, cwd, encoding: options?.latin1 ? "latin1" : "utf8" }, (error, stdout, stderr) => {
 			if (!error) return resolve({ code: 0, stdout, stderr });
 			if (error.name === "AbortError" || options?.signal?.aborted) return reject(new CancelledError());
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return reject(new ToolMissingError(command));

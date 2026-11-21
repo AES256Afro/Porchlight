@@ -29,8 +29,8 @@ test("reads how a repository uses a package: how it is declared, and which of it
 	const sharp = await gatherEvidence(repo, "web/package-lock.json", "sharp");
 	assert.equal(sharp.declared, "runtime dependency");
 	assert.deepEqual(sharp.uses, [
-		{ file: "web/src/resize.ts", line: 'import sharp from "sharp";' },
-		{ file: "web/test/resize.test.ts", line: "const sharp = require('sharp/lib/x');" },
+		{ file: "web/src/resize.ts", line: 'import sharp from "sharp"' },
+		{ file: "web/test/resize.test.ts", line: "const sharp = require('sharp/lib/x')" },
 	]);
 	assert.equal(sharp.usedInFiles, 2);
 	assert.equal(sharp.onlyInTests, false);
@@ -49,12 +49,30 @@ test("reads how a repository uses a package: how it is declared, and which of it
 	assert.equal(packageName("@scope/name@1.0.0"), "@scope/name");
 });
 
-test("says when a package is only imported by tests, and keeps each quoted line short", async () => {
+test("says when a package is only imported by tests, and keeps the import alone, never the rest of its line", async () => {
 	const repo = await tempDir();
 	await makeTree(repo, { "package.json": "{}", "tests/a.spec.js": `require("lodash"); ${"x".repeat(500)}\n` });
 	const evidence = await gatherEvidence(repo, "package-lock.json", "lodash");
 	assert.equal(evidence.onlyInTests, true);
-	assert.equal(evidence.uses[0]?.line.length, 160);
+	assert.equal(evidence.uses[0]?.line, 'require("lodash")');
+});
+
+test("a key on the same line as an import never reaches the evidence a model is given (S11)", async () => {
+	const repo = await tempDir();
+	const key = `sk_live_${"4eC39HqLyjWDarjtT1zdp7dc".split("").reverse().join("")}`;
+	const bundle = `var cfg={token:"${key}"};var s=require("stripe");module.exports=s;`;
+	await makeTree(repo, {
+		"package.json": JSON.stringify({ dependencies: { stripe: "^1.0.0", yaml: "^2.0.0" } }),
+		"src/pay.js": `const stripe = require("stripe")("${key}");\n`,
+		"src/bundle.min.js": `${bundle}\n`,
+		"src/esm.js": `import Stripe, { webhooks } from "stripe"; const k = "${key}";\n`,
+		"src/conf.py": `from yaml import safe_load as load  # ${key}\n`,
+	});
+	const stripe = await gatherEvidence(repo, "package-lock.json", "stripe");
+	assert.deepEqual(stripe.uses.map((use) => use.line).sort(), ['const stripe = require("stripe")', 'import Stripe, { webhooks } from "stripe"', 'var s=require("stripe")']);
+	const yaml = await gatherEvidence(repo, "package-lock.json", "yaml");
+	assert.deepEqual(yaml.uses.map((use) => use.line), ["from yaml import safe_load as load"]);
+	assert.ok(!JSON.stringify([stripe, yaml]).includes(key));
 });
 
 test("judges a package's advisories together and a secret alone, worst first", () => {

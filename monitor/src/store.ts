@@ -85,68 +85,136 @@ export async function deleteDomain(db: D1Database, name: string): Promise<boolea
 }
 
 /**
- * Records a passed ownership check. A domain whose record had lapsed is no
- * longer shown as failing, and is due for a scan on the next tick.
+ * What a write made after an await matches besides the id. A domain may be
+ * removed while a verify or scan of it waits on the network, and another added:
+ * before migration 0003 it could take the same id, and the same name added again
+ * gets a new token. A write that matches no row changes nothing.
  */
-export async function markVerified(db: D1Database, id: number, now: string): Promise<DomainRow> {
-	return (await db
+export type DomainKey = Pick<DomainRow, "id" | "name" | "challenge_token">;
+
+const SAME_DOMAIN = "id = ? AND name = ? AND challenge_token = ?";
+
+function keyOf(domain: DomainKey): [number, string, string] {
+	return [domain.id, domain.name, domain.challenge_token];
+}
+
+/** Whether the domain is still registered as it was read: not removed, and not removed and added again. */
+export async function isRegistered(db: D1Database, domain: DomainKey): Promise<boolean> {
+	const row = await db
+		.prepare(`SELECT 1 AS found FROM domains WHERE ${SAME_DOMAIN}`)
+		.bind(...keyOf(domain))
+		.first<{ found: number }>();
+	return row !== null;
+}
+
+/**
+ * Records a passed ownership check. A domain whose record had lapsed is no
+ * longer shown as failing, and is due for a scan on the next tick. Returns
+ * null, changing nothing, when the domain was removed while it was checked.
+ */
+export function markVerified(
+	db: D1Database,
+	domain: DomainKey,
+	now: string,
+): Promise<DomainRow | null> {
+	return db
 		.prepare(
 			`UPDATE domains SET verified_at = ?,
 			   last_scan_status = CASE WHEN last_scan_status = 'unverified' THEN NULL ELSE last_scan_status END
-			 WHERE id = ? RETURNING *`,
+			 WHERE ${SAME_DOMAIN} RETURNING *`,
 		)
-		.bind(now, id)
-		.first<DomainRow>())!;
+		.bind(now, ...keyOf(domain))
+		.first<DomainRow>();
 }
 
-/** Records that the ownership check failed. Not a scan failure, so the error streak ends. */
-export async function markUnverified(db: D1Database, id: number, now: string): Promise<void> {
+/**
+ * Records that the scan started at `startedAt` found the challenge record
+ * missing. Not a scan failure, so the error streak ends. A verify that passed
+ * after the scan started saw the record more recently, so it stands and
+ * nothing changes. Returns whether the domain was marked.
+ */
+export async function markUnverified(
+	db: D1Database,
+	domain: DomainKey,
+	startedAt: string,
+): Promise<boolean> {
+	const result = await db
+		.prepare(
+			`UPDATE domains SET last_scan_at = ?1, last_scan_status = 'unverified', error_streak = 0
+			 WHERE id = ?2 AND name = ?3 AND challenge_token = ?4
+			   AND (verified_at IS NULL OR verified_at <= ?1)`,
+		)
+		.bind(startedAt, ...keyOf(domain))
+		.run();
+	return result.meta.changes > 0;
+}
+
+/**
+ * The ownership lookup of a domain last seen without its record failed. Nothing
+ * was observed, so it stays unverified (invariant 5): only the time of its next
+ * attempt moves. Changes nothing if a verify has passed since.
+ */
+export async function postponeUnverified(
+	db: D1Database,
+	domain: DomainKey,
+	now: string,
+): Promise<void> {
 	await db
 		.prepare(
-			"UPDATE domains SET last_scan_at = ?, last_scan_status = 'unverified', error_streak = 0 WHERE id = ?",
+			`UPDATE domains SET last_scan_at = ? WHERE ${SAME_DOMAIN} AND last_scan_status = 'unverified'`,
 		)
-		.bind(now, id)
+		.bind(now, ...keyOf(domain))
 		.run();
 }
 
-/** Records a failed scan and returns how many have now failed in a row. */
-export async function markFailed(db: D1Database, id: number, now: string): Promise<number> {
+/**
+ * Records a failed scan and returns how many have now failed in a row: 0 when
+ * the domain was removed meanwhile, and nothing was recorded.
+ */
+export async function markFailed(db: D1Database, domain: DomainKey, now: string): Promise<number> {
 	const row = await db
 		.prepare(
 			`UPDATE domains SET last_scan_at = ?, last_scan_status = 'error', error_streak = error_streak + 1
-			 WHERE id = ? RETURNING error_streak`,
+			 WHERE ${SAME_DOMAIN} RETURNING error_streak`,
 		)
-		.bind(now, id)
+		.bind(now, ...keyOf(domain))
 		.first<{ error_streak: number }>();
 	return row?.error_streak ?? 0;
 }
 
 /**
  * Claims the domain for one scan and returns its current row, or null when
- * another scan holds an unexpired claim. The update is a single statement, so
- * of two scans that start together exactly one gets the row.
+ * another scan holds an unexpired claim or the domain is no longer registered
+ * as `domain` describes it. The update is a single statement, so of two scans
+ * that start together exactly one gets the row.
  */
 export function claimScan(
 	db: D1Database,
-	id: number,
+	domain: DomainKey,
 	now: string,
 	staleBefore: string,
 ): Promise<DomainRow | null> {
 	return db
 		.prepare(
 			`UPDATE domains SET scan_claimed_at = ?
-			 WHERE id = ? AND (scan_claimed_at IS NULL OR scan_claimed_at < ?)
+			 WHERE ${SAME_DOMAIN} AND (scan_claimed_at IS NULL OR scan_claimed_at < ?)
 			 RETURNING *`,
 		)
-		.bind(now, id, staleBefore)
+		.bind(now, ...keyOf(domain), staleBefore)
 		.first<DomainRow>();
 }
 
 /** Releases the claim taken at `claimedAt`, unless a later scan has since taken it over. */
-export async function releaseScan(db: D1Database, id: number, claimedAt: string): Promise<void> {
+export async function releaseScan(
+	db: D1Database,
+	domain: DomainKey,
+	claimedAt: string,
+): Promise<void> {
 	await db
-		.prepare("UPDATE domains SET scan_claimed_at = NULL WHERE id = ? AND scan_claimed_at = ?")
-		.bind(id, claimedAt)
+		.prepare(
+			`UPDATE domains SET scan_claimed_at = NULL WHERE ${SAME_DOMAIN} AND scan_claimed_at = ?`,
+		)
+		.bind(...keyOf(domain), claimedAt)
 		.run();
 }
 
@@ -197,29 +265,48 @@ export async function latestScan(db: D1Database, domainId: number): Promise<Stor
 	};
 }
 
-/** Stores the scan, marks the domain scanned (ending any error streak), and drops snapshots beyond the newest `keep`. */
+/**
+ * Stores the scan, marks the domain scanned (ending any error streak), and drops
+ * snapshots beyond the newest `keep`, all only while the scan's claim, taken at
+ * `claimedAt`, is still held on this domain. Returns false, having changed
+ * nothing, when the domain was removed (and perhaps another added) while the
+ * scan ran, or a later scan took the claim over: the scan is then discarded.
+ */
 export async function saveScan(
 	db: D1Database,
-	domainId: number,
+	domain: DomainKey,
+	claimedAt: string,
 	scan: StoredScan,
 	keep: number,
-): Promise<void> {
+): Promise<boolean> {
 	const takenAt = scan.snapshot.takenAt;
-	await db.batch([
-		db
-			.prepare("INSERT INTO snapshots (domain_id, taken_at, data, report) VALUES (?, ?, ?, ?)")
-			.bind(domainId, takenAt, JSON.stringify(scan.snapshot), JSON.stringify(scan.report)),
+	const held = `EXISTS (SELECT 1 FROM domains WHERE ${SAME_DOMAIN} AND scan_claimed_at = ?)`;
+	const claim = [...keyOf(domain), claimedAt];
+	const [, updated] = await db.batch([
 		db
 			.prepare(
-				"UPDATE domains SET last_scan_at = ?, last_scan_status = 'ok', error_streak = 0, verified_at = ? WHERE id = ?",
+				`INSERT INTO snapshots (domain_id, taken_at, data, report) SELECT ?, ?, ?, ? WHERE ${held}`,
 			)
-			.bind(takenAt, takenAt, domainId),
+			.bind(
+				domain.id,
+				takenAt,
+				JSON.stringify(scan.snapshot),
+				JSON.stringify(scan.report),
+				...claim,
+			),
 		db
 			.prepare(
-				`DELETE FROM snapshots WHERE domain_id = ? AND id NOT IN (
+				`UPDATE domains SET last_scan_at = ?, last_scan_status = 'ok', error_streak = 0, verified_at = ?
+				 WHERE ${SAME_DOMAIN} AND scan_claimed_at = ?`,
+			)
+			.bind(takenAt, takenAt, ...claim),
+		db
+			.prepare(
+				`DELETE FROM snapshots WHERE domain_id = ? AND ${held} AND id NOT IN (
 					SELECT id FROM snapshots WHERE domain_id = ? ORDER BY taken_at DESC, id DESC LIMIT ?
 				)`,
 			)
-			.bind(domainId, domainId, keep),
+			.bind(domain.id, ...claim, domain.id, keep),
 	]);
+	return (updated?.meta.changes ?? 0) > 0;
 }

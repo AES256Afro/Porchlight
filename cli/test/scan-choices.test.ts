@@ -36,7 +36,7 @@ test("each preset names exactly what it covers, and Standard covers what a scan 
 test("files git does not track and skipped repositories are said beside a preset, not instead of it", () => {
 	const quick = { ...presetChoices("quick"), localFiles: true, skip: ["old-site"] };
 	assert.equal(presetOf(quick), "quick");
-	assert.equal(describeChoices(quick), "Quick: secrets in the files as they are now, no history, dependencies, files git does not track, 1 repository skipped");
+	assert.equal(describeChoices(quick), "Quick: secrets in the files as they are now, no history, dependencies, files git does not track (not node_modules or virtual environments), 1 repository skipped");
 	// Reading more is not a gap; leaving a repository out is.
 	assert.deepEqual(choiceGaps({ ...standardChoices(), localFiles: true }), []);
 	assert.deepEqual(choiceGaps(standardChoices(), ["old-site", "zz"]), ["Not scanned, as chosen: old-site, zz."]);

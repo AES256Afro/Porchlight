@@ -8,12 +8,17 @@
 FROM node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5
 
 # gitleaks reads history with git. The repositories are someone else's files mounted read-only,
-# and git refuses to read a repository owned by another user unless told it is safe: only those
-# under /repos are. Repositories fetched from GitHub belong to this image's own user and need no
-# such exception. A repository's own .git/config still runs nothing, because gitleaks is given
-# git options that switch diff programs off (see cli/src/repos/gitleaks.ts).
-RUN apk add --no-cache git \
+# and git refuses to read a repository owned by another user unless told it is safe: only /repos
+# and those under it are. Porchlight's git ignores the system's and the user's git settings (a
+# repository's own .git/config could otherwise name programs to run), so the exception is given
+# through PORCHLIGHT_GIT_SAFE_DIRECTORY (see cli/src/repos/git-copy.ts). History is read from a copy
+# Porchlight makes of each repository, which holds none of its settings. Repositories fetched from
+# GitHub belong to this image's own user and need no exception.
+# tini runs as PID 1, so `docker stop` reaches Porchlight as SIGTERM and a scan in progress removes
+# its temporary copies before the container stops.
+RUN apk add --no-cache git tini \
  && git config --system --add safe.directory '/repos/*'
+ENV PORCHLIGHT_GIT_SAFE_DIRECTORY=/repos:/repos/*
 
 # The scanners, pinned and checked against the checksums their releases publish. To update one,
 # change its version and both of its checksums together.
@@ -56,4 +61,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget -qO- http://127.0.0.1:4747/healthz >/dev/null || exit 1
 
 # Listening beyond loopback needs PORCHLIGHT_UI_KEY; without it the server refuses to start.
+ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["node", "cli/bin/porchlight.js", "ui", "--host", "0.0.0.0", "--port", "4747", "--root", "/repos", "--report", "/data/repo-scan.json"]

@@ -195,7 +195,8 @@ export function describeChoices(choices = standardChoices()) {
 	const label = choices.preset === "custom" ? "Custom" : (PRESETS.find((preset) => preset.key === choices.preset)?.label ?? "Custom");
 	const parts = [choices.secrets ? `secrets in ${historyWords(choices.history)}` : "no secrets check", choices.dependencies ? "dependencies" : "no dependencies check"];
 	if (choices.privateData) parts.push(choices.secrets ? "private data" : `private data in ${historyWords(choices.history)}`);
-	if ((choices.secrets || choices.privateData) && choices.localFiles) parts.push("files git does not track");
+	// Third-party code a package manager installed is not read among them (cli/src/repos/rules.ts).
+	if ((choices.secrets || choices.privateData) && choices.localFiles) parts.push("files git does not track (not node_modules or virtual environments)");
 	if (choices.skip.length > 0) parts.push(`${choices.skip.length === 1 ? "1 repository" : `${choices.skip.length} repositories`} skipped`);
 	if (choices.analyse) parts.push("then the model's deeper analysis");
 	return `${label}: ${parts.join(", ")}`;

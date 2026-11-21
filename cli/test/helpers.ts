@@ -28,13 +28,21 @@ export async function git(cwd: string, ...args: string[]): Promise<void> {
 	await exec("git", ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", ...args], { cwd });
 }
 
+/**
+ * Whether a program is installed, so a test that needs the real scanner can skip without it. In CI
+ * (PORCHLIGHT_REQUIRE_SCANNERS=1) a missing scanner is an error instead: those tests are the proof of
+ * invariants 3 and 14, and a skip would pass silently.
+ */
 export async function installed(command: string): Promise<boolean> {
+	let found: boolean;
 	try {
 		await exec(command, ["--version"]);
-		return true;
+		found = true;
 	} catch (err) {
-		return (err as NodeJS.ErrnoException).code !== "ENOENT";
+		found = (err as NodeJS.ErrnoException).code !== "ENOENT";
 	}
+	if (!found && process.env.PORCHLIGHT_REQUIRE_SCANNERS === "1") throw new Error(`${command} is required here (PORCHLIGHT_REQUIRE_SCANNERS=1) but is not installed`);
+	return found;
 }
 
 /**
@@ -55,11 +63,37 @@ export function fakeRunner(
 	const runner: Runner = async (command, args, options) => {
 		calls.push([command, ...args]);
 		envs.push(options?.env);
-		const program = programs[command];
+		// Scanning history first copies it with git (git-copy.ts); a test that names no git of its own
+		// gets one that answers as a repository with one branch.
+		const program = programs[command] ?? (command === "git" ? fakeGit : undefined);
 		if (program === undefined || program === "missing") throw new ToolMissingError(command);
 		return { code: 0, stdout: "", stderr: "", ...program(args) };
 	};
 	return Object.assign(runner, { calls, envs });
+}
+
+/** An object id for fake git output. */
+export const FAKE_COMMIT = "1".repeat(40);
+
+/**
+ * git as a repository with one branch, `main`, answers the commands that copy its history for a
+ * scan (git-copy.ts): not a partial clone, one ref and one worktree HEAD, both copied, not shallow.
+ * Anything else answers with nothing.
+ */
+export function fakeGit(args: string[]): Partial<ExecResult> {
+	const has = (word: string) => args.includes(word);
+	if (has("config") && has("--get-regexp")) return { code: 1 };
+	if (has("for-each-ref")) return { stdout: `${FAKE_COMMIT} refs/heads/main\n${FAKE_COMMIT} refs/porchlight/head-0\n` };
+	if (has("worktree")) return { stdout: `worktree /repo\nHEAD ${FAKE_COMMIT}\nbranch refs/heads/main\n` };
+	if (has("count-objects")) return { stdout: "count: 0\nsize: 0\nin-pack: 3\npacks: 1\nsize-pack: 4\n" };
+	if (has("--is-shallow-repository")) return { stdout: "false\n" };
+	return {};
+}
+
+/** The repository a gitleaks call is about. History is read from a copy, so the repository is the one named for its .gitleaksignore. */
+export function gitleaksRepo(args: string[]): string {
+	const at = args.indexOf("--gitleaks-ignore-path");
+	return at >= 0 ? args[at + 1]! : args.at(-1)!;
 }
 
 /** A JPEG holding only EXIF data, with a GPS position unless both are zero. */

@@ -48,16 +48,18 @@ export function shellWord(word) {
 	return /^[\w.@%+=:,\/-]+$/.test(word) ? word : `'${word.replace(/'/g, "'\\''")}'`;
 }
 
-/** An npm package and version or tag, as `npm install` takes it: nothing a shell would read. */
-const NPM_SPEC = /^(@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*@[\w.+-]+$/i;
-/** A Python requirement such as `requests>=2.31.0`, or a name alone. */
-const PIP_SPEC = /^[\w.-]+(>=[\w.+!-]+)?$/;
+/**
+ * An npm package at a version number, as `npm install` takes it: nothing a shell would read, and no tag
+ * such as `latest`, which can cross a major version.
+ */
+const NPM_SPEC = /^(@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*@\d[\w.+-]*$/i;
 
 /**
  * The repair commands of every problem, combined so they can be pasted into a terminal at once:
- * npm packages in one `npm install -g`, Python packages in one `pip install`, every other command
- * once. In the order the checks come in. A package name that is not one a shell would take as it
- * is never makes it into the list; its own check still says how to repair it.
+ * npm packages in one `npm install -g`, every other command once. In the order the checks come in.
+ * Only commands safe to paste without a decision belong here (invariant 19): a package name or version
+ * a shell would not take as it is, a tag that can cross a major version, and pip upgrades (which a Python
+ * another tool manages refuses) never make it in; each check's own fix still says how to repair it.
  *
  * @param {HostCheck[]} checks
  * @returns {string[]}
@@ -65,8 +67,6 @@ const PIP_SPEC = /^[\w.-]+(>=[\w.+!-]+)?$/;
 export function combinedCommands(checks) {
 	/** @type {string[]} */
 	const npm = [];
-	/** @type {string[]} */
-	const pip = [];
 	/** @type {string[]} */
 	const order = [];
 	for (const check of checks) {
@@ -77,15 +77,15 @@ export function combinedCommands(checks) {
 				if (!npm.includes(command.spec)) npm.push(command.spec);
 				if (!order.includes("\0npm")) order.push("\0npm");
 			} else if (command.kind === "pip") {
-				if (!PIP_SPEC.test(command.spec)) continue;
-				if (!pip.includes(command.spec)) pip.push(command.spec);
-				if (!order.includes("\0pip")) order.push("\0pip");
+				// Never combined: pip refuses to change a Python another tool manages (PEP 668), so the
+				// check's own fix says how to upgrade it.
+				continue;
 			} else if (!order.includes(command.line)) {
 				order.push(command.line);
 			}
 		}
 	}
 	return order.map((entry) =>
-		entry === "\0npm" ? `npm install -g ${npm.join(" ")}` : entry === "\0pip" ? `python3 -m pip install --upgrade ${pip.map((spec) => `"${spec}"`).join(" ")}` : entry,
+		entry === "\0npm" ? `npm install -g ${npm.join(" ")}` : entry,
 	);
 }

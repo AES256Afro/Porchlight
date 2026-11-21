@@ -19,6 +19,7 @@ import { tokenProblem } from "./github/github.ts";
 import { checkHost } from "./host/check.ts";
 import { renderHostText } from "./host/render.ts";
 import { run, type Runner } from "./repos/exec.ts";
+import { sweepStaleTemp } from "./repos/temp.ts";
 import { adoptOldSettings, dataFolder } from "./legacy.ts";
 import { renderDoctor, runDoctor, type DoctorOptions } from "./doctor.ts";
 import { asksForHelp, helpFor, usage } from "./help.ts";
@@ -62,6 +63,8 @@ export async function main(argv: string[]): Promise<number> {
 		return 0;
 	}
 	try {
+		// Copies of repositories' files a crash or SIGKILL left behind (S33): removed before more are made.
+		if (group === "ui" || group === "repos" || group === "host") await sweepStaleTemp().catch(() => 0);
 		if (group === "doctor") return await doctor(argv.slice(1));
 		if (group === "repos" && command === "scan") return await reposScan(rest);
 		if (group === "repos" && command === "export") return await reposExport(rest);

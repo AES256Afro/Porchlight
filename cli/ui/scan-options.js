@@ -60,7 +60,7 @@ export function scanOptions(initial, depthField, onChange) {
 			null,
 			h("legend", null, "Checks"),
 			h("label", { class: "choice" }, secretsBox, h("span", null, h("strong", null, "Secrets"), h("span", { class: "hint" }, "Passwords and keys, with gitleaks."))),
-			h("label", { class: "choice" }, dependenciesBox, h("span", null, h("strong", null, "Dependencies"), h("span", { class: "hint" }, "Packages with published security advisories, with osv-scanner."))),
+			h("label", { class: "choice" }, dependenciesBox, h("span", null, h("strong", null, "Dependencies"), h("span", { class: "hint" }, "Packages with published security advisories, with osv-scanner. It sends each package's name and version to OSV.dev, unless OSV's databases are kept on this computer."))),
 			h(
 				"label",
 				{ class: "choice" },

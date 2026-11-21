@@ -4,16 +4,16 @@ import { access, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { GIT_LOG_OPTIONS, GITLEAKS_CONFIG } from "../src/repos/gitleaks.ts";
-import { coverageNotes, exceeds, exitCode, renderMarkdown, renderSummary, repoName } from "../src/repos/report.ts";
+import { GIT_LOG_OPTIONS } from "../src/repos/gitleaks.ts";
+import { coverageNotes, exceeds, exitCode, parseScanReport, renderMarkdown, renderSummary, repoName } from "../src/repos/report.ts";
 import { progressLine, reposScan } from "../src/main.ts";
 import { CancelledError, run as realRun, type Runner } from "../src/repos/exec.ts";
 import { History } from "../src/repos/history.ts";
 import { repoConcurrency, rescanRepo, scanRepos } from "../src/repos/scan.ts";
 import { scannerSettingFiles } from "../src/repos/settings.ts";
-import type { ScanReport } from "../src/repos/types.ts";
+import { REPORT_FORMAT, type ScanReport } from "../src/repos/types.ts";
 import { presetChoices } from "../ui/scan-choices.js";
-import { fakeAwsKeyId, fakeRunner, git, installed, makeTree, photoWithGps, tempDir } from "./helpers.ts";
+import { fakeAwsKeyId, fakeGit, fakeRunner, git, gitleaksRepo, installed, makeTree, photoWithGps, tempDir } from "./helpers.ts";
 
 const exec = promisify(execFile);
 const CLI = join(import.meta.dirname, "../bin/porchlight.js");
@@ -41,7 +41,7 @@ test("runs every installed scanner on every repository and ranks the worst first
 		gitleaks: (args) =>
 			args[0] === "version"
 				? { stdout: "8.30.1\n" }
-				: { stdout: args.at(-1)!.endsWith("leaky") ? JSON.stringify([gitleaksRow("app/settings.py")]) : "[]" },
+				: { stdout: gitleaksRepo(args).endsWith("leaky") ? JSON.stringify([gitleaksRow("app/settings.py")]) : "[]" },
 		"osv-scanner": (args) =>
 			args[0] === "--version"
 				? { stdout: "osv-scanner version: 2.2.1\n" }
@@ -100,7 +100,7 @@ test("a scanner failing on one repository is recorded and the rest still run", a
 	const run = fakeRunner({
 		gitleaks: (args) => {
 			if (args[0] === "version") return { stdout: "8.30.1" };
-			return args.at(-1)!.endsWith("clean") ? { code: 1, stderr: "fatal: bad object HEAD\nmore detail" } : { stdout: "[]" };
+			return gitleaksRepo(args).endsWith("clean") ? { code: 1, stderr: "fatal: bad object HEAD\nmore detail" } : { stdout: "[]" };
 		},
 		"osv-scanner": (args) => (args[0] === "--version" ? { stdout: "2.2.1" } : { code: 1, stdout: JSON.stringify(osvRow("5.0")) }),
 	});
@@ -132,19 +132,27 @@ test("gitleaks reporting nothing because git could not read the history is a fai
 	assert.equal(exitCode(report, "critical"), 1, "a gate cannot pass on a history that was never read");
 });
 
-test("gitleaks uses Porchlight's rules and stops git running the repository's diff programs", async () => {
+test("gitleaks uses Porchlight's rules, reads a copy of the history, and stops git running the repository's diff programs", async () => {
 	const root = await twoRepos();
 	const run = fakeRunner({ gitleaks: (args) => ({ stdout: args[0] === "version" ? "8.30.1" : "[]" }), "osv-scanner": "missing" });
 
 	await scanRepos({ root, depth: 2, run, now: NOW });
 
-	const scan = run.calls.find((call) => call[0] === "gitleaks" && call[1] === "git")!;
-	const repo = scan.at(-1)!;
-	assert.equal(scan[scan.indexOf("--config") + 1], GITLEAKS_CONFIG);
+	const at = run.calls.findIndex((call) => call[0] === "gitleaks" && call[1] === "git");
+	const scan = run.calls[at]!;
+	const repo = scan[scan.indexOf("--gitleaks-ignore-path") + 1]!;
+	assert.ok(repo.startsWith(root), "ignore files come from the repository, not the working folder");
+	assert.match(scan.at(-1)!, /porchlight-copy-/, "history is read from Porchlight's own copy, never the repository in place");
+	const config = scan[scan.indexOf("--config") + 1]!;
+	assert.ok(!config.startsWith(root), "the config is Porchlight's own");
+	const rules = await readFile(config, "utf8");
+	const globalPaths = /^\[\[allowlists\]\]\ndescription = "global allow lists"\npaths = \[\n([^\]]*)\]/m.exec(rules)?.[1];
+	assert.equal(globalPaths?.trim(), String.raw`'''(?:^|/)\.git$''',`, "no file is skipped by its name but .git");
 	assert.ok(scan.includes(`--log-opts=${GIT_LOG_OPTIONS}`));
-	for (const option of ["--no-textconv", "--no-ext-diff", "--all"]) assert.ok(GIT_LOG_OPTIONS.split(" ").includes(option), option);
-	assert.equal(scan[scan.indexOf("--gitleaks-ignore-path") + 1], repo, "ignore files come from the repository, not the working folder");
-	assert.ok(scan.includes("--redact"));
+	for (const option of ["--no-textconv", "--no-ext-diff", "--all", "--text", "--encoding=none", "--diff-merges=first-parent"]) assert.ok(GIT_LOG_OPTIONS.split(" ").includes(option), option);
+	assert.ok(scan.includes("--redact") && scan.includes("--ignore-gitleaks-allow"));
+	const env = run.envs[at]!;
+	for (const [name, value] of Object.entries({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_LAZY_FETCH: "1", GIT_NO_REPLACE_OBJECTS: "1" })) assert.equal(env[name], value, name);
 });
 
 test("lists the files that tell a scanner to leave findings out, without reading dependencies or .git", async () => {
@@ -195,7 +203,7 @@ test("the report states why a secret was ranked lower", async () => {
 		gitleaks: (args) =>
 			args[0] === "version"
 				? { stdout: "8.30.1" }
-				: { stdout: args.at(-1)!.endsWith("leaky") ? JSON.stringify([gitleaksRow("tests/test_settings.py"), gitleaksRow("app/settings.py")]) : "[]" },
+				: { stdout: gitleaksRepo(args).endsWith("leaky") ? JSON.stringify([gitleaksRow("tests/test_settings.py"), gitleaksRow("app/settings.py")]) : "[]" },
 		"osv-scanner": (args) => (args[0] === "--version" ? { stdout: "2.7.1" } : { code: 128 }),
 	});
 
@@ -325,6 +333,7 @@ test("runs a repository's scanners together, and still reports them in one order
 	};
 	const run: Runner = async (command, args) => {
 		if (args[0] === "version" || args[0] === "--version") return { code: 0, stdout: "1.0.0\n", stderr: "" };
+		if (command === "git") return { code: 0, stdout: "", stderr: "", ...fakeGit(args) };
 		// gitleaks answers last, and is still listed first.
 		if (command === "gitleaks") return slow({ code: 0, stdout: JSON.stringify([gitleaksRow("app/settings.py")]), stderr: "" }, 40);
 		return slow({ code: 1, stdout: JSON.stringify(osvRow("9.8")), stderr: "" }, 5);
@@ -339,7 +348,7 @@ test("runs a repository's scanners together, and still reports them in one order
 test("says when each repository finishes, how long it took and what it found", async () => {
 	const root = await twoRepos();
 	const run = fakeRunner({
-		gitleaks: (args) => (args[0] === "version" ? { stdout: "8.30.1\n" } : args.at(-1)!.endsWith("leaky") ? { stdout: JSON.stringify([gitleaksRow("a.py")]) } : { stdout: "[]" }),
+		gitleaks: (args) => (args[0] === "version" ? { stdout: "8.30.1\n" } : gitleaksRepo(args).endsWith("leaky") ? { stdout: JSON.stringify([gitleaksRow("a.py")]) } : { stdout: "[]" }),
 		"osv-scanner": (args) => (args[0] === "--version" ? { stdout: "2.7.1\n" } : { code: 127, stderr: "could not reach the database" }),
 	});
 	let clock = Date.parse("2026-11-17T12:00:00Z");
@@ -374,7 +383,7 @@ test("scans one repository again without touching the others", async () => {
 	const root = await twoRepos();
 	const scanned: string[] = [];
 	const run = fakeRunner({
-		gitleaks: (args) => (args[0] === "version" ? { stdout: "8.30.1\n" } : (scanned.push(args.at(-1)!), { stdout: "[]" })),
+		gitleaks: (args) => (args[0] === "version" ? { stdout: "8.30.1\n" } : (scanned.push(gitleaksRepo(args)), { stdout: "[]" })),
 		"osv-scanner": (args) => (args[0] === "--version" ? { stdout: "2.7.1\n" } : { code: 128, stderr: "No package sources found" }),
 	});
 
@@ -564,4 +573,14 @@ test("end to end: private data of every kind is found in history and in the file
 		for (const value of [...Object.values(values), ...addresses]) assert.ok(!text.includes(value), "no value is in the report");
 		assert.ok(!text.includes("mailbox.org"));
 	}
+});
+
+test("a report says its format, and one newer than this version reads is refused, never read as complete (B26)", async () => {
+	const root = await twoRepos();
+	const run = fakeRunner({ gitleaks: (args) => ({ stdout: args[0] === "version" ? "8.30.1" : "[]" }), "osv-scanner": "missing" });
+	const report = await scanRepos({ root, depth: 2, run, now: NOW });
+	assert.equal(report.format, REPORT_FORMAT);
+	assert.equal(parseScanReport(JSON.stringify(report), "r.json").format, REPORT_FORMAT);
+	assert.equal(parseScanReport(JSON.stringify({ ...report, format: undefined }), "old.json").root, root, "a report from before formats is still read");
+	assert.throws(() => parseScanReport(JSON.stringify({ ...report, format: REPORT_FORMAT + 1 }), "new.json"), /newer Porchlight.*Update Porchlight/);
 });

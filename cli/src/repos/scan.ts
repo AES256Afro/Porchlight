@@ -4,10 +4,10 @@ import { discoverRepos } from "./discover.ts";
 import { CancelledError, run as defaultRun, ToolMissingError, type Runner } from "./exec.ts";
 import { standardChoices } from "../../ui/scan-choices.js";
 import { scanSecrets } from "./gitleaks.ts";
-import { runOsvScanner } from "./osv.ts";
+import { scanDependencies } from "./osv.ts";
 import { nameUnder } from "./report.ts";
 import { scannerSettingFiles } from "./settings.ts";
-import type { Finding, RepoResult, ScanChoices, ScanReport, ToolName, ToolStatus } from "./types.ts";
+import { REPORT_FORMAT, type Finding, type NotCovered, type RepoResult, type ScanChoices, type ScanReport, type ToolName, type ToolStatus } from "./types.ts";
 
 interface Tool {
 	name: ToolName;
@@ -15,7 +15,7 @@ interface Tool {
 	installHint: string;
 	/** Whether the choices ask for this scanner's check. */
 	chosen: (choices: ScanChoices) => boolean;
-	scan: (repo: string, run: Runner, settings: ScannerSettings) => Promise<{ findings: Finding[]; unreadFiles?: number }>;
+	scan: (repo: string, run: Runner, settings: ScannerSettings) => Promise<{ findings: Finding[]; unreadFiles?: number; notCovered?: NotCovered[]; settingFiles?: string[] }>;
 }
 
 const TOOLS: Tool[] = [
@@ -33,7 +33,7 @@ const TOOLS: Tool[] = [
 		versionArgs: ["--version"],
 		installHint: "brew install osv-scanner",
 		chosen: (choices) => choices.dependencies,
-		scan: async (repo, run, settings) => ({ findings: await runOsvScanner(repo, run, { database: settings.osvDatabase }) }),
+		scan: (repo, run, settings) => scanDependencies(repo, run, { database: settings.osvDatabase }),
 	},
 ];
 
@@ -129,7 +129,7 @@ export async function scanRepos(options: ScanOptions): Promise<ScanReport> {
 	await Promise.all(Array.from({ length: Math.max(1, options.concurrency ?? repoConcurrency()) }, worker));
 	repos.sort((a, b) => a.path.localeCompare(b.path));
 
-	return { root, ...(otherRoots.length > 0 ? { otherRoots } : {}), scannedAt: now().toISOString(), tools, repos, choices, ...(skipped.length > 0 ? { skipped: skipped.sort() } : {}) };
+	return { format: REPORT_FORMAT, root, ...(otherRoots.length > 0 ? { otherRoots } : {}), scannedAt: now().toISOString(), tools, repos, choices, ...(skipped.length > 0 ? { skipped: skipped.sort() } : {}) };
 }
 
 /** The scanners that are installed and that the choices ask for. */
@@ -187,6 +187,10 @@ async function scanRepo(path: string, tools: Tool[], run: Runner, settingFiles: 
 		}
 		result.findings.push(...outcome.findings);
 		if (outcome.unreadFiles) result.unreadFiles = outcome.unreadFiles;
+		if (outcome.notCovered?.length) result.notCovered = [...(result.notCovered ?? []), ...outcome.notCovered];
+		// What a scanner reports it applied, wherever it was: the search for setting files skips some folders.
+		const applied = (outcome.settingFiles ?? []).filter((file) => !result.settingFiles?.includes(file));
+		if (applied.length > 0) result.settingFiles = [...(result.settingFiles ?? []), ...applied];
 	}
 	return result;
 }

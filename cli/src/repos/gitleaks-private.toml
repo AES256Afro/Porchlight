@@ -1,7 +1,8 @@
-# Private data: Porchlight's own rules, added to gitleaks' built-in ones when a scan looks for
-# private data (M7). Porchlight passes this file with --config, as it does gitleaks.toml, so a
-# scanned repository's own .gitleaks.toml is never used. gitleaks still runs with --redact: no value
-# reaches Porchlight, which keeps the kind, the file, the line and a count (invariant 3).
+# Private data: Porchlight's own rules, added to gitleaks' built-in ones (gitleaks.toml) when a
+# scan looks for private data (M7). rules.ts joins the two into the one config gitleaks is given with
+# --config, so a scanned repository's own .gitleaks.toml is never used; this file holds rules only.
+# gitleaks still runs with --redact: no value reaches Porchlight, which keeps the kind, the file, the
+# line and a count (invariant 3).
 #
 # Every id starts with "private-", which is how Porchlight tells these matches from secrets. A rule
 # ending in -example or -test matches values published for examples and testing; its main rule
@@ -11,8 +12,6 @@
 # checksum (Luhn, IBAN mod 97): it would need the value, which gitleaks never hands over. Card numbers
 # are told apart by issuer prefixes and length, IBANs by country and length.
 
-[extend]
-useDefault = true
 
 [[rules]]
 id = "private-email"

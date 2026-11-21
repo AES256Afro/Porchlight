@@ -214,7 +214,8 @@ async function storeChecks(home: string, mac: boolean): Promise<HostCheck[]> {
 				? `In plain text, and its permissions are ${octal(file.mode)}: other users of this computer can read it.`
 				: "In plain text. Only you can read the file, but so can every program you run, and every backup that copies it.",
 			fix: [...(open ? [`\`chmod 600 ${shown}\``] : []), mac || !store.macCommand ? store.fix : "Use a credential helper that encrypts them, such as Git Credential Manager, then delete the file."],
-			commands: [...(open ? [{ kind: "line" as const, line: `chmod 600 ${shown}` }] : []), ...(mac && store.macCommand ? [{ kind: "line" as const, line: store.macCommand }] : [])],
+			// Switching to the keychain stays in the fix alone: it replaces a `store` helper that unattended jobs may rely on.
+			commands: open ? [{ kind: "line" as const, line: `chmod 600 ${shown}` }] : [],
 		});
 	}
 	// Only when every file could be read and none holds one: a file that could not be read is no pass.

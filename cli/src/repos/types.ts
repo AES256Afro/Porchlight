@@ -84,9 +84,29 @@ export interface RepoResult {
 	 * could open. Missing when none were.
 	 */
 	unreadFiles?: number;
+	/**
+	 * What a scanner ran but could not cover in this repository, such as history cut short by a shallow
+	 * clone. Said under "Not covered", and no finding of that scanner there counts as fixed or new.
+	 * Missing when there was nothing.
+	 */
+	notCovered?: NotCovered[];
 }
 
+/** Something a scanner ran but could not cover in a repository: said in the report, never read as clean. */
+export interface NotCovered {
+	tool: ToolName;
+	message: string;
+}
+
+/**
+ * The shape of a report this version writes. 2 adds `notCovered` (M9), which an older Porchlight would
+ * not know to read as an incomplete scan; a reader refuses a report newer than it knows.
+ */
+export const REPORT_FORMAT = 2;
+
 export interface ScanReport {
+	/** Missing from reports before format 2. */
+	format?: number;
 	root: string;
 	/**
 	 * Further folders scanned along with `root`, such as the one holding repositories fetched from

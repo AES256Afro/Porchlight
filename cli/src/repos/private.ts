@@ -1,4 +1,3 @@
-import { fileURLToPath } from "node:url";
 import { triagePrivate } from "./triage.ts";
 import type { Finding, SecretSource, Severity } from "./types.ts";
 
@@ -13,9 +12,6 @@ import type { Finding, SecretSource, Severity } from "./types.ts";
 //   named like a passport or a payslip. The name and type only; such a file is never opened.
 // - Photos the repository tracks, as they are now: whether their EXIF data holds a GPS position.
 //   The position itself is never read out.
-
-/** Porchlight's rules for gitleaks, used instead of gitleaks.toml when a scan looks for private data. */
-export const PRIVATE_CONFIG = fileURLToPath(new URL("./gitleaks-private.toml", import.meta.url));
 
 /** Contact details (addresses and phone numbers that are not examples) in one file that make it a possible data dump. */
 export const DUMP_THRESHOLD = 20;

@@ -4,7 +4,8 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { hasGpsPosition, isPrivateRule, nameKind, namedFindings, PRIVATE_CONFIG, privateFindings, type Match } from "../src/repos/private.ts";
+import { hasGpsPosition, isPrivateRule, nameKind, namedFindings, privateFindings, type Match } from "../src/repos/private.ts";
+import { gitleaksConfig } from "../src/repos/rules.ts";
 import { triagePrivate } from "../src/repos/triage.ts";
 import { installed, photoWithGps, tempDir } from "./helpers.ts";
 
@@ -140,7 +141,7 @@ test("the private-data rules match what they are for, and leave example values t
 		[`db at ${j("db1.prod", ".internal")}:5432, not service-1.internal-cluster.example.test`, "private-internal-name"],
 	];
 	await writeFile(join(dir, "sample.txt"), `${lines.map(([line]) => line).join("\n")}\n`);
-	const { stdout } = await exec("gitleaks", ["dir", "--config", PRIVATE_CONFIG, "--report-format", "json", "--report-path", "-", "--redact", "--no-banner", "--no-color", "--log-level", "error", "--exit-code", "0", "."], { cwd: dir });
+	const { stdout } = await exec("gitleaks", ["dir", "--config", gitleaksConfig({ privateData: true }), "--report-format", "json", "--report-path", "-", "--redact", "--no-banner", "--no-color", "--log-level", "error", "--exit-code", "0", "."], { cwd: dir });
 	const rows = JSON.parse(stdout) as { RuleID: string; StartLine: number; Secret: string; Match: string }[];
 	const found = lines.map((_, index) => [...new Set(rows.filter((row) => row.StartLine === index + 1 && isPrivateRule(row.RuleID)).map((row) => row.RuleID))]);
 	assert.deepEqual(

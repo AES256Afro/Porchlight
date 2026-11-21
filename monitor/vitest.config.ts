@@ -8,6 +8,8 @@ export default defineConfig(async () => {
 			cloudflareTest({
 				config: true,
 				miniflare: {
+					// A second, empty database, for testing migrations on data made before them.
+					d1Databases: { MIGRATION_TEST_DB: "migration-test" },
 					bindings: {
 						TEST_MIGRATIONS: migrations,
 						ADMIN_TOKEN: "test-admin-token-0123456789abcdef0123456789",

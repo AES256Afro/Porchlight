@@ -59,7 +59,24 @@ jobs:
       - run: npm ci
       - run: npm --prefix monitor ci
       - run: npm --prefix cli ci
+      # The tests that run the real gitleaks and osv-scanner (the hostile-repository ones among them)
+      # skip on a computer without them. Here they must run, with the image's pinned versions and checksums.
+      - name: Install the scanners
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP"
+          gitleaks_version=8.30.1
+          osv_version=2.7.1
+          wget -qO gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/v${gitleaks_version}/gitleaks_${gitleaks_version}_linux_x64.tar.gz"
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+          wget -qO osv-scanner "https://github.com/google/osv-scanner/releases/download/v${osv_version}/osv-scanner_linux_amd64"
+          echo "fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8  osv-scanner" | sha256sum -c -
+          sudo install -m 0755 gitleaks osv-scanner /usr/local/bin/
       - run: npm test
+        env:
+          # A test that needs a scanner fails rather than skips when it is missing.
+          PORCHLIGHT_REQUIRE_SCANNERS: "1"
 
   # The image BoxPilot runs: it refuses to listen without a key, answers /healthz, keeps its API
   # behind the key, and the real scanners find a secret in a repository owned by another user.

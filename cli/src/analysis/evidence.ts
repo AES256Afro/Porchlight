@@ -73,7 +73,7 @@ export async function gatherEvidence(repo: string, manifest: string, name: strin
 			const file = relative(repo, full).split(sep).join("/");
 			evidence.usedInFiles++;
 			if (TEST_PATH.test(file)) testFiles++;
-			if (evidence.uses.length < MAX_USES) evidence.uses.push({ file, line: line.trim().slice(0, MAX_LINE) });
+			if (evidence.uses.length < MAX_USES) evidence.uses.push({ file, line: importText(line, name) });
 		}
 	}
 	evidence.onlyInTests = evidence.usedInFiles > 0 && testFiles === evidence.usedInFiles;
@@ -85,6 +85,38 @@ function importPattern(name: string): RegExp {
 	const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	const python = escaped.replace(/-/g, "[-_]");
 	return new RegExp(`['"\`]${escaped}(?:/[^'"\`]*)?['"\`]|^\\s*(?:import|from)\\s+${python}\\b`);
+}
+
+/**
+ * The import itself, out of a line that names the package: its keywords, the names it binds and the
+ * package's path, and nothing else from the line. A line can hold more than its import (a key passed
+ * straight to the package, `require("stripe")("sk_live_…")`, or a whole minified bundle), and that more
+ * can be a secret, so nothing quoted is kept but the package's own path (S11, invariants 3 and 16).
+ */
+export function importText(line: string, name: string): string {
+	const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const python = escaped.replace(/-/g, "[-_]");
+	const quote = "[\"'`]";
+	const path = `${quote}${escaped}(?:/[\\w@./-]{0,120})?${quote}`;
+	const forms = [
+		// import x from "p"; import { a, b } from "p"; import * as x from "p"; import "p"
+		`\\bimport\\s+(?:type\\s+)?(?:[\\w$*{}\\s,]+?\\s+from\\s+)?${path}`,
+		// import("p")
+		`\\bimport\\s*\\(\\s*${path}\\s*\\)`,
+		// const x = require("p"), with the names it binds; or require("p") alone
+		`(?:\\b(?:const|let|var)\\s+[\\w$\\s{},:]+?=\\s*)?\\brequire\\s*\\(\\s*${path}\\s*\\)`,
+		// from p import a, b
+		`^\\s*from\\s+${python}[\\w.]*\\s+import\\s+[\\w\\s,.*()]+`,
+		// import p, import p.sub as q
+		`^\\s*import\\s+${python}[\\w.]*(?:\\s+as\\s+\\w+)?`,
+		// Anything else that names it (a Go import path, say): the quoted path alone.
+		path,
+	];
+	for (const form of forms) {
+		const found = new RegExp(form).exec(line)?.[0];
+		if (found) return found.trim().slice(0, MAX_LINE);
+	}
+	return name;
 }
 
 async function declaredAs(repo: string, manifest: string, name: string): Promise<Evidence["declared"]> {

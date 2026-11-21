@@ -7,7 +7,7 @@
  */
 import { access, constants, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, isAbsolute, join } from "node:path";
 import { runOsvScanner } from "../repos/osv.ts";
 import { ToolMissingError, type Runner } from "../repos/exec.ts";
 import { highestVersion } from "../roadmap/versions.ts";
@@ -65,7 +65,8 @@ export function requirementsFile(packages: { name?: unknown; version?: unknown }
 /** The first executable of this name on PATH, as a shell would find it. */
 export async function findOnPath(name: string, pathEnv: string | undefined): Promise<string | null> {
 	for (const dir of (pathEnv ?? "").split(delimiter)) {
-		if (!dir) continue;
+		// An empty entry or "." means the folder Porchlight was started in, which may be a repository.
+		if (!dir || !isAbsolute(dir)) continue;
 		const candidate = join(dir, name);
 		try {
 			await access(candidate, constants.X_OK);
@@ -157,8 +158,14 @@ export function packageChecks(findings: Finding[], npmEntries: NpmEntry[], pytho
 						`It comes with ${owners.join(", ")}, installed globally. Update ${owners.length === 1 ? "it" : "them"}: \`npm install -g ${owners.map((owner) => `${owner}@latest`).join(" ")}\``,
 						"If that does not bring a fixed version, the package's maintainers have not released one yet.",
 					]
-			: [`\`python3 -m pip install --upgrade "${name}${fixedIn ? `>=${fixedIn}` : ""}"\``];
-		const specs = npm ? (direct ? [`${name}@${fixedIn ?? "latest"}`] : owners.map((owner) => `${owner}@latest`)) : [fixedIn ? `${name}>=${fixedIn}` : name];
+			: [
+					`\`python3 -m pip install --upgrade "${name}${fixedIn ? `>=${fixedIn}` : ""}"\``,
+					"If pip says this Python is externally managed, upgrade the package with the tool that installed that Python (Homebrew, apt) or inside a virtual environment.",
+				];
+		// Only commands safe to paste without a decision go in the combined list (invariant 19): an npm
+		// package raised to the version that fixes it. `@latest` can cross a major version, and pip refuses
+		// to change a Python another tool manages (PEP 668), so those stay in this check's own fix.
+		const specs = npm && direct && fixedIn ? [`${name}@${fixedIn}`] : [];
 		checks.push({
 			id: `package:${npm ? "npm" : "python"}:${name}`,
 			area: "packages",
@@ -212,8 +219,8 @@ async function brewCheck(run: Runner): Promise<HostCheck | null> {
 		status: "failed",
 		detail: `${outdated.length === 1 ? "1 package has" : `${outdated.length} packages have`} a newer version. ${note}`,
 		items: outdated.length > MAX_LISTED ? [...outdated.slice(0, MAX_LISTED), `and ${outdated.length - MAX_LISTED} more`] : outdated,
-		fix: ["`brew update && brew upgrade`"],
-		commands: [{ kind: "line", line: "brew update && brew upgrade" }],
+		// Not in the combined commands: `brew upgrade` moves every package, across major versions too.
+		fix: ["`brew update && brew upgrade` upgrades every package; `brew upgrade <name>` upgrades one."],
 	};
 }
 

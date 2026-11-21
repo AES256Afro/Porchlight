@@ -1,7 +1,7 @@
 import { basename, isAbsolute, relative } from "node:path";
 import { mdCode, mdText } from "../roadmap/escape.ts";
 import { choiceGaps, describeChoices, standardChoices } from "../../ui/scan-choices.js";
-import { SEVERITIES, severityRank, type Finding, type RepoResult, type ScanReport, type Severity, type ToolName } from "./types.ts";
+import { REPORT_FORMAT, SEVERITIES, severityRank, type Finding, type RepoResult, type ScanReport, type Severity, type ToolName } from "./types.ts";
 
 export type Counts = Record<Severity, number>;
 
@@ -15,6 +15,10 @@ export function parseScanReport(text: string, path: string): ScanReport {
 	}
 	if (!Array.isArray(report?.repos) || !Array.isArray(report?.tools) || typeof report.root !== "string") {
 		throw new Error(`Not a Porchlight scan report: ${path}`);
+	}
+	// A newer report can say a scan was incomplete in ways this version cannot read: refused, never misread as complete.
+	if (typeof report.format === "number" && report.format > REPORT_FORMAT) {
+		throw new Error(`This report was written by a newer Porchlight (report format ${report.format}; this one reads ${REPORT_FORMAT} and older). Update Porchlight to read it: ${path}`);
 	}
 	return report;
 }
@@ -81,6 +85,7 @@ export function coverageNotes(report: ScanReport): string[] {
 		for (const error of repo.errors) {
 			notes.push(`${error.tool} failed on ${repoName(report, repo)}: ${error.message}`);
 		}
+		for (const note of repo.notCovered ?? []) notes.push(`${note.tool} on ${repoName(report, repo)}: ${note.message}.`);
 		if (repo.unreadFiles) {
 			notes.push(
 				`${repo.unreadFiles === 1 ? "1 tracked file" : `${repo.unreadFiles} tracked files`} in ${repoName(report, repo)} ${repo.unreadFiles === 1 ? "was" : "were"} not read: larger than ${UNREAD_LIMIT_WORDS}, or not a file that could be opened.`,

@@ -131,7 +131,9 @@ async function verifyDomain(domain: DomainRow, env: AppEnv, deps: Deps): Promise
 			409,
 		);
 	}
-	const updated = await markVerified(env.DB, domain.id, deps.now().toISOString());
+	// Matches the name and token too: the domain may have been removed while DNS was asked.
+	const updated = await markVerified(env.DB, domain, deps.now().toISOString());
+	if (!updated) return removedMeanwhile();
 	const report = (await latestScan(env.DB, domain.id))?.report ?? null;
 	return json({ domain: describeDomain(updated, report) });
 }
@@ -165,7 +167,20 @@ async function scanDomain(domain: DomainRow, env: AppEnv, deps: Deps): Promise<R
 				{ error: "A scan of this domain is already running. Try again in a minute." },
 				409,
 			);
+		case "gone":
+			return removedMeanwhile();
 	}
+}
+
+/** The domain was removed (perhaps added again) while the request waited on the network; nothing was recorded. */
+function removedMeanwhile(): Response {
+	return json(
+		{
+			error:
+				"Domain is not registered: it was removed while this request ran, so nothing was recorded.",
+		},
+		404,
+	);
 }
 
 /** A path segment that is not valid percent-encoding names no domain, rather than failing the request. */

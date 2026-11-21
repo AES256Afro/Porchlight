@@ -1,7 +1,20 @@
-import { relative } from "node:path";
+import { realpath } from "node:fs/promises";
+import { isAbsolute, relative, sep } from "node:path";
+import { GIT_SAFE_ARGS } from "../github/github.ts";
 import { compareVersions, highestVersion } from "../roadmap/versions.ts";
 import { lastLine, type Runner } from "./exec.ts";
-import type { Finding, Severity } from "./types.ts";
+import { gitReadEnv } from "./git-copy.ts";
+import type { Finding, NotCovered, Severity } from "./types.ts";
+
+/**
+ * What osv-scanner is kept from doing, in every run (scans, the SBOM, the host check): working out
+ * packages a manifest pulls in indirectly (that sends their names to deps.dev, and follows registries a
+ * repository's pom.xml names), running a language's toolchain inside the repository to see which code is
+ * reached (`go list` can download whatever modules a go.mod names), and sending hashes of vendored
+ * files to OSV.dev. What it does instead is read the lockfiles and ask OSV.dev about the packages in
+ * them, or nothing at all offline (S19).
+ */
+export const OSV_LIMITS = ["--no-resolve", "--no-call-analysis=all", "--x-disable-plugins=filesystem/vendored"];
 
 /**
  * osv-scanner's exit codes. Anything else is a failure, notably 127 when the
@@ -22,18 +35,91 @@ export interface OsvOptions {
 
 /** Checks the dependencies named in a repository's lockfiles against the OSV database. */
 export async function runOsvScanner(repo: string, run: Runner, options: OsvOptions = {}): Promise<Finding[]> {
+	return (await osvScan(repo, run, options)).findings;
+}
+
+async function osvScan(repo: string, run: Runner, options: OsvOptions): Promise<{ findings: Finding[]; stderr: string }> {
 	const offline = options.database ? ["--offline-vulnerabilities", "--download-offline-databases"] : [];
 	const { code, stdout, stderr } = await run(
 		"osv-scanner",
-		["scan", "source", "--recursive", ...offline, "--format", "json", repo],
+		["scan", "source", "--recursive", ...OSV_LIMITS, ...offline, "--format", "json", repo],
 		options.database ? { env: { OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY: options.database } } : undefined,
 	);
-	if (code === NO_PACKAGES_FOUND) return [];
+	if (code === NO_PACKAGES_FOUND) return { findings: [], stderr };
 	if (code !== 0 && code !== VULNERABILITIES_FOUND) {
 		// Progress lines come first on stderr; the reason for the failure is last.
 		throw new Error(lastLine(stderr) || `osv-scanner exited with code ${code}`);
 	}
-	return parseOsv(stdout, repo);
+	return { findings: parseOsv(stdout, repo), stderr };
+}
+
+/** Manifests whose indirect dependencies only resolution (which is off, see OSV_LIMITS) would work out. */
+const UNRESOLVED = /^(?:requirements.*\.txt|pom\.xml)$/;
+
+/** The lockfiles and manifests osv-scanner reads, by name: a tracked one it did not read is said. */
+const LOCKFILES = [
+	"package-lock.json",
+	"npm-shrinkwrap.json",
+	"yarn.lock",
+	"pnpm-lock.yaml",
+	"bun.lock",
+	"Cargo.lock",
+	"go.mod",
+	"Gemfile.lock",
+	"gems.locked",
+	"composer.lock",
+	"poetry.lock",
+	"Pipfile.lock",
+	"pdm.lock",
+	"uv.lock",
+	"pubspec.lock",
+	"mix.lock",
+	"packages.lock.json",
+	"gradle.lockfile",
+	"conan.lock",
+	"renv.lock",
+	"pom.xml",
+	"requirements*.txt",
+];
+
+/** Paths osv-scanner names on stderr after `prefix`, as paths inside the repository. */
+function namedPaths(stderr: string, prefix: RegExp, repo: string, top: string): string[] {
+	const paths: string[] = [];
+	for (const line of stderr.split("\n")) {
+		const path = prefix.exec(line.trim())?.[1];
+		if (!path) continue;
+		const inside = [repo, top].map((base) => relative(base, path)).find((rel) => rel !== "" && !rel.startsWith("..") && !isAbsolute(rel));
+		if (inside !== undefined) paths.push(inside.split(sep).join("/"));
+	}
+	return paths;
+}
+
+/**
+ * A repository's packages checked against OSV, and what that left out (S17, S18, S19):
+ * - an osv-scanner.toml it applied, wherever it was (a filter hides findings, so it is named);
+ * - a lockfile git tracks that it did not read: a repository's .gitignore can hide one from it;
+ * - the packages a requirements.txt or pom.xml pulls in indirectly, which were not worked out.
+ */
+export async function scanDependencies(repo: string, run: Runner, options: OsvOptions = {}): Promise<{ findings: Finding[]; notCovered: NotCovered[]; settingFiles: string[] }> {
+	const { findings, stderr } = await osvScan(repo, run, options);
+	const top = await realpath(repo).catch(() => repo);
+	const settingFiles = [...new Set(namedPaths(stderr, /^Loaded filter from: (.+)$/, repo, top))].sort();
+	const read = new Set(namedPaths(stderr, /^Scanned (.+) file and found \d+ packages?$/, repo, top));
+	const listed = await run("git", [...GIT_SAFE_ARGS, "-C", repo, "ls-files", "-z", "--", ...LOCKFILES.map((name) => `:(glob)**/${name}`)], { env: gitReadEnv() }).catch(() => null);
+	// Third-party code committed with the project carries lockfiles of its own, which are not the project's.
+	const tracked = listed && listed.code === 0 ? listed.stdout.split("\0").filter((path) => path !== "" && !path.split("/").includes("node_modules")) : [];
+	const notCovered: NotCovered[] = [];
+	const missed = tracked.filter((path) => !read.has(path));
+	if (missed.length > 0) {
+		const shown = missed.slice(0, 3).join(", ") + (missed.length > 3 ? ` and ${missed.length - 3} more` : "");
+		notCovered.push({ tool: "osv-scanner", message: `${missed.length === 1 ? "a lockfile git tracks was" : `${missed.length} lockfiles git tracks were`} not read (${shown}), most likely because the repository's .gitignore covers ${missed.length === 1 ? "it" : "them"}` });
+	}
+	const manifests = tracked.filter((path) => UNRESOLVED.test(path.split("/").at(-1) ?? ""));
+	if (manifests.length > 0) {
+		const names = [...new Set(manifests.map((path) => path.split("/").at(-1)))].sort().join(" and ");
+		notCovered.push({ tool: "osv-scanner", message: `packages its ${names} ${manifests.length === 1 ? "file pulls" : "files pull"} in indirectly were not worked out: that would send their names to deps.dev` });
+	}
+	return { findings, notCovered, settingFiles };
 }
 
 interface OsvAffected {

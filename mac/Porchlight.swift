@@ -11,6 +11,58 @@
 import AppKit
 import WebKit
 
+/// The server's output, kept in ~/.porchlight/app.log for Show Log. The folder is 0700 and the log
+/// 0600, as for everything Porchlight keeps, and the session key in the page's link is never
+/// written: output is held until its line ends, so a key split across two reads is masked whole.
+/// Used only from the pipe's handler, which runs one call at a time. A write that fails (a full
+/// disk) ends the log, never the app.
+final class AppLog {
+	private var handle: FileHandle?
+	private var pending = Data()
+
+	init(_ url: URL) {
+		let folder = url.deletingLastPathComponent()
+		try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+		// One made before this rule is corrected: the folder itself, not what is in it.
+		chmod(folder.path, 0o700)
+		let fd = open(url.path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0o600)
+		guard fd >= 0 else { return }
+		// The mode given to open applies only to a new file; an earlier log is corrected before any write.
+		guard fchmod(fd, 0o600) == 0 else { close(fd); return }
+		handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+	}
+
+	func write(_ data: Data) {
+		guard handle != nil else { return }
+		pending.append(data)
+		guard let end = pending.lastIndex(of: 0x0A) else { return }
+		let lines = pending[...end]
+		pending = Data(pending[pending.index(after: end)...])
+		put(lines)
+	}
+
+	/// The server has stopped: what is left of its last line.
+	func finish() {
+		if !pending.isEmpty { put(pending) }
+		pending = Data()
+	}
+
+	private func put(_ data: Data) {
+		do {
+			try handle?.write(contentsOf: Data(AppLog.masked(String(decoding: data, as: UTF8.self)).utf8))
+		} catch {
+			try? handle?.close()
+			handle = nil
+			pending = Data()
+		}
+	}
+
+	/// Everything after `#k=` up to the next space is the key: the page's link keeps it, the log does not.
+	static func masked(_ text: String) -> String {
+		text.replacingOccurrences(of: #"#k=\S+"#, with: "#k=(not logged)", options: .regularExpression)
+	}
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, WKScriptMessageHandlerWithReply {
 	private var window: NSWindow!
 	private var webView: WKWebView!
@@ -216,13 +268,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 	// MARK: The local server
 
 	private func startServer() {
+		// Made first, so the data folder is private from launch even if the server cannot start.
+		let log = AppLog(logURL)
 		guard let launcher = Bundle.main.url(forResource: "launch", withExtension: "sh") else {
 			fail("This copy of Porchlight is incomplete (launch.sh is missing). Install it again, or build it with mac/build.sh.")
 			return
 		}
-		try? FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-		FileManager.default.createFile(atPath: logURL.path, contents: nil)
-		let log = try? FileHandle(forWritingTo: logURL)
 
 		let process = Process()
 		process.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -232,8 +283,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 		process.standardError = pipe
 		pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
 			let data = handle.availableData
-			guard !data.isEmpty else { handle.readabilityHandler = nil; return }
-			log?.write(data)
+			guard !data.isEmpty else { log.finish(); handle.readabilityHandler = nil; return }
+			log.write(data)
 			let text = String(decoding: data, as: UTF8.self)
 			DispatchQueue.main.async { self?.received(text) }
 		}

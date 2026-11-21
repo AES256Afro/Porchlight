@@ -1,6 +1,7 @@
 import { basename, resolve } from "node:path";
 import { discoverRepos } from "./discover.ts";
 import { run as defaultRun, ToolMissingError, type Runner } from "./exec.ts";
+import { OSV_LIMITS } from "./osv.ts";
 import { nameUnder } from "./report.ts";
 
 // A software bill of materials: every package the repositories' lockfiles name, as CycloneDX 1.5.
@@ -49,7 +50,7 @@ export interface Sbom {
  * vulnerability database, so the plugin that matches against one is switched off. That switch is one of
  * osv-scanner's experimental flags (2.x); a version without it is said to be unsupported, never ignored.
  */
-const INVENTORY_ONLY = ["--offline", "--all-packages", "--x-disable-plugins=vulnmatch/osvlocal"];
+const INVENTORY_ONLY = ["--offline", "--all-packages", "--x-disable-plugins=vulnmatch/osvlocal", ...OSV_LIMITS];
 
 /** osv-scanner's exit codes that still carry an inventory: 0 found none to flag, 1 found some, 128 no lockfiles. */
 const READ = new Set([0, 1, 128]);

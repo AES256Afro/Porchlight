@@ -1,6 +1,7 @@
 import { fetchCtCerts, hostsFromCerts, latestCertFor, type CertWindow } from "./collect/ct.ts";
 import { lookupApex, lookupHost, resolves, type ApexRecords, type HostDns } from "./collect/dns.ts";
 import { probeHttps, type HttpProbe } from "./collect/http.ts";
+import { isWithin } from "./domain.ts";
 import type { Deps, Settings } from "./env.ts";
 
 export interface HostState {
@@ -39,10 +40,14 @@ const PROBE_CONCURRENCY = 4;
 
 export async function collectSnapshot(
 	domain: string,
-	prev: Snapshot | null,
+	previous: Snapshot | null,
 	settings: Settings,
 	deps: Deps,
 ): Promise<Snapshot> {
+	// Only names within this domain are carried from the previous scan, and only
+	// from a scan of this same domain: a carried name is probed without a
+	// certificate log entry of its own, so it must be one the ownership check covers.
+	const prev = carriedFrom(previous, domain);
 	const [certs, { records: apex, dnssec }] = await Promise.all([
 		fetchCtCerts(domain, deps.fetch).catch(() => null),
 		lookupApex(domain, deps.fetch),
@@ -100,6 +105,18 @@ export async function collectSnapshot(
 		...(dnssec !== undefined ? { dnssec } : {}),
 		hosts,
 		...(Object.keys(gone).length > 0 ? { gone } : {}),
+	};
+}
+
+/** The previous snapshot cut to what may be carried into a scan of `domain`, or null if it was of another domain. */
+function carriedFrom(prev: Snapshot | null, domain: string): Snapshot | null {
+	if (!prev || prev.domain !== domain) return null;
+	const within = <T>(record: Record<string, T> | undefined) =>
+		Object.fromEntries(Object.entries(record ?? {}).filter(([host]) => isWithin(host, domain)));
+	return {
+		...prev,
+		hosts: within(prev.hosts),
+		...(prev.gone ? { gone: within(prev.gone) } : {}),
 	};
 }
 

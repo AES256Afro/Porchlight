@@ -272,10 +272,13 @@ test("installed packages become lockfiles osv-scanner can read, and one check pe
 	assert.equal(byId["package:npm:lodash"]!.items!.length, 2);
 	assert.match(byId["package:python:requests"]!.fix![0]!, /pip install --upgrade "requests>=2\.31\.0"/);
 	assert.match(byId["package:python:requests"]!.title, /Python \(\/usr\/local\/bin\/python3\)/);
+	// Only what is safe to paste without a decision is offered to combine: a package raised to its fixed
+	// version. `old-cli@latest` can cross a major version, and pip refuses a Python another tool manages.
 	assert.deepEqual(
 		checks.map((check) => check.commands),
-		[[{ kind: "npm-global", spec: "old-cli@latest" }], [{ kind: "npm-global", spec: "lodash@4.17.21" }], [{ kind: "pip", spec: "requests>=2.31.0" }]],
+		[[], [{ kind: "npm-global", spec: "lodash@4.17.21" }], []],
 	);
+	assert.match(byId["package:python:requests"]!.fix![1]!, /externally managed/);
 });
 
 test("the repair commands are combined into lines a terminal can take in one paste", () => {
@@ -288,16 +291,13 @@ test("the repair commands are combined into lines a terminal can take in one pas
 		check("evil", "failed", [{ kind: "npm-global", spec: "x@1;rm -rf ~" }, { kind: "pip", spec: "y>=1 && curl evil" }]),
 		check("d", "failed", [{ kind: "pip", spec: "requests>=2.31.0" }]),
 		check("e", "failed", [{ kind: "pip", spec: "diskcache" }]),
+		check("options", "failed", [{ kind: "npm-global", spec: "--registry=evil.example@1" }, { kind: "npm-global", spec: "a@latest" }]),
 		check("ok", "passed", [{ kind: "line", line: "never shown" }]),
 		check("brew", "failed", [{ kind: "line", line: "brew update && brew upgrade" }]),
 		check("brew again", "failed", [{ kind: "line", line: "brew update && brew upgrade" }]),
 	]);
-	assert.deepEqual(lines, [
-		"softwareupdate --install --all",
-		"npm install -g lodash@4.17.21 cf@latest",
-		'python3 -m pip install --upgrade "requests>=2.31.0" "diskcache"',
-		"brew update && brew upgrade",
-	]);
+	// No tag (it can cross a major version), nothing that reads as an option, and no pip upgrade.
+	assert.deepEqual(lines, ["softwareupdate --install --all", "npm install -g lodash@4.17.21", "brew update && brew upgrade"]);
 	assert.deepEqual(combinedCommands([check("ok", "passed", [{ kind: "npm-global", spec: "a@1" }])]), []);
 	assert.deepEqual([shellWord("id_ed25519"), shellWord("my key"), shellWord("it's"), shellWord("$(boom)")], ["id_ed25519", "'my key'", "'it'\\''s'", "'$(boom)'"]);
 });
@@ -313,7 +313,9 @@ test("credential repairs quote file names, and leave out what needs a decision",
 	assert.deepEqual(mac["ssh-key:my key"]!.commands, [{ kind: "line", line: "chmod 600 ~/.ssh/'my key'" }]);
 	// Adding a passphrase would stop a script that uses the key, so it is a step, not a command to paste.
 	assert.equal(mac["ssh-key:deploy"]!.commands, undefined);
-	assert.deepEqual(mac["plaintext:.git-credentials"]!.commands, [{ kind: "line", line: "git config --global credential.helper osxkeychain" }]);
+	// Switching to the keychain would replace a `store` helper that unattended jobs may rely on: a step, not a command to paste.
+	assert.deepEqual(mac["plaintext:.git-credentials"]!.commands, []);
+	assert.match(mac["plaintext:.git-credentials"]!.fix!.join(" "), /credential\.helper osxkeychain/);
 	const linux = Object.fromEntries((await credentialChecks(home, false)).map((check) => [check.id, check]));
 	assert.deepEqual(linux["plaintext:.git-credentials"]!.commands, []);
 	assert.doesNotMatch(linux["plaintext:.git-credentials"]!.fix!.join(" "), /osxkeychain/);

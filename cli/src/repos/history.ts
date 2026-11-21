@@ -79,7 +79,10 @@ function checked(report: ScanReport): Set<string> {
 	const pairs = new Set<string>();
 	for (const repo of report.repos) {
 		const name = repoName(report, repo);
-		for (const tool of ran) if (!repo.errors.some((error) => error.tool === tool)) pairs.add(`${name}\n${tool}`);
+		for (const tool of ran) {
+			const looked = !repo.errors.some((error) => error.tool === tool) && !repo.notCovered?.some((note) => note.tool === tool);
+			if (looked) pairs.add(`${name}\n${tool}`);
+		}
 	}
 	return pairs;
 }
