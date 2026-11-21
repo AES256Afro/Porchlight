@@ -95,14 +95,16 @@ report() {
 while IFS= read -r needle; do
 	grep -r -a -i -F -l -- "$needle" "$root" 2>/dev/null >"$work/hits" || true
 	while IFS= read -r hit; do report "\"$needle\" is in ${hit#"$root"/}"; done <"$work/hits"
-	find "$root" -print 2>/dev/null | grep -i -F -- "$needle" >"$work/hits" || true
-	while IFS= read -r hit; do report "\"$needle\" is in the name ${hit#"$root"/}"; done <"$work/hits"
+	# Names inside the DMG only: the folder it is checked in can itself be under a home folder (CI's is).
+	find "$root" -mindepth 1 -print 2>/dev/null | cut -c"$((${#root} + 2))"- | grep -i -F -- "$needle" >"$work/hits" || true
+	while IFS= read -r hit; do report "\"$needle\" is in the name $hit"; done <"$work/hits"
 done <"$substrings"
 while IFS= read -r needle; do
 	grep -r -a -i -w -F -l -- "$needle" "$root" 2>/dev/null >"$work/hits" || true
 	while IFS= read -r hit; do report "\"$needle\" is in ${hit#"$root"/}"; done <"$work/hits"
-	find "$root" -print 2>/dev/null | grep -i -w -F -- "$needle" >"$work/hits" || true
-	while IFS= read -r hit; do report "\"$needle\" is in the name ${hit#"$root"/}"; done <"$work/hits"
+	# Names inside the DMG only: the folder it is checked in can itself be under a home folder (CI's is).
+	find "$root" -mindepth 1 -print 2>/dev/null | cut -c"$((${#root} + 2))"- | grep -i -w -F -- "$needle" >"$work/hits" || true
+	while IFS= read -r hit; do report "\"$needle\" is in the name $hit"; done <"$work/hits"
 done <"$words"
 
 # Programs: an absolute run-path search folder outside macOS's own points at the building machine.
