@@ -61,3 +61,46 @@ export function fakeRunner(
 	};
 	return Object.assign(runner, { calls, envs });
 }
+
+/** A JPEG holding only EXIF data, with a GPS position unless both are zero. */
+export function photoWithGps(latitude: [number, number, number], longitude: [number, number, number], bigEndian = false): Buffer {
+	const t = Buffer.alloc(104);
+	const u16 = (value: number, at: number) => (bigEndian ? t.writeUInt16BE(value, at) : t.writeUInt16LE(value, at));
+	const u32 = (value: number, at: number) => (bigEndian ? t.writeUInt32BE(value, at) : t.writeUInt32LE(value, at));
+	t.write(bigEndian ? "MM" : "II", 0, "latin1");
+	u16(42, 2);
+	u32(8, 4);
+	// IFD0: one entry, the GPS IFD's place.
+	u16(1, 8);
+	u16(0x8825, 10);
+	u16(4, 12);
+	u32(1, 14);
+	u32(26, 18);
+	u32(0, 22);
+	// GPS IFD: latitude (2) and longitude (4), three rationals each.
+	u16(2, 26);
+	for (const [index, tag, at] of [
+		[0, 2, 56],
+		[1, 4, 80],
+	] as const) {
+		u16(tag, 28 + index * 12);
+		u16(5, 30 + index * 12);
+		u32(3, 32 + index * 12);
+		u32(at, 36 + index * 12);
+	}
+	u32(0, 52);
+	for (const [at, values] of [
+		[56, latitude],
+		[80, longitude],
+	] as const) {
+		values.forEach((value, part) => {
+			u32(value, at + part * 8);
+			u32(part === 2 ? 100 : 1, at + part * 8 + 4);
+		});
+	}
+	const exif = Buffer.concat([Buffer.from("Exif\0\0", "latin1"), t]);
+	const app1 = Buffer.alloc(4);
+	app1.writeUInt16BE(0xffe1, 0);
+	app1.writeUInt16BE(exif.length + 2, 2);
+	return Buffer.concat([Buffer.from([0xff, 0xd8]), app1, exif, Buffer.from([0xff, 0xd9])]);
+}

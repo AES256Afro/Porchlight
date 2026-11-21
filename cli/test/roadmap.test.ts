@@ -179,7 +179,7 @@ test("renders a Markdown checklist", () => {
 			[
 				"## 2. Fix next",
 				"",
-				"High-severity vulnerabilities.",
+				"High-severity vulnerabilities, and personal data in git history such as ID numbers or data dumps.",
 				"",
 				"### shop",
 				"",
@@ -425,4 +425,60 @@ test("a key that was never committed is kept out of git, not rotated", () => {
 	assert.match(actions[0]!.how.join(" "), /need no rotation while that stays true/);
 	// Every finding is still listed, each with that repair.
 	assert.equal(listRepoFindings(report).rows.length, 3);
+});
+
+test("private data in history is removed from it, file by file; network names and examples are checked; local data is kept out of git", () => {
+	const found = (ruleId: string, location: string, severity: Finding["severity"], extra: Partial<Finding> = {}): Finding => ({
+		tool: "gitleaks",
+		kind: "private-data",
+		severity,
+		ruleId,
+		title: ruleId,
+		location,
+		detail: "commit abcdef12 on 2026-03-24",
+		source: "history",
+		...extra,
+	});
+	const report: ScanReport = {
+		...sampleReport(),
+		repos: [
+			{
+				path: "/work/app",
+				errors: [],
+				findings: [
+					found("private-data-dump", "exports/customers.csv:2", "high"),
+					found("private-us-ssn", "exports/customers.csv:9", "high"),
+					found("private-document", "id/passport scan.pdf", "high"),
+					found("private-ip", "deploy/hosts:3", "low"),
+					found("private-internal-name", "deploy/hosts:4", "low"),
+					found("private-email-example", "tests/users.json:1", "low", { note: "Ranked lower: a value published for examples or testing; in a test path" }),
+					found("private-email", "package.json:3", "low", { note: "Ranked lower: in project metadata, where a maintainer's address is public by design" }),
+					found("private-iban", ".env:1", "medium", { source: "local", detail: "on this computer only, not in git" }),
+				],
+			},
+		],
+	};
+	const actions = buildRepoRoadmap(report).phases.flatMap((phase) => phase.groups.flatMap((group) => group.actions));
+	assert.deepEqual(
+		actions.map((action) => [action.kind, action.title]),
+		[
+			["purge", "Remove the personal data in exports/customers.csv from git history"],
+			["purge", "Remove the personal data in id/passport scan.pdf from git history"],
+			["keep", "Keep 1 file with personal data out of git"],
+			["review", "Check the internal network names and addresses in 1 file"],
+			["review", "Check the contact details in the project metadata of 1 file"],
+			["review", "Check the example personal data in 1 file"],
+		],
+	);
+	// A file found by its name alone is dropped from history whole; its name is quoted for the shell.
+	assert.match(actions[1]!.how[0]!, /`git filter-repo --invert-paths --path 'id\/passport scan\.pdf'`/);
+	assert.match(actions[0]!.how[0]!, /--replace-text/);
+	assert.deepEqual(actions[0]!.clears, ["private-data-dump", "private-us-ssn"]);
+	const rows = listRepoFindings(report).rows;
+	assert.equal(rows.length, 8);
+	assert.ok(rows.every((row) => row.type === "Private data"));
+	// The type filter and its words know private data.
+	assert.equal(listRepoFindings(report, parseFilter({ kind: "private-data" })).rows.length, 8);
+	assert.equal(listRepoFindings(report, parseFilter({ kind: "secret" })).rows.length, 0);
+	assert.throws(() => parseFilter({ kind: "personal" }), /Choose secret, vulnerability or private-data/);
 });

@@ -26,12 +26,16 @@ osv-scanner, and prints one ranked report. Progress goes to the error stream, on
   --preset <name>        What to look at (default: standard):
                            quick: secrets in the files as they are now, and dependencies; no history
                            standard: secrets in every commit on every branch, and dependencies
-                           deep: as standard here; in the interface the model's deeper analysis follows
-  --checks <list>        Only these checks: secrets, dependencies, or both separated by a comma
+                           deep: as standard, plus private data; in the interface the model's deeper
+                           analysis follows
+  --checks <list>        Only these checks: secrets, dependencies, private-data, separated by commas.
+                         Private data: contact details, ID and account numbers, locations, data
+                         dumps and personal documents, counted per file and never shown
   --history <reach>      How much git history to read for secrets: all, none (the files as they are
                          now), or a number of the latest commits (with the files as they are now)
-  --local-files          Also read files git does not track, such as .env. What is found there is
-                         reported as on this computer only, one step lower
+  --local-files          Also read files git does not track, such as .env, and changes not yet
+                         committed. What is found there is reported as on this computer only, one
+                         step lower
   --skip <name>          Leave out a repository, by the name the report gives it. Repeat, or separate
                          names with commas
   --out <file>           Write the report to a file instead of printing it
@@ -53,7 +57,7 @@ osv-scanner, and prints one ranked report. Progress goes to the error stream, on
   --format <format>      ${FORMATS.join(", ")} (default: md)
   --out <file>           Write to a file instead of printing it
   --severity <list>      Only these severities, comma-separated
-  --kind <type>          Only secret or vulnerability findings
+  --kind <type>          Only secret, vulnerability or private-data findings
   --match <text>         Only findings mentioning this text
   --repo <name>          Only this repository`,
 	},

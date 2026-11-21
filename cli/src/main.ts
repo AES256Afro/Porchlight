@@ -11,7 +11,7 @@ import { History } from "./repos/history.ts";
 import { buildSbom } from "./repos/sbom.ts";
 import { scanRepos, type RepoDone } from "./repos/scan.ts";
 import { SEVERITIES, type ScanChoices, type Severity } from "./repos/types.ts";
-import { ChoiceError, isPreset, parseChoices, PRESETS } from "../ui/scan-choices.js";
+import { ChoiceError, isPreset, parseChoices, presetOf, PRESETS } from "../ui/scan-choices.js";
 import type { MonitorReport } from "./roadmap/domains.ts";
 import { CONTENTS, exportDomain, exportRepos, parseFilter, type ExportFile } from "./roadmap/export.ts";
 import { FORMATS } from "./roadmap/render.ts";
@@ -145,8 +145,8 @@ export async function reposSbom(args: string[], deps: { run?: Runner; write?: (t
 
 /**
  * The scan choices the flags ask for: a preset (standard when none is named), changed by any switch
- * given. The model's deeper analysis is the interface's alone, so `--preset deep` scans as Standard
- * does here and says so.
+ * given. The model's deeper analysis is the interface's alone, so `--preset deep` scans as Deep does
+ * (private data included) without it, and keeps the name.
  */
 export function choicesFromFlags(values: { preset?: string; checks?: string; history?: string; "local-files"?: boolean; skip?: string[] }): ScanChoices {
 	const input: Record<string, unknown> = { analyse: false };
@@ -156,10 +156,11 @@ export function choicesFromFlags(values: { preset?: string; checks?: string; his
 	}
 	if (values.checks !== undefined) {
 		const checks = values.checks.split(",").map((check) => check.trim()).filter((check) => check !== "");
-		const unknown = checks.filter((check) => check !== "secrets" && check !== "dependencies");
-		if (unknown.length > 0 || checks.length === 0) throw new Error("--checks takes secrets, dependencies or both, separated by a comma");
+		const unknown = checks.filter((check) => check !== "secrets" && check !== "dependencies" && check !== "private-data");
+		if (unknown.length > 0 || checks.length === 0) throw new Error("--checks takes secrets, dependencies and private-data, any of them separated by commas");
 		input.secrets = checks.includes("secrets");
 		input.dependencies = checks.includes("dependencies");
+		input.privateData = checks.includes("private-data");
 	}
 	if (values.history !== undefined) input.history = values.history;
 	if (values["local-files"]) input.localFiles = true;
@@ -167,7 +168,7 @@ export function choicesFromFlags(values: { preset?: string; checks?: string; his
 	try {
 		const choices = parseChoices(input);
 		// Without the interface there is no model to hand over to; the preset's name stays, as chosen.
-		return values.preset === "deep" && choices.preset === "standard" ? { ...choices, preset: "deep" } : choices;
+		return values.preset === "deep" && presetOf({ ...choices, analyse: true }) === "deep" ? { ...choices, preset: "deep" } : choices;
 	} catch (err) {
 		if (err instanceof ChoiceError) throw new Error(err.message.replace(/^History/, "--history").replace(/^Skip/, "--skip"));
 		throw err;

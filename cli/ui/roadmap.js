@@ -121,9 +121,10 @@ export async function renderRoadmap(view, route) {
 					select(
 						"Type",
 						[
-							["all", "Secrets and vulnerabilities"],
+							["all", "All types"],
 							["secret", "Secrets"],
 							["vulnerability", "Vulnerabilities"],
+							["private-data", "Private data"],
 						],
 						filter.kind,
 						(value) => ((filter.kind = /** @type {typeof filter.kind} */ (value)), refetch()),

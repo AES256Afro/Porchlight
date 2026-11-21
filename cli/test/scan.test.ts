@@ -13,7 +13,7 @@ import { repoConcurrency, rescanRepo, scanRepos } from "../src/repos/scan.ts";
 import { scannerSettingFiles } from "../src/repos/settings.ts";
 import type { ScanReport } from "../src/repos/types.ts";
 import { presetChoices } from "../ui/scan-choices.js";
-import { fakeAwsKeyId, fakeRunner, git, installed, makeTree, tempDir } from "./helpers.ts";
+import { fakeAwsKeyId, fakeRunner, git, installed, makeTree, photoWithGps, tempDir } from "./helpers.ts";
 
 const exec = promisify(execFile);
 const CLI = join(import.meta.dirname, "../bin/porchlight.js");
@@ -501,4 +501,67 @@ test("a check switched off runs no scanner, and a Quick scan never runs git's ow
 	assert.ok(scans[1]!.includes("--redact"));
 	assert.equal(report.repos[0]!.errors.length, 0);
 	assert.deepEqual(report.choices?.dependencies, false);
+});
+
+test("end to end: private data of every kind is found in history and in the files as they are now, and no value reaches the report", async (t) => {
+	if (!(await installed("gitleaks"))) return t.skip("gitleaks is not installed");
+	const root = await tempDir();
+	const repo = join(root, "people");
+	const j = (...parts: string[]) => parts.join("");
+	// Made-up values, assembled here so this repository's own scan has nothing to find.
+	const values = {
+		ssn: j("536-", "22-", "4471"),
+		card: j("4539 1488 ", "0343 6467"),
+		iban: j("DE44 5001 0517 ", "5407 3249 31"),
+		gps: j("51.50735", ", -0.12776"),
+		host: j("db1.prod", ".internal"),
+	};
+	const addresses = Array.from({ length: 25 }, (_, i) => j(`person${i}.surname`, "@", "mailbox.org"));
+	const kinds = (dir: string, image: string, document: string) => ({
+		[`${dir}/contacts.csv`]: `email\n${addresses.join("\n")}\n`,
+		[`${dir}/ids.txt`]: `ssn ${values.ssn}\ncard ${values.card}\niban ${values.iban}\n`,
+		[`${dir}/home.txt`]: `home: ${values.gps}\n`,
+		[`${dir}/hosts.txt`]: `gateway 192.168.4.1\ndatabase ${values.host}\n`,
+		[`${dir}/users.sqlite`]: "SQLite format 3\0",
+		[`${dir}/${document}`]: "%PDF-1.4\n",
+		[`${dir}/${image}`]: "",
+	});
+	const old = kinds("old", "photo.jpg", "passport.pdf");
+	const now = kinds("now", "garden.jpg", "bank-statement.pdf");
+	await makeTree(repo, { ...old, ...now, "tests/fixtures/users.json": JSON.stringify([j("alice", "@", "example.com")]) });
+	await writeFile(join(repo, "old/photo.jpg"), photoWithGps([51, 30, 2645], [0, 7, 3982]));
+	await writeFile(join(repo, "now/garden.jpg"), photoWithGps([48, 51, 1200], [2, 21, 800]));
+	await git(repo, "init", "-q");
+	await git(repo, "add", "-A");
+	await git(repo, "commit", "-q", "-m", "data");
+	// Deleting the files does not take them out of history.
+	await git(repo, "rm", "-q", "-r", "old");
+	await git(repo, "commit", "-q", "-m", "remove");
+
+	const RULES = ["private-data-dump", "private-dump-file", "private-gps", "private-iban", "private-internal-name", "private-ip", "private-payment-card", "private-photo-location", "private-us-ssn", "private-document"].sort();
+	const rulesIn = (report: ScanReport, dir: string) => [...new Set(report.repos[0]!.findings.filter((finding) => finding.kind === "private-data" && finding.location.startsWith(`${dir}/`)).map((finding) => finding.ruleId))].sort();
+
+	const deep = await scanRepos({ root, depth: 1, now: NOW, choices: { ...presetChoices("deep"), analyse: false } });
+	assert.deepEqual(deep.repos[0]!.errors, []);
+	assert.deepEqual(rulesIn(deep, "old"), RULES, "everything in the deleted files is still found in history");
+	assert.deepEqual(rulesIn(deep, "now"), RULES);
+	const dump = deep.repos[0]!.findings.find((finding) => finding.ruleId === "private-data-dump" && finding.location.startsWith("now/"))!;
+	assert.deepEqual([dump.title, dump.severity, dump.count, dump.detail.startsWith("commit ")], ["Possible data dump: 25 email addresses in one file", "high", 25, true]);
+	// Example data ranks below real-looking data.
+	const example = deep.repos[0]!.findings.find((finding) => finding.ruleId === "private-email-example")!;
+	assert.deepEqual([example.severity, example.location], ["low", "tests/fixtures/users.json:1"]);
+	assert.ok(deep.repos[0]!.findings.some((finding) => finding.kind === "secret") === false, "no secret in this repository");
+
+	// Quick reads the files as they are now: the deleted ones are not looked for, and the report says so.
+	const quick = await scanRepos({ root, depth: 1, now: NOW, choices: { ...presetChoices("quick"), privateData: true } });
+	assert.deepEqual(rulesIn(quick, "now"), RULES);
+	assert.deepEqual(rulesIn(quick, "old"), []);
+	assert.ok(quick.repos[0]!.findings.filter((finding) => finding.kind === "private-data" && finding.location.startsWith("now/")).every((finding) => finding.detail === "current files"));
+	assert.ok(coverageNotes(quick).some((note) => note.startsWith("Git history was not read for secrets or private data")));
+
+	for (const report of [deep, quick]) {
+		const text = JSON.stringify(report);
+		for (const value of [...Object.values(values), ...addresses]) assert.ok(!text.includes(value), "no value is in the report");
+		assert.ok(!text.includes("mailbox.org"));
+	}
 });

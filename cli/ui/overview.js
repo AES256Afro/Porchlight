@@ -81,7 +81,7 @@ export async function renderOverview(view, context) {
 				"div",
 				{ class: "card full" },
 				h("h2", null, "Check your code"),
-				h("p", { class: "sub" }, "Finds passwords and keys saved in your git repositories, old commits included, and packages with known security holes."),
+				h("p", { class: "sub" }, "Finds passwords and keys saved in your git repositories, old commits included, and packages with known security holes. Deep also looks for personal data."),
 				h(
 					"form",
 					{

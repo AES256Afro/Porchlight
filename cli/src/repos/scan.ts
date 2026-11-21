@@ -23,8 +23,10 @@ const TOOLS: Tool[] = [
 		name: "gitleaks",
 		versionArgs: ["version"],
 		installHint: "brew install gitleaks",
-		chosen: (choices) => choices.secrets,
-		scan: (repo, run, settings) => scanSecrets(repo, run, { history: settings.choices.history, localFiles: settings.choices.localFiles }),
+		// One gitleaks pass finds secrets and, with Porchlight's rules beside its own, private data.
+		chosen: (choices) => choices.secrets || choices.privateData === true,
+		scan: (repo, run, { choices }) =>
+			scanSecrets(repo, run, { history: choices.history, localFiles: choices.localFiles, secrets: choices.secrets, privateData: choices.privateData === true }),
 	},
 	{
 		name: "osv-scanner",

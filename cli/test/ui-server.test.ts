@@ -2033,7 +2033,7 @@ test("a scan request carries its choices to the scanner, and choices it does not
 
 	assert.equal((await send(server, "POST", "/api/repos/scan", { body: { root: server.dir, choices: { preset: "quick", skip: ["mild"], localFiles: true } } })).status, 202);
 	await untilScan(server, "done");
-	assert.deepEqual(scanned[0]!.choices, { preset: "quick", secrets: true, dependencies: true, history: "none", localFiles: true, skip: ["mild"], analyse: false });
+	assert.deepEqual(scanned[0]!.choices, { preset: "quick", secrets: true, dependencies: true, privateData: false, history: "none", localFiles: true, skip: ["mild"], analyse: false });
 	// The choices are kept with the report and named in the log; the report says what was not covered.
 	const { report, notes } = (await send(server, "GET", "/api/repos/report")).json;
 	assert.equal(report.choices.preset, "quick");

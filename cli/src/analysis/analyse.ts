@@ -51,9 +51,9 @@ const MAX_STEPS = 5;
 /** Advisory IDs named for one package; the rest are counted. */
 const MAX_ADVISORIES = 12;
 
-/** A finding's unit: a secret stands alone; a package's advisories at one place are judged together. */
+/** A finding's unit: a secret or private data stands alone; a package's advisories at one place are judged together. */
 export function unitKey(repo: string, finding: Finding): string {
-	return finding.kind === "vulnerability" ? [repo, "vulnerability", finding.location, finding.detail].join("\n") : [repo, "secret", finding.ruleId, finding.location, finding.detail].join("\n");
+	return finding.kind === "vulnerability" ? [repo, "vulnerability", finding.location, finding.detail].join("\n") : [repo, finding.kind, finding.ruleId, finding.location, finding.detail].join("\n");
 }
 
 /** Everything to judge in a report, worst first, then in report order. */
@@ -91,7 +91,7 @@ export async function judge(report: ScanReport, unit: Unit, config: AssistantCon
 					...(unit.findings.length > MAX_ADVISORIES ? { moreAdvisories: unit.findings.length - MAX_ADVISORIES } : {}),
 					evidence,
 				}
-			: { rule: first.ruleId, title: first.title, foundIn: first.detail, ...(first.note ? { rankingNote: first.note } : {}) }),
+			: { rule: first.ruleId, title: first.title, foundIn: first.detail, ...(first.count ? { count: first.count } : {}), ...(first.note ? { rankingNote: first.note } : {}) }),
 		...(suggestion ? { suggestedFix: { title: suggestion.title, steps: suggestion.how } } : {}),
 	};
 	const answer = await chat(config, analysisPrompt(item).messages, options);

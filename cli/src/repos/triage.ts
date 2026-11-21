@@ -73,3 +73,29 @@ export function pathContext(file: string): string | null {
 	if (dirs.some((dir) => DATA_DIRS.has(dir)) && DATA_EXTENSIONS.has(extension)) return "in a data file";
 	return null;
 }
+
+const SEVERITY_STEPS = ["critical", "high", "medium", "low"] as const;
+
+/** Files whose contact details are public by design: who maintains or licenses a project. */
+const METADATA_NAMES = new Set(["package.json", "composer.json", "pyproject.toml", "setup.py", "setup.cfg", "cargo.toml", "pom.xml", "build.gradle", "build.gradle.kts", "codeowners", ".mailmap", "citation.cff", "copying", "authors", "contributors", "maintainers", "notice"]);
+
+/**
+ * Ranks private data the way triageSecret ranks a secret: each reason to doubt that it is someone's
+ * real data lowers it one step, down to low, and the note says why. It never drops a finding: sample
+ * data in a test fixture still appears, one step lower. A data file is not a reason here, since that
+ * is where people's data is kept.
+ */
+export function triagePrivate(base: Severity, file: string, signals: { example?: boolean; contact?: boolean; local?: boolean }): { severity: Severity; note?: string } {
+	const reasons: string[] = [];
+	if (signals.example) reasons.push("a value published for examples or testing");
+	const place = pathContext(file);
+	if (place && place !== "in a data file") reasons.push(place);
+	const name = (file.split("/").at(-1) ?? "").toLowerCase();
+	const stem = name.replace(/\.(?:md|txt|rst)$/, "");
+	if (signals.contact && (METADATA_NAMES.has(name) || METADATA_NAMES.has(stem) || /^licen[cs]e/.test(name) || name.endsWith(".gemspec") || name.endsWith(".nuspec"))) {
+		reasons.push("in project metadata, where a maintainer's address is public by design");
+	}
+	if (signals.local) reasons.push("on this computer only, never committed");
+	const severity = SEVERITY_STEPS[Math.min(SEVERITY_STEPS.indexOf(base) + reasons.length, SEVERITY_STEPS.length - 1)]!;
+	return reasons.length > 0 ? { severity, note: `Ranked lower: ${reasons.join("; ")}` } : { severity };
+}

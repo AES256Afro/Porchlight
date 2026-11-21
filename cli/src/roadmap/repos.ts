@@ -7,9 +7,9 @@ import { bumpKind, highestVersion, mayBreak } from "./versions.ts";
 
 const SUMMARIES: Record<PhaseKey, string> = {
 	now: "Credentials that look live, and critical vulnerabilities.",
-	next: "High-severity vulnerabilities.",
-	schedule: "Medium-severity vulnerabilities, and possible secrets that need a look.",
-	later: "Low-severity vulnerabilities, and matches that are unlikely to be real secrets.",
+	next: "High-severity vulnerabilities, and personal data in git history such as ID numbers or data dumps.",
+	schedule: "Medium-severity vulnerabilities, possible secrets that need a look, and other personal data.",
+	later: "Low-severity vulnerabilities, matches that are unlikely to be real secrets, and low-risk private data such as network names and example values.",
 };
 
 const PHASE_OF: Record<Severity, PhaseKey> = { critical: "now", high: "next", medium: "schedule", low: "later" };
@@ -54,7 +54,7 @@ export function listRepoFindings(report: ScanReport, filter: FindingFilter = noF
 			rows.push({
 				place: group,
 				severity: finding.severity,
-				type: finding.kind === "secret" ? "Secret" : "Vulnerability",
+				type: finding.kind === "secret" ? "Secret" : finding.kind === "private-data" ? "Private data" : "Vulnerability",
 				id: finding.ruleId,
 				title: finding.title,
 				where: finding.location,
@@ -113,9 +113,10 @@ function plan(report: ScanReport): Planned<Finding>[] {
 		// A key in a file git does not track has never left this computer: it is kept out of git, not rotated.
 		const local = findings.filter((finding) => finding.kind === "secret" && finding.source === "local");
 		if (local.length > 0) {
-			const action = keepAction(local);
+			const action = keepAction(local, "keys");
 			entries.push({ group: name, phase: PHASE_OF[action.priority], action, findings: local });
 		}
+		entries.push(...privateActions(name, findings.filter((finding) => finding.kind === "private-data")));
 		const secrets = findings.filter((finding) => finding.kind === "secret" && finding.source !== "local");
 		for (const secret of secrets.filter((finding) => finding.severity === "high")) {
 			// A credential that looks live outranks its own severity label: until it is rotated it is usable.
@@ -194,23 +195,133 @@ function rotateAction(secret: Finding): Action {
 	};
 }
 
-/** Keys in files git does not track: nothing to rotate while they stay out of every commit. */
-function keepAction(secrets: Finding[]): Action {
-	const files = unique(secrets.map((secret) => secret.location.replace(/:\d+$/, "")));
+/** Network names and addresses, and private data that rules call examples: looked at, not purged. */
+const REVIEW_RULES = new Set(["private-ip", "private-tailnet-ip", "private-tailnet-name", "private-internal-name"]);
+
+/**
+ * Repairs for private data in one repository: data on this computer only is kept out of git; data
+ * in a file that was committed is removed from history, one action per file, since that is how
+ * history is rewritten; network names and example values are checked, a batch at a time.
+ */
+function privateActions(name: string, findings: Finding[]): Planned<Finding>[] {
+	const entries: Planned<Finding>[] = [];
+	const local = findings.filter((finding) => finding.source === "local");
+	if (local.length > 0) {
+		const action = keepAction(local, "personal data");
+		entries.push({ group: name, phase: PHASE_OF[action.priority], action, findings: local });
+	}
+	const committed = findings.filter((finding) => finding.source !== "local");
+	const example = (finding: Finding) => /examples or testing/.test(finding.note ?? "");
+	const metadata = (finding: Finding) => /in project metadata/.test(finding.note ?? "");
+	const network = committed.filter((finding) => REVIEW_RULES.has(finding.ruleId));
+	const examples = committed.filter((finding) => !REVIEW_RULES.has(finding.ruleId) && example(finding));
+	const maintainers = committed.filter((finding) => !REVIEW_RULES.has(finding.ruleId) && !example(finding) && metadata(finding));
+	for (const file of groupBy(committed.filter((finding) => !REVIEW_RULES.has(finding.ruleId) && !example(finding) && !metadata(finding)), (finding) => fileOf(finding))) {
+		const action = purgeAction(file);
+		entries.push({ group: name, phase: PHASE_OF[action.priority], action, findings: file });
+	}
+	for (const [batch, kind] of [
+		[network, "network"],
+		[maintainers, "metadata"],
+		[examples, "examples"],
+	] as const) {
+		if (batch.length === 0) continue;
+		const action = privateReviewAction(batch, kind);
+		entries.push({ group: name, phase: PHASE_OF[action.priority], action, findings: batch });
+	}
+	return entries;
+}
+
+/** The file a finding is in, without its line. */
+function fileOf(finding: Finding): string {
+	return finding.location.replace(/:\d+$/, "");
+}
+
+/** Private data in a committed file: deleting it now leaves it in every earlier commit, so history is rewritten. */
+function purgeAction(findings: Finding[]): Action {
+	// Steps mark commands with backticks, so a file name may not bring its own.
+	const file = fileOf(findings[0]!).replace(/`/g, "");
+	const whole = findings.every((finding) => finding.ruleId === "private-document" || finding.ruleId === "private-dump-file" || finding.ruleId === "private-photo-location");
+	return {
+		kind: "purge",
+		priority: worst(findings),
+		title: `Remove the personal data in ${file} from git history`,
+		where: file,
+		how: [
+			`It is in git history, so deleting it now leaves it in every earlier commit. ${whole ? `Rewrite history without the file: \`git filter-repo --invert-paths --path ${shellPath(file)}\`.` : `Rewrite history without it: \`git filter-repo --invert-paths --path ${shellPath(file)}\` drops the whole file, or \`git filter-repo --replace-text <file of expressions>\` replaces the values alone.`} Then force-push every branch and tag.`,
+			"Every clone, fork and CI cache still has the old history: ask for fresh clones, and treat the data as seen by anyone who had access.",
+			"Keep such data out of the repository from now on: add the file to .gitignore, and load real data from outside the repository.",
+			"If it turns out to be made-up sample data, record it in .gitleaksignore so it stops being reported.",
+		],
+		clears: unique(findings.map((finding) => finding.ruleId)),
+		counts: count(findings),
+		match: fileOf(findings[0]!),
+	};
+}
+
+/** A path as one shell word: quoted when it holds anything but plain path characters. */
+function shellPath(path: string): string {
+	return /^[\w./-]+$/.test(path) ? path : `'${path.replace(/'/g, "'\\''")}'`;
+}
+
+/** Network names and addresses, a project's own contact details, or values published for examples: checked in one sitting. */
+function privateReviewAction(findings: Finding[], kind: "network" | "metadata" | "examples"): Action {
+	const files = unique(findings.map(fileOf));
+	const listed = files.slice(0, MAX_LISTED);
+	if (files.length > MAX_LISTED) listed.push(`and ${files.length - MAX_LISTED} more`);
+	const where = files.length === 1 ? "1 file" : `${files.length} files`;
+	return {
+		kind: "review",
+		priority: worst(findings),
+		title:
+			kind === "network"
+				? `Check the internal network names and addresses in ${where}`
+				: kind === "metadata"
+					? `Check the contact details in the project metadata of ${where}`
+					: `Check the example personal data in ${where}`,
+		where: listed.join(", "),
+		how:
+			kind === "network"
+				? [
+						"They show how a private network is laid out: which machines exist and what they are called. On their own they open nothing.",
+						"If the repository is public, or will be, move them into configuration that is not committed.",
+					]
+				: kind === "metadata"
+					? [
+							"A maintainer's address in package metadata, a licence or an authors file is usually published on purpose.",
+							"Check that each one is meant to be public. If one is a personal address, use a role address or the forge's no-reply address instead.",
+						]
+					: [
+						"These are values published for examples and testing (example.com addresses, test card numbers, fictional phone numbers), so they usually need no repair.",
+						"Check that nothing real sits beside them, then record them in .gitleaksignore so they stop being reported.",
+					],
+		clears: unique(findings.map((finding) => finding.ruleId)),
+		counts: count(findings),
+		...(files.length === 1 ? { match: files[0]! } : {}),
+	};
+}
+
+/** Keys or personal data in files git does not track: nothing to repair while they stay out of every commit. */
+function keepAction(found: Finding[], what: "keys" | "personal data"): Action {
+	const files = unique(found.map(fileOf));
 	const listed = files.slice(0, MAX_LISTED);
 	if (files.length > MAX_LISTED) listed.push(`and ${files.length - MAX_LISTED} more`);
 	return {
 		kind: "keep",
-		priority: worst(secrets),
-		title: `Keep ${files.length === 1 ? "1 file" : `${files.length} files`} with keys out of git`,
+		priority: worst(found),
+		title: `Keep ${files.length === 1 ? "1 file" : `${files.length} files`} with ${what} out of git`,
 		where: listed.join(", "),
 		how: [
-			"These files are on this computer only: git does not track them, so the keys in them have not been committed. They need no rotation while that stays true.",
+			what === "keys"
+				? "These files are on this computer only: git does not track them, so the keys in them have not been committed. They need no rotation while that stays true."
+				: "These files are on this computer only: git does not track them, or the change is not committed, so the data in them has not left this computer.",
 			"Check that .gitignore covers each one (`git check-ignore -v <file>` names the rule), so a later `git add` cannot pick it up.",
-			"If one was shared some other way (copied into a chat, a ticket or another machine), rotate that key with the service that issued it.",
+			what === "keys"
+				? "If one was shared some other way (copied into a chat, a ticket or another machine), rotate that key with the service that issued it."
+				: "If the data is other people's, keep it somewhere meant for it rather than in a project folder.",
 		],
-		clears: unique(secrets.map((secret) => secret.ruleId)),
-		counts: count(secrets),
+		clears: unique(found.map((finding) => finding.ruleId)),
+		counts: count(found),
 		...(files.length === 1 ? { match: files[0]! } : {}),
 	};
 }

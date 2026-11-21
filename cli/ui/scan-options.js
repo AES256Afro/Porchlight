@@ -23,6 +23,7 @@ export function scanOptions(initial, depthField, onChange) {
 	const customNote = h("p", { class: "hint" }, "The switches below no longer match a preset, so this scan is Custom.");
 	const secretsBox = /** @type {HTMLInputElement} */ (h("input", { type: "checkbox", name: "secrets" }));
 	const dependenciesBox = /** @type {HTMLInputElement} */ (h("input", { type: "checkbox", name: "dependencies" }));
+	const privateBox = /** @type {HTMLInputElement} */ (h("input", { type: "checkbox", name: "private-data" }));
 	const historySelect = /** @type {HTMLSelectElement} */ (
 		h(
 			"select",
@@ -40,7 +41,7 @@ export function scanOptions(initial, depthField, onChange) {
 	const skipInput = /** @type {HTMLInputElement} */ (h("input", { type: "text", name: "skip", spellcheck: false, autocomplete: "off", placeholder: "old-site, github/me/archive" }));
 
 	for (const input of presetInputs) input.addEventListener("change", () => input.checked && setPreset(/** @type {import("./scan-choices.js").Preset} */ (input.value)));
-	for (const control of [secretsBox, dependenciesBox, historySelect, countInput, localBox, analyseBox]) control.addEventListener("change", fromControls);
+	for (const control of [secretsBox, dependenciesBox, privateBox, historySelect, countInput, localBox, analyseBox]) control.addEventListener("change", fromControls);
 	// A half-typed name is not acted on: the list is read once the box is left or Enter is pressed.
 	skipInput.addEventListener("change", fromControls);
 
@@ -60,8 +61,23 @@ export function scanOptions(initial, depthField, onChange) {
 			h("legend", null, "Checks"),
 			h("label", { class: "choice" }, secretsBox, h("span", null, h("strong", null, "Secrets"), h("span", { class: "hint" }, "Passwords and keys, with gitleaks."))),
 			h("label", { class: "choice" }, dependenciesBox, h("span", null, h("strong", null, "Dependencies"), h("span", { class: "hint" }, "Packages with published security advisories, with osv-scanner."))),
+			h(
+				"label",
+				{ class: "choice" },
+				privateBox,
+				h(
+					"span",
+					null,
+					h("strong", null, "Private data"),
+					h(
+						"span",
+						{ class: "hint" },
+						"Email addresses and phone numbers, ID and account numbers, GPS positions, internal network names, data dumps, and files named like personal documents. Each is counted per file; no value is ever kept or shown.",
+					),
+				),
+			),
 		),
-		h("label", { class: "field" }, h("span", null, "Git history to read for secrets"), historySelect),
+		h("label", { class: "field" }, h("span", null, "Git history to read for secrets and private data"), historySelect),
 		countField,
 		h(
 			"fieldset",
@@ -102,9 +118,9 @@ export function scanOptions(initial, depthField, onChange) {
 	}
 
 	function fromControls() {
-		if (!secretsBox.checked && !dependenciesBox.checked) {
-			// At least one check runs: the one just unticked is ticked again, and the page says why.
-			(choices.secrets ? secretsBox : dependenciesBox).checked = true;
+		if (!secretsBox.checked && !dependenciesBox.checked && !privateBox.checked) {
+			// At least one check runs: the one just unticked is ticked again.
+			(choices.secrets ? secretsBox : choices.dependencies ? dependenciesBox : privateBox).checked = true;
 		}
 		const count = Number(countInput.value);
 		const recent = Number.isInteger(count) && count >= 1 && count <= MAX_HISTORY_COMMITS ? count : RECENT_DEFAULT;
@@ -112,6 +128,7 @@ export function scanOptions(initial, depthField, onChange) {
 		const next = {
 			secrets: secretsBox.checked,
 			dependencies: dependenciesBox.checked,
+			privateData: privateBox.checked,
 			history: /** @type {ScanChoices["history"]} */ (history),
 			localFiles: localBox.checked,
 			skip: parseSkip(skipInput.value) ?? choices.skip,
@@ -127,12 +144,15 @@ export function scanOptions(initial, depthField, onChange) {
 		customNote.hidden = choices.preset !== "custom";
 		secretsBox.checked = choices.secrets;
 		dependenciesBox.checked = choices.dependencies;
+		privateBox.checked = choices.privateData;
 		historySelect.value = typeof choices.history === "number" ? "recent" : choices.history;
 		if (typeof choices.history === "number") countInput.value = String(choices.history);
 		countField.hidden = typeof choices.history !== "number";
-		historySelect.disabled = !choices.secrets;
+		// History and files git does not track are read by gitleaks, for secrets and private data alike.
+		const gitleaks = choices.secrets || choices.privateData;
+		historySelect.disabled = !gitleaks;
 		localBox.checked = choices.localFiles;
-		localBox.disabled = !choices.secrets;
+		localBox.disabled = !gitleaks;
 		analyseBox.checked = choices.analyse;
 		if (document.activeElement !== skipInput) skipInput.value = choices.skip.join(", ");
 		replace(analyseNote, ...analyseWords(choices.analyse));

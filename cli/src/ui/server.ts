@@ -2386,7 +2386,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			.then(async ({ repo, tools }) => {
 				if (cancel.signal.aborted) throw new CancelledError();
 				// Scanners that did not look this time: not chosen, not installed any more, or failed on the repository.
-				const chosen = (tool: ToolName) => (tool === "gitleaks" ? choices.secrets : choices.dependencies);
+				const chosen = (tool: ToolName) => (tool === "gitleaks" ? choices.secrets || choices.privateData === true : choices.dependencies);
 				const looked = (tool: ToolName) => chosen(tool) && tools.some((now) => now.tool === tool && now.status === "ok") && !repo.errors.some((error) => error.tool === tool);
 				const kept = before.findings.filter((finding) => !looked(finding.tool));
 				const merged: RepoResult = {

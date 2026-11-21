@@ -223,6 +223,15 @@ Pin the base image digest and the BoxPilot schema (S8). Fix the picomatch dev ad
 
 ### M7: Private data, not only secrets. Size: L
 
+**Status, 2026-11-20: built, not released.** Owner decisions 6 and 7 answered: all six kinds, with location as GPS coordinates and photo EXIF only (no street-address pattern); no value at all in a report, not even masked. How it was built, where it differs from the plan below:
+- One gitleaks pass, not two: when a scan looks for private data, gitleaks runs with `gitleaks-private.toml` (its built-in rules plus Porchlight's, every id starting `private-`), and the matches are split by rule. Same history, files and local reach as secrets, same `--redact`.
+- No checksums (Luhn, IBAN mod 97): they need the value, and gitleaks never hands it over (invariant 3). Cards are matched by issuer prefix and length, IBANs by country and length, SSNs without the never-issued areas. Published example and test values have their own `-example`/`-test` rules, which the main rules leave them to, so they are listed low rather than dropped. A card number defaults to medium for want of the checksum.
+- No "repository's own author address ranks low": that would need author emails, which reports never carry. Instead, contact details in project metadata (package.json, licences, authors files) rank one step lower.
+- Matches are grouped per rule and file, with a count (the most values in any one commit), placed at the oldest commit that has them. 20 or more contact details that are not examples make one "possible data dump" finding.
+- File types and personal documents are found by name, from the index and from every file history added (`git log --raw`, names and ids only). Photos are read for EXIF GPS as they are now, and as committed when history added them and they are gone or changed since (`cat-file blob`, byte for byte).
+- Repairs: `git filter-repo` per committed file, a check for network names, a project's own contact details and example values, and "keep it out of git" for data on this computer only.
+- Private data is in the Deep preset and `--checks private-data`, not in Standard. Comparisons count it as new or fixed only between scans that both looked for it.
+
 *Added 2026-11-19 at the owner's request.* Today a scan finds credentials (gitleaks) and vulnerable packages (osv-scanner) and nothing else. Personal data committed to a repository is a leak too, even when it isn't a key. M7 looks for it.
 
 **What it looks for:**
@@ -250,13 +259,13 @@ Pin the base image digest and the BoxPilot schema (S8). Fix the picomatch dev ad
 
 ### M8: Scan options: how deep a scan goes. Size: M
 
-**Status, 2026-11-20: built, not released.** Presets, switches and flags as below, apart from private data, which waits for M7: until then Deep differs from Standard only by the analysis it starts. Decisions taken, open to the owner:
+**Status, 2026-11-20: built, not released.** Presets, switches and flags as below. Private data came with M7: Deep reads it, Quick and Standard do not. Decisions taken, open to the owner:
 - Owner decision 8: Deep does not read files git does not track. That stays a separate switch, off in every preset, so no preset reads a real `.env` unasked.
 - "Current files" are the files git tracks as they are now in the working tree, listed from git's index alone (`ls-files --stage`) and copied to a private temporary folder for gitleaks; nothing is converted by git, so no filter a repository names can run. A file changed since it was committed is compared with its committed version (`cat-file blob`); a key only in the change is "on this computer only, an uncommitted change". Files over 50 MB are counted under "Not covered".
 - "The last N commits" are the N latest across all branches, read together with the current files, so a key still in a file is found however old its commit. A window that moves with every commit means a history finding is never counted as fixed or new by such a scan.
 - The local-files switch also covers changes to tracked files not yet committed (a key typed into a tracked file), not only untracked and ignored files.
 - Keys found on this computer only are ranked one step lower (a triage reason, recorded in the note), and the roadmap's repair for them is "keep the file out of git", not "rotate".
-- Deep's analysis: up to 25 critical and high findings, as the analysis card starts it. With a hosted model only when the scan request says the page showed what is sent (`sendsToHosted`). A scheduled scan is always Standard and never starts a model. The CLI accepts `--preset deep`, scans as Standard, and says so in its help.
+- Deep's analysis: up to 25 critical and high findings, as the analysis card starts it. With a hosted model only when the scan request says the page showed what is sent (`sendsToHosted`). A scheduled scan is always Standard and never starts a model. The CLI accepts `--preset deep` and scans as Deep does, private data included, without the analysis.
 - Comparisons between scans count a finding as new or fixed only where both scans' choices reach it (`looksFor`), on top of the existing per-scanner rule. Scanning one repository again uses the report's own choices.
 
 *Added 2026-11-19 at the owner's request.* Today the only option is "folder levels to look through". M8 adds presets in the scan form's Options and matching CLI flags:
@@ -285,6 +294,6 @@ Any scan with less than the full set says so in the report and every export (inv
 3. **A separate exit code for "incomplete scan".** This is breaking for CI users.
 4. **Rotated/accepted design (M6.2).** Confirm it re-ranks only.
 5. **`docs/ACTIVE-TESTING.md`.** It still waits for your answers and conflicts with invariant 2.
-6. **M7 kinds.** Which kinds of private data to look for: all six in the table, or a subset? Street addresses and names are the noisiest.
-7. **M7 values.** No value at all in the report (proposed), or a masked hint such as `j•••@g•••.com`?
-8. **M8 local files.** Should Deep include uncommitted and git-ignored files by default, or keep them a separate switch?
+6. **M7 kinds.** Answered 2026-11-20: all six, location as GPS coordinates and photo EXIF only, no street-address pattern.
+7. **M7 values.** Answered 2026-11-20: no value at all.
+8. **M8 local files.** Taken as a separate switch, off in every preset, Deep included (see M8). Open to the owner.

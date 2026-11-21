@@ -43,7 +43,7 @@ export function parseFilter(input: { severity?: string | null; kind?: string | n
 		filter.severities = ALL_SEVERITIES.filter((severity) => wanted.includes(severity));
 	}
 	if (input.kind != null && input.kind !== "all") {
-		if (input.kind !== "secret" && input.kind !== "vulnerability") throw new ExportError(`Unknown type "${input.kind}". Choose secret or vulnerability`);
+		if (input.kind !== "secret" && input.kind !== "vulnerability" && input.kind !== "private-data") throw new ExportError(`Unknown type "${input.kind}". Choose secret, vulnerability or private-data`);
 		filter.kind = input.kind;
 	}
 	if (input.match != null) filter.query = input.match;

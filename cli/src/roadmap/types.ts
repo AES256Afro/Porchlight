@@ -4,7 +4,7 @@ export type Counts = Record<Severity, number>;
 
 /** One thing to do. It may clear many findings: upgrading a package clears every advisory against it. */
 export interface Action {
-	kind: "upgrade" | "replace" | "rotate" | "review" | "keep" | "dns" | "certificate" | "headers";
+	kind: "upgrade" | "replace" | "rotate" | "review" | "keep" | "purge" | "dns" | "certificate" | "headers";
 	/** The worst severity among the findings this action clears. */
 	priority: Severity;
 	/** What to do, as an instruction. */

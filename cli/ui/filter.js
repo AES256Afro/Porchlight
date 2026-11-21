@@ -7,7 +7,7 @@
 /**
  * @typedef {object} FindingFilter
  * @property {Severity[]} severities levels to include
- * @property {"all" | "secret" | "vulnerability"} kind
+ * @property {"all" | "secret" | "vulnerability" | "private-data"} kind
  * @property {string} query text to find in the repository name or any finding field
  * @property {string} [repo] only this repository, by name; empty or absent for all
  */
@@ -57,6 +57,7 @@ export function describeFilter(filter) {
 	if (kept.length < ALL_SEVERITIES.length) parts.push(kept.length > 0 ? `${kept.join(", ")} severity only` : "no severity selected");
 	if (filter.kind === "secret") parts.push("secrets only");
 	if (filter.kind === "vulnerability") parts.push("vulnerabilities only");
+	if (filter.kind === "private-data") parts.push("private data only");
 	if (filter.repo) parts.push(`in ${filter.repo}`);
 	if (filter.query.trim() !== "") parts.push(`matching "${filter.query.trim()}"`);
 	return parts.join("; ");

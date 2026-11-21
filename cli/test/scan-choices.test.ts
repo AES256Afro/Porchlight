@@ -17,13 +17,14 @@ import {
 } from "../ui/scan-choices.js";
 
 test("each preset names exactly what it covers, and Standard covers what a scan always did", () => {
-	assert.deepEqual(standardChoices(), { preset: "standard", secrets: true, dependencies: true, history: "all", localFiles: false, skip: [], analyse: false });
+	assert.deepEqual(standardChoices(), { preset: "standard", secrets: true, dependencies: true, privateData: false, history: "all", localFiles: false, skip: [], analyse: false });
 	assert.deepEqual(presetChoices("quick"), { ...standardChoices(), preset: "quick", history: "none" });
-	assert.deepEqual(presetChoices("deep"), { ...standardChoices(), preset: "deep", analyse: true });
+	assert.deepEqual(presetChoices("deep"), { ...standardChoices(), preset: "deep", privateData: true, analyse: true });
 
 	assert.equal(describeChoices(presetChoices("quick")), "Quick: secrets in the files as they are now, no history, dependencies");
 	assert.equal(describeChoices(standardChoices()), "Standard: secrets in every commit on every branch, dependencies");
-	assert.equal(describeChoices(presetChoices("deep")), "Deep: secrets in every commit on every branch, dependencies, then the model's deeper analysis");
+	assert.equal(describeChoices(presetChoices("deep")), "Deep: secrets in every commit on every branch, dependencies, private data, then the model's deeper analysis");
+	assert.equal(describeChoices(parseChoices({ preset: "quick", secrets: false, privateData: true })), "Custom: no secrets check, dependencies, private data in the files as they are now, no history");
 	// A report from before there were choices reads as the Standard scan it was.
 	assert.equal(describeChoices(undefined), describeChoices(standardChoices()));
 
@@ -48,12 +49,15 @@ test("parses choices from a request strictly, starting from the named preset", (
 	assert.deepEqual(parseChoices({ history: "50" }).history, 50);
 	assert.deepEqual(parseChoices({ skip: " a, b ,a,," }).skip, ["a", "b"]);
 	assert.deepEqual(parseChoices({ skip: ["github/me/x"] }).skip, ["github/me/x"]);
-	// Switching Deep's analysis off is Standard again.
-	assert.equal(parseChoices({ preset: "deep", analyse: false }).preset, "standard");
+	// Deep without its analysis still reads private data, so it is Custom; without both it is Standard again.
+	assert.equal(parseChoices({ preset: "deep", analyse: false }).preset, "custom");
+	assert.equal(parseChoices({ preset: "deep", analyse: false, privateData: false }).preset, "standard");
+	assert.equal(parseChoices({ secrets: false, dependencies: false, privateData: true }).privateData, true);
 
 	const refused: [Record<string, unknown>, RegExp][] = [
 		[{ preset: "thorough" }, /Choose a preset/],
 		[{ secrets: false, dependencies: false }, /at least one check/],
+		[{ privateData: "yes" }, /true or false/],
 		[{ secrets: "no" }, /true or false/],
 		[{ history: 0 }, /History must be/],
 		[{ history: 100_001 }, /History must be/],
@@ -72,6 +76,7 @@ test("the choices survive a reload: written to the address and read back the sam
 		presetChoices("quick"),
 		presetChoices("deep"),
 		{ ...standardChoices(), preset: "custom" as const, history: 200, dependencies: false, localFiles: true, skip: ["a", "github/me/b"] },
+		{ ...standardChoices(), preset: "custom" as const, secrets: false, dependencies: false, privateData: true },
 		{ ...presetChoices("quick"), skip: ["old"] },
 	];
 	for (const choices of samples) {
@@ -122,7 +127,7 @@ test("a Quick scan is never a clean result: its report says so, and --fail-on ca
 	assert.ok(notes.includes("Dependencies were not checked: that check was switched off for this scan."));
 	// The check was switched off, so osv-scanner's absence is not said a second time.
 	assert.ok(!notes.some((note) => note.includes("osv-scanner is not installed")));
-	assert.ok(notes.some((note) => /^2 tracked files in app were not read for secrets/.test(note)));
+	assert.ok(notes.some((note) => /^2 tracked files in app were not read: larger than 50 MB/.test(note)));
 	assert.equal(exitCode(report, "low"), 1);
 	assert.equal(exitCode({ ...report, choices: standardChoices(), skipped: [], repos: [{ path: "/p/app", findings: [], errors: [] }], tools: report.tools.map((tool) => ({ ...tool, status: "ok" as const })) }, "low"), 0);
 });
@@ -130,19 +135,21 @@ test("a Quick scan is never a clean result: its report says so, and --fail-on ca
 test("the command line takes the same choices, and refuses what it does not understand", () => {
 	assert.deepEqual(choicesFromFlags({}), standardChoices());
 	assert.deepEqual(choicesFromFlags({ preset: "quick" }), presetChoices("quick"));
-	// Deep's analysis needs the interface; the scan itself is Standard's, and keeps the name it was given.
-	assert.deepEqual(choicesFromFlags({ preset: "deep" }), { ...standardChoices(), preset: "deep" });
+	// Deep's analysis needs the interface; the scan itself is Deep's, private data included, and keeps the name.
+	assert.deepEqual(choicesFromFlags({ preset: "deep" }), { ...presetChoices("deep"), analyse: false });
+	assert.deepEqual(choicesFromFlags({ checks: "secrets,private-data" }), { ...standardChoices(), preset: "custom", dependencies: false, privateData: true });
 	assert.deepEqual(choicesFromFlags({ checks: "dependencies", history: "20", "local-files": true, skip: ["a,b", "c"] }), {
 		preset: "custom",
 		secrets: false,
 		dependencies: true,
+		privateData: false,
 		history: 20,
 		localFiles: true,
 		skip: ["a", "b", "c"],
 		analyse: false,
 	});
 	assert.throws(() => choicesFromFlags({ preset: "max" }), /--preset must be one of: quick, standard, deep/);
-	assert.throws(() => choicesFromFlags({ checks: "secrets,licences" }), /--checks takes/);
+	assert.throws(() => choicesFromFlags({ checks: "secrets,licences" }), /--checks takes secrets, dependencies and private-data/);
 	assert.throws(() => choicesFromFlags({ checks: "" }), /--checks takes/);
 	assert.throws(() => choicesFromFlags({ history: "lots" }), /^Error: --history must be/);
 });

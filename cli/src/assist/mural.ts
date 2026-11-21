@@ -21,7 +21,7 @@ export interface MuralFacts {
 	notCovered: string[];
 	repositories: number;
 	repositoriesAffected: number;
-	findings: Record<Severity, number> & { total: number; secrets: number; vulnerabilities: number };
+	findings: Record<Severity, number> & { total: number; secrets: number; vulnerabilities: number; privateData: number };
 	actions: { phase: string; actions: number }[];
 	/** The model's Deeper analysis of this scan, across the whole scan. */
 	analysis: { items: number; judged: number; verdicts: Record<Verdict, number> };
@@ -71,10 +71,11 @@ const MAX_HEADLINE = 200;
 const MAX_FIXED_EXAMPLES = 15;
 
 export function muralFacts(report: ScanReport, roadmap: Roadmap, list: FindingsList, analysis: AnalysisFile, change: Comparison | null = null): MuralFacts {
-	const findings = { critical: 0, high: 0, medium: 0, low: 0, total: list.rows.length, secrets: 0, vulnerabilities: 0 };
+	const findings = { critical: 0, high: 0, medium: 0, low: 0, total: list.rows.length, secrets: 0, vulnerabilities: 0, privateData: 0 };
 	for (const row of list.rows) {
 		findings[row.severity]++;
 		if (row.type === "Secret") findings.secrets++;
+		else if (row.type === "Private data") findings.privateData++;
 		else findings.vulnerabilities++;
 	}
 	const units = unitsOf(report);

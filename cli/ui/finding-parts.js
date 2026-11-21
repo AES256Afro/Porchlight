@@ -311,6 +311,7 @@ export function filterBar(filter, onChange, { extras = [], onCleared }) {
 				["all", "All types"],
 				["secret", "Secrets"],
 				["vulnerability", "Vulnerabilities"],
+				["private-data", "Private data"],
 			],
 			filter.kind,
 			(value) => ((filter.kind = /** @type {FindingFilter["kind"]} */ (value)), changedNow()),

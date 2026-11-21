@@ -76,8 +76,11 @@ export async function renderByRepo(view, route) {
 				counts,
 				secrets: findings.filter((finding) => finding.kind === "secret").length,
 				vulnerabilities: findings.filter((finding) => finding.kind === "vulnerability").length,
+				private: findings.filter((finding) => finding.kind === "private-data").length,
 			};
 		});
+		// A column for private data only once a scan has looked for it.
+		const privateColumn = report.choices?.privateData === true || report.repos.some((repo) => repo.findings.some((finding) => finding.kind === "private-data"));
 		// A repository with nothing matching is only worth a row when nothing is being filtered out.
 		const visible = rows.filter((row) => row.findings.length > 0 || (!filtering && row.repo.findings.length === 0));
 		const matching = findingRows().filter((row) => matchesFilter(row, row.repo, filter));
@@ -92,7 +95,7 @@ export async function renderByRepo(view, route) {
 				return a.rank - b.rank;
 			}
 			if (sort.key === "name") return direction * a.repo.name.localeCompare(b.repo.name);
-			const value = (/** @type {typeof a} */ row) => (sort.key === "secrets" || sort.key === "vulnerabilities" ? row[sort.key] : row.counts[/** @type {Severity} */ (sort.key)]);
+			const value = (/** @type {typeof a} */ row) => (sort.key === "secrets" || sort.key === "vulnerabilities" || sort.key === "private" ? row[sort.key] : row.counts[/** @type {Severity} */ (sort.key)]);
 			return direction * (value(a) - value(b)) || a.rank - b.rank;
 		});
 
@@ -136,9 +139,10 @@ export async function renderByRepo(view, route) {
 					...ALL_SEVERITIES.map((severity) => countCell(row.counts[severity], SEVERITY_LABELS[severity])),
 					countCell(row.secrets, "Secrets"),
 					countCell(row.vulnerabilities, "Vulnerabilities"),
+					privateColumn ? countCell(row.private, "Private data") : null,
 				),
 			);
-			if (open) body.append(h("tr", { class: "detail-row" }, h("td", { colSpan: 8 }, findingsList(row.repo, row.findings))));
+			if (open) body.append(h("tr", { class: "detail-row" }, h("td", { colSpan: privateColumn ? 9 : 8 }, findingsList(row.repo, row.findings))));
 		}
 
 		replace(
@@ -161,6 +165,7 @@ export async function renderByRepo(view, route) {
 							...ALL_SEVERITIES.map((severity) => sortHeader(SEVERITY_LABELS[severity], severity, true)),
 							sortHeader("Secrets", "secrets", true),
 							sortHeader("Vulnerabilities", "vulnerabilities", true),
+							privateColumn ? sortHeader("Private data", "private", true) : null,
 						),
 					),
 					body,

@@ -6,7 +6,7 @@ export type ToolName = "gitleaks" | "osv-scanner";
 /** One problem found in one repository, in a shape common to every scanner. */
 export interface Finding {
 	tool: ToolName;
-	kind: "secret" | "vulnerability";
+	kind: "secret" | "vulnerability" | "private-data";
 	severity: Severity;
 	/** Scanner rule ID for a secret; advisory ID for a vulnerability. */
 	ruleId: string;
@@ -19,8 +19,10 @@ export interface Finding {
 	note?: string;
 	/** For a vulnerability: the lowest release that fixes it, when the advisory names one. */
 	fixedIn?: string;
+	/** For private data: how many different values of this kind the file holds. Never a value itself. */
+	count?: number;
 	/**
-	 * For a secret: where it was found. `history`: in a commit. `files`: in a file git tracks, as it is
+	 * For a secret or private data: where it was found. `history`: in a commit. `files`: in a file git tracks, as it is
 	 * now (a scan that did not read every commit). `local`: in a file git does not track, so it has
 	 * never been committed. Missing from older reports, which read history alone.
 	 */
@@ -41,6 +43,8 @@ export interface ScanChoices {
 	preset: "quick" | "standard" | "deep" | "custom";
 	secrets: boolean;
 	dependencies: boolean;
+	/** Personal data committed to a repository: contact details, ID numbers, locations, dumps, documents. Missing from older reports: off. */
+	privateData: boolean;
 	history: HistoryReach;
 	/** Also read files git does not track (such as .env), reported as on this computer only. */
 	localFiles: boolean;

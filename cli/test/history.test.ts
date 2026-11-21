@@ -110,3 +110,12 @@ test("a scan that did not read history, or a check switched off, never makes a f
 	const skipped = compareScans(standard, { ...standard, scannedAt: "2026-11-20T00:00:00.000Z", repos: [], skipped: ["api"] });
 	assert.deepEqual([skipped.fixedCount, skipped.uncheckedCount], [0, 2]);
 });
+
+test("private data counts as new or fixed only between two scans that both looked for it", () => {
+	const dump: Finding = { tool: "gitleaks", kind: "private-data", severity: "high", ruleId: "private-data-dump", title: "Possible data dump", location: "people.csv:2", detail: "commit abc", source: "history" };
+	const deep = { ...scan("2026-11-18T00:00:00.000Z", [{ path: "/p/api", findings: [dump], errors: [] }]), choices: { ...presetChoices("deep"), analyse: false } };
+	const standard = { ...scan("2026-11-19T00:00:00.000Z", [{ path: "/p/api", findings: [], errors: [] }]), choices: presetChoices("standard") };
+	assert.deepEqual([compareScans(deep, standard).fixedCount, compareScans(deep, standard).uncheckedCount], [0, 1]);
+	assert.equal(compareScans(standard, { ...deep, scannedAt: "2026-11-20T00:00:00.000Z" }).newCount, 0);
+	assert.equal(compareScans(deep, { ...deep, scannedAt: "2026-11-20T00:00:00.000Z", repos: [{ path: "/p/api", findings: [], errors: [] }] }).fixedCount, 1);
+});

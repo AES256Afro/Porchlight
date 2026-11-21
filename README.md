@@ -457,7 +457,7 @@ porchlight repos scan ~/Projects --out reports/repos.md
 | --- | --- |
 | `--depth <n>` | Directory levels searched for repositories (default 3) |
 | `--preset <name>` | What to look at: `quick`, `standard` (default) or `deep`. See "How deep a scan goes" below |
-| `--checks <list>` | Only these checks: `secrets`, `dependencies`, or both separated by a comma |
+| `--checks <list>` | Only these checks: `secrets`, `dependencies`, `private-data`, separated by commas |
 | `--history <reach>` | Git history read for secrets: `all` (default), `none` (the files as they are now), or a number of the latest commits (with the files as they are now) |
 | `--local-files` | Also read files git does not track (such as `.env`) and changes not yet committed. What is found there is marked "on this computer only" and ranked one step lower |
 | `--skip <name>` | Leave a repository out, by the name the report gives it. Repeat, or separate names with commas |
@@ -473,6 +473,7 @@ What it checks:
 
 - **Secrets** in the full commit history, with gitleaks. A secret deleted in a later commit is still reported, because it is still in history and must be rotated. Each match is ranked by how likely it is to be a live credential.
 - **Dependencies** named in lockfiles, with osv-scanner, rated by CVSS score.
+- **Private data**, in the Deep preset or with `--checks private-data`: personal data committed to a repository. See "Private data" below.
 
 How secrets are ranked:
 
@@ -492,6 +493,25 @@ What to know:
 - Uncommitted and git-ignored files are not scanned unless `--local-files` (in the interface, Options → "Files git does not track") asks for them.
 - `reports/` is git-ignored: a report names the files and commits where secrets were found.
 
+### Private data
+
+Personal data in a repository is a leak even when it is not a key. A scan that looks for it reads the same history and files as the secrets check, with three methods:
+
+| Kind | Found by | Told apart from noise by |
+| --- | --- | --- |
+| Contact details: email addresses, phone numbers | gitleaks, with Porchlight's own rules (`cli/src/repos/gitleaks-private.toml`) | Example domains (`example.com`, `.test`), fictional numbers (555-01xx) and no-reply addresses rank low or are not matched; a maintainer's address in `package.json`, a licence or an authors file ranks lower |
+| Government and financial IDs: US Social Security numbers, payment card numbers, IBANs | the same rules | Published example and test numbers (Stripe's, the textbook IBANs) rank low. Cards are matched by issuer prefix and length, IBANs by country and length. No checksum is computed, since gitleaks never hands over the value |
+| Location: GPS coordinates, and the GPS position in a photo's EXIF data | the rules; Porchlight's own reader for photos | Coordinates need four decimal places (a building), and a latitude between -1 and 1 is not matched, which leaves out probability pairs such as `0.12, 0.98`. No street-address pattern: it mostly matches ordinary text |
+| Network internals: private addresses, Tailscale names and addresses, internal host names (`.internal`, `.corp`, `.lan`) | the rules | Ranked low, apart from Tailscale names, which name the tailnet |
+| Data dumps: 20 or more contact details in one file; databases, mail and HTTP archives, contact files | the rules' counts; file type | Example values do not count towards a dump |
+| Personal documents: files named like a passport, an ID card, a payslip, a bank statement, a tax form or a CV | file name and type only | Whole words of the name; a CV only among document types. The file is never opened |
+
+- No value is kept or shown, not even masked: a finding carries its kind, file, line and a count ("25 email addresses"). The same rule in one file is one finding.
+- A photo is opened only to answer whether its EXIF data holds a GPS position; the position is never read out. Photos history added and later deleted or changed are read as committed, with `git cat-file`, which converts nothing.
+- Ranking follows the secrets check: each reason to doubt that it is someone's real data (an example value, a test path, project metadata, a file never committed) lowers it one step, and nothing is dropped.
+- The repair for data in a committed file is to rewrite history (`git filter-repo`), one action per file, since deleting it leaves it in every earlier commit and every clone. Network names, a project's own contact details and example values get a check instead; data in files git does not track is kept out of git.
+- A model judging private data gets no file content, the same as for a secret.
+
 ### How deep a scan goes
 
 The scan form's **Options** on the Overview, and the flags above, choose what a scan looks at:
@@ -500,7 +520,7 @@ The scan form's **Options** on the Overview, and the flags above, choose what a 
 | --- | --- | --- | --- | --- |
 | Quick | the files git tracks, as they are now | yes | none | |
 | Standard | every commit on every branch | yes | all | |
-| Deep | every commit on every branch | yes | all | the model's deeper analysis of up to 25 critical and high findings starts (interface only) |
+| Deep | every commit on every branch, and private data | yes | all | the model's deeper analysis of up to 25 critical and high findings starts (interface only) |
 
 Under the presets are separate switches: which checks run, how much history is read (all, none, or the latest N commits together with the files as they are now), folder levels, repositories to skip, and files git does not track. Changing a switch away from a preset makes the scan "Custom". Reading files git does not track is off in every preset.
 
@@ -591,7 +611,7 @@ Formats (`--format`):
 | `csv` | One row per action or finding, for a tracker or a spreadsheet |
 | `json` | Scripts and other tools |
 
-`--severity`, `--kind`, `--match` and `--repo` narrow a repository export to part of the scan. A narrowed export says at the top that it is partial, and one made from an incomplete scan says what the scan did not cover.
+`--severity`, `--kind` (`secret`, `vulnerability` or `private-data`), `--match` and `--repo` narrow a repository export to part of the scan. A narrowed export says at the top that it is partial, and one made from an incomplete scan says what the scan did not cover.
 
 Text from repositories and DNS records is escaped for each format, so a hostile file name or package name cannot become markup in the page, a link in the Markdown or a formula in the spreadsheet.
 

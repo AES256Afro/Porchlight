@@ -6,6 +6,7 @@ import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GIT_SAFE_ARGS } from "../github/github.ts";
 import { firstLine, type Runner } from "./exec.ts";
+import { hasGpsPosition, isPrivateRule, namedFindings, PHOTO_TYPES, photoFinding, placeOf, PRIVATE_CONFIG, privateFindings, type Match, type NamedFile } from "./private.ts";
 import { triageSecret } from "./triage.ts";
 import type { Finding, HistoryReach, SecretSource } from "./types.ts";
 
@@ -29,6 +30,10 @@ export const GIT_LOG_OPTIONS = "--full-history --all --no-textconv --no-ext-diff
 export interface SecretScope {
 	history: HistoryReach;
 	localFiles: boolean;
+	/** Report secrets (the default). Off when only private data was asked for. */
+	secrets?: boolean;
+	/** Also look for private data, with Porchlight's own rules in the same gitleaks pass (see private.ts). */
+	privateData?: boolean;
 }
 
 /** Every commit, and nothing git does not track: what a scan looked at before there were choices. */
@@ -45,10 +50,10 @@ const READ_ENV = { GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" };
 export const MAX_FILE_BYTES = 50 * 1024 * 1024;
 
 /** gitleaks' options shared by every way it is run. `--redact` is not optional (invariant 3). */
-function common(ignoreFrom: string): string[] {
+function common(ignoreFrom: string, config: string): string[] {
 	return [
 		"--config",
-		GITLEAKS_CONFIG,
+		config,
 		// Read .gitleaksignore from the repository only, never from the folder Porchlight runs in.
 		"--gitleaks-ignore-path",
 		ignoreFrom,
@@ -72,7 +77,7 @@ function common(ignoreFrom: string): string[] {
  * report can be shared or stored without becoming a leak itself.
  */
 export async function runGitleaks(repo: string, run: Runner): Promise<Finding[]> {
-	return parseGitleaks(JSON.stringify(await historyRows(repo, run, "all")));
+	return parseGitleaks(JSON.stringify(await historyRows(repo, run, "all", GITLEAKS_CONFIG)));
 }
 
 /**
@@ -83,12 +88,14 @@ export async function runGitleaks(repo: string, run: Runner): Promise<Finding[]>
  *   in a file is found however long ago it was committed;
  * - with `localFiles`, the files git does not track (an .env, say), reported as on this computer only.
  *
- * The same secret found twice is reported once, from history first.
+ * The same secret found twice is reported once, from history first. With `privateData`, gitleaks
+ * runs once with Porchlight's private-data rules beside its own, and its matches are split by rule.
  */
 export async function scanSecrets(repo: string, run: Runner, scope: SecretScope = FULL_HISTORY): Promise<{ findings: Finding[]; unreadFiles: number }> {
+	const config = scope.privateData ? PRIVATE_CONFIG : GITLEAKS_CONFIG;
 	const rows: Located[] = [];
-	if (scope.history !== "none") rows.push(...(await historyRows(repo, run, scope.history)).map((row) => ({ row, source: "history" as const })));
-	if (scope.history === "all" && !scope.localFiles) return { findings: findingsOf(rows), unreadFiles: 0 };
+	if (scope.history !== "none") rows.push(...(await historyRows(repo, run, scope.history, config)).map((row) => ({ row, source: "history" as const })));
+	if (scope.history === "all" && !scope.localFiles && !scope.privateData) return { findings: findingsOf(rows), unreadFiles: 0 };
 
 	const tracked = await trackedFiles(repo, run);
 	let unreadFiles = 0;
@@ -96,9 +103,9 @@ export async function scanSecrets(repo: string, run: Runner, scope: SecretScope 
 		const copy = await copyTracked(repo, tracked);
 		try {
 			unreadFiles = copy.unread;
-			const found = await folderRows(copy.dir, repo, run);
+			const found = await folderRows(copy.dir, repo, run, config);
 			// A key in a file changed since it was committed may be in that change alone: then it is on this computer only.
-			const committed = await committedSecrets(repo, run, tracked, [...new Set(found.map(fileOf).filter((file) => copy.changed.has(file)))]);
+			const committed = await committedSecrets(repo, run, tracked, [...new Set(found.map(fileOf).filter((file) => copy.changed.has(file)))], config);
 			for (const row of found) {
 				const file = fileOf(row);
 				const uncommitted = committed.read.has(file) && !committed.ids.has(secretId(row));
@@ -115,7 +122,7 @@ export async function scanSecrets(repo: string, run: Runner, scope: SecretScope 
 		// that key in that file.
 		const committed = new Set(rows.filter((located) => located.source === "history").map((located) => secretId(located.row)));
 		const top = await realpath(repo);
-		for (const row of await folderRows(repo, repo, run)) {
+		for (const row of await folderRows(repo, repo, run, config)) {
 			const file = fileOf(row);
 			const id = tracked.get(file);
 			if (id === undefined) rows.push({ row, source: "local" });
@@ -125,7 +132,93 @@ export async function scanSecrets(repo: string, run: Runner, scope: SecretScope 
 			}
 		}
 	}
-	return { findings: findingsOf(rows), unreadFiles };
+	const isPrivate = (located: Located) => isPrivateRule((located.row as { RuleID?: unknown } | null)?.RuleID);
+	const findings = scope.secrets === false ? [] : findingsOf(rows.filter((located) => !isPrivate(located)));
+	if (scope.privateData) findings.push(...(await privateData(repo, run, scope.history, rows.filter(isPrivate), tracked)));
+	return { findings, unreadFiles };
+}
+
+/**
+ * Private data in a repository (see private.ts): gitleaks' matches of Porchlight's rules, grouped and
+ * counted; files that hold people's data by their type or name, among those history added and those
+ * tracked now; and tracked photos whose EXIF data holds a GPS position.
+ */
+async function privateData(repo: string, run: Runner, history: HistoryReach, located: Located[], tracked: Map<string, string>): Promise<Finding[]> {
+	const matches: Match[] = located.map(({ row, source, changed }) => {
+		const { RuleID, StartLine, StartColumn, Commit, Date: date } = (row ?? {}) as Record<string, unknown>;
+		return {
+			ruleId: String(RuleID),
+			file: fileOf(row),
+			...(typeof StartLine === "number" ? { line: StartLine } : {}),
+			...(typeof StartColumn === "number" ? { column: StartColumn } : {}),
+			...(source === "history" && typeof Commit === "string" && Commit ? { commit: Commit } : {}),
+			...(source === "history" && typeof date === "string" ? { date } : {}),
+			source,
+			...(changed ? { changed } : {}),
+		};
+	});
+	const added = history === "none" ? new Map<string, Added>() : await addedFiles(repo, run, history);
+	const place = (path: string, at = added.get(path)): NamedFile => (at ? { path, source: "history", commit: at.commit, date: at.date } : { path, source: "files" });
+	const named: NamedFile[] = [...[...added.keys()].map((path) => place(path)), ...[...tracked.keys()].map((path) => ({ path, source: "files" as const }))];
+	const photo = (path: string) => PHOTO_TYPES.has(path.slice(path.lastIndexOf(".") + 1).toLowerCase());
+	const top = await realpath(repo);
+	const photos = new Map<string, Finding>();
+	// Photos as they are now.
+	for (const path of tracked.keys()) {
+		if (!photo(path)) continue;
+		const content = await readTracked(top, path);
+		if (Buffer.isBuffer(content) && hasGpsPosition(content)) photos.set(path, photoFinding(place(path)));
+	}
+	// Photos history added that are gone now, or changed since: their committed versions, read with
+	// `cat-file blob`, which converts nothing. One past the size limit is not read.
+	const checked = new Map<string, boolean>();
+	for (const [path, at] of added) {
+		if (!photo(path) || photos.has(path) || at.blob === "" || tracked.get(path) === at.blob) continue;
+		let found = checked.get(at.blob);
+		if (found === undefined) {
+			const blob = await run("git", [...GIT_SAFE_ARGS, "-C", repo, "cat-file", "blob", at.blob], { env: READ_ENV, latin1: true }).catch(() => null);
+			found = blob !== null && blob.code === 0 && blob.stdout.length <= MAX_FILE_BYTES && hasGpsPosition(Buffer.from(blob.stdout, "latin1"));
+			checked.set(at.blob, found);
+		}
+		if (found) photos.set(path, photoFinding(place(path, at)));
+	}
+	return [...privateFindings(matches), ...namedFindings(named), ...photos.values()];
+}
+
+/** A file a commit added: the oldest such commit, and the id of the content it added (empty for a link or a submodule). */
+interface Added {
+	commit: string;
+	date: string;
+	blob: string;
+}
+
+/**
+ * Every file a commit added, by path, with the oldest commit that added it and the id of what it
+ * added: read with `git log --raw`, which compares no file's content and so runs no diff program.
+ */
+async function addedFiles(repo: string, run: Runner, reach: "all" | number): Promise<Map<string, Added>> {
+	const limit = typeof reach === "number" ? [`--max-count=${reach}`] : [];
+	const { code, stdout, stderr } = await run(
+		"git",
+		[...GIT_SAFE_ARGS, "-C", repo, "log", ...GIT_LOG_OPTIONS.split(" "), ...limit, "--no-renames", "--diff-filter=A", "--raw", "--no-abbrev", "-z", "--format=%x01%H %aI"],
+		{ env: READ_ENV },
+	);
+	if (code !== 0) throw new Error(firstLine(stderr) || `git exited with code ${code}`);
+	const added = new Map<string, Added>();
+	// Newest first: an older commit that added the same path again overwrites, so the oldest stays.
+	for (const chunk of stdout.split("\x01")) {
+		const end = chunk.indexOf("\0");
+		if (end < 0) continue;
+		const [commit = "", date = ""] = chunk.slice(0, end).split(" ");
+		// Each file: ":000000 100644 <old id> <new id> A", then its path.
+		const fields = chunk.slice(end + 1).replace(/^\n/, "").split("\0");
+		for (let i = 0; i + 1 < fields.length; i += 2) {
+			const [, mode = "", , blob = ""] = (fields[i] ?? "").split(" ");
+			const path = fields[i + 1] ?? "";
+			if (path !== "") added.set(path, { commit, date, blob: mode === "100644" || mode === "100755" || mode === "100664" ? blob : "" });
+		}
+	}
+	return added;
 }
 
 /**
@@ -134,7 +227,7 @@ export async function scanSecrets(repo: string, run: Runner, scope: SecretScope 
  * nothing a repository's settings name. A file that cannot be read is left out of `read`, so its
  * keys are reported as committed: the more careful reading.
  */
-async function committedSecrets(repo: string, run: Runner, tracked: Map<string, string>, files: string[]): Promise<{ ids: Set<string>; read: Set<string> }> {
+async function committedSecrets(repo: string, run: Runner, tracked: Map<string, string>, files: string[], config: string): Promise<{ ids: Set<string>; read: Set<string> }> {
 	const ids = new Set<string>();
 	const read = new Set<string>();
 	if (files.length === 0) return { ids, read };
@@ -151,7 +244,7 @@ async function committedSecrets(repo: string, run: Runner, tracked: Map<string, 
 			await writeFile(target, stdout, { mode: 0o600, flag: "wx" });
 			read.add(file);
 		}
-		if (read.size > 0) for (const row of await folderRows(dir, repo, run)) ids.add(secretId(row));
+		if (read.size > 0) for (const row of await folderRows(dir, repo, run, config)) ids.add(secretId(row));
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}
@@ -165,9 +258,9 @@ function secretId(row: unknown): string {
 }
 
 /** gitleaks over the history `git log` shows it, limited to the latest `reach` commits when that is a number. */
-async function historyRows(repo: string, run: Runner, reach: "all" | number): Promise<unknown[]> {
+async function historyRows(repo: string, run: Runner, reach: "all" | number, config: string): Promise<unknown[]> {
 	const logOptions = reach === "all" ? GIT_LOG_OPTIONS : `--max-count=${reach} ${GIT_LOG_OPTIONS}`;
-	const { code, stdout, stderr } = await run("gitleaks", ["git", ...common(repo), `--log-opts=${logOptions}`, repo]);
+	const { code, stdout, stderr } = await run("gitleaks", ["git", ...common(repo, config), `--log-opts=${logOptions}`, repo]);
 	if (code !== 0) throw new Error(errorLine(stderr) || `gitleaks exited with code ${code}`);
 	// When git cannot read the repository (another user's, a broken worktree, a
 	// corrupt .git), gitleaks logs the error, reports nothing and still exits 0.
@@ -181,8 +274,8 @@ async function historyRows(repo: string, run: Runner, reach: "all" | number): Pr
  * gitleaks over a folder, run from inside it so the files it names are relative to it (and match a
  * repository's .gitleaksignore). It does not follow symbolic links, and skips .git.
  */
-async function folderRows(folder: string, repo: string, run: Runner): Promise<unknown[]> {
-	const { code, stdout, stderr } = await run("gitleaks", ["dir", ...common(repo), "."], { cwd: folder });
+async function folderRows(folder: string, repo: string, run: Runner, config: string): Promise<unknown[]> {
+	const { code, stdout, stderr } = await run("gitleaks", ["dir", ...common(repo, config), "."], { cwd: folder });
 	if (code !== 0) throw new Error(errorLine(stderr) || `gitleaks exited with code ${code}`);
 	if (stderr.trim() !== "") throw new Error(errorLine(stderr));
 	return rowsOf(stdout);
@@ -296,14 +389,6 @@ interface Located {
 	changed?: boolean;
 }
 
-/** What a finding's detail says about where it is, beside a commit for one found in history. */
-const PLACES = {
-	files: "current files",
-	changed: "current files, changed since the last commit",
-	local: "on this computer only, not in git",
-	uncommitted: "on this computer only, an uncommitted change",
-} as const;
-
 function findingsOf(located: Located[]): Finding[] {
 	// The same secret is reported again by each commit that rewrote its line; keep the first.
 	// Which secret a match is cannot be told by its value (gitleaks runs with --redact), but its
@@ -319,14 +404,12 @@ function findingsOf(located: Located[]): Finding[] {
 		const location = typeof StartLine === "number" ? `${File}:${StartLine}` : File;
 		const key = `${RuleID}\n${location}\n${typeof Entropy === "number" ? Entropy : ""}`;
 		if (bySecret.has(key)) continue;
-		let detail: string;
-		if (source === "history") {
-			const commit = typeof Commit === "string" && Commit ? `commit ${Commit.slice(0, 8)}` : "working tree";
-			const day = typeof date === "string" ? ` on ${date.slice(0, 10)}` : "";
-			detail = `${commit}${day}`;
-		} else {
-			detail = source === "local" ? (changed ? PLACES.uncommitted : PLACES.local) : changed ? PLACES.changed : PLACES.files;
-		}
+		let detail =
+			source === "history"
+				? typeof Commit === "string" && Commit
+					? placeOf({ source, commit: Commit, ...(typeof date === "string" ? { date } : {}) })
+					: `working tree${typeof date === "string" ? ` on ${date.slice(0, 10)}` : ""}`
+				: placeOf({ source, ...(changed ? { changed } : {}) });
 		// Two secrets on one line in one commit would otherwise read the same, and share one note and status.
 		const place = `${RuleID}\n${location}\n`;
 		if (details.has(place + detail)) {

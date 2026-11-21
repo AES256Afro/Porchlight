@@ -77,7 +77,7 @@ export function filterFromParams(params) {
 		if (known.length > 0 || severity === "none") filter.severities = known;
 	}
 	const kind = params.get("kind");
-	if (kind === "secret" || kind === "vulnerability") filter.kind = kind;
+	if (kind === "secret" || kind === "vulnerability" || kind === "private-data") filter.kind = kind;
 	filter.query = params.get("q") ?? "";
 	filter.repo = params.get("repo") ?? "";
 	return filter;
@@ -100,9 +100,9 @@ export function paramsFromFilter(filter) {
 	return settings;
 }
 
-/** @typedef {{ key: "rank" | "name" | "secrets" | "vulnerabilities" | import("./filter.js").Severity, descending: boolean }} RepoSort */
+/** @typedef {{ key: "rank" | "name" | "secrets" | "vulnerabilities" | "private" | import("./filter.js").Severity, descending: boolean }} RepoSort */
 
-const REPO_SORT_KEYS = ["rank", "name", "secrets", "vulnerabilities", ...ALL_SEVERITIES];
+const REPO_SORT_KEYS = ["rank", "name", "secrets", "vulnerabilities", "private", ...ALL_SEVERITIES];
 
 /**
  * The By repository order an address describes: `sort=critical`, with `order=asc` only when it

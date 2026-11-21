@@ -70,12 +70,12 @@ export function exitCode(report: ScanReport, failOn: Severity | undefined): 0 | 
 export function coverageNotes(report: ScanReport): string[] {
 	const choices = report.choices ?? standardChoices();
 	// A check switched off is said once, by choiceGaps, not again as a scanner that is missing.
-	const chosen = (tool: ToolName) => (tool === "gitleaks" ? choices.secrets : choices.dependencies);
+	const checks = (tool: ToolName) =>
+		tool === "gitleaks" ? [choices.secrets ? "Secrets were not checked" : null, choices.privateData ? "Private data was not checked" : null] : [choices.dependencies ? "Dependencies were not checked" : null];
 	const notes: string[] = [...choiceGaps(choices, report.skipped)];
 	for (const tool of report.tools) {
-		if (tool.status !== "missing" || !chosen(tool.tool)) continue;
-		const skipped = tool.tool === "gitleaks" ? "Secrets were not checked" : "Dependencies were not checked";
-		notes.push(`${skipped}: ${tool.tool} is not installed (${tool.installHint}).`);
+		if (tool.status !== "missing") continue;
+		for (const skipped of checks(tool.tool)) if (skipped) notes.push(`${skipped}: ${tool.tool} is not installed (${tool.installHint}).`);
 	}
 	for (const repo of report.repos) {
 		for (const error of repo.errors) {
@@ -83,7 +83,7 @@ export function coverageNotes(report: ScanReport): string[] {
 		}
 		if (repo.unreadFiles) {
 			notes.push(
-				`${repo.unreadFiles === 1 ? "1 tracked file" : `${repo.unreadFiles} tracked files`} in ${repoName(report, repo)} ${repo.unreadFiles === 1 ? "was" : "were"} not read for secrets: larger than ${UNREAD_LIMIT_WORDS}, or not a file that could be opened.`,
+				`${repo.unreadFiles === 1 ? "1 tracked file" : `${repo.unreadFiles} tracked files`} in ${repoName(report, repo)} ${repo.unreadFiles === 1 ? "was" : "were"} not read: larger than ${UNREAD_LIMIT_WORDS}, or not a file that could be opened.`,
 			);
 		}
 	}

@@ -15,6 +15,8 @@ export interface RunOptions {
 	signal?: AbortSignal;
 	/** The folder the command runs in (default: this process's own). */
 	cwd?: string;
+	/** Read the output byte for byte, one character a byte, for content that is not text: `Buffer.from(stdout, "latin1")` gives the bytes back. */
+	latin1?: boolean;
 }
 
 /** Runs a program and resolves with its exit code and output, whatever the code. */
@@ -46,7 +48,7 @@ export const run: Runner = (command, args, options) =>
 	new Promise((resolve, reject) => {
 		const env = options?.env ? { ...process.env, ...options.env } : undefined;
 		if (options?.signal?.aborted) return reject(new CancelledError());
-		execFile(command, args, { timeout: options?.timeoutMs ?? TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES, env, signal: options?.signal, cwd: options?.cwd }, (error, stdout, stderr) => {
+		execFile(command, args, { timeout: options?.timeoutMs ?? TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES, env, signal: options?.signal, cwd: options?.cwd, encoding: options?.latin1 ? "latin1" : "utf8" }, (error, stdout, stderr) => {
 			if (!error) return resolve({ code: 0, stdout, stderr });
 			if (error.name === "AbortError" || options?.signal?.aborted) return reject(new CancelledError());
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return reject(new ToolMissingError(command));
