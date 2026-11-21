@@ -1,4 +1,4 @@
-import { recordsOf, resolve, TYPE_CODE, type DnsAnswer } from "../doh.ts";
+import { recordsOf, resolve, resolveSigned, TYPE_CODE, type DnsAnswer } from "../doh.ts";
 import type { FetchFn } from "../env.ts";
 
 export interface HostDns {
@@ -65,16 +65,29 @@ export type ApexType = (typeof APEX_TYPES)[number];
 /** A missing key means that lookup failed this run: "not observed", never "no records". */
 export type ApexRecords = Partial<Record<ApexType, string[]>>;
 
-export async function lookupApex(domain: string, fetchFn: FetchFn): Promise<ApexRecords> {
+export interface ApexLookup {
+	records: ApexRecords;
+	/**
+	 * Whether the domain's answers are signed with DNSSEC, read from the lookups above: no further
+	 * request is made for it. Undefined when no lookup said, or when they disagreed: "not observed".
+	 */
+	dnssec?: boolean;
+}
+
+export async function lookupApex(domain: string, fetchFn: FetchFn): Promise<ApexLookup> {
 	const records: ApexRecords = {};
+	const validated: boolean[] = [];
 	await Promise.all(
 		APEX_TYPES.map(async (type) => {
 			try {
-				records[type] = recordsOf(await resolve(domain, type, fetchFn), type);
+				const { answers, authenticated } = await resolveSigned(domain, type, fetchFn);
+				records[type] = recordsOf(answers, type);
+				if (authenticated !== undefined) validated.push(authenticated);
 			} catch {
 				// Left unset so the diff skips this type instead of reporting it emptied.
 			}
 		}),
 	);
-	return records;
+	const agree = validated.length > 0 && validated.every((value) => value === validated[0]);
+	return { records, ...(agree ? { dnssec: validated[0]! } : {}) };
 }

@@ -156,6 +156,112 @@ describe("DNS findings", () => {
 	});
 });
 
+describe("mail and DNS signing", () => {
+	const spf = (...txt: string[]) => ids(snapshot({}, { CAA, TXT: txt }));
+
+	it("reads the SPF record for who may send mail", () => {
+		expect(spf()).toEqual(["no-spf:example.com"]);
+		expect(spf("google-site-verification=abc", "v=spf1 include:_spf.example.net ~all")).toEqual([]);
+		expect(spf("v=spf1 -all")).toEqual([]);
+		expect(spf("v=spf1 +all")).toEqual(["weak-spf:example.com"]);
+		expect(spf("v=spf1 a mx ?all")).toEqual(["weak-spf:example.com"]);
+		expect(spf("v=spf1 -all", "v=spf1 mx -all")).toEqual(["weak-spf:example.com"]);
+		// "v=spf10" is not an SPF record; the lookup failing says nothing.
+		expect(spf("v=spf10 -all")).toEqual(["no-spf:example.com"]);
+		expect(ids(snapshot({}, { CAA }))).toEqual([]);
+	});
+
+	it("ranks an SPF record that lets anyone send above one that only says nothing", () => {
+		const severity = (txt: string) =>
+			deriveFindings(snapshot({}, { CAA, TXT: [txt] }), [], SETTINGS, NOW)[0]?.severity;
+		expect([severity("v=spf1 +all"), severity("v=spf1 all"), severity("v=spf1 ?all")]).toEqual([
+			"medium",
+			"medium",
+			"low",
+		]);
+	});
+
+	it("flags unsigned DNS only when the resolver said so", () => {
+		expect(ids({ ...snapshot({}), dnssec: false })).toEqual(["no-dnssec:example.com"]);
+		expect(ids({ ...snapshot({}), dnssec: true })).toEqual([]);
+		expect(ids(snapshot({}))).toEqual([]);
+	});
+});
+
+describe("HSTS and cookies", () => {
+	const ALL = [
+		"strict-transport-security",
+		"content-security-policy",
+		"x-content-type-options",
+		"x-frame-options",
+		"referrer-policy",
+		"permissions-policy",
+	];
+	const withHttp = (extra: Partial<Extract<HttpProbe, { ok: true }>>) =>
+		deriveFindings(
+			snapshot({ "example.com": host({ http: page(ALL, extra) }) }),
+			[],
+			SETTINGS,
+			NOW,
+		).map((finding) => `${finding.severity} ${finding.id}`);
+
+	it("flags HSTS that is sent but short, or switched off", () => {
+		expect(withHttp({ hsts: { maxAge: 63072000, includeSubDomains: false } })).toEqual([]);
+		expect(withHttp({ hsts: { maxAge: 86400, includeSubDomains: true } })).toEqual([
+			"low weak-hsts:example.com",
+		]);
+		expect(withHttp({ hsts: { maxAge: 0, includeSubDomains: false } })).toEqual([
+			"medium weak-hsts:example.com",
+		]);
+		// Unreadable, or a snapshot from before it was kept: nothing is claimed.
+		expect(withHttp({ hsts: { maxAge: null, includeSubDomains: false } })).toEqual([]);
+		expect(withHttp({})).toEqual([]);
+	});
+
+	it("flags cookies without Secure, and sign-in cookies a script can read, once per host", () => {
+		const cookie = (name: string, secure: boolean, httpOnly: boolean) => ({
+			name,
+			secure,
+			httpOnly,
+		});
+		expect(
+			withHttp({ cookies: [cookie("sid", true, true), cookie("theme", true, false)] }),
+		).toEqual([]);
+		expect(
+			withHttp({
+				cookies: [
+					cookie("theme", false, false),
+					cookie("lang", false, false),
+					cookie("session_id", true, false),
+				],
+			}),
+		).toEqual(["low insecure-cookies:example.com", "low script-readable-cookies:example.com"]);
+		const many = deriveFindings(
+			snapshot({
+				"example.com": host({
+					http: page(ALL, {
+						cookies: ["f", "e", "d", "c", "b", "a"].map((name) => cookie(name, false, true)),
+					}),
+				}),
+			}),
+			[],
+			SETTINGS,
+			NOW,
+		);
+		expect(many[0]!.title).toMatch(/: a, b, c, d and 2 more$/);
+	});
+
+	it("says nothing about either from a response that only reports an outage", () => {
+		expect(
+			withHttp({
+				status: 503,
+				hsts: { maxAge: 0, includeSubDomains: false },
+				cookies: [{ name: "x", secure: false, httpOnly: false }],
+			}),
+		).toEqual([]);
+	});
+});
+
 describe("findings across scans", () => {
 	const first = deriveFindings(
 		snapshot({ "example.com": host({ http: page([], { status: 301 }) }) }, { CAA: [] }),

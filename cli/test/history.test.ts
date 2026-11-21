@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { compareScans } from "../src/repos/history.ts";
 import type { Finding, ScanReport } from "../src/repos/types.ts";
-import { changeSummary } from "../ui/tracking.js";
+import { acceptanceEnded, changeSummary, isDay, statusesFor } from "../ui/tracking.js";
 
 const secret: Finding = { tool: "gitleaks", kind: "secret", severity: "high", ruleId: "aws-access-token", title: "AWS key", location: "config.ts:3", detail: "commit abc" };
 const advisory: Finding = { tool: "osv-scanner", kind: "vulnerability", severity: "critical", ruleId: "GHSA-1", title: "lodash", location: "package-lock.json", detail: "lodash@4.17.20" };
@@ -69,4 +69,19 @@ test("the summary says what could not be checked again", () => {
 		"1 fixed since the previous scan. 2 findings of the previous scan could not be checked again, so they are not counted as fixed.",
 	);
 	assert.equal(changeSummary({ previousScannedAt: "", newCount: 0, fixedCount: 0 }), "Nothing new and nothing fixed since the previous scan.");
+});
+
+test("an accepted risk ends the day after the one it was accepted until", () => {
+	const noon = (day: string) => new Date(`${day}T12:00:00`);
+	const accepted = { status: "accepted", until: "2027-06-30" };
+	assert.equal(acceptanceEnded(accepted, noon("2027-06-30")), false);
+	assert.equal(acceptanceEnded(accepted, noon("2027-07-01")), true);
+	// No end date never ends, and no other status has one.
+	assert.equal(acceptanceEnded({ status: "accepted" }, noon("2099-01-01")), false);
+	assert.equal(acceptanceEnded({ status: "fixed", until: "2020-01-01" }, noon("2027-07-01")), false);
+	assert.equal(acceptanceEnded(null), false);
+
+	assert.deepEqual(["2027-06-30", "2027-02-30", "2027-6-30", "soon", 20270630].map(isDay), [true, false, false, false, false]);
+	assert.ok(statusesFor("secret").some(([status]) => status === "rotated"));
+	assert.ok(!statusesFor("vulnerability").some(([status]) => status === "rotated"));
 });

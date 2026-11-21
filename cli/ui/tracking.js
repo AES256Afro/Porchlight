@@ -20,12 +20,20 @@ export const STATUSES = /** @type {const} */ ([
 	["open", "Open"],
 	["in-progress", "In progress"],
 	["fixed", "Fixed"],
+	// For a secret: the credential was replaced with the service that issued it. The old one stays in
+	// git history, so the finding stays listed; this says it no longer opens anything.
+	["rotated", "Rotated"],
 	["accepted", "Accepted risk"],
 	["false-positive", "False positive"],
 ]);
 
 /** @typedef {(typeof STATUSES)[number][0]} FindingStatus */
-/** @typedef {{ status: FindingStatus, note: string, updatedAt: string }} FindingNote */
+/**
+ * `until`: for "accepted", the last day (YYYY-MM-DD) the owner accepts the risk for. After it the
+ * finding reads as open again, with a mark saying the acceptance has ended.
+ *
+ * @typedef {{ status: FindingStatus, note: string, updatedAt: string, until?: string }} FindingNote
+ */
 
 /** The longest note, in characters. */
 export const MAX_NOTE = 2000;
@@ -33,6 +41,35 @@ export const MAX_NOTE = 2000;
 /** @param {unknown} value @returns {value is FindingStatus} */
 export function isStatus(value) {
 	return STATUSES.some(([status]) => status === value);
+}
+
+/** The statuses offered for a finding of this kind: "Rotated" is for secrets alone. @param {string} kind */
+export function statusesFor(kind) {
+	return STATUSES.filter(([status]) => status !== "rotated" || kind === "secret");
+}
+
+/** A day as the owner typed it, and a real one: "2027-02-30" is not. @param {unknown} value @returns {value is string} */
+export function isDay(value) {
+	if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+	const date = new Date(`${value}T00:00:00Z`);
+	return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+/**
+ * Whether an accepted risk has run past the day it was accepted until. The status the owner chose
+ * is kept as it was; the page shows it as ended, so it is looked at again rather than forgotten.
+ *
+ * @param {{ status: string, until?: string } | null | undefined} note
+ * @param {Date} [now]
+ */
+export function acceptanceEnded(note, now = new Date()) {
+	return note?.status === "accepted" && typeof note.until === "string" && note.until < localDay(now);
+}
+
+/** Today as YYYY-MM-DD where the owner is. @param {Date} [now] */
+export function localDay(now = new Date()) {
+	const pad = (/** @type {number} */ part) => String(part).padStart(2, "0");
+	return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
 /** @param {string} status */

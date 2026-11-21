@@ -4,7 +4,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { assistantConfig, isHosted } from "./assist/ollama.ts";
 import { callMonitor, monitorConfig } from "./monitor/client.ts";
-import { describeDomain } from "./monitor/describe.ts";
+import { describeDomain, describeHistory } from "./monitor/describe.ts";
 import { exitCode, parseScanReport, renderMarkdown, renderSummary } from "./repos/report.ts";
 import { History } from "./repos/history.ts";
 import { scanRepos, type RepoDone } from "./repos/scan.ts";
@@ -388,6 +388,7 @@ async function domains(command: string, args: string[]): Promise<number> {
 		verify: () => callMonitor(config, "POST", `${path}/verify`),
 		scan: () => callMonitor(config, "POST", `${path}/scan`),
 		show: () => callMonitor(config, "GET", path),
+		history: () => callMonitor(config, "GET", `${path}/history`),
 		remove: () => callMonitor(config, "DELETE", path),
 	};
 	const request = requests[command];
@@ -418,6 +419,9 @@ async function domains(command: string, args: string[]): Promise<number> {
 		case "show":
 			say(describeDomain(body.domain));
 			say(body.text ?? "No scan yet.");
+			break;
+		case "history":
+			say(describeHistory(body.domain, body.history));
 			break;
 		case "remove":
 			say(`Removed ${body.deleted} and its scan history.`);

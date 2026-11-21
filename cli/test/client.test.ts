@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { callMonitor, monitorConfig } from "../src/monitor/client.ts";
-import { describeDomain } from "../src/monitor/describe.ts";
+import { describeDomain, describeHistory } from "../src/monitor/describe.ts";
 
 const TOKEN = "t".repeat(40);
 
@@ -74,4 +74,40 @@ test("lists a domain's scan state, with a run of failures counted", () => {
 	// An older monitor sends no streak.
 	assert.equal(describeDomain({ ...base, lastScanStatus: "error" }), "example.com: verified, last scan 2026-11-20T12:00:00.000Z (error)");
 	assert.equal(describeDomain({ ...base, lastScanStatus: null }), "example.com: verified, last scan 2026-11-20T12:00:00.000Z (verified again, scan due)");
+});
+
+test("lists how many findings a domain has open, when the monitor counts them", () => {
+	const base = { name: "example.com", verified: true, lastScanAt: "2026-11-20T12:00:00.000Z", lastScanStatus: "ok" as const };
+	assert.match(describeDomain({ ...base, openFindings: { high: 1, medium: 0, low: 2 } }), /\(ok\), 3 open findings \(1 high\)$/);
+	assert.match(describeDomain({ ...base, openFindings: { high: 0, medium: 1, low: 0 } }), /\(ok\), 1 open finding$/);
+	assert.match(describeDomain({ ...base, openFindings: { high: 0, medium: 0, low: 0 } }), /\(ok\), no open findings$/);
+	assert.match(describeDomain({ ...base, openFindings: null }), /\(ok\)$/);
+});
+
+test("prints a domain's history newest first, with what each scan saw change", () => {
+	const finding = { id: "no-caa:example.com", severity: "low" as const, host: "example.com", basis: "apex" as const, title: "No CAA record" };
+	const text = describeHistory("example.com", [
+		{ takenAt: "2026-11-19T12:00:00.000Z", baseline: false, changes: [], newFindings: [], resolvedFindings: [finding], openFindings: { high: 0, medium: 0, low: 0 }, hostCount: 2, notes: [] },
+		{
+			takenAt: "2026-11-18T12:00:00.000Z",
+			baseline: false,
+			changes: [{ kind: "host_added", host: "shop.example.com" }],
+			newFindings: [finding],
+			resolvedFindings: [],
+			openFindings: { high: 0, medium: 0, low: 1 },
+			hostCount: 2,
+			notes: ["The certificate log could not be read."],
+		},
+		{ takenAt: "2026-11-17T12:00:00.000Z", baseline: true, changes: [], newFindings: [], resolvedFindings: [], openFindings: { high: 0, medium: 0, low: 0 }, hostCount: 1, notes: [] },
+	]);
+	assert.deepEqual(text.split("\n"), [
+		"2026-11-19 12:00  0 changes, 0 new findings, 1 resolved; 0 open",
+		"    ✓ example.com: No CAA record",
+		"2026-11-18 12:00  1 change, 1 new finding, 0 resolved; 1 open",
+		"    + new host shop.example.com",
+		"    ! [low] example.com: No CAA record",
+		"    (The certificate log could not be read.)",
+		"2026-11-17 12:00  first scan, 1 host; 0 open",
+	]);
+	assert.equal(describeHistory("example.com", []), "example.com has not been scanned yet.");
 });

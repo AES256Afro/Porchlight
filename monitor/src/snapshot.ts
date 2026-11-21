@@ -24,6 +24,8 @@ export interface Snapshot {
 	/** False when the certificate log could not be read; the host list was then carried over. */
 	ctOk: boolean;
 	apex: ApexRecords;
+	/** Whether the domain's DNS answers are signed. Absent: not observed, or an older snapshot. */
+	dnssec?: boolean;
 	hosts: Record<string, HostState>;
 	/**
 	 * Names the certificate log still lists but DNS showed gone, with when that
@@ -41,7 +43,7 @@ export async function collectSnapshot(
 	settings: Settings,
 	deps: Deps,
 ): Promise<Snapshot> {
-	const [certs, apex] = await Promise.all([
+	const [certs, { records: apex, dnssec }] = await Promise.all([
 		fetchCtCerts(domain, deps.fetch).catch(() => null),
 		lookupApex(domain, deps.fetch),
 	]);
@@ -95,6 +97,7 @@ export async function collectSnapshot(
 		takenAt: deps.now().toISOString(),
 		ctOk: certs !== null,
 		apex,
+		...(dnssec !== undefined ? { dnssec } : {}),
 		hosts,
 		...(Object.keys(gone).length > 0 ? { gone } : {}),
 	};

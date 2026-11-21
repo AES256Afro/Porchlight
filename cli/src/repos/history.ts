@@ -11,7 +11,7 @@
  */
 import { chmod, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { findingKey, isStatus, MAX_NOTE, type FindingNote } from "../../ui/tracking.js";
+import { findingKey, isDay, isStatus, MAX_NOTE, type FindingNote } from "../../ui/tracking.js";
 import { countBySeverity, rank, repoName } from "./report.ts";
 import type { Finding, ScanReport, Severity } from "./types.ts";
 
@@ -205,7 +205,9 @@ export async function readNotes(path: string): Promise<NotesFile> {
 		if (typeof parsed !== "object" || parsed === null) return {};
 		const notes: NotesFile = {};
 		for (const [key, value] of Object.entries(parsed as Record<string, Partial<FindingNote>>)) {
-			if (isStatus(value?.status) && typeof value.note === "string") notes[key] = { status: value.status, note: value.note.slice(0, MAX_NOTE), updatedAt: String(value.updatedAt ?? "") };
+			if (isStatus(value?.status) && typeof value.note === "string") {
+				notes[key] = { status: value.status, note: value.note.slice(0, MAX_NOTE), updatedAt: String(value.updatedAt ?? ""), ...(value.status === "accepted" && isDay(value.until) ? { until: value.until } : {}) };
+			}
 		}
 		return notes;
 	} catch {
@@ -217,12 +219,13 @@ export async function readNotes(path: string): Promise<NotesFile> {
  * Sets one finding's status and note. Back to "open" with no note removes the entry, so the file
  * holds only what the owner said.
  */
-export async function setNote(path: string, key: string, status: FindingNote["status"], note: string, now: Date = new Date()): Promise<FindingNote | null> {
+export async function setNote(path: string, key: string, status: FindingNote["status"], note: string, now: Date = new Date(), until?: string): Promise<FindingNote | null> {
 	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
 	const notes = await readNotes(path);
 	const trimmed = note.trim();
 	if (status === "open" && trimmed === "") delete notes[key];
-	else notes[key] = { status, note: trimmed, updatedAt: now.toISOString() };
+	// An end date belongs to an accepted risk alone; any other status drops it.
+	else notes[key] = { status, note: trimmed, updatedAt: now.toISOString(), ...(status === "accepted" && until ? { until } : {}) };
 	await writePrivate(path, notes);
 	return notes[key] ?? null;
 }

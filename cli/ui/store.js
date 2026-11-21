@@ -245,9 +245,10 @@ export function noteFor(repo, finding) {
  * @param {{ ruleId: string, location: string, detail: string }} finding
  * @param {string} status
  * @param {string} note
+ * @param {string} [until] for an accepted risk: the last day it is accepted for (YYYY-MM-DD), or "" for no end
  */
-export async function saveFindingNote(repo, finding, status, note) {
-	const answer = await api("POST", "/findings/note", { repo, ruleId: finding.ruleId, location: finding.location, detail: finding.detail, status, note });
+export async function saveFindingNote(repo, finding, status, note, until = "") {
+	const answer = await api("POST", "/findings/note", { repo, ruleId: finding.ruleId, location: finding.location, detail: finding.detail, status, note, ...(status === "accepted" && until ? { until } : {}) });
 	if (answer.note) store.findingNotes[answer.key] = answer.note;
 	else delete store.findingNotes[answer.key];
 	emit("notes");

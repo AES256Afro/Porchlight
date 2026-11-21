@@ -33,6 +33,24 @@ export async function resolve(
 	type: RecordType,
 	fetchFn: FetchFn,
 ): Promise<DnsAnswer[]> {
+	return (await resolveSigned(name, type, fetchFn)).answers;
+}
+
+export interface SignedAnswer {
+	answers: DnsAnswer[];
+	/**
+	 * Whether the resolver validated the answer with DNSSEC (the AD flag): true for a signed zone,
+	 * false for an unsigned one. Undefined when the resolver did not say.
+	 */
+	authenticated?: boolean;
+}
+
+/** As `resolve`, with whether the answer was validated. The same single request. */
+export async function resolveSigned(
+	name: string,
+	type: RecordType,
+	fetchFn: FetchFn,
+): Promise<SignedAnswer> {
 	const url = new URL("https://cloudflare-dns.com/dns-query");
 	url.searchParams.set("name", name);
 	url.searchParams.set("type", type);
@@ -41,11 +59,14 @@ export async function resolve(
 		signal: AbortSignal.timeout(8_000),
 	});
 	if (!res.ok) throw new Error(`DNS lookup ${type} ${name}: HTTP ${res.status}`);
-	const body = (await res.json()) as { Status?: unknown; Answer?: DnsAnswer[] };
+	const body = (await res.json()) as { Status?: unknown; AD?: unknown; Answer?: DnsAnswer[] };
 	if (typeof body.Status !== "number" || !ANSWERED.has(body.Status)) {
 		throw new Error(`DNS lookup ${type} ${name}: no answer (DNS status ${String(body.Status)})`);
 	}
-	return Array.isArray(body.Answer) ? body.Answer : [];
+	return {
+		answers: Array.isArray(body.Answer) ? body.Answer : [],
+		...(typeof body.AD === "boolean" ? { authenticated: body.AD } : {}),
+	};
 }
 
 /** The values of one record type from an answer, normalised and sorted so they compare stably. */

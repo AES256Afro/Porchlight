@@ -10,8 +10,10 @@ export interface FakeNet {
 	apex?: Partial<Record<"NS" | "MX" | "CAA", string[]>>;
 	/** Certificate log rows, or "down" to make crt.sh fail. */
 	ct?: { names: string[]; notBefore: string; notAfter: string }[] | "down";
-	/** HTTPS responses by host. A host absent from here refuses the connection. */
-	https?: Record<string, { status?: number; headers?: Record<string, string> }>;
+	/** HTTPS responses by host. A host absent from here refuses the connection. `cookies` are whole Set-Cookie headers. */
+	https?: Record<string, { status?: number; headers?: Record<string, string>; cookies?: string[] }>;
+	/** Whether the resolver says answers are DNSSEC-validated (the AD flag). Absent: it does not say. */
+	dnssec?: boolean;
 	/** Names whose DNS lookups fail at the transport level. */
 	dnsDown?: string[];
 	/** Names the resolver cannot answer for: HTTP 200 with DNS status 2 (SERVFAIL) and no records. */
@@ -53,7 +55,9 @@ export function fakeDeps(net: FakeNet = {}, start = "2026-11-17T12:00:00.000Z"):
 			if (url.hostname === "crt.sh") return ct(deps.net, url);
 			const site = deps.net.https?.[url.hostname];
 			if (!site) throw new Error("connection refused");
-			return new Response("<!doctype html>", { status: site.status ?? 200, headers: site.headers });
+			const headers = new Headers(site.headers);
+			for (const cookie of site.cookies ?? []) headers.append("set-cookie", cookie);
+			return new Response("<!doctype html>", { status: site.status ?? 200, headers });
 		},
 	};
 	return deps;
@@ -85,7 +89,11 @@ function dns(net: FakeNet, url: URL): Response {
 		push(type, type === "A" ? host?.a : host?.aaaa);
 	}
 	if (type === "NS" || type === "MX" || type === "CAA") push(type, net.apex?.[type]);
-	return Response.json({ Status: 0, Answer: answers.length > 0 ? answers : undefined });
+	return Response.json({
+		Status: 0,
+		...(net.dnssec === undefined ? {} : { AD: net.dnssec }),
+		Answer: answers.length > 0 ? answers : undefined,
+	});
 }
 
 function ct(net: FakeNet, url: URL): Response {

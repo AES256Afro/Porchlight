@@ -625,7 +625,7 @@ The list is kept beside the report (`projects.json`).
 
 Each finished scan is kept beside the report (`history/`, the last 50). The Overview's **Since the last scan** card counts what is new and what was fixed against the scan before, names the fixed findings, and lists past scans; new findings are marked **New** on the Findings page. A finding is the same finding across scans when its repository, advisory or rule, file and detail match, so upgrading a package counts its old findings as fixed.
 
-Open a finding to give it a status (Open, In progress, Fixed, Accepted risk, False positive) and a note. They are kept in `finding-notes.json` beside the report and stay with the finding in later scans. They never change a severity, a count, the roadmap or an export.
+Open a finding to give it a status (Open, In progress, Fixed, Accepted risk, False positive, and for a secret, Rotated) and a note. **Rotated** says the credential was replaced with the service that issued it; the old one is still in git history, so the finding stays listed. **Accepted risk** can carry the last day you accept it for: after that day the finding is marked **Acceptance ended**, so it is looked at again rather than forgotten. They are kept in `finding-notes.json` beside the report and stay with the finding in later scans. They never change a severity, a count, the roadmap or an export.
 
 ## Investigate with a model
 
@@ -766,7 +766,18 @@ It raises these findings:
 | Latest certificate expires soon with no renewal logged | medium |
 | Missing `Strict-Transport-Security` or `Content-Security-Policy` | medium |
 | Missing `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` or `Permissions-Policy` | low |
+| `Strict-Transport-Security` sent with `max-age=0`, which switches it off | medium |
+| `Strict-Transport-Security` that lasts less than 180 days | low |
+| Cookies set without the `Secure` flag | low |
+| Sign-in cookies (by their name) set without `HttpOnly` | low |
 | No CAA record | low |
+| DNSSEC not enabled | low |
+| An SPF record ending in `+all`, which lets any server send mail as the domain | medium |
+| No SPF record, more than one, or one ending in `?all` | low |
+
+The checks for HSTS, cookies, DNSSEC and SPF are read from what a scan already fetches: the one `GET /` per host and the apex DNS lookups. They add no request. Of a cookie, only its name and flags are kept, never its value. Each is raised or cleared only by a scan that saw the evidence for it, so a failed lookup or an outage changes nothing.
+
+The Domains page lists each domain with how many findings it has open, and under a domain's report shows its **History**: every scan the monitor has kept (`SNAPSHOTS_TO_KEEP`, 30 by default), newest first, with what changed in each.
 
 ### Run locally
 
@@ -825,6 +836,7 @@ porchlight domains add example.com      # prints the TXT record to publish
 porchlight domains verify example.com   # once the record resolves
 porchlight domains scan example.com     # scan now; the first scan is the baseline
 porchlight domains show example.com     # latest report
+porchlight domains history example.com  # each kept scan, newest first, with what changed
 porchlight domains list
 porchlight domains remove example.com   # also deletes its scan history
 ```

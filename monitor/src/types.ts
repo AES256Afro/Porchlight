@@ -48,6 +48,24 @@ export interface DomainView {
 	lastScanStatus: ScanStatus | null;
 	/** Scans that have failed in a row; 0 unless the last scan failed. */
 	errorStreak: number;
+	/** Open findings of the latest scan, by severity; null until the domain has been scanned. */
+	openFindings: Record<Severity, number> | null;
 	/** The DNS record that proves ownership. */
 	challenge: { type: "TXT"; name: string; value: string };
+}
+
+/**
+ * One kept scan in a domain's history (`/domains/:name/history`): what it saw change, without the
+ * whole list of findings that were open at the time.
+ */
+export interface HistoryEntry {
+	takenAt: string;
+	baseline: boolean;
+	changes: Change[];
+	newFindings: Finding[];
+	resolvedFindings: Finding[];
+	/** How many findings were open after this scan, by severity. */
+	openFindings: Record<Severity, number>;
+	hostCount: number;
+	notes: string[];
 }

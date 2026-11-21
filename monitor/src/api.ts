@@ -2,15 +2,16 @@ import { normalizeDomain } from "./domain.ts";
 import { errorMessage, type AppEnv, type Deps } from "./env.ts";
 import { challengeName, challengeValue, checkOwnership, newChallengeToken } from "./ownership.ts";
 import { formatReport } from "./report.ts";
-import type { DomainView } from "./types.ts";
+import type { DomainView, HistoryEntry, ScanReport, Severity } from "./types.ts";
 import { runScan } from "./scan.ts";
 import {
 	addDomain,
 	deleteDomain,
 	getDomain,
 	latestScan,
-	listDomains,
+	listDomainsWithReports,
 	markVerified,
+	scanHistory,
 	type DomainRow,
 } from "./store.ts";
 
@@ -45,8 +46,10 @@ async function route(request: Request, env: AppEnv, deps: Deps): Promise<Respons
 	if (denied) return denied;
 
 	if (segments.length === 1) {
-		if (request.method === "GET")
-			return json({ domains: (await listDomains(env.DB)).map(describeDomain) });
+		if (request.method === "GET") {
+			const listed = await listDomainsWithReports(env.DB);
+			return json({ domains: listed.map(({ domain, report }) => describeDomain(domain, report)) });
+		}
 		if (request.method === "POST") return createDomain(request, env, deps);
 		return methodNotAllowed("GET, POST");
 	}
@@ -59,13 +62,32 @@ async function route(request: Request, env: AppEnv, deps: Deps): Promise<Respons
 		if (request.method === "GET") {
 			const latest = await latestScan(env.DB, domain.id);
 			const report = latest?.report ?? null;
-			return json({ domain: describeDomain(domain), report, text: report && formatReport(report) });
+			return json({
+				domain: describeDomain(domain, report),
+				report,
+				text: report && formatReport(report),
+			});
 		}
 		if (request.method === "DELETE") {
 			await deleteDomain(env.DB, domain.name);
 			return json({ deleted: domain.name });
 		}
 		return methodNotAllowed("GET, DELETE");
+	}
+
+	if (segments[2] === "history") {
+		if (request.method !== "GET") return methodNotAllowed("GET");
+		const history: HistoryEntry[] = (await scanHistory(env.DB, domain.id)).map((report) => ({
+			takenAt: report.takenAt,
+			baseline: report.baseline,
+			changes: report.changes,
+			newFindings: report.newFindings,
+			resolvedFindings: report.resolvedFindings,
+			openFindings: countOpen(report),
+			hostCount: report.hostCount,
+			notes: report.notes,
+		}));
+		return json({ domain: domain.name, history });
 	}
 
 	if (request.method !== "POST") return methodNotAllowed("POST");
@@ -89,7 +111,8 @@ async function createDomain(request: Request, env: AppEnv, deps: Deps): Promise<
 		return json({ error: 'Body must be {"domain": "example.com"} with a valid domain name' }, 400);
 
 	const domain = await addDomain(env.DB, name, newChallengeToken(), deps.now().toISOString());
-	return json({ domain: describeDomain(domain) }, 201);
+	const report = (await latestScan(env.DB, domain.id))?.report ?? null;
+	return json({ domain: describeDomain(domain, report) }, 201);
 }
 
 async function verifyDomain(domain: DomainRow, env: AppEnv, deps: Deps): Promise<Response> {
@@ -109,7 +132,8 @@ async function verifyDomain(domain: DomainRow, env: AppEnv, deps: Deps): Promise
 		);
 	}
 	const updated = await markVerified(env.DB, domain.id, deps.now().toISOString());
-	return json({ domain: describeDomain(updated) });
+	const report = (await latestScan(env.DB, domain.id))?.report ?? null;
+	return json({ domain: describeDomain(updated, report) });
 }
 
 async function scanDomain(domain: DomainRow, env: AppEnv, deps: Deps): Promise<Response> {
@@ -189,7 +213,13 @@ function challengeOf(domain: DomainRow): DomainView["challenge"] {
 	};
 }
 
-function describeDomain(domain: DomainRow): DomainView {
+function countOpen(report: ScanReport): Record<Severity, number> {
+	const counts: Record<Severity, number> = { high: 0, medium: 0, low: 0 };
+	for (const finding of report.findings) counts[finding.severity]++;
+	return counts;
+}
+
+function describeDomain(domain: DomainRow, latest: ScanReport | null): DomainView {
 	return {
 		name: domain.name,
 		verified: domain.verified_at !== null && domain.last_scan_status !== "unverified",
@@ -198,6 +228,7 @@ function describeDomain(domain: DomainRow): DomainView {
 		lastScanStatus: domain.last_scan_status,
 		/** Scans that have failed in a row; 0 unless the last scan failed. */
 		errorStreak: domain.error_streak,
+		openFindings: latest ? countOpen(latest) : null,
 		challenge: challengeOf(domain),
 	};
 }

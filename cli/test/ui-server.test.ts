@@ -1824,6 +1824,38 @@ test("keeps the owner's status and note for a finding of the latest scan, privat
 	}
 });
 
+test("a secret can be marked rotated, and an accepted risk can carry the day it ends", async (t) => {
+	const server = await start(t);
+	await withReport(server);
+	const secret = { repo: "group/worst", ruleId: "rule-high", location: "package-lock.json", detail: "pkg@1.0.0" };
+	const vulnerability = { ...secret, ruleId: "rule-critical" };
+	const note = (body: object) => send(server, "POST", "/api/findings/note", { body });
+	const day = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+
+	// Rotated is for a credential; a package is upgraded, which the next scan sees for itself.
+	assert.equal((await note({ ...secret, status: "rotated", note: "New key issued" })).json.note.status, "rotated");
+	assert.equal((await note({ ...vulnerability, status: "rotated" })).status, 400);
+
+	const accepted = await note({ ...vulnerability, status: "accepted", note: "No fix published yet", until: day(30) });
+	assert.deepEqual([accepted.status, accepted.json.note.until], [200, day(30)]);
+	for (const [body, why] of [
+		[{ ...vulnerability, status: "accepted", until: day(-3) }, "a day that has passed"],
+		[{ ...vulnerability, status: "accepted", until: "2027-02-30" }, "not a real day"],
+		[{ ...vulnerability, status: "accepted", until: "next month" }, "not a day"],
+		[{ ...vulnerability, status: "fixed", until: day(30) }, "only an accepted risk ends"],
+	] as const) {
+		assert.equal((await note(body)).status, 400, why);
+	}
+
+	// Neither changes the finding: it is still listed, at its own severity, and counted.
+	const { report, findingNotes } = (await send(server, "GET", "/api/repos/report")).json;
+	assert.deepEqual(report.repos[0].findings.map((f: { ruleId: string; severity: string }) => `${f.ruleId} ${f.severity}`), ["rule-critical critical", "rule-high high"]);
+	assert.deepEqual(Object.values(findingNotes).map((entry) => (entry as { status: string }).status).sort(), ["accepted", "rotated"]);
+
+	// Moving off "accepted" drops the end date.
+	assert.equal((await note({ ...vulnerability, status: "in-progress", note: "Upgrading" })).json.note.until, undefined);
+});
+
 test("says what is still running, and remembers the place in the page but never the key", async (t) => {
 	let release = () => {};
 	const scan = (() => new Promise((resolve) => (release = () => resolve(sampleReport("/work"))))) as unknown as UiOptions["scan"];

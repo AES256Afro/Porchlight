@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Finding, ScanReport } from "../src/repos/types.ts";
-import { buildDomainRoadmap } from "../src/roadmap/domains.ts";
+import { buildDomainRoadmap, listDomainFindings } from "../src/roadmap/domains.ts";
 import { csvCell, html, mdCode, mdText } from "../src/roadmap/escape.ts";
 import { exportRepos, parseFilter } from "../src/roadmap/export.ts";
 import { fileStem, renderFindings, renderRoadmap } from "../src/roadmap/render.ts";
@@ -340,6 +340,25 @@ test("hostile text cannot break a findings table in any format", () => {
 	assert.ok(!/(?<!\\)<script/.test(row));
 	assert.ok(!/<script/.test(renderFindings(list, "html").body));
 	assert.ok(renderFindings(list, "csv").body.includes("'=1+1"));
+});
+
+test("each finding the monitor reads from a scan has its own repair", () => {
+	const kinds = ["weak-hsts", "insecure-cookies", "script-readable-cookies", "no-dnssec", "no-spf", "weak-spf"];
+	const report = {
+		domain: "example.com",
+		takenAt: "2026-11-20T12:00:00.000Z",
+		notes: [],
+		findings: kinds.map((kind) => ({ id: `${kind}:example.com`, severity: "low" as const, host: "example.com", title: `The monitor's words for ${kind}` })),
+	};
+	const actions = buildDomainRoadmap(report).phases.flatMap((phase) => phase.groups.flatMap((group) => group.actions));
+	assert.equal(actions.length, kinds.length);
+	// None falls through to "Look into this finding": each says what to do.
+	assert.ok(actions.every((action) => action.kind !== "review" && action.how.length === 2), JSON.stringify(actions.map((action) => action.kind)));
+	assert.deepEqual(actions.map((action) => action.kind).sort(), ["dns", "dns", "dns", "headers", "headers", "headers"]);
+	// A finding beside missing headers keeps its own steps, whole.
+	const rows = listDomainFindings({ ...report, findings: [...report.findings, { id: "missing-header:example.com:referrer-policy", severity: "low", host: "example.com", title: "Missing referrer-policy header" }] }).rows;
+	assert.equal(rows.find((row) => row.id === "weak-hsts")!.how.length, 2);
+	assert.equal(rows.find((row) => row.id === "missing-header")!.how.length, 1);
 });
 
 test("turns a monitor report into repairs grouped by host", () => {

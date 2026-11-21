@@ -51,7 +51,7 @@ import { checkHost, type HostCheckOptions } from "../host/check.ts";
 import type { HostReport } from "../host/types.ts";
 import { CancelledError, run as runCommand } from "../repos/exec.ts";
 import { rescanRepo, scanRepos } from "../repos/scan.ts";
-import { findingKey, isStatus, MAX_NOTE } from "../../ui/tracking.js";
+import { findingKey, isDay, isStatus, MAX_NOTE } from "../../ui/tracking.js";
 import { SEVERITIES, type RepoResult, type ScanReport, type Severity, type ToolName } from "../repos/types.ts";
 import { domainSuggestions, type MonitorReport } from "../roadmap/domains.ts";
 import { exportDomain, exportRepos, ExportError, parseFilter, type ExportFile } from "../roadmap/export.ts";
@@ -454,9 +454,19 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		const note = fields.note ?? "";
 		if (typeof note !== "string" || note.length > MAX_NOTE) throw new HttpError(400, `Keep the note to ${MAX_NOTE} characters`);
 		const report = await storedReport();
-		if (!locateFinding(report, target)) throw new HttpError(404, "That finding is not in the latest scan. Reload the page to see the current one.");
+		const found = locateFinding(report, target);
+		if (!found) throw new HttpError(404, "That finding is not in the latest scan. Reload the page to see the current one.");
+		// A credential can be rotated; a vulnerable package is upgraded, which the next scan sees for itself.
+		if (fields.status === "rotated" && found.finding.kind !== "secret") throw new HttpError(400, "Only a secret can be marked rotated");
+		// An accepted risk may carry the last day it is accepted for: a day from today on, so it cannot be saved already ended.
+		const until = fields.until === undefined || fields.until === "" ? undefined : fields.until;
+		if (until !== undefined) {
+			if (fields.status !== "accepted") throw new HttpError(400, "Only an accepted risk has an end date");
+			if (!isDay(until)) throw new HttpError(400, "Give the end date as a day, such as 2027-06-30");
+			if (until < new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)) throw new HttpError(400, "Choose an end date that has not passed");
+		}
 		const key = findingKey(target.repo, target);
-		return sendJson(res, 200, { key, note: await setNote(notesPath, key, fields.status, note) });
+		return sendJson(res, 200, { key, note: await setNote(notesPath, key, fields.status, note, new Date(), until) });
 	}
 
 	function targets() {
@@ -2396,6 +2406,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			if (!DOMAIN_PATTERN.test(domain) || extra.length > 0) throw new HttpError(400, "Invalid domain name");
 			if (action === undefined) {
 				if (method !== "GET" && method !== "DELETE") throw new HttpError(405, "Method not allowed");
+			} else if (action === "history") {
+				if (method !== "GET") throw new HttpError(405, "Method not allowed");
 			} else if (method !== "POST" || (action !== "verify" && action !== "scan")) {
 				throw new HttpError(404, "Not found");
 			}

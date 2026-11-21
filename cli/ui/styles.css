@@ -3186,9 +3186,16 @@ fieldset.looks legend {
 }
 
 .tag-status.status-fixed,
+.tag-status.status-rotated,
 .tag-status.status-false-positive,
 .tag-status.status-accepted {
 	border-style: dashed;
+}
+
+/* An accepted risk whose end date has passed: it wants looking at again. */
+.tag-status.status-ended {
+	border-color: var(--critical-ink);
+	color: var(--critical-ink);
 }
 
 .note-editor {
@@ -3754,4 +3761,81 @@ fieldset.looks legend {
 .assist-content > .assist-wait + .button {
 	display: flex;
 	width: fit-content;
+}
+
+/* Domains: open findings in the list, and the history of kept scans under a domain's report. */
+.domain-open {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 6px;
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+}
+
+.domain-history {
+	margin-top: 24px;
+}
+
+.timeline {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	background: var(--surface);
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-lg);
+}
+
+.timeline > li + li {
+	border-top: 1px solid var(--hairline);
+}
+
+.timeline summary,
+.timeline-line {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px 12px;
+	padding: 8px 12px;
+}
+
+.timeline summary {
+	cursor: pointer;
+}
+
+.timeline-when {
+	flex: 0 0 176px;
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+	font-variant-numeric: tabular-nums;
+}
+
+.timeline-what {
+	flex: 1 1 200px;
+	font-weight: 500;
+}
+
+.timeline-quiet .timeline-what {
+	color: var(--ink-2);
+	font-weight: 400;
+}
+
+.timeline details > :not(summary) {
+	margin: 0 12px 12px;
+}
+
+.timeline-findings {
+	display: grid;
+	gap: 4px;
+	margin: 4px 0 0;
+	padding: 0;
+	list-style: none;
+	overflow-wrap: anywhere;
+}
+
+.timeline-findings li {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px 8px;
 }

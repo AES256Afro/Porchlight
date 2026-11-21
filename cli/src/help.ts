@@ -53,6 +53,7 @@ osv-scanner, and prints one ranked report. Progress goes to the error stream, on
   verify <domain>        Check that the verification record is published
   scan <domain>          Scan now and print what changed
   show <domain>          Latest report
+  history <domain>       Each kept scan, newest first, with what changed in it
   remove <domain>        Stop watching it and delete its scan history
   export <domain>        Repair roadmap for a domain; takes --content, --format and --out
 

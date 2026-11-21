@@ -202,6 +202,11 @@ Pin the base image digest and the BoxPilot schema (S8). Fix the picomatch dev ad
 
 ### M6: Features that fit the invariants. Size: L
 
+**Status, 2026-11-20: part one built, not released.** Done: 1 (in 0.5.0), 2, 4 and 5. Still to do: 3 and 6 (notifications), then 7 to 9 (the scanner).
+- 6.2: "Rotated" is a status for secrets alone. "Accepted risk" may carry the last day it is accepted for; after it the page marks the finding "Acceptance ended". Neither changes a severity, a count, the roadmap or an export: invariant 17, written after this plan, already says a status never does, so "re-ranks only" became "changes nothing".
+- 6.4: weak HSTS (`weak-hsts`), cookies without `Secure` (`insecure-cookies`) and sign-in cookies without `HttpOnly` (`script-readable-cookies`), unsigned DNS (`no-dnssec`, from the resolver's AD flag) and SPF (`no-spf`, `weak-spf`). All are read from the requests a scan already makes; a test compares the request list before and after. Each is cleared only by a scan that saw its evidence. A cookie's value is never kept. The first scan after an update reports them as new findings on every domain.
+- 6.5: `GET /domains/:name/history` lists the kept scans newest first; the domain list carries open findings by severity. `porchlight domains history`, the counts in `domains list` and on the page, and a History timeline under each domain's report. A monitor deployed before this answers 404 for history, and the page then shows none.
+
 1. Repo scan history and "new since last scan" (a failed scanner never counts as resolved).
 2. Mark a secret rotated or accepted, with a reason and an expiry. It **re-ranks only** and stays listed and exported (invariant 10).
 3. Scheduled repo scans in the container, with owner-only notifications (counts, titles and paths; never values or authors).

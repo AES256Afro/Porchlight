@@ -51,6 +51,33 @@ export async function listDomains(db: D1Database): Promise<DomainRow[]> {
 	return results;
 }
 
+/** Every domain with the report of its latest scan, or null where there has been none. */
+export async function listDomainsWithReports(
+	db: D1Database,
+): Promise<{ domain: DomainRow; report: ScanReport | null }[]> {
+	const { results } = await db
+		.prepare(
+			`SELECT d.*, (
+			   SELECT report FROM snapshots s WHERE s.domain_id = d.id ORDER BY s.taken_at DESC, s.id DESC LIMIT 1
+			 ) AS latest_report
+			 FROM domains d ORDER BY d.name`,
+		)
+		.all<DomainRow & { latest_report: string | null }>();
+	return results.map(({ latest_report, ...domain }) => ({
+		domain,
+		report: latest_report ? (JSON.parse(latest_report) as ScanReport) : null,
+	}));
+}
+
+/** The reports of the domain's kept scans, newest first. */
+export async function scanHistory(db: D1Database, domainId: number): Promise<ScanReport[]> {
+	const { results } = await db
+		.prepare("SELECT report FROM snapshots WHERE domain_id = ? ORDER BY taken_at DESC, id DESC")
+		.bind(domainId)
+		.all<{ report: string }>();
+	return results.map((row) => JSON.parse(row.report) as ScanReport);
+}
+
 /** Removes the domain and, by cascade, every snapshot taken of it. */
 export async function deleteDomain(db: D1Database, name: string): Promise<boolean> {
 	const result = await db.prepare("DELETE FROM domains WHERE name = ?").bind(name).run();

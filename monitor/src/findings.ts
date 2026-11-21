@@ -40,6 +40,9 @@ export function deriveFindings(
 			if (finding) add(finding);
 		}
 		if (state.http?.ok && !pageUnavailable(state.http.status)) {
+			for (const finding of [hstsFinding(host, state.http), ...cookieFindings(host, state.http)]) {
+				if (finding) add(finding);
+			}
 			for (const header of missingHeaders(state.http)) {
 				add({
 					id: `missing-header:${host}:${header}`,
@@ -64,6 +67,18 @@ export function deriveFindings(
 			title: "No CAA record: any certificate authority may issue for this domain",
 		});
 	}
+	if (snapshot.dnssec === false) {
+		add({
+			id: `no-dnssec:${snapshot.domain}`,
+			severity: "low",
+			host: snapshot.domain,
+			basis: "apex",
+			title:
+				"DNSSEC is not enabled: DNS answers for this domain are not signed, so a forged one cannot be told apart",
+		});
+	}
+	const spf = spfFinding(snapshot.domain, snapshot.apex.TXT);
+	if (spf) add(spf);
 
 	for (const finding of previous) {
 		if (!found.has(finding.id) && !reobserved(snapshot, finding)) add(finding);
@@ -110,6 +125,111 @@ function certFinding(
 	return null;
 }
 
+/** Browsers are asked to remember HTTPS for at least this long; less, and the protection lapses between visits. */
+const MIN_HSTS_SECONDS = 180 * 86_400;
+
+/** A Strict-Transport-Security header that is sent, but too weak to do its job. */
+function hstsFinding(host: string, probe: Extract<HttpProbe, { ok: true }>): Finding | null {
+	const maxAge = probe.hsts?.maxAge;
+	// No header at all is the missing-header finding; an older snapshot, or a max-age that could not be read, says nothing.
+	if (maxAge === undefined || maxAge === null || maxAge >= MIN_HSTS_SECONDS) return null;
+	const off = maxAge === 0;
+	const days = Math.floor(maxAge / 86_400);
+	const hours = Math.max(1, Math.floor(maxAge / 3_600));
+	const lasts =
+		days >= 1 ? (days === 1 ? "1 day" : `${days} days`) : hours === 1 ? "1 hour" : `${hours} hours`;
+	return {
+		id: `weak-hsts:${host}`,
+		severity: off ? "medium" : "low",
+		host,
+		basis: "http",
+		title: off
+			? "Strict-Transport-Security has max-age=0, which tells browsers to stop insisting on HTTPS"
+			: `Strict-Transport-Security lasts ${lasts}; use at least 180 days so browsers keep insisting on HTTPS`,
+	};
+}
+
+/** A cookie that carries a sign-in, by its name: the ones a script should never be able to read. */
+const SESSION_COOKIE = /sess|sid$|^sid|auth|token|login|jwt/i;
+/** Cookie names listed in a finding's title before the rest are counted. */
+const COOKIES_NAMED = 4;
+
+/** Cookies set without the flags that keep them off plain HTTP and out of scripts. One finding per kind per host. */
+function cookieFindings(host: string, probe: Extract<HttpProbe, { ok: true }>): Finding[] {
+	const cookies = probe.cookies ?? [];
+	const named = (list: typeof cookies) => {
+		const names = [...new Set(list.map((cookie) => cookie.name))].sort();
+		const shown = names.slice(0, COOKIES_NAMED).join(", ");
+		return names.length > COOKIES_NAMED
+			? `${shown} and ${names.length - COOKIES_NAMED} more`
+			: shown;
+	};
+	const findings: Finding[] = [];
+	const insecure = cookies.filter((cookie) => !cookie.secure);
+	if (insecure.length > 0) {
+		findings.push({
+			id: `insecure-cookies:${host}`,
+			severity: "low",
+			host,
+			basis: "http",
+			title: `Cookies set without the Secure flag, so a browser would also send them over plain HTTP: ${named(insecure)}`,
+		});
+	}
+	const readable = cookies.filter((cookie) => !cookie.httpOnly && SESSION_COOKIE.test(cookie.name));
+	if (readable.length > 0) {
+		findings.push({
+			id: `script-readable-cookies:${host}`,
+			severity: "low",
+			host,
+			basis: "http",
+			title: `Sign-in cookies set without the HttpOnly flag, so a script on the page can read them: ${named(readable)}`,
+		});
+	}
+	return findings;
+}
+
+/**
+ * What the domain's SPF record says about who may send its mail. `txt` is the apex TXT records
+ * already looked up; undefined (the lookup failed) says nothing.
+ */
+function spfFinding(domain: string, txt: string[] | undefined): Finding | null {
+	if (txt === undefined) return null;
+	const records = txt.filter((value) => /^v=spf1(\s|$)/i.test(value));
+	const finding = (id: string, severity: Severity, title: string): Finding => ({
+		id: `${id}:${domain}`,
+		severity,
+		host: domain,
+		basis: "apex",
+		title,
+	});
+	if (records.length === 0)
+		return finding(
+			"no-spf",
+			"low",
+			"No SPF record: receiving servers cannot tell which mail really comes from this domain",
+		);
+	if (records.length > 1)
+		return finding(
+			"weak-spf",
+			"low",
+			`${records.length} SPF records: receivers treat more than one as an error and ignore them all`,
+		);
+	const all = /(?:^|\s)([+?~-]?)all\s*$/i.exec(records[0]!)?.[1];
+	if (all === "+" || all === "")
+		return finding(
+			"weak-spf",
+			"medium",
+			"The SPF record ends in +all, which lets any server send mail as this domain",
+		);
+	if (all === "?")
+		return finding(
+			"weak-spf",
+			"low",
+			"The SPF record ends in ?all, which says nothing about mail from other servers; use ~all or -all",
+		);
+	return null;
+}
+
 /** Which headers a response should carry depends on what kind of response it is. */
 function missingHeaders(probe: Extract<HttpProbe, { ok: true }>): SecurityHeader[] {
 	const success = probe.status >= 200 && probe.status < 300;
@@ -147,7 +267,13 @@ function pageUnavailable(status: number): boolean {
 
 /** Whether this scan had the evidence to confirm or clear `finding`. */
 function reobserved(snapshot: Snapshot, finding: Finding): boolean {
-	if (finding.basis === "apex") return snapshot.apex.CAA !== undefined;
+	if (finding.basis === "apex") {
+		// Each apex finding rests on one lookup: it is cleared only by a scan that made that lookup.
+		const kind = finding.id.slice(0, finding.id.indexOf(":"));
+		if (kind === "no-dnssec") return snapshot.dnssec !== undefined;
+		if (kind === "no-spf" || kind === "weak-spf") return snapshot.apex.TXT !== undefined;
+		return snapshot.apex.CAA !== undefined;
+	}
 	const state = snapshot.hosts[finding.host];
 	if (!state) return true; // The host left the inventory, which clears its findings.
 	if (state.dns === null) return false;

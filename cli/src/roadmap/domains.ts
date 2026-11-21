@@ -61,7 +61,8 @@ export function listDomainFindings(report: MonitorReport): FindingsList {
 			detail: "",
 			phase,
 			suggestion: action.title,
-			how: action.kind === "headers" ? action.how.filter((_, index) => action.clears[index] === finding.id.split(":").at(-1)) : action.how,
+			// Missing headers are one action for a host; each finding keeps the step for its own header.
+			how: finding.id.startsWith("missing-header:") ? action.how.filter((_, index) => action.clears[index] === finding.id.split(":").at(-1)) : action.how,
 		})),
 	);
 	rows.sort((a, b) => rank[a.severity as keyof typeof rank] - rank[b.severity as keyof typeof rank] || a.place.localeCompare(b.place) || a.title.localeCompare(b.title));
@@ -147,6 +148,57 @@ function single(kind: string | undefined, finding: MonitorFinding): Action {
 				kind: "dns",
 				title: `Add a CAA record for ${finding.host}`,
 				how: ['Publish a CAA record naming the certificate authority you use, for example `0 issue "letsencrypt.org"`.', "Add one record for each authority that issues certificates for this domain."],
+			};
+		case "weak-hsts":
+			return {
+				...base,
+				kind: "headers",
+				title: `Make Strict-Transport-Security last longer on ${finding.host}`,
+				how: [
+					"Send `Strict-Transport-Security: max-age=31536000`.",
+					"Raise it in steps if you are unsure every page works over HTTPS: a browser that has seen the header refuses plain HTTP until it runs out.",
+				],
+			};
+		case "insecure-cookies":
+			return {
+				...base,
+				kind: "headers",
+				title: `Add the Secure flag to the cookies ${finding.host} sets`,
+				how: ["Set each cookie with `Secure`, in the application or in the framework's session settings.", "A Secure cookie is not sent over plain HTTP, so check first that the site is only ever reached over HTTPS."],
+			};
+		case "script-readable-cookies":
+			return {
+				...base,
+				kind: "headers",
+				title: `Add the HttpOnly flag to the sign-in cookies ${finding.host} sets`,
+				how: [
+					"Set the sign-in cookie with `HttpOnly`, so a script injected into a page cannot read it.",
+					"If your own scripts read it, give them what they need another way, such as a separate cookie that does not carry the sign-in.",
+				],
+			};
+		case "no-dnssec":
+			return {
+				...base,
+				kind: "dns",
+				title: `Turn on DNSSEC for ${finding.host}`,
+				how: ["Enable DNSSEC where the domain's DNS is hosted.", "Add the DS record it gives you at the registrar. Nothing is signed until both are done."],
+			};
+		case "no-spf":
+			return {
+				...base,
+				kind: "dns",
+				title: `Add an SPF record for ${finding.host}`,
+				how: [
+					"Publish one TXT record listing who sends mail for the domain, such as `v=spf1 include:_spf.google.com ~all` for Google Workspace.",
+					"If the domain sends no mail at all, publish `v=spf1 -all`.",
+				],
+			};
+		case "weak-spf":
+			return {
+				...base,
+				kind: "dns",
+				title: `Tighten the SPF record for ${finding.host}`,
+				how: ["Keep exactly one TXT record that starts `v=spf1`, listing only the servers that send your mail.", "End it with `~all` or `-all`, never `+all` or `?all`."],
 			};
 		default:
 			// A finding kind this version does not know is still listed, in the monitor's own words.

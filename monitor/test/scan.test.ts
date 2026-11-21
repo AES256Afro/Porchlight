@@ -21,6 +21,8 @@ function healthyNet(): FakeNet {
 			[DOMAIN]: { a: ["203.0.113.10"] },
 			[`www.${DOMAIN}`]: { a: ["203.0.113.10"] },
 		},
+		// A domain that sends no mail says so; without it, the missing SPF record is a finding.
+		txt: { [DOMAIN]: ["v=spf1 -all"] },
 		apex: {
 			CAA: ['0 issue "letsencrypt.org"'],
 			NS: ["ns1.dns.example."],
@@ -379,6 +381,159 @@ describe("findings that hold across scans", () => {
 		// The names that are gone stay out of the inventory; the live ones are in it.
 		expect(report.hostCount).toBe(4);
 		expect(report.changes).toEqual([]);
+	});
+});
+
+describe("checks read from what a scan already fetches", () => {
+	it("finds weak HSTS, cookie flags, unsigned DNS and a missing SPF record without one more request", async () => {
+		const plain = fakeDeps(healthyNet());
+		await registerVerified(plain, DOMAIN);
+		await scan(plain);
+		const before = [...plain.requests];
+
+		const net = healthyNet();
+		net.dnssec = false;
+		net.txt = {};
+		net.https![DOMAIN] = {
+			headers: { ...HARDENED_HEADERS, "strict-transport-security": "max-age=3600" },
+			// Values that look like secrets are assembled here, and must never be kept.
+			cookies: [
+				`session=${"s".repeat(24)}; Path=/; HttpOnly`,
+				`auth_token=${"t".repeat(24)}; Secure`,
+				"theme=dark; Secure",
+			],
+		};
+		const deps = fakeDeps(net);
+		await registerVerified(deps, DOMAIN);
+		const { body } = await scan(deps);
+
+		expect(deps.requests).toEqual(before);
+		expect(body.report.findings.map((finding: { id: string }) => finding.id).sort()).toEqual([
+			`insecure-cookies:${DOMAIN}`,
+			`no-dnssec:${DOMAIN}`,
+			`no-spf:${DOMAIN}`,
+			`script-readable-cookies:${DOMAIN}`,
+			`weak-hsts:${DOMAIN}`,
+		]);
+		const title = (id: string) =>
+			body.report.findings.find((finding: { id: string }) => finding.id === `${id}:${DOMAIN}`)
+				.title;
+		expect(title("insecure-cookies")).toContain(": session");
+		expect(title("script-readable-cookies")).toContain(": auth_token");
+		expect(title("weak-hsts")).toContain("lasts 1 hour;");
+		const stored = await env.DB.prepare("SELECT data, report FROM snapshots").first<{
+			data: string;
+			report: string;
+		}>();
+		expect(`${stored!.data}${stored!.report}`).not.toMatch(/s{24}|t{24}/);
+	});
+
+	it("keeps these findings when the lookup behind them fails, and clears them when the fix is seen", async () => {
+		const net = healthyNet();
+		net.dnssec = false;
+		net.txt = {};
+		const deps = fakeDeps(net);
+		await registerVerified(deps, DOMAIN);
+		const record = deps.net.txt!;
+		const ids = (report: { findings: { id: string }[] }) =>
+			report.findings.map((finding) => finding.id).sort();
+		expect(ids((await scan(deps)).body.report)).toEqual([
+			`no-dnssec:${DOMAIN}`,
+			`no-spf:${DOMAIN}`,
+		]);
+
+		// The resolver cannot answer for the apex: neither finding is cleared by not looking.
+		deps.net.dnsServfail = [DOMAIN];
+		deps.clock = new Date("2026-11-18T12:00:00Z");
+		const during = (await scan(deps)).body.report;
+		expect(during.resolvedFindings).toEqual([]);
+		expect(ids(during)).toEqual([`no-dnssec:${DOMAIN}`, `no-spf:${DOMAIN}`]);
+
+		deps.net.dnsServfail = [];
+		deps.net.dnssec = true;
+		deps.net.txt = { ...record, [DOMAIN]: ["v=spf1 include:_spf.mail.example ~all"] };
+		deps.clock = new Date("2026-11-19T12:00:00Z");
+		const after = (await scan(deps)).body.report;
+		expect(after.resolvedFindings.map((finding: { id: string }) => finding.id).sort()).toEqual([
+			`no-dnssec:${DOMAIN}`,
+			`no-spf:${DOMAIN}`,
+		]);
+		expect(after.findings).toEqual([]);
+	});
+});
+
+describe("history", () => {
+	it("lists each kept scan newest first, and counts open findings in the domain list", async () => {
+		const deps = fakeDeps(healthyNet());
+		await registerVerified(deps, DOMAIN);
+		await call(deps, "POST", "/domains", { body: { domain: "unscanned.test" } });
+		expect((await call(deps, "GET", `/domains/${DOMAIN}/history`)).body).toEqual({
+			domain: DOMAIN,
+			history: [],
+		});
+
+		await scan(deps);
+		// A host appears without its security headers, then gets them.
+		const staging = `staging.${DOMAIN}`;
+		deps.net.ct = [...(deps.net.ct as []), { names: [staging], ...VALID_CERT }];
+		deps.net.hosts![staging] = { a: ["198.51.100.20"] };
+		deps.net.https![staging] = { headers: { "content-type": "text/html" } };
+		deps.clock = new Date("2026-11-18T12:00:00Z");
+		await scan(deps);
+
+		const listed = (await call(deps, "GET", "/domains")).body.domains;
+		expect(
+			listed.map((domain: { name: string; openFindings: unknown }) => [
+				domain.name,
+				domain.openFindings,
+			]),
+		).toEqual([
+			[DOMAIN, { high: 0, medium: 2, low: 4 }],
+			["unscanned.test", null],
+		]);
+		expect((await call(deps, "GET", `/domains/${DOMAIN}`)).body.domain.openFindings).toEqual({
+			high: 0,
+			medium: 2,
+			low: 4,
+		});
+
+		deps.net.https![staging] = { headers: HARDENED_HEADERS };
+		deps.clock = new Date("2026-11-19T12:00:00Z");
+		await scan(deps);
+
+		const { status, body } = await call(deps, "GET", `/domains/${DOMAIN}/history`);
+		expect(status).toBe(200);
+		expect(
+			body.history.map(
+				(entry: {
+					takenAt: string;
+					baseline: boolean;
+					changes: unknown[];
+					newFindings: unknown[];
+					resolvedFindings: unknown[];
+					openFindings: object;
+				}) => [
+					entry.takenAt.slice(0, 10),
+					entry.baseline,
+					entry.changes.length,
+					entry.newFindings.length,
+					entry.resolvedFindings.length,
+					entry.openFindings,
+				],
+			),
+		).toEqual([
+			["2026-11-19", false, 0, 0, 6, { high: 0, medium: 0, low: 0 }],
+			["2026-11-18", false, 1, 6, 0, { high: 0, medium: 2, low: 4 }],
+			["2026-11-17", true, 0, 0, 0, { high: 0, medium: 0, low: 0 }],
+		]);
+		// The list of every open finding is not repeated per scan.
+		expect(body.history[1].findings).toBeUndefined();
+
+		expect((await call(deps, "POST", `/domains/${DOMAIN}/history`)).status).toBe(405);
+		expect((await call(deps, "GET", "/domains/unknown.test/history")).status).toBe(404);
+		expect((await call(deps, "GET", `/domains/${DOMAIN}/history`, { token: "wrong" })).status).toBe(
+			401,
+		);
 	});
 });
 

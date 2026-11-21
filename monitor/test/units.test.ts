@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import { latestCertFor, parseCtRows, readTextCapped } from "../src/collect/ct.ts";
 import { cnameChain } from "../src/collect/dns.ts";
+import { parseCookie, parseHsts } from "../src/collect/http.ts";
 import { recordsOf, unquoteTxt } from "../src/doh.ts";
 import { isWithin, normalizeDomain } from "../src/domain.ts";
 
@@ -134,5 +135,32 @@ describe("capped reads", () => {
 		await expect(readTextCapped(new Response("x".repeat(17)), 16)).rejects.toThrow(/larger than/);
 		const declared = new Response("small", { headers: { "content-length": "999999" } });
 		await expect(readTextCapped(declared, 16)).rejects.toThrow(/larger than/);
+	});
+});
+
+describe("response headers read for their settings", () => {
+	it("reads how long HSTS lasts and whether it covers subdomains", () => {
+		expect(parseHsts("max-age=63072000; includeSubDomains; preload")).toEqual({
+			maxAge: 63072000,
+			includeSubDomains: true,
+		});
+		expect(parseHsts('includesubdomains;MAX-AGE="300"')).toEqual({
+			maxAge: 300,
+			includeSubDomains: true,
+		});
+		expect(parseHsts("max-age=abc")).toEqual({ maxAge: null, includeSubDomains: false });
+	});
+
+	it("keeps a cookie's name and flags, never its value", () => {
+		expect(parseCookie("sid=abc123; Path=/; Secure; HttpOnly; SameSite=Lax")).toEqual({
+			name: "sid",
+			secure: true,
+			httpOnly: true,
+		});
+		expect(parseCookie("theme=dark")).toEqual({ name: "theme", secure: false, httpOnly: false });
+		// The value says "Secure", the cookie is not.
+		expect(parseCookie("note=Secure")).toEqual({ name: "note", secure: false, httpOnly: false });
+		expect(parseCookie("=novalue")).toBeNull();
+		expect(parseCookie("bad name=1")).toBeNull();
 	});
 });

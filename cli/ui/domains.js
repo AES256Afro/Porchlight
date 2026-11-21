@@ -7,11 +7,12 @@ import { domainFromInput, monitorSetupSteps } from "./hints.js";
 
 const WATCHES = "Watches the domains you own for new subdomains, DNS changes, expiring certificates and missing security headers. It only looks at what is public.";
 
-// The monitor's own types (monitor/src/types.ts). errorStreak is absent from a monitor deployed before it was added.
-/** @typedef {Omit<import("../../monitor/src/types.ts").DomainView, "errorStreak"> & { errorStreak?: number }} Domain */
+// The monitor's own types (monitor/src/types.ts). errorStreak and openFindings are absent from a monitor deployed before they were added.
+/** @typedef {Omit<import("../../monitor/src/types.ts").DomainView, "errorStreak" | "openFindings"> & { errorStreak?: number, openFindings?: import("../../monitor/src/types.ts").DomainView["openFindings"] }} Domain */
 /** @typedef {import("../../monitor/src/types.ts").Finding} MonitorFinding */
 /** @typedef {import("../../monitor/src/types.ts").Change} Change */
 /** @typedef {import("../../monitor/src/types.ts").ScanReport} MonitorReport */
+/** @typedef {import("../../monitor/src/types.ts").HistoryEntry} HistoryEntry */
 
 /**
  * The Domains page: register domains with the monitor, prove ownership, scan, and read what changed.
@@ -116,6 +117,7 @@ export async function renderDomains(view, selected) {
 						{ href: `#/domains/${domain.name}`, "aria-current": domain.name === selected ? "page" : null },
 						h("span", { class: "domain-name" }, domain.name),
 						statusPill(domain),
+						openCount(domain),
 						h("span", { class: "domain-meta" }, domain.lastScanAt ? `Scanned ${formatWhen(domain.lastScanAt)}` : "Never scanned"),
 					),
 				),
@@ -180,6 +182,14 @@ export async function renderDomains(view, selected) {
 		}
 		const { domain, report } = data;
 		const suggestions = data.suggestions ?? {};
+		// Filled in when it arrives, so the report is not held up. A monitor deployed before it kept
+		// history this way answers "not found", and then nothing is shown.
+		const historySlot = h("div");
+		if (report) {
+			void api("GET", `/domains/${encodeURIComponent(domain.name)}/history`)
+				.then((answer) => replace(historySlot, historyView(/** @type {HistoryEntry[]} */ (answer.history ?? []))))
+				.catch(() => {});
+		}
 		const everVerified = domain.verifiedAt !== null;
 
 		const scanButton = /** @type {HTMLButtonElement} */ (
@@ -230,6 +240,7 @@ export async function renderDomains(view, selected) {
 						h("h2", null, everVerified ? "Ready for its first scan" : "Not scanned yet"),
 						h("p", null, everVerified ? "Choose Scan now. The first scan records how things are today; later scans show what changed." : "Add the DNS record above, then choose Check DNS record. Scanning starts once it is found."),
 					),
+			historySlot,
 		);
 
 		/**
@@ -310,6 +321,75 @@ function statusPill(domain) {
 		return h("span", { class: "severity status-warning" }, icon("warning"), text);
 	}
 	return h("span", { class: "severity status-good" }, icon("good"), "Verified");
+}
+
+/**
+ * How many findings a domain has open, with the worst of them as shape, colour and word. Nothing for
+ * a domain not scanned yet, or from a monitor that does not count them.
+ *
+ * @param {Domain} domain
+ */
+function openCount(domain) {
+	const open = domain.openFindings;
+	if (!open) return null;
+	const total = open.high + open.medium + open.low;
+	if (total === 0) return h("span", { class: "domain-meta" }, "No open findings");
+	const worst = open.high > 0 ? "high" : open.medium > 0 ? "medium" : "low";
+	return h("span", { class: "domain-open" }, severityBadge(worst), `${open[worst].toLocaleString()} of ${plural(total, "open finding", "open findings")}`);
+}
+
+/**
+ * The scans the monitor has kept for a domain, newest first: when each ran and what it saw change.
+ * A scan in which something changed opens to show it.
+ *
+ * @param {HistoryEntry[]} history
+ */
+function historyView(history) {
+	if (history.length < 2) return null;
+	return h(
+		"section",
+		{ class: "domain-history", "aria-labelledby": "domain-history-title" },
+		h("h3", { id: "domain-history-title" }, `History (${plural(history.length, "scan", "scans")} kept)`),
+		h(
+			"ol",
+			{ class: "timeline" },
+			...history.map((entry) => {
+				const open = entry.openFindings.high + entry.openFindings.medium + entry.openFindings.low;
+				const quiet = entry.changes.length + entry.newFindings.length + entry.resolvedFindings.length === 0;
+				const what = entry.baseline
+					? `First scan: ${plural(entry.hostCount, "host", "hosts")}`
+					: quiet
+						? "Nothing changed"
+						: [
+								entry.changes.length > 0 ? plural(entry.changes.length, "change", "changes") : null,
+								entry.newFindings.length > 0 ? plural(entry.newFindings.length, "new finding", "new findings") : null,
+								entry.resolvedFindings.length > 0 ? `${entry.resolvedFindings.length.toLocaleString()} resolved` : null,
+							]
+								.filter(Boolean)
+								.join(", ");
+				const head = [h("span", { class: "timeline-when" }, formatWhen(entry.takenAt)), h("span", { class: "timeline-what" }, what), h("span", { class: "hint" }, `${open.toLocaleString()} open`)];
+				const detail = entry.baseline || quiet ? [] : timelineDetail(entry);
+				return h("li", { class: quiet && !entry.baseline ? "timeline-quiet" : "" }, detail.length > 0 ? h("details", null, h("summary", null, ...head), ...detail) : h("div", { class: "timeline-line" }, ...head));
+			}),
+		),
+	);
+}
+
+/** @param {HistoryEntry} entry */
+function timelineDetail(entry) {
+	/** @param {string} label @param {MonitorFinding[]} findings */
+	const list = (label, findings) =>
+		findings.length > 0
+			? h("div", null, h("p", { class: "hint" }, label), h("ul", { class: "timeline-findings" }, ...findings.map((finding) => h("li", null, severityBadge(finding.severity), h("code", null, finding.host), ` ${finding.title}`))))
+			: null;
+	return /** @type {HTMLElement[]} */ (
+		[
+			entry.changes.length > 0 ? h("ul", { class: "changes" }, ...entry.changes.map(changeItem)) : null,
+			list("New findings", entry.newFindings),
+			list("Resolved", entry.resolvedFindings),
+			entry.notes.length > 0 ? h("p", { class: "hint" }, entry.notes.join(" ")) : null,
+		].filter(Boolean)
+	);
 }
 
 /** @param {Domain} domain @param {HTMLButtonElement} verifyButton */
