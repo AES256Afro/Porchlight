@@ -8,6 +8,7 @@ import { describeDomain, describeHistory } from "./monitor/describe.ts";
 import { formatFor, NOTIFY_FORMATS, notifyTarget, type NotifyFormat } from "./notify/format.ts";
 import { exitCode, parseScanReport, renderMarkdown, renderSummary } from "./repos/report.ts";
 import { History } from "./repos/history.ts";
+import { buildSbom } from "./repos/sbom.ts";
 import { scanRepos, type RepoDone } from "./repos/scan.ts";
 import { SEVERITIES, type Severity } from "./repos/types.ts";
 import type { MonitorReport } from "./roadmap/domains.ts";
@@ -63,6 +64,7 @@ export async function main(argv: string[]): Promise<number> {
 		if (group === "doctor") return await doctor(argv.slice(1));
 		if (group === "repos" && command === "scan") return await reposScan(rest);
 		if (group === "repos" && command === "export") return await reposExport(rest);
+		if (group === "repos" && command === "sbom") return await reposSbom(rest);
 		if (group === "domains" && command === "export") return await domainsExport(rest);
 		if (group === "domains" && command) return await domains(command, rest);
 		if (group === "host" && command === "check") return await hostCheck(rest);
@@ -116,6 +118,28 @@ export function progressLine(done: RepoDone, root: string): string {
 	const found = done.findings === 1 ? "1 finding" : `${done.findings} findings`;
 	const failed = done.errors > 0 ? `, ${done.errors === 1 ? "1 scanner" : `${done.errors} scanners`} failed` : "";
 	return `[${String(done.done).padStart(width)}/${done.total}] ${name}  ${seconds}s  ${found}${failed}`;
+}
+
+/**
+ * A CycloneDX bill of materials for the repositories under a folder. `deps` lets tests pass a
+ * scripted runner and catch what is written.
+ */
+export async function reposSbom(args: string[], deps: { run?: Runner; write?: (text: string) => void } = {}): Promise<number> {
+	const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { depth: { type: "string", default: "3" }, out: { type: "string" } } });
+	const depth = Number.parseInt(values.depth, 10);
+	if (!Number.isInteger(depth) || depth < 0) throw new Error("--depth must be a whole number");
+	if (positionals.length > 1) throw new Error("Give at most one path");
+	const root = resolve(positionals[0] ?? ".");
+	const sbom = await buildSbom({ root, depth, ...(deps.run ? { run: deps.run } : {}), onProgress: (done, total, repo) => warn(`[${done + 1}/${total}] ${repo}`) });
+	const text = jsonText(sbom);
+	const missed = sbom.metadata.properties?.length ?? 0;
+	const packages = sbom.components.reduce((sum, repo) => sum + repo.components.length, 0);
+	if (values.out) {
+		await writePrivate(values.out, text);
+		say(`${packages} packages in ${sbom.components.length} repositories, written to ${values.out}`);
+	} else (deps.write ?? print)(text);
+	if (missed > 0) warn(`porchlight: ${missed === 1 ? "1 repository" : `${missed} repositories`} could not be read, and the SBOM names ${missed === 1 ? "it" : "them"} as not covered`);
+	return missed > 0 ? 1 : 0;
 }
 
 /** `deps` lets tests pass a scripted runner and their own folder. */

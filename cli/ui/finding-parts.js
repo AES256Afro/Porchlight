@@ -2,8 +2,9 @@
 // The parts the Findings pages (All findings, By repository), the Roadmap and the Overview share:
 // the page head and its views, the filter bar, the headline tiles, the banners and one finding's detail.
 import { judgementBlock } from "./analysis.js";
+import { download } from "./api.js";
 import { assistAction } from "./assist.js";
-import { banner, emptyState, formatWhen, h, icon, plural, select, severityBadge, statTile, stepNodes, tileRow } from "./dom.js";
+import { banner, emptyState, formatWhen, h, icon, plural, select, severityBadge, statTile, stepNodes, tileRow, toast } from "./dom.js";
 import { exportButton, openExportDialog } from "./export.js";
 import { openSendDialog, sendButton } from "./send.js";
 import { noteEditor } from "./finding-notes.js";
@@ -137,6 +138,8 @@ export function findingsHeader(mode, filter) {
 						openSendDialog({ filter, shown, total: findingRows().length }, "findings");
 					}, findingRows().length === 0)
 				: null,
+			// Every package the repositories use, not only the vulnerable ones: read from the lockfiles, offline.
+			mode === "by-repo" && report ? sbomButton() : null,
 			filter && report
 				? exportButton(() => {
 						const shown = findingRows().filter((row) => matchesFilter(row, row.repo, filter)).length;
@@ -145,6 +148,35 @@ export function findingsHeader(mode, filter) {
 				: null,
 		),
 	);
+}
+
+/** Downloads a CycloneDX bill of materials of the scan's repositories. It takes a few seconds, so the button says so while it works. */
+function sbomButton() {
+	const button = /** @type {HTMLButtonElement} */ (
+		h(
+			"button",
+			{
+				type: "button",
+				class: "button",
+				title: "Every package the repositories' lockfiles name, as a CycloneDX file. Read on this computer; nothing is sent anywhere.",
+				onclick: async () => {
+					if (button.getAttribute("aria-disabled") === "true") return;
+					button.setAttribute("aria-disabled", "true");
+					button.textContent = "Listing packages…";
+					try {
+						toast(`Saved ${await download("/repos/sbom")}`);
+					} catch (err) {
+						toast(err instanceof Error ? err.message : String(err), "error");
+					} finally {
+						button.removeAttribute("aria-disabled");
+						button.textContent = "SBOM";
+					}
+				},
+			},
+			"SBOM",
+		)
+	);
+	return button;
 }
 
 /**

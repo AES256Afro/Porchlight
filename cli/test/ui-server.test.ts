@@ -540,6 +540,32 @@ test("a scheduled scan tells the owner what is new and fixed, and a scan they st
 	assert.ok((await send(server, "GET", "/api/activity")).json.lines.some((line: { text: string }) => line.text === "Sent the scan's outcome to hooks.slack.com"));
 });
 
+test("downloads a bill of materials of the scan's own repositories, read offline", async (t) => {
+	const asked: string[][] = [];
+	const run: Runner = async (command, args) => {
+		asked.push([command, ...args]);
+		if (args[0] === "--version") return { code: 0, stdout: "2.7.1\n", stderr: "" };
+		const name = args.at(-1)!.split("/").at(-1);
+		return { code: 0, stdout: JSON.stringify({ components: [{ name: `pkg-${name}`, version: "1.0.0", purl: `pkg:npm/pkg-${name}@1.0.0` }] }), stderr: "" };
+	};
+	const server = await start(t, { run });
+	assert.equal((await send(server, "GET", "/api/repos/sbom")).status, 404, "no scan yet");
+	await withReport(server);
+
+	const reply = await send(server, "GET", "/api/repos/sbom?root=/etc");
+	assert.equal(reply.status, 200);
+	assert.match(String(reply.headers["content-disposition"]), /^attachment; filename="porchlight-sbom-\d{4}-\d{2}-\d{2}\.cdx\.json"$/);
+	assert.equal(reply.headers["content-type"], "application/vnd.cyclonedx+json");
+	const sbom = JSON.parse(reply.text);
+	assert.deepEqual(sbom.components.map((repo: { name: string; components: { name: string }[] }) => [repo.name, repo.components[0]?.name]), [
+		["clean", "pkg-clean"],
+		["mild", "pkg-mild"],
+		["group/worst", "pkg-worst"],
+	]);
+	// The report's repositories, never the path in the request.
+	assert.ok(asked.filter((call) => call[1] === "scan").every((call) => call.at(-1)!.startsWith("/work/") && call.includes("--offline")));
+});
+
 test("reads a report that changed on disk, and serves the kept one until then", async (t) => {
 	const server = await start(t);
 	await makeTree(server.dir, { "state/": "" });

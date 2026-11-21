@@ -46,6 +46,20 @@ osv-scanner, and prints one ranked report. Progress goes to the error stream, on
   --repo <name>          Only this repository`,
 	},
 	{
+		command: "repos sbom",
+		summary: "List every package the repositories use, as a CycloneDX SBOM",
+		detail: `Usage: porchlight repos sbom [path]
+
+Writes a software bill of materials (CycloneDX 1.5 JSON) of every package named in the lockfiles of
+the git repositories under path, one component per repository. osv-scanner reads the lockfiles
+offline: nothing is sent anywhere. It holds names, versions and package URLs, never a file path from
+this computer. A repository that could not be read is named in metadata.properties, and the
+command then exits 1.
+
+  --depth <n>            Folder levels to search for repositories (default: 3)
+  --out <file>           Write it to a file (readable only by you) instead of printing it`,
+	},
+	{
 		command: "domains",
 		summary: "Register, verify and scan the domains your monitor watches",
 		detail: `Usage: porchlight domains <command> [domain]

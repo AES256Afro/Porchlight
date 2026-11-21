@@ -486,6 +486,14 @@ What to know:
 - Uncommitted and git-ignored files are not scanned.
 - `reports/` is git-ignored: a report names the files and commits where secrets were found.
 
+### A software bill of materials
+
+```bash
+porchlight repos sbom ~/Projects --out sbom.cdx.json
+```
+
+Lists every package the repositories' lockfiles name, not only the vulnerable ones, as one CycloneDX 1.5 file with a component per repository. osv-scanner reads the lockfiles offline, so nothing is sent anywhere. The file holds names, versions, package URLs and licences where the lockfile gives them; never a path from your computer. A repository that could not be read is named under `metadata.properties` as not covered, and the command exits 1. On the page, **SBOM** under Findings → By repository downloads the same for the latest scan's repositories.
+
 ## Deeper analysis with a model
 
 With a model connected, the Overview page has a **Deeper analysis** card. It has the model judge findings from your last scan, worst first, a number at a time:

@@ -51,6 +51,8 @@ import { checkHost, type HostCheckOptions } from "../host/check.ts";
 import type { HostReport } from "../host/types.ts";
 import { CancelledError, run as runCommand } from "../repos/exec.ts";
 import { rescanRepo, scanRepos } from "../repos/scan.ts";
+import { buildSbom } from "../repos/sbom.ts";
+import { jsonText } from "../roadmap/escape.ts";
 import { noticeRequest, type Notice, type NotifyFormat } from "../notify/format.ts";
 import { failedScanNotice, scanNotice } from "../notify/scan.ts";
 import { findingKey, isDay, isStatus, MAX_NOTE } from "../../ui/tracking.js";
@@ -1876,6 +1878,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			[paths("/api/analysis", "/api/analysis/stop"), ({ res, route, body }) => analysisRoute(res, route, body)],
 			[(call) => call.route === "GET /api/repos/roadmap" || call.url.pathname === "/api/repos/export" || call.url.pathname === "/api/repos/mural", roadmapRoute],
 			[exact("GET /api/repos/scan"), ({ res }) => sendJson(res, 200, { scan: status })],
+			[exact("GET /api/repos/sbom"), sbomRoute],
 			[
 				exact("GET /api/repos/preview"),
 				async ({ res, url }) => sendJson(res, 200, { preview: await previewScan(url.searchParams.get("root") ?? options.defaultRoot, url.searchParams.get("depth"), github.dir) }),
@@ -1988,6 +1991,23 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		if (req.method === "POST") return saveExport(res, file, title);
 		log(`Exported ${FILE_TITLES[title]} (${file.extension}) as a download`);
 		return sendDownload(res, file);
+	}
+
+	/**
+	 * A CycloneDX bill of materials of the latest scan's repositories, read offline. The repositories
+	 * are the report's own, never a path from the request, and the file's name is a fixed stem and a date.
+	 */
+	async function sbomRoute({ res }: Call): Promise<void> {
+		const report = await storedReport();
+		let sbom;
+		try {
+			sbom = await buildSbom({ root: report.root, depth: 0, ...(options.run ? { run: options.run } : {}), repositories: report.repos.map((repo) => ({ path: repo.path, name: repoName(report, repo) })) });
+		} catch (err) {
+			throw new HttpError(503, err instanceof Error ? err.message : String(err));
+		}
+		const packages = sbom.components.reduce((sum, repo) => sum + repo.components.length, 0);
+		log(`Exported a software bill of materials as a download: ${packages} packages in ${sbom.components.length} repositories${sbom.metadata.properties ? `, ${sbom.metadata.properties.length} not covered` : ""}`);
+		return sendDownload(res, { contentType: "application/vnd.cyclonedx+json", filename: `porchlight-sbom-${new Date().toISOString().slice(0, 10)}.cdx.json`, body: jsonText(sbom) });
 	}
 
 	function cancelScanRoute({ res }: Call): void {
