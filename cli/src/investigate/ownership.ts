@@ -12,9 +12,9 @@
  * can read the TXT record), but they are never sent to a model (invariant 13).
  */
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile, rename } from "node:fs/promises";
 import { parseDomain } from "./scope.ts";
+import { oneAtATime, readPrivateJson, UnreadableFileError, writePrivate } from "../private-files.ts";
 
 export const CHALLENGE_LABEL = "_porchlight-challenge";
 /** The label and value prefix records were published under before the rename. Still accepted. */
@@ -125,17 +125,27 @@ export interface DomainsFile {
 	domains: Record<string, DomainEntry>;
 }
 
+const DOMAINS_FILE = "The domains proven for investigations";
+
+/** The proven domains. A file that is there but cannot be read throws: it holds tokens, and is never taken for none (B25). */
 export async function readDomains(path: string): Promise<DomainsFile> {
-	try {
-		const parsed = JSON.parse(await readFile(path, "utf8")) as DomainsFile;
-		const domains: Record<string, DomainEntry> = {};
-		for (const [name, entry] of Object.entries(parsed?.domains ?? {})) {
-			if (parseDomain(name) === name && entry && typeof entry.token === "string" && TOKEN.test(entry.token)) domains[name] = entry;
-		}
-		return { domains };
-	} catch {
-		return { domains: {} };
+	const read = await readPrivateJson(path);
+	if (read.state === "missing") return { domains: {} };
+	if (read.state === "unreadable") throw new UnreadableFileError(DOMAINS_FILE, read.reason);
+	const parsed = read.value as DomainsFile | null;
+	const domains: Record<string, DomainEntry> = {};
+	for (const [name, entry] of Object.entries(parsed?.domains ?? {})) {
+		if (parseDomain(name) === name && entry && typeof entry.token === "string" && TOKEN.test(entry.token)) domains[name] = entry;
 	}
+	return { domains };
+}
+
+/** Changes the proven domains one change at a time; `edit` says whether it changed anything to save. */
+export function changeDomains(path: string, edit: (file: DomainsFile) => boolean): Promise<void> {
+	return oneAtATime(path, async () => {
+		const file = await readDomains(path);
+		if (edit(file)) await saveDomains(path, file);
+	});
 }
 
 export async function saveDomains(path: string, file: DomainsFile): Promise<void> {
@@ -150,10 +160,4 @@ export function tokenFromChallenge(value: unknown): string | null {
 }
 
 /** Written readable by the owner alone, through a temporary file so a crash leaves the old copy. */
-export async function writePrivate(path: string, text: string): Promise<void> {
-	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-	const temporary = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
-	await writeFile(temporary, text, { mode: 0o600 });
-	await chmod(temporary, 0o600);
-	await rename(temporary, path);
-}
+export { writePrivate };

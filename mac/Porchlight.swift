@@ -2,7 +2,8 @@
 //
 // It starts the local web interface (through launch.sh, written by build.sh),
 // waits for the link it prints, shows that page in its own window, and stops
-// the interface when the window closes. It adds nothing to the interface's
+// the interface when the window closes, or when the app ends any other way
+// (a Force-Quit or a crash: see startServer). It adds nothing to the interface's
 // protections: the page is still served on 127.0.0.1 with a per-run key.
 //
 // The page can ask it for two things only (see "The page's bridge"): a folder the owner picks, for
@@ -68,7 +69,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 	private var webView: WKWebView!
 	private var status: NSTextField!
 	private var server: Process?
+	/// The writing end of the server's input, held for as long as the app runs and never written to (see startServer).
+	private var serverInput: FileHandle?
 	private var origin: URL?
+	/// The link the server printed, with its session key: kept in memory only, to load the page again if it stops.
+	private var pageLink: URL?
+	/// When the page was last loaded again after it stopped, so a page that keeps stopping is not reloaded in a loop.
+	private var lastRecovery: Date?
 	private var output = ""
 	private var quitting = false
 	/** Set once quitting needs no more questions: nothing was running, the owner said so, or the system asked. */
@@ -257,7 +264,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 		NSApp.mainMenu = main
 	}
 
-	@objc private func reload() { webView.reload() }
+	@objc private func reload() {
+		// After the page stopped twice in a row (see webViewWebContentProcessDidTerminate): load it again from the server's link.
+		if webView.isHidden, let pageLink, server?.isRunning == true {
+			status.isHidden = true
+			webView.isHidden = false
+			webView.load(URLRequest(url: pageLink))
+			return
+		}
+		webView.reload()
+	}
 	@objc private func goBack() { webView.goBack() }
 	@objc private func goForward() { webView.goForward() }
 	@objc private func zoomReset() { webView.pageZoom = 1 }
@@ -278,6 +294,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 		let process = Process()
 		process.executableURL = URL(fileURLWithPath: "/bin/sh")
 		process.arguments = [launcher.path]
+		// The server stops with the app, however the app ends. Told so by PORCHLIGHT_STOP_WITH_STDIN, it
+		// reads its input and exits when that input ends, which happens once nothing holds the writing end.
+		// Only the app holds it, and writes nothing; the system closes it when the app goes, on a Force-Quit
+		// or a crash as on a quit, so no server is left behind holding the data folder or the tailnet listener.
+		let input = Pipe()
+		// Not passed on to the server, or it would hold its own input open.
+		_ = fcntl(input.fileHandleForWriting.fileDescriptor, F_SETFD, FD_CLOEXEC)
+		process.standardInput = input
+		var environment = ProcessInfo.processInfo.environment
+		environment["PORCHLIGHT_STOP_WITH_STDIN"] = "1"
+		process.environment = environment
+		serverInput = input.fileHandleForWriting
 		let pipe = Pipe()
 		process.standardOutput = pipe
 		process.standardError = pipe
@@ -305,6 +333,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 		      let range = output.range(of: #"http://127\.0\.0\.1:\d+/#k=[A-Za-z0-9_-]+"#, options: .regularExpression),
 		      let url = URL(string: String(output[range])) else { return }
 		origin = URL(string: "http://127.0.0.1:\(url.port ?? 0)")
+		pageLink = url
 		status.isHidden = true
 		webView.isHidden = false
 		webView.load(URLRequest(url: url))
@@ -344,6 +373,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 		if isOwnPage(action.request.url) { decisionHandler(.allow, preferences); return }
 		openOutside(action.request.url)
 		decisionHandler(.cancel, preferences)
+	}
+
+	/// The page's own process stopped (a crash, or the system ending it to free memory), leaving the window
+	/// blank. It is loaded again from the server's link, since the key the page kept may have gone with it;
+	/// the page then returns to where the owner was, and the title bar says when this happened. A page that
+	/// stops again straight away is not reloaded in a loop: the window says so, and View → Reload tries again.
+	func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+		guard !quitting, let pageLink, server?.isRunning == true else { return }
+		let now = Date()
+		if let lastRecovery, now.timeIntervalSince(lastRecovery) < 30 {
+			webView.isHidden = true
+			status.stringValue = "The page stopped again just after it was reloaded.\n\nChoose View → Reload to try once more."
+			status.isHidden = false
+			status.isSelectable = true
+			return
+		}
+		lastRecovery = now
+		let time = DateFormatter.localizedString(from: now, dateStyle: .none, timeStyle: .short)
+		window.subtitle = "The page stopped at \(time) and was reloaded"
+		webView.load(URLRequest(url: pageLink))
 	}
 
 	func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse,

@@ -52,12 +52,12 @@ test("gitleaks: ranks a match by how likely it is to be live, and says why when 
 	);
 
 	assert.deepEqual(
-		findings.map((finding) => [finding.severity, finding.location, finding.note]),
+		findings.map((finding) => [finding.severity, finding.location, finding.note]).sort((a, b) => String(a[1]).localeCompare(String(b[1]))),
 		[
-			["low", "tests/terminal/test_launch.py:1", "Ranked lower: generic pattern, not a known key format; in a test path"],
 			["medium", "server/redaction.test.mjs:1", "Ranked lower: in a test path"],
-			["medium", "src/worker.js:1", "Ranked lower: generic pattern, not a known key format"],
 			["high", "src/lib/cesium-config.ts:1", undefined],
+			["medium", "src/worker.js:1", "Ranked lower: generic pattern, not a known key format"],
+			["low", "tests/terminal/test_launch.py:1", "Ranked lower: generic pattern, not a known key format; in a test path"],
 		],
 	);
 	assert.equal(findings.length, 4, "triage re-ranks; it never drops a finding");
@@ -67,14 +67,15 @@ test("gitleaks: reports a line once however many commits touched it", () => {
 	const findings = parseGitleaks(
 		JSON.stringify([
 			leak({}),
-			leak({ Commit: "1111111111111111111111111111111111111111" }),
+			// A later commit that rewrote the line around the same key.
+			leak({ Commit: "1111111111111111111111111111111111111111", Date: "2026-11-18T09:00:00Z" }),
 			leak({ File: "other.ini" }),
 			leak({ RuleID: "generic-api-key" }),
 		]),
 	);
 
 	assert.deepEqual(
-		findings.map((finding) => `${finding.ruleId} ${finding.location} ${finding.detail}`),
+		findings.map((finding) => `${finding.ruleId} ${finding.location} ${finding.detail}`).sort(),
 		[
 			"aws-access-token config.ini:1 commit 7b8cd884 on 2026-11-17",
 			"aws-access-token other.ini:1 commit 7b8cd884 on 2026-11-17",
@@ -92,7 +93,7 @@ test("gitleaks: keeps different secrets on the same line apart, without their va
 			// A different key written to the same line later.
 			leak({ Entropy: 4.17, Commit: "2222222222222222222222222222222222222222", Date: "2026-11-18T09:00:00Z" }),
 			// The first key again, after the line was edited around it: the same secret, so no new finding.
-			leak({ Entropy: 3.91, StartColumn: 12, Commit: "3333333333333333333333333333333333333333" }),
+			leak({ Entropy: 3.91, StartColumn: 12, Commit: "3333333333333333333333333333333333333333", Date: "2026-11-19T09:00:00Z" }),
 		]),
 	);
 
@@ -105,6 +106,23 @@ test("gitleaks: keeps different secrets on the same line apart, without their va
 		],
 	);
 	assert.ok(!JSON.stringify(findings).includes("3.91"), "the entropy only tells matches apart; it is not reported");
+});
+
+test("gitleaks: the same rows in any order give the same findings, naming the oldest commit (B20)", () => {
+	const rows = [
+		leak({ Commit: "9999999999999999999999999999999999999999", Date: "2026-11-19T09:00:00Z" }),
+		leak({}),
+		leak({ Commit: "5555555555555555555555555555555555555555", Date: "2026-11-18T09:00:00Z", StartLine: 4 }),
+		leak({ Entropy: 4.4, StartColumn: 30 }),
+		leak({ File: "other.ini", Commit: "2222222222222222222222222222222222222222" }),
+	];
+	const expected = parseGitleaks(JSON.stringify(rows));
+	for (let seed = 1; seed <= 20; seed++) {
+		// A different order each time, as gitleaks gives on every run.
+		const shuffled = rows.map((row, index) => ({ row, at: (index * 7919 * seed) % 101 })).sort((a, b) => a.at - b.at).map(({ row }) => row);
+		assert.deepEqual(parseGitleaks(JSON.stringify(shuffled)), expected, `order ${seed}`);
+	}
+	assert.ok(expected.some((finding) => finding.location === "config.ini:1" && finding.detail === "commit 7b8cd884 on 2026-11-17"), "the oldest commit names the finding");
 });
 
 test("gitleaks: accepts an empty report and rejects a malformed one", () => {

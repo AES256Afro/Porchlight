@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { cpus, homedir, hostname, networkInterfaces, totalmem } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -46,7 +46,7 @@ import { forgetMonitor, monitorProblem, MonitorSettingsError, parseMonitorSettin
 import { discoverRepos } from "../repos/discover.ts";
 import type { Runner } from "../repos/exec.ts";
 import { coverageNotes, nameUnder, rank, rankRepos, repoName, settingNotes } from "../repos/report.ts";
-import { History, readNotes, setNote } from "../repos/history.ts";
+import { carryNotes, History, notesForPage, setNote, type HistoryEntry } from "../repos/history.ts";
 import { checkHost, type HostCheckOptions } from "../host/check.ts";
 import type { HostReport } from "../host/types.ts";
 import { CancelledError, run as runCommand } from "../repos/exec.ts";
@@ -63,7 +63,7 @@ import { exportDomain, exportRepos, ExportError, parseFilter, type ExportFile } 
 import { buildRepoRoadmap, listRepoFindings, suggestionsFor } from "../roadmap/repos.ts";
 import { DEFAULT_GOAL, DEFAULT_MAX_TURNS, DEFAULT_MIN_GAP_MS, investigate, MAX_GOAL, MAX_TURNS_LIMIT, newRun, type ApprovalAnswer, type Run } from "../investigate/engine.ts";
 import { exportInvestigation, INVESTIGATION_FORMATS, type InvestigationFormat } from "../investigate/export.ts";
-import { challengeName, challengeValue, checkOwnership, newToken, readDomains, saveDomains, tokenFromChallenge } from "../investigate/ownership.ts";
+import { challengeName, challengeValue, changeDomains, checkOwnership, newToken, readDomains, tokenFromChallenge } from "../investigate/ownership.ts";
 import { abortableSleep, parseDomain, RateLimiter } from "../investigate/scope.ts";
 import { isRunId, RunStore, settled } from "../investigate/store.ts";
 import { liveNet, TOOLS as INVESTIGATION_TOOLS, type Net } from "../investigate/tools.ts";
@@ -108,6 +108,7 @@ import { auditCloudflare, READ_PERMISSIONS, TOKEN_TEMPLATE_URL, WRITE_PERMISSION
 import { CfClient, tokenShapeProblem } from "../cloudflare/client.ts";
 import { CF_FORMATS, exportCloudflare, type CfFormat } from "../cloudflare/export.ts";
 import { forgetToken, readAudit, readChanges, readSavedToken, recordChange, saveAudit, saveToken } from "../cloudflare/store.ts";
+import { oneAtATime, readPrivateJson, UnreadableFileError, writePrivateJson } from "../private-files.ts";
 
 export interface UiOptions {
 	/** 0 picks a free port. */
@@ -119,6 +120,12 @@ export interface UiOptions {
 	host?: string;
 	/** File holding the latest repository scan. Scans started from the UI overwrite it. */
 	reportPath: string;
+	/**
+	 * Where settings, keys, tokens, fetched repositories and audits are kept (default: beside the report).
+	 * Only the report's own history, notes, judgements and mural stay beside the report, so a report kept
+	 * in a project folder (`--report reports/x.json`) never draws keys into it (S34).
+	 */
+	dataDir?: string;
 	/** Folder offered in the scan form. */
 	defaultRoot: string;
 	monitor: MonitorConfig | null;
@@ -221,8 +228,20 @@ interface Call {
 	gate: Gate;
 }
 
-/** Which requests an entry of the route table answers, and what answers them. */
-type Route = [claims: (call: Call) => boolean, answer: (call: Call) => void | Promise<void>];
+/**
+ * Who may change something through a route (any method but GET): "here", the page on the computer that
+ * runs Porchlight only; "owner", that page or a service's own page, never another device on the tailnet;
+ * "any", every page that holds its listener's key. A handler can be stricter still for one action.
+ */
+type Changes = "here" | "owner" | "any";
+
+/** Which requests an entry of the route table answers, what answers them, and who may change things through it (default "any"). */
+type Route = [claims: (call: Call) => boolean, answer: (call: Call) => void | Promise<void>, changes?: Changes];
+
+/** Whether this gate may change things through a route that allows `changes`. */
+export function mayChange(changes: Changes, gate: { loopbackOnly: boolean; tailnet: boolean }): boolean {
+	return changes === "any" || (changes === "owner" ? !gate.tailnet : gate.loopbackOnly && !gate.tailnet);
+}
 
 /**
  * Who a request came in through. The page on this computer uses the per-run session key on loopback;
@@ -355,20 +374,24 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	const scan = options.scan ?? scanRepos;
 	const rescan = options.rescan ?? rescanRepo;
 	const defaultDepth = options.scanDepth ?? DEFAULT_DEPTH;
-	const osvDatabase = options.osvOffline ? join(dirname(options.reportPath), "osv-db") : undefined;
+	// Settings and secrets in the data folder; the report's own companions beside it (S34).
+	const reportDir = dirname(options.reportPath);
+	const dataDir = options.dataDir ?? reportDir;
+	if (dataDir !== reportDir) await moveIntoDataFolder(reportDir, dataDir, (line) => console.log(`porchlight ui: ${line}`));
+	const osvDatabase = options.osvOffline ? join(dataDir, "osv-db") : undefined;
 	/** Stops the scan that is running, when there is one. */
 	let scanCancel: AbortController | null = null;
-	const github: GithubConfig = options.github ?? { dir: join(dirname(options.reportPath), "github") };
+	const github: GithubConfig = options.github ?? { dir: join(dataDir, "github") };
 	let status: ScanStatus = { state: "idle" };
 	let fetching: FetchStatus = { state: "idle" };
-	const analysisPath = join(dirname(options.reportPath), "repo-analysis.json");
-	/** The interface's own preferences (the chosen look), kept beside the report. */
-	const settingsPath = join(dirname(options.reportPath), "ui-settings.json");
+	const analysisPath = join(reportDir, "repo-analysis.json");
+	/** The interface's own preferences (the chosen look), kept in the data folder. */
+	const settingsPath = join(dataDir, "ui-settings.json");
 	// Every finished scan is kept, so the page can say what is new and what was fixed since the last one.
-	const history = new History(dirname(options.reportPath));
-	const notesPath = join(dirname(options.reportPath), "finding-notes.json");
+	const history = new History(reportDir);
+	const notesPath = join(reportDir, "finding-notes.json");
 	// Where the owner was, so the app opens there again however it was closed.
-	const viewPath = join(dirname(options.reportPath), "ui-view.json");
+	const viewPath = join(dataDir, "ui-view.json");
 	// A report from before history was kept starts it, so the next scan has something to compare with.
 	await readReport(options.reportPath)
 		.then((report) => (report ? history.add(report) : null))
@@ -380,12 +403,12 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	let modelBusy = false;
 	/** Sends to a model still waiting for an answer, hosted ones included, so quitting can warn about them. */
 	let sending = 0;
-	const modelPath = join(dirname(options.reportPath), "model-settings.json");
+	const modelPath = join(dataDir, "model-settings.json");
 	// The mural for an export, written in the background: a model on a processor takes minutes.
-	const muralPath = join(dirname(options.reportPath), "repo-mural.json");
+	const muralPath = join(reportDir, "repo-mural.json");
 	let muralJob: MuralJob = (await readMural(muralPath)) ?? { state: "idle" };
 	// The check of this computer: what it found is kept beside the report, readable only by its owner.
-	const hostPath = join(dirname(options.reportPath), "host-check.json");
+	const hostPath = join(dataDir, "host-check.json");
 	const runHostCheck = options.hostCheck ?? ((hostOptions) => checkHost({ run: runCommand, ...hostOptions }));
 	let hostStatus: HostStatus = { state: "idle" };
 	const startup: ModelInUse = { config: options.assistant ?? null, error: options.assistantError, unset: options.assistantUnset ?? false, source: "startup" };
@@ -487,12 +510,11 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	}
 
 	// Discussions: every answer a model gives on a page, kept so it can be read again and followed up.
-	const discussionStore = new DiscussionStore(join(dirname(options.reportPath), "discussions"));
+	const discussionStore = new DiscussionStore(join(dataDir, "discussions"));
 	/** Discussions waiting for a follow-up answer: one question at a time each. */
 	const answering = new Set<string>();
 
 	// Projects: a folder the owner chose, where exports, discussions and a daily log are written.
-	const dataDir = dirname(options.reportPath);
 	const projects = new ProjectStore(join(dataDir, "projects.json"));
 	// A service (a container) keeps project folders in its data volume, in a folder of their own.
 	const projectsWithin = loopbackOnly ? undefined : join(dataDir, "projects");
@@ -921,18 +943,26 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		try {
 			if (route === "GET /api/model") return sendJson(res, 200, modelState());
 			if (route === "POST /api/model") {
-				const next = nextSaved(savedModel, modelRequest(body));
-				// Checked before it is saved, so a mistake never replaces a working choice.
-				configFor(next, { fallbackKeys: startupKeys });
-				await saveModel(modelPath, next);
-				savedModel = next;
-				model = inUse(next);
+				// One save at a time, each from the file as it is now, so two saves for different providers
+				// keep both keys (B21); a file that cannot be read is never written over, which would lose every key (B25).
+				await oneAtATime(modelPath, async () => {
+					const read = await readPrivateJson(modelPath);
+					if (read.state === "unreadable") throw new HttpError(409, new UnreadableFileError("Your model settings", read.reason).message);
+					const next = nextSaved(read.state === "read" ? await readSavedModel(modelPath) : null, modelRequest(body));
+					// Checked before it is saved, so a mistake never replaces a working choice.
+					configFor(next, { fallbackKeys: startupKeys });
+					await saveModel(modelPath, next);
+					savedModel = next;
+					model = inUse(next);
+				});
 				return sendJson(res, 200, modelState());
 			}
 			if (route === "POST /api/model/startup") {
-				await forgetModel(modelPath);
-				savedModel = null;
-				model = startup;
+				await oneAtATime(modelPath, async () => {
+					await forgetModel(modelPath);
+					savedModel = null;
+					model = startup;
+				});
 				return sendJson(res, 200, modelState());
 			}
 			if (route === "POST /api/model/models") {
@@ -1037,7 +1067,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	}
 
 	// Access from other devices: a second listener on this machine's Tailscale address only.
-	const accessPath = join(dirname(options.reportPath), "access.json");
+	const accessPath = join(dataDir, "access.json");
 	const accessPort = options.accessPort ?? DEFAULT_ACCESS_PORT;
 	const findTailnet = options.tailnetAddress ?? tailnetAddress;
 	let access: AccessFile = (await readAccess(accessPath)) ?? { enabled: false, key: "" };
@@ -1065,7 +1095,12 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	}
 
 	/** Listens on the tailnet when access is on, and stops when it is off. Safe to call again to retry. */
-	async function applyAccess(): Promise<void> {
+	/** Starts or stops the tailnet listener to match `access`, one change at a time, the retry included (S25). */
+	function applyAccess(): Promise<void> {
+		return oneAtATime(`${accessPath}#listener`, applyAccessNow);
+	}
+
+	async function applyAccessNow(): Promise<void> {
 		await stopAccess();
 		clearInterval(accessRetry);
 		accessRetry = undefined;
@@ -1130,14 +1165,24 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		if (analysing.state === "running") throw new HttpError(409, "Deeper analysis is running. Write the mural when it has finished, so it can include it");
 		if (modelBusy) throw new HttpError(409, "The model is still answering another request. Try again when it has finished.");
 
-		const roadmap = buildRepoRoadmap(report, filter);
-		const analysis = await readAnalysis(analysisPath, report);
-		// What was fixed since the previous scan, where this scan could check again: the "done" column's best evidence.
-		const change = await history.latestChange(report).catch(() => null);
-		const facts = muralFacts(report, roadmap, listRepoFindings(report, filter), analysis, change);
-		const prompt = muralPrompt(facts, roadmap, judgedHighlights(report, analysis).slice(0, MURAL_HIGHLIGHTS));
+		// Running, and the model taken, before the first await, so a second request is refused (B24).
+		const earlierMural = muralJob;
 		muralJob = { state: "running", key, startedAt: new Date().toISOString() };
 		modelBusy = true;
+		let prompt: ReturnType<typeof muralPrompt>;
+		let facts: ReturnType<typeof muralFacts>;
+		try {
+			const roadmap = buildRepoRoadmap(report, filter);
+			const analysis = await readAnalysis(analysisPath, report);
+			// What was fixed since the previous scan, where this scan could check again: the "done" column's best evidence.
+			const change = await history.latestChange(report).catch(() => null);
+			facts = muralFacts(report, roadmap, listRepoFindings(report, filter), analysis, change);
+			prompt = muralPrompt(facts, roadmap, judgedHighlights(report, analysis).slice(0, MURAL_HIGHLIGHTS));
+		} catch (err) {
+			muralJob = earlierMural;
+			modelBusy = false;
+			throw err;
+		}
 		void (async () => {
 			try {
 				// A small model now and then answers with something other than the JSON asked for: it gets one more try.
@@ -1170,16 +1215,24 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		if (route === "POST /api/access") {
 			const enabled = bodyObject(body).enabled;
 			if (typeof enabled !== "boolean") throw new HttpError(400, "Say whether access is on");
-			access = { enabled, key: access.key || newAccessKey() };
-			await saveAccess(accessPath, access);
-			await applyAccess();
+			// One change at a time, saved before it takes effect: the file always says what a restart
+			// should open, and a change that could not be saved changes nothing (S25).
+			await oneAtATime(accessPath, async () => {
+				const next = { enabled, key: access.key || newAccessKey() };
+				await saveAccess(accessPath, next);
+				access = next;
+				await applyAccess();
+			});
 			return sendJson(res, 200, accessState(gate));
 		}
 		if (route === "POST /api/access/key") {
 			// A new key turns away every device that had the old one, including open pages.
-			access = { ...access, key: newAccessKey() };
-			await saveAccess(accessPath, access);
-			await applyAccess();
+			await oneAtATime(accessPath, async () => {
+				const next = { ...access, key: newAccessKey() };
+				await saveAccess(accessPath, next);
+				access = next;
+				await applyAccess();
+			});
 			return sendJson(res, 200, accessState(gate));
 		}
 		throw new HttpError(404, "Not found");
@@ -1189,7 +1242,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	// The monitor that watches the owner's websites. A connection saved under Settings → Monitor comes
 	// before the one given at start-up, as a saved model or Cloudflare token does. The admin token is
 	// added to each call here and never sent to the page.
-	const monitorSettingsPath = join(dirname(options.reportPath), "monitor-settings.json");
+	const monitorSettingsPath = join(dataDir, "monitor-settings.json");
 	let savedMonitor = await readSavedMonitor(monitorSettingsPath);
 	let monitor: MonitorConfig | null = savedMonitor?.config ?? options.monitor;
 
@@ -1236,11 +1289,13 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	}
 
 	// "Investigate with a model": one run at a time, on a domain whose ownership record holds its token.
-	const investigateDir = join(dirname(options.reportPath), "investigations");
-	const investigateDomainsPath = join(dirname(options.reportPath), "investigate-domains.json");
+	const investigateDir = join(dataDir, "investigations");
+	const investigateDomainsPath = join(dataDir, "investigate-domains.json");
 	const runStore = new RunStore(investigateDir);
 	const investigateNet: Net = options.investigateNet ?? (options.fetchFn ? { ...liveNet, fetch: options.fetchFn } : liveNet);
 	let investigation: InvestigationJob | null = null;
+	/** An investigation is being started: ownership is being checked. See S24. */
+	let investigationStarting = false;
 	/** Saves run by run, in order, so a slow write never lands after a newer one. */
 	let runSaves: Promise<void> = Promise.resolve();
 
@@ -1330,16 +1385,19 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		if (route === "POST /api/investigate/domains") {
 			const name = parseDomain(fields.domain);
 			if (!name) throw new HttpError(400, "Type a domain such as example.com");
-			const file = await readDomains(investigateDomainsPath);
-			if (!file.domains[name]) {
+			if (!(await readDomains(investigateDomainsPath)).domains[name]) {
 				// When the monitor already watches this domain, its record serves here too.
 				let token: string | null = null;
 				if (monitor) {
 					const answer = await callMonitor(monitor, "GET", `/domains/${encodeURIComponent(name)}`, undefined, options.fetchFn).catch(() => null);
 					if (answer?.status === 200) token = tokenFromChallenge(answer.body?.domain?.challenge?.value);
 				}
-				file.domains[name] = { token: token ?? newToken(), addedAt: new Date().toISOString(), source: token ? "monitor" : "local" };
-				await saveDomains(investigateDomainsPath, file);
+				// One change at a time, so two domains added together are both kept (B21).
+				await changeDomains(investigateDomainsPath, (file) => {
+					if (file.domains[name]) return false;
+					file.domains[name] = { token: token ?? newToken(), addedAt: new Date().toISOString(), source: token ? "monitor" : "local" };
+					return true;
+				});
 			}
 			return sendJson(res, 200, { domains: await investigateDomains() });
 		}
@@ -1347,21 +1405,18 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			const name = parseDomain(fields.domain);
 			if (!name) throw new HttpError(400, "Type a domain such as example.com");
 			if (investigation?.run.domain === name) throw new HttpError(409, "Stop the investigation of this domain first");
-			const file = await readDomains(investigateDomainsPath);
-			delete file.domains[name];
-			await saveDomains(investigateDomainsPath, file);
+			await changeDomains(investigateDomainsPath, (file) => delete file.domains[name]);
 			return sendJson(res, 200, { domains: await investigateDomains() });
 		}
 		if (route === "POST /api/investigate/verify") {
 			const { name, token } = await addedDomain(fields);
 			const verified = await proveOwnership(name, token);
 			if (verified) {
-				const file = await readDomains(investigateDomainsPath);
-				const entry = file.domains[name];
-				if (entry) {
-					entry.verifiedAt = new Date().toISOString();
-					await saveDomains(investigateDomainsPath, file);
-				}
+				await changeDomains(investigateDomainsPath, (file) => {
+					const entry = file.domains[name];
+					if (entry) entry.verifiedAt = new Date().toISOString();
+					return entry !== undefined;
+				});
 			}
 			return sendJson(res, 200, { verified, domains: await investigateDomains() });
 		}
@@ -1398,20 +1453,29 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		const config = model.config;
 		if (!config) throw new HttpError(503, model.error ?? "No model is connected. Choose one in Settings → Model");
 		if (investigation) throw new HttpError(409, `An investigation of ${investigation.run.domain} is already running. Stop it first`);
-		const { name, token } = await addedDomain(fields);
-		const goal = fields.goal === undefined || fields.goal === "" ? DEFAULT_GOAL : fields.goal;
-		if (typeof goal !== "string" || goal.trim() === "" || goal.length > MAX_GOAL) throw new HttpError(400, `Write a goal of 1 to ${MAX_GOAL} characters`);
-		const maxTurns = fields.maxTurns ?? DEFAULT_MAX_TURNS;
-		if (typeof maxTurns !== "number" || !Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > MAX_TURNS_LIMIT) throw new HttpError(400, `Choose 1 to ${MAX_TURNS_LIMIT} turns`);
-		// Approving every request of the run at its start is the owner's choice, said plainly or not at all.
-		if (fields.approveAll !== undefined && typeof fields.approveAll !== "boolean") throw new HttpError(400, "Say whether to approve the run's requests now");
-		const approveAll = fields.approveAll === true;
-		const hosted = isHosted(config);
-		// The page shows what will be sent; a hosted model is used only once the owner has said yes to it.
-		if (hosted && fields.sendsToHosted !== true) throw new HttpError(409, investigationDisclosure(config));
-		if (!(await proveOwnership(name, token))) {
-			throw new HttpError(409, `The TXT record ${challengeName(name)} does not hold ${challengeValue(token)} yet. Publish it, wait a few minutes, and check again`);
-		}
+		// A run is recorded only once ownership is proven, which takes a DNS lookup. Until then this flag
+		// refuses a second start, so no run is ever started that Stop cannot reach (S24).
+		if (investigationStarting) throw new HttpError(409, "An investigation is already starting");
+		investigationStarting = true;
+		const { name, token, goal, maxTurns, approveAll, hosted } = await (async () => {
+			const { name, token } = await addedDomain(fields);
+			const goal = fields.goal === undefined || fields.goal === "" ? DEFAULT_GOAL : fields.goal;
+			if (typeof goal !== "string" || goal.trim() === "" || goal.length > MAX_GOAL) throw new HttpError(400, `Write a goal of 1 to ${MAX_GOAL} characters`);
+			const maxTurns = fields.maxTurns ?? DEFAULT_MAX_TURNS;
+			if (typeof maxTurns !== "number" || !Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > MAX_TURNS_LIMIT) throw new HttpError(400, `Choose 1 to ${MAX_TURNS_LIMIT} turns`);
+			// Approving every request of the run at its start is the owner's choice, said plainly or not at all.
+			if (fields.approveAll !== undefined && typeof fields.approveAll !== "boolean") throw new HttpError(400, "Say whether to approve the run's requests now");
+			const approveAll = fields.approveAll === true;
+			const hosted = isHosted(config);
+			// The page shows what will be sent; a hosted model is used only once the owner has said yes to it.
+			if (hosted && fields.sendsToHosted !== true) throw new HttpError(409, investigationDisclosure(config));
+			if (!(await proveOwnership(name, token))) {
+				throw new HttpError(409, `The TXT record ${challengeName(name)} does not hold ${challengeValue(token)} yet. Publish it, wait a few minutes, and check again`);
+			}
+			return { name, token, goal, maxTurns, approveAll, hosted };
+		})().finally(() => {
+			investigationStarting = false;
+		});
 
 		const run = newRun({ domain: name, goal: goal.trim(), model: config.model, modelHost: config.url.host, hosted, maxTurns, minGapMs: options.investigateMinGapMs ?? DEFAULT_MIN_GAP_MS, approveAll });
 		const stop = new AbortController();
@@ -1495,9 +1559,9 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	}
 
 	// The Cloudflare account audit: the owner's token, kept beside the report and never sent to the page.
-	const cloudflareTokenPath = join(dirname(options.reportPath), "cloudflare-settings.json");
-	const cloudflareAuditPath = join(dirname(options.reportPath), "cloudflare-audit.json");
-	const cloudflareChangesPath = join(dirname(options.reportPath), "cloudflare-changes.json");
+	const cloudflareTokenPath = join(dataDir, "cloudflare-settings.json");
+	const cloudflareAuditPath = join(dataDir, "cloudflare-audit.json");
+	const cloudflareChangesPath = join(dataDir, "cloudflare-changes.json");
 	let cloudflareStatus: CloudflareStatus = { state: "idle" };
 	/** What Cloudflare last said about the token in use. Never the token. */
 	let cloudflareVerified: { status: string; kind: "user" | "account"; expiresOn?: string; checkedAt: string } | null = null;
@@ -1568,12 +1632,21 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		}
 		if (route === "POST /api/cloudflare/audit") {
 			if (cloudflareStatus.state === "running") throw new HttpError(409, "A Cloudflare audit is already running");
-			const token = await cloudflareToken();
-			if (!token) throw new HttpError(409, "Connect Cloudflare first: paste an API token in Settings → Cloudflare");
 			const lookups = bodyObject(body).lookups;
 			if (lookups !== undefined && typeof lookups !== "boolean") throw new HttpError(400, "lookups must be true or false");
-			const ownership = await readDomains(investigateDomainsPath);
+			// Running before the first await, so a second request is refused (B24); as it was if the audit cannot start.
+			const earlierAudit = cloudflareStatus;
 			cloudflareStatus = { state: "running", startedAt: new Date().toISOString(), done: 0, total: 0, current: "" };
+			let token: Awaited<ReturnType<typeof cloudflareToken>>;
+			let ownership: Awaited<ReturnType<typeof readDomains>>;
+			try {
+				token = await cloudflareToken();
+				if (!token) throw new HttpError(409, "Connect Cloudflare first: paste an API token in Settings → Cloudflare");
+				ownership = await readDomains(investigateDomainsPath);
+			} catch (err) {
+				cloudflareStatus = earlierAudit;
+				throw err;
+			}
 			const project = await projects.current();
 			log("Cloudflare audit started", project);
 			// Not awaited: the page polls for progress, as it does for a scan.
@@ -1758,11 +1831,12 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		const outcome = await sendChange(new CfClient(token, options.fetchFn ?? fetch), planned);
 		// Kept for the investigation and the audit: the record now holds this token.
 		if (outcome.ok && planned.change === "ownership-record" && planned.ownershipToken) {
-			const file = await readDomains(investigateDomainsPath);
-			if (!file.domains[planned.zone]) {
-				file.domains[planned.zone] = { token: planned.ownershipToken, addedAt: new Date().toISOString(), source: "local" };
-				await saveDomains(investigateDomainsPath, file);
-			}
+			const token = planned.ownershipToken;
+			await changeDomains(investigateDomainsPath, (file) => {
+				if (file.domains[planned.zone]) return false;
+				file.domains[planned.zone] = { token, addedAt: new Date().toISOString(), source: "local" };
+				return true;
+			});
 		}
 		// The change's title is Porchlight's, from its own list; the request and the token stay out of the log.
 		log(`Cloudflare change ${outcome.ok ? "applied" : "failed"}: ${planned.title}, on ${planned.zone}`, project);
@@ -1801,7 +1875,12 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	async function handle(req: IncomingMessage, res: ServerResponse, gate: Gate): Promise<void> {
 		const call = await admit(req, res, gate);
 		if (!call) return;
-		for (const [claims, answer] of (routeTable ??= routes())) if (claims(call)) return answer(call);
+		for (const [claims, answer, changes = "any"] of (routeTable ??= routes())) {
+			if (!claims(call)) continue;
+			// Settings that decide where data goes or what is kept are changed from the owner's own page (S20).
+			if (call.req.method !== "GET" && !mayChange(changes, call.gate)) throw new HttpError(403, "This is changed from the page on the computer that runs Porchlight");
+			return answer(call);
+		}
 		throw new HttpError(404, "Not found");
 	}
 
@@ -1864,18 +1943,26 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			[paths("/api/host", "/api/host/check"), ({ res, route, body }) => hostRoute(res, route, body)],
 			[under("/api/investigate"), ({ res, route, url, body, gate }) => investigateRoute(res, route, url, body, gate)],
 			[under("/api/cloudflare"), ({ res, route, url, body, gate }) => cloudflareRoute(res, route, url, body, gate)],
-			[under("/api/monitor"), ({ res, route, body, gate }) => monitorRoute(res, route, body, gate)],
+			[under("/api/monitor"), ({ res, route, body, gate }) => monitorRoute(res, route, body, gate), "here"],
 			[exact("GET /api/activity"), activityRoute],
 			[exact("GET /api/repos/history"), historyRoute],
 			[exact("POST /api/findings/note"), ({ res, body }) => noteRoute(res, body)],
 			[exact("GET /api/busy"), ({ res }) => sendJson(res, 200, { busy: busyWork() })],
 			[exact("POST /api/view"), viewRoute],
 			[exact("POST /api/settings"), settingsRoute],
-			[under("/api/model/local"), ({ res, route, url, body, gate }) => downloadRoute(res, route, url, body, gate)],
-			[under("/api/model"), ({ res, route, body }) => modelRoute(res, route, body)],
-			[under("/api/access"), ({ res, route, body, gate }) => accessRoute(res, route, body, gate)],
+			[under("/api/model/local"), ({ res, route, url, body, gate }) => downloadRoute(res, route, url, body, gate), "here"],
+			// Where the owner's data is sent, under which key, and a probe of any address: never from another device (S20).
+			[under("/api/model"), ({ res, route, body }) => modelRoute(res, route, body), "owner"],
+			[under("/api/access"), ({ res, route, body, gate }) => accessRoute(res, route, body, gate), "here"],
 			[(call) => call.url.pathname.startsWith("/api/assist/"), ({ req, res, url, body }) => assist(req, res, url.pathname.slice("/api/assist/".length), body)],
-			[exact("GET /api/repos/report"), async ({ res }) => sendJson(res, 200, { ...(await loadReport(options.reportPath, analysisPath)), findingNotes: await readNotes(notesPath) })],
+			[
+				exact("GET /api/repos/report"),
+				async ({ res }) => {
+					// Notes that cannot be read are said beside the report, never a reason the report cannot be shown.
+					const notes = await notesForPage(notesPath);
+					return sendJson(res, 200, { ...(await loadReport(options.reportPath, analysisPath)), findingNotes: notes.notes, ...(notes.problem ? { notesProblem: notes.problem } : {}) });
+				},
+			],
 			[paths("/api/analysis", "/api/analysis/stop"), ({ res, route, body }) => analysisRoute(res, route, body)],
 			[(call) => call.route === "GET /api/repos/roadmap" || call.url.pathname === "/api/repos/export" || call.url.pathname === "/api/repos/mural", roadmapRoute],
 			[exact("GET /api/repos/scan"), ({ res }) => sendJson(res, 200, { scan: status })],
@@ -1944,8 +2031,21 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 
 	async function historyRoute({ res }: Call): Promise<void> {
 		const report = await readReport(options.reportPath);
-		const scans = (await history.list()).reverse();
-		return sendJson(res, 200, { scans, change: report ? await history.latestChange(report) : null });
+		// Kept scans that cannot be read are said, never shown as none (B25, B68).
+		let scans: HistoryEntry[] = [];
+		let problem: string | undefined;
+		try {
+			scans = (await history.list()).reverse();
+		} catch (err) {
+			problem = err instanceof Error ? err.message : String(err);
+		}
+		const latest = report ? await history.compare(report) : ({ state: "first" } as const);
+		return sendJson(res, 200, {
+			scans,
+			change: latest.state === "compared" ? latest.change : null,
+			...(problem ? { problem } : {}),
+			...(latest.state === "unreadable" ? { changeProblem: latest.reason } : {}),
+		});
 	}
 
 	/** Where the owner is in the page, kept so the app opens there again. */
@@ -2088,15 +2188,26 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		const assistant = model.config;
 		if (!assistant) throw new HttpError(503, model.error ?? "No model is connected. Choose one in Settings → Model");
 		if (analysing.state === "running") throw new HttpError(409, "The analysis is already running");
-		const report = await storedReport();
-		const stored = await readAnalysis(analysisPath, report);
-		const queue = unitsOf(report)
-			.filter((unit) => !stored.items[unit.key] && severities.includes(unit.severity))
-			.slice(0, limit);
-		if (queue.length === 0) throw new HttpError(409, "Nothing is waiting to be analysed at those severities");
-
+		// Running before the first await, so a second request in the meantime is refused (B24).
+		const earlier = analysing;
 		const stop = new AbortController();
 		stopAnalysis = stop;
+		analysing = { state: "running", done: 0, total: 0, current: null, failed: 0 };
+		let report: ScanReport;
+		let stored: Awaited<ReturnType<typeof readAnalysis>>;
+		let queue: ReturnType<typeof unitsOf>;
+		try {
+			report = await storedReport();
+			stored = await readAnalysis(analysisPath, report);
+			queue = unitsOf(report)
+				.filter((unit) => !stored.items[unit.key] && severities.includes(unit.severity))
+				.slice(0, limit);
+			if (queue.length === 0) throw new HttpError(409, "Nothing is waiting to be analysed at those severities");
+		} catch (err) {
+			analysing = earlier;
+			stopAnalysis = null;
+			throw err;
+		}
 		analysing = { state: "running", done: 0, total: queue.length, current: null, failed: 0 };
 		const project = await projects.current();
 		log(`Deeper analysis started: ${queue.length} ${queue.length === 1 ? "item" : "items"} for ${modelWords(assistant)}`, project);
@@ -2150,8 +2261,18 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				if (fetching.state === "running") throw new HttpError(409, "Repositories are already being fetched");
 				if (status.state === "running") throw new HttpError(409, "A scan is running. Fetch when it has finished.");
 				const fields = bodyObject(body);
-				const names = fields.all === true ? await fetchedRepos(github.dir) : fields.repos;
+				// Running before the first await, so a second request is refused (B24); as it was if nothing is fetched.
+				const earlierFetch = fetching;
+				fetching = { state: "running", done: 0, total: 0, current: null, errors: [] };
+				let names: unknown;
+				try {
+					names = fields.all === true ? await fetchedRepos(github.dir) : fields.repos;
+				} catch (err) {
+					fetching = earlierFetch;
+					throw err;
+				}
 				if (!Array.isArray(names) || names.length === 0 || names.length > MAX_FETCH || !names.every((name) => typeof name === "string" && parseRepoName(name))) {
+					fetching = earlierFetch;
 					throw new HttpError(400, `Choose 1 to ${MAX_FETCH} repositories, each named owner/repository`);
 				}
 				const wanted = [...new Set(names as string[])];
@@ -2291,10 +2412,11 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		const scheduled = how.scheduled === true;
 		// A scheduled scan is always a Standard one: nobody is there to have chosen less, or to say yes to a model.
 		const choices = scheduled ? standardChoices() : (how.choices ?? standardChoices());
-		const also = (await fetchedRepos(github.dir)).length > 0 ? [{ root: github.dir, depth: GITHUB_DEPTH }] : undefined;
 		const cancel = new AbortController();
 		scanCancel = cancel;
+		// Running before the first await, so a second request in the meantime is refused, not started too (B24).
 		status = { state: "running", root, startedAt: new Date().toISOString(), done: 0, total: 0, current: null };
+		const also = (await fetchedRepos(github.dir)).length > 0 ? [{ root: github.dir, depth: GITHUB_DEPTH }] : undefined;
 		// The scan is logged in the project in use when it starts, even if the owner moves to another meanwhile.
 		const project = await projects.current();
 		log(`Scan started: ${root}, ${depth} ${depth === 1 ? "level" : "levels"} down. ${describeChoices(choices)}`, project);
@@ -2327,9 +2449,15 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				}
 				await saveReport(options.reportPath, report);
 				await history.add(report).catch((err) => console.error(`porchlight ui: could not keep the scan in history: ${err instanceof Error ? err.message : String(err)}`));
+				// A secret's finding may name another of its commits than before (B20): its note follows it.
+				const carried = await carryNotes(notesPath, report).catch(() => 0);
+				if (carried > 0) log(`Moved ${carried === 1 ? "1 note" : `${carried} notes`} to the secret ${carried === 1 ? "it was" : "they were"} about`, project);
 				status = { state: "done", root, finishedAt: new Date().toISOString() };
 				log(`Scan finished: ${scanCounts(report)}`, project);
-				if (scheduled) await tell(scanNotice(report, await history.latestChange(report).catch(() => null)), project);
+				if (scheduled) {
+					const latest = await history.compare(report);
+					await tell(scanNotice(report, latest.state === "compared" ? latest.change : null, latest.state === "unreadable" ? latest.reason : undefined), project);
+				}
 				if (choices.analyse) analyseAfterScan(how.sendsToHosted === true, project);
 			})
 			.catch((err) => {
@@ -2372,12 +2500,23 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	 */
 	async function beginRescan(name: string): Promise<ScanStatus> {
 		scanMayStart();
-		const report = await storedReport();
-		const before = report.repos.find((repo) => repoName(report, repo) === name);
-		if (!before) throw new HttpError(404, "That repository is not in the latest scan. Reload the page to see the current one.");
+		// Running before the first await (B24); as it was again if the repository cannot be scanned.
+		const earlier = status;
 		const cancel = new AbortController();
 		scanCancel = cancel;
-		status = { state: "running", root: report.root, startedAt: new Date().toISOString(), done: 0, total: 1, current: name };
+		status = { state: "running", root: "", startedAt: new Date().toISOString(), done: 0, total: 1, current: name };
+		let report: ScanReport;
+		let before: RepoResult | undefined;
+		try {
+			report = await storedReport();
+			before = report.repos.find((repo) => repoName(report, repo) === name);
+			if (!before) throw new HttpError(404, "That repository is not in the latest scan. Reload the page to see the current one.");
+		} catch (err) {
+			status = earlier;
+			scanCancel = null;
+			throw err;
+		}
+		status = { ...status, root: report.root };
 		const project = await projects.current();
 		log(`Scanning ${name} again`, project);
 		// Scanned as the whole report was, so what it covers stays what the report says it covers.
@@ -2574,10 +2713,7 @@ async function readMural(path: string): Promise<MuralJob | null> {
 
 /** It names repositories and findings, like the report, so only its owner can read it. */
 async function saveMural(path: string, job: { key: string; mural: Mural }): Promise<void> {
-	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-	const temporary = `${path}.${process.pid}.tmp`;
-	await writeFile(temporary, `${JSON.stringify({ key: job.key, mural: job.mural }, null, "\t")}\n`, { mode: 0o600 });
-	await rename(temporary, path);
+	await writePrivateJson(path, { key: job.key, mural: job.mural });
 }
 
 const DEFAULT_ACCESS_PORT = 4747;
@@ -2604,13 +2740,51 @@ async function readAccess(path: string): Promise<AccessFile | null> {
 	}
 }
 
+/**
+ * What an earlier Porchlight kept beside the report and now keeps in the data folder (S34): settings,
+ * keys and tokens, fetched repositories and the OSV databases, audits, investigations and discussions.
+ */
+const DATA_FILES = [
+	"model-settings.json",
+	"monitor-settings.json",
+	"cloudflare-settings.json",
+	"cloudflare-audit.json",
+	"cloudflare-changes.json",
+	"access.json",
+	"investigate-domains.json",
+	"host-check.json",
+	"projects.json",
+	"ui-settings.json",
+	"ui-view.json",
+	"investigations",
+	"discussions",
+	"github",
+	"osv-db",
+];
+
+/**
+ * Moves each of DATA_FILES found beside the report into the data folder, where none of that name is yet,
+ * so a key saved by an earlier version keeps working and no longer sits in the report's folder (which may
+ * be a project's own). Says what it moved and what it could not; a name already in the data folder wins.
+ */
+export async function moveIntoDataFolder(reportDir: string, dataDir: string, say: (line: string) => void): Promise<void> {
+	await mkdir(dataDir, { recursive: true, mode: 0o700 });
+	for (const name of DATA_FILES) {
+		const from = join(reportDir, name);
+		const to = join(dataDir, name);
+		if (!(await lstat(from).catch(() => null)) || (await lstat(to).catch(() => null))) continue;
+		try {
+			await rename(from, to);
+			say(`moved ${name} from beside the report into ${dataDir}`);
+		} catch (err) {
+			say(`could not move ${name} into ${dataDir} (${(err as NodeJS.ErrnoException).code ?? String(err)}); move it there yourself`);
+		}
+	}
+}
+
 /** Holds the access key, so only its owner can read it. */
 async function saveAccess(path: string, access: AccessFile): Promise<void> {
-	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-	const temporary = `${path}.${process.pid}.tmp`;
-	await writeFile(temporary, `${JSON.stringify(access, null, "\t")}\n`, { mode: 0o600 });
-	await chmod(temporary, 0o600);
-	await rename(temporary, path);
+	await writePrivateJson(path, access);
 }
 
 /** This machine's Tailscale IPv4 address (100.64.0.0/10), or null when Tailscale is not up. */
@@ -2928,10 +3102,7 @@ async function readUiSettings(path: string): Promise<UiSettings> {
 }
 
 async function saveUiSettings(path: string, settings: UiSettings): Promise<void> {
-	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-	const temporary = `${path}.${process.pid}.tmp`;
-	await writeFile(temporary, `${JSON.stringify(settings, null, "\t")}\n`, { mode: 0o600 });
-	await rename(temporary, path);
+	await writePrivateJson(path, settings);
 }
 
 /** The place in the page the owner was last at, or null. */
@@ -2945,10 +3116,7 @@ async function readView(path: string): Promise<string | null> {
 }
 
 async function saveView(path: string, view: string): Promise<void> {
-	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-	const temporary = `${path}.${process.pid}.tmp`;
-	await writeFile(temporary, `${JSON.stringify({ view }, null, "\t")}\n`, { mode: 0o600 });
-	await rename(temporary, path);
+	await writePrivateJson(path, { view });
 }
 
 /** Reports say where secrets were found, so a new one is readable only by its owner. */
@@ -2963,17 +3131,9 @@ async function readHostReport(path: string): Promise<HostReport | null> {
 
 /** What this computer's check found says where it is weak, so only its owner can read it. */
 async function saveHostReport(path: string, report: HostReport): Promise<void> {
-	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-	const temporary = `${path}.${process.pid}.tmp`;
-	await writeFile(temporary, `${JSON.stringify(report, null, "\t")}\n`, { mode: 0o600 });
-	await chmod(temporary, 0o600);
-	await rename(temporary, path);
+	await writePrivateJson(path, report);
 }
 
 async function saveReport(path: string, report: ScanReport): Promise<void> {
-	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-	const temporary = `${path}.${process.pid}.tmp`;
-	await writeFile(temporary, `${JSON.stringify(report, null, "\t")}\n`, { mode: 0o600 });
-	await chmod(temporary, 0o600);
-	await rename(temporary, path);
+	await writePrivateJson(path, report);
 }

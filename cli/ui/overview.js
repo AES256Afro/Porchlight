@@ -389,7 +389,14 @@ function historyCard() {
 		"div",
 		{ class: "card full" },
 		h("h2", null, "Since the last scan"),
-		h("p", { class: "sub" }, changeSummary(change) ?? "This is the first scan kept. The next scan shows what is new and what was fixed since this one."),
+		h(
+			"p",
+			{ class: "sub" },
+			changeSummary(change) ??
+				(store.changeProblem
+					? `The scans kept before this one could not be compared with it, so nothing is marked new or fixed. ${store.changeProblem}`
+					: "This is the first scan kept. The next scan shows what is new and what was fixed since this one."),
+		),
 		fixedShown.length > 0
 			? h(
 					"ul",

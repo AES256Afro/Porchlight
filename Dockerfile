@@ -62,4 +62,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 # Listening beyond loopback needs PORCHLIGHT_UI_KEY; without it the server refuses to start.
 ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["node", "cli/bin/porchlight.js", "ui", "--host", "0.0.0.0", "--port", "4747", "--root", "/repos", "--report", "/data/repo-scan.json"]
+CMD ["node", "cli/bin/porchlight.js", "ui", "--host", "0.0.0.0", "--port", "4747", "--root", "/repos", "--report", "/data/repo-scan.json", "--data", "/data"]

@@ -17,6 +17,7 @@ import { lstat, mkdir, open, readFile, realpath, rename, rm, stat } from "node:f
 import { randomBytes } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { writePrivate } from "../investigate/ownership.ts";
+import { readPrivateJson, UnreadableFileError } from "../private-files.ts";
 
 /** The one folder Porchlight writes in, inside the folder the owner chose. */
 export const OWN_FOLDER = "Porchlight";
@@ -426,7 +427,10 @@ export class ProjectStore {
 
 	private change<T>(edit: (file: ProjectsFile) => T): Promise<T> {
 		const next = this.chain.then(async () => {
-			const file = await this.read();
+			// A list that is there but cannot be read is never written over with an empty one (B25).
+			const read = await readPrivateJson(this.path);
+			if (read.state === "unreadable") throw new ProjectError(new UnreadableFileError("Your project list", read.reason).message);
+			const file = read.state === "read" ? parseProjects(read.value) : { version: 1 as const, current: null, projects: [] };
 			const result = edit(file);
 			await writePrivate(this.path, `${JSON.stringify(file, null, "\t")}\n`);
 			return result;

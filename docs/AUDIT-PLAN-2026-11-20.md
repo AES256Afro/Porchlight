@@ -615,6 +615,28 @@ S9, S10, S11, S12, S13, S14, S15, S16, S17, S18, S19 (the flags and the preview 
 
 ### M10: Saves and jobs that hold. Size: M
 
+**Status, 2026-11-20: built.** Tests in `cli/test/private-files.test.ts`, `cli/test/conventions.test.ts`, the new tests in `cli/test/ui-server.test.ts` and `cli/test/parsers.test.ts`.
+
+- **One private-file module** (`cli/src/private-files.ts`):
+  - `writePrivate` and `writePrivateJson` use a random temporary name;
+  - `readPrivateJson` answers missing, read or unreadable;
+  - `updatePrivateJson` and `oneAtATime` make one change at a time per file.
+  - Every writer that used `${pid}.tmp` now goes through it, and a static test refuses a new one (B21).
+- **Unreadable files are never written over.** This covers the history index (never pruned), notes, model settings, investigation domains, the project list and the Cloudflare change log. The page shows why where a page reads them: notes beside the report, history as "could not be compared" (B25, B68).
+- **Notes keep entries this version does not understand** (B26).
+- **A secret's matches are put in a fixed order,** so its finding names the oldest commit every time (B20). `carryNotes` moves a note to its secret's new identity once, only where that is unambiguous.
+- **History compares only scans of the same folders** (B27).
+- **Every background job marks itself running before its first await,** and puts its state back if it cannot start: scan, rescan, analysis, mural, Cloudflare audit, GitHub fetch. An investigation is refused while another is starting (B24, S24).
+- **The route table declares who may change things.** The model's routes are "owner", never a tailnet device. Downloads, access and the monitor are "here" (S20).
+- **Access changes are saved before they take effect,** one at a time, with the listener (S25).
+- **Settings, keys and tokens live in the data folder** (`--data`, default `~/.porchlight`, `/data` in the image), and files an earlier version kept beside the report are moved there (S34).
+- **The server stops when the Mac app that started it goes away,** through its stdin (B53). The app reloads a page whose web process stopped (B71).
+- **Not done:**
+  - the full observation type through collectors and exports (`readPrivateJson` and the static test are its first part);
+  - a version number in settings files;
+  - double-start tests for the analysis and an investigation (the code paths match the tested scan's);
+  - the Mac app stopping a server left by an older build.
+
 B20, B21, B24, B25, B26 (the rest of it), B27, B53, B68, B70, B71, S20, S24, S25, S34.
 
 - **One observation type** (see "Why invariant 5 is ended structurally too"): readers, `latestChange`, collectors and exports pass `{ observed, value | reason }`, and a static test refuses new silent fallbacks in readers.

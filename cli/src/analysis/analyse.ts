@@ -1,11 +1,11 @@
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
 import { chat, type AssistantConfig, type ChatOptions } from "../assist/ollama.ts";
 import { analysisPrompt } from "../assist/prompts.ts";
 import { repoName } from "../repos/report.ts";
 import { severityRank, type Finding, type RepoResult, type ScanReport, type Severity } from "../repos/types.ts";
 import { suggestionsFor } from "../roadmap/repos.ts";
 import { gatherEvidence, packageName, type Evidence } from "./evidence.ts";
+import { writePrivateJson } from "../private-files.ts";
 
 /**
  * The model as a step of the analysis: for each finding it is given the evidence Porchlight gathered
@@ -136,9 +136,5 @@ export async function readAnalysis(path: string, report: ScanReport): Promise<An
 
 /** Judgements name files and say what is wrong with them, so the file is readable only by its owner. */
 export async function saveAnalysis(path: string, file: AnalysisFile): Promise<void> {
-	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-	const temporary = `${path}.${process.pid}.tmp`;
-	await writeFile(temporary, `${JSON.stringify(file, null, "\t")}\n`, { mode: 0o600 });
-	await chmod(temporary, 0o600);
-	await rename(temporary, path);
+	await writePrivateJson(path, file);
 }

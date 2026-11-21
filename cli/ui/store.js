@@ -58,6 +58,10 @@ export const store = {
 	/** The owner's status and note for findings, by `findingKey`. They carry over to later scans. */
 	/** @type {Record<string, import("./tracking.js").FindingNote>} */
 	findingNotes: {},
+	/** Why the owner's notes could not be read, when they could not: the page says so rather than show none. */
+	notesProblem: "",
+	/** Why the scan before the latest could not be compared with it, when it could not. */
+	changeProblem: "",
 	/** The latest scan against the one before it; null until there are two. */
 	/** @type {{ previousScannedAt: string, newCount: number, fixedCount: number, uncheckedCount?: number, newKeys: string[], fixed: { repo: string, severity: import("./filter.js").Severity, kind: string, ruleId: string, title: string, location: string, detail: string }[] } | null} */
 	change: null,
@@ -204,15 +208,18 @@ export async function loadReport() {
 	store.notes = data.notes;
 	store.settingNotes = data.settingNotes ?? [];
 	store.findingNotes = data.findingNotes ?? {};
+	store.notesProblem = typeof data.notesProblem === "string" ? data.notesProblem : "";
 	rows = null;
 	// History is extra: a page still shows the scan if it cannot be read.
 	try {
 		const history = await api("GET", "/repos/history");
 		store.change = history.change ?? null;
 		store.scans = Array.isArray(history.scans) ? history.scans : [];
-	} catch {
+		store.changeProblem = typeof history.changeProblem === "string" ? history.changeProblem : typeof history.problem === "string" ? history.problem : "";
+	} catch (err) {
 		store.change = null;
 		store.scans = [];
+		store.changeProblem = err instanceof Error ? err.message : String(err);
 	}
 	newKeys = new Set(store.change?.newKeys ?? []);
 	emit("report");

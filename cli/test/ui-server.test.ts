@@ -1651,6 +1651,21 @@ test("other devices get in only on the tailnet address, only with the access key
 	assert.equal((await send(device(key), "POST", "/api/monitor", { ...viaName, body: { address: "https://monitor.example", token: ADMIN_TOKEN } })).status, 403);
 	assert.equal((await send(device(key), "POST", "/api/monitor/remove", viaName)).status, 403);
 
+	// Nor choose where the owner's data goes, delete the saved keys, or have this computer probe an address (S20).
+	const modelFile = join(server.dir, "state", "model-settings.json");
+	await writeFile(modelFile, `${JSON.stringify({ choice: "off", keys: { anthropic: "kept-key-0123456789" } })}\n`);
+	for (const [path, body] of [
+		["/api/model", { choice: "anthropic" }],
+		["/api/model/startup", {}],
+		["/api/model/test", { choice: "compatible", url: "http://127.0.0.1:8080/v1" }],
+		["/api/model/models", { choice: "compatible", url: "http://127.0.0.1:8080/v1" }],
+		["/api/model/local/pull", { name: "llama3" }],
+	] as const) {
+		assert.equal((await send(device(key), "POST", path, { ...viaName, body })).status, 403, path);
+	}
+	assert.match(await readFile(modelFile, "utf8"), /kept-key-0123456789/, "the saved settings and keys are as they were");
+	assert.equal((await send(device(key), "GET", "/api/model", viaName)).status, 200, "a device can still see which model is used");
+
 	// A new key turns the old one away.
 	const renewed = await send(server, "POST", "/api/access/key");
 	const newKey = new URL(renewed.json.link).hash.slice("#k=".length);
@@ -2113,4 +2128,54 @@ test("a Deep scan starts the model's analysis when it finishes, and a hosted mod
 	await untilScan(hosted, "done");
 	for (let attempt = 0; attempt < 200 && judged.length === before; attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
 	assert.ok(judged.length > before, "the analysis started with the hosted model");
+});
+
+test("settings and keys are kept in the data folder, never beside a report kept elsewhere, and earlier ones are moved there (S34)", async (t) => {
+	const dir = await tempDir();
+	const reports = join(dir, "project", "reports");
+	const data = join(dir, "data");
+	// What an earlier version kept beside the report.
+	await makeTree(reports, {
+		"model-settings.json": `${JSON.stringify({ choice: "off", keys: { anthropic: "moved-key-0123456789" } })}\n`,
+		"access.json": `${JSON.stringify({ enabled: false, key: "k".repeat(43) })}\n`,
+		"finding-notes.json": "{}\n",
+	});
+	const server = await startUiServer({ port: 0, reportPath: join(reports, "repo-scan.json"), dataDir: data, defaultRoot: dir, monitor: null });
+	t.after(() => server.close());
+
+	assert.match(await readFile(join(data, "model-settings.json"), "utf8"), /moved-key-0123456789/, "an earlier key keeps working, from the data folder");
+	assert.ok(!(await readdir(reports)).includes("model-settings.json"), "and no longer sits beside the report");
+	assert.ok((await readdir(reports)).includes("finding-notes.json"), "the report's own notes stay beside it");
+
+	const saved = await send(server as UiServer & { dir: string }, "POST", "/api/view", { body: { view: "#/findings" } });
+	assert.equal(saved.status, 200);
+	assert.ok((await readdir(data)).includes("ui-view.json"));
+	assert.ok(!(await readdir(reports)).some((name) => /settings|access|view/.test(name)), "nothing of the kind is written beside the report");
+});
+
+test("a scan started twice at once runs once: the second request is refused, not started too (B24)", async (t) => {
+	let scans = 0;
+	let finish!: () => void;
+	const held = new Promise<void>((resolve) => (finish = resolve));
+	const server = await start(t, { scan: async (options) => (scans++, await held, sampleReport(options.root)) });
+	const replies = await Promise.all([1, 2, 3].map(() => send(server, "POST", "/api/repos/scan", { body: { root: server.dir } })));
+	assert.deepEqual(replies.map((reply) => reply.status).sort(), [202, 409, 409]);
+	finish();
+	for (let n = 0; n < 50 && (await send(server, "GET", "/api/repos/scan")).json.scan.state === "running"; n++) await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.equal(scans, 1, "one scan ran");
+	// And a rescan of a repository the report does not have puts the state back as it was.
+	const missing = await send(server, "POST", "/api/repos/rescan", { body: { repo: "no-such-repository" } });
+	assert.equal(missing.status, 404);
+	assert.notEqual((await send(server, "GET", "/api/repos/scan")).json.scan.state, "running");
+});
+
+test("turning access on and off many times at once leaves the saved setting and the listener agreeing (S25)", async (t) => {
+	const server = await start(t, { tailnetAddress: () => "127.0.0.1", accessPort: 0 });
+	const replies = await Promise.all(Array.from({ length: 20 }, (_, n) => send(server, "POST", "/api/access", { body: { enabled: n % 3 !== 0 } })));
+	assert.ok(replies.every((reply) => reply.status === 200));
+	const state = (await send(server, "GET", "/api/access")).json;
+	const saved = JSON.parse(await readFile(join(server.dir, "state", "access.json"), "utf8")) as { enabled: boolean };
+	assert.equal(state.enabled, saved.enabled, "what a restart would open is what is open now");
+	assert.equal(state.listening, saved.enabled);
+	await send(server, "POST", "/api/access", { body: { enabled: false } });
 });

@@ -9,8 +9,9 @@
  *
  * Neither changes a finding, a severity, a count, the roadmap, an export or the CLI's exit code.
  */
-import { chmod, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { mkdir, readdir, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { oneAtATime, readPrivateJson, UnreadableFileError, updatePrivateJson, writePrivateJson } from "../private-files.ts";
 import { looksFor } from "../../ui/scan-choices.js";
 import { findingKey, isDay, isStatus, MAX_NOTE, type FindingNote } from "../../ui/tracking.js";
 import { countBySeverity, rank, repoName } from "./report.ts";
@@ -25,6 +26,8 @@ export interface HistoryEntry {
 	file: string;
 	scannedAt: string;
 	root: string;
+	/** Further folders the scan covered (fetched repositories). Missing from entries made before M10. */
+	otherRoots?: string[];
 	repositories: number;
 	findings: number;
 	counts: Record<Severity, number>;
@@ -130,6 +133,17 @@ export function compareScans(previous: ScanReport, current: ScanReport): Compari
 	};
 }
 
+/** Whether two scans covered the same folders, so comparing them says what changed rather than where they looked. */
+function sameFolders(a: { root: string; otherRoots?: string[] }, b: { root: string; otherRoots?: string[] }, known = true): boolean {
+	if (a.root !== b.root) return false;
+	// An entry kept before M10 does not say which further folders it covered: its root decides.
+	if (!known) return true;
+	return [...(a.otherRoots ?? [])].sort().join("\n") === [...(b.otherRoots ?? [])].sort().join("\n");
+}
+
+/** The latest scan against the kept scan before it: none to compare with, one that could not be read, or the comparison. */
+export type LatestChange = { state: "first" } | { state: "unreadable"; reason: string } | { state: "compared"; change: Comparison };
+
 export class History {
 	readonly dir: string;
 	private readonly indexPath: string;
@@ -139,68 +153,94 @@ export class History {
 		this.indexPath = join(this.dir, "index.json");
 	}
 
+	/** The kept scans. An index that is there but cannot be read throws: it is never taken for an empty one (invariant 5). */
 	async list(): Promise<HistoryEntry[]> {
-		try {
-			const entries = JSON.parse(await readFile(this.indexPath, "utf8"));
-			return Array.isArray(entries) ? (entries as HistoryEntry[]).filter((entry) => typeof entry?.file === "string" && typeof entry.scannedAt === "string") : [];
-		} catch {
-			return [];
-		}
+		const read = await readPrivateJson(this.indexPath);
+		if (read.state === "missing") return [];
+		if (read.state === "unreadable" || !Array.isArray(read.value)) throw new UnreadableFileError("The scan history's index", read.state === "unreadable" ? read.reason : "it is not a list");
+		return (read.value as HistoryEntry[]).filter((entry) => typeof entry?.file === "string" && typeof entry.scannedAt === "string");
 	}
 
 	/** A kept scan, by the name in the index only: never a path from a request. */
 	async read(file: string): Promise<ScanReport | null> {
+		const kept = await this.readKept(file);
+		return kept.state === "read" ? (kept.value as ScanReport) : null;
+	}
+
+	private async readKept(file: string): Promise<{ state: "missing" } | { state: "read"; value: unknown } | { state: "unreadable"; reason: string }> {
 		const entries = await this.list();
-		if (!entries.some((entry) => entry.file === file) || !/^scan-[\w.-]+\.json$/.test(file)) return null;
-		try {
-			return JSON.parse(await readFile(join(this.dir, file), "utf8")) as ScanReport;
-		} catch {
-			return null;
-		}
+		if (!entries.some((entry) => entry.file === file) || !/^scan-[\w.-]+\.json$/.test(file)) return { state: "missing" };
+		const read = await readPrivateJson(join(this.dir, file));
+		if (read.state === "read" && !Array.isArray((read.value as ScanReport | null)?.repos)) return { state: "unreadable", reason: "it is not a scan report" };
+		return read;
 	}
 
 	/**
 	 * Keeps a finished scan, and counts what changed since the one before it. A scan already kept (the
 	 * same `scannedAt`) is not kept twice.
 	 */
-	async add(report: ScanReport): Promise<HistoryEntry> {
-		const entries = await this.list();
-		const existing = entries.find((entry) => entry.scannedAt === report.scannedAt);
-		if (existing) return existing;
-		await mkdir(this.dir, { recursive: true, mode: 0o700 });
-		const file = `scan-${report.scannedAt.replace(/[^\dT]/g, "")}.json`;
-		await writePrivate(join(this.dir, file), report);
-		const previous = entries.at(-1) ? await this.read(entries.at(-1)!.file) : null;
-		const findings = report.repos.flatMap((repo) => repo.findings);
-		const entry: HistoryEntry = {
-			file,
-			scannedAt: report.scannedAt,
-			root: report.root,
-			repositories: report.repos.length,
-			findings: findings.length,
-			counts: countBySeverity(findings),
-		};
-		if (previous) {
-			const change = compareScans(previous, report);
-			entry.newCount = change.newCount;
-			entry.fixedCount = change.fixedCount;
-		}
-		const kept = [...entries, entry];
-		const removed = kept.splice(0, Math.max(0, kept.length - HISTORY_KEEP));
-		await writePrivate(this.indexPath, kept);
-		for (const old of removed) await rm(join(this.dir, old.file), { force: true });
-		await this.prune(kept);
-		return entry;
+	add(report: ScanReport): Promise<HistoryEntry> {
+		// One at a time: two scans finishing together each add their entry, and neither is lost.
+		return oneAtATime(this.indexPath, async () => {
+			// An index that cannot be read throws here, before anything is written or pruned (B25).
+			const entries = await this.list();
+			const existing = entries.find((entry) => entry.scannedAt === report.scannedAt);
+			if (existing) return existing;
+			await mkdir(this.dir, { recursive: true, mode: 0o700 });
+			const file = `scan-${report.scannedAt.replace(/[^\dT]/g, "")}.json`;
+			await writePrivateJson(join(this.dir, file), report);
+			const findings = report.repos.flatMap((repo) => repo.findings);
+			const entry: HistoryEntry = {
+				file,
+				scannedAt: report.scannedAt,
+				root: report.root,
+				...(report.otherRoots?.length ? { otherRoots: report.otherRoots } : {}),
+				repositories: report.repos.length,
+				findings: findings.length,
+				counts: countBySeverity(findings),
+			};
+			const change = await this.compareWith(entries, report);
+			if (change.state === "compared") {
+				entry.newCount = change.change.newCount;
+				entry.fixedCount = change.change.fixedCount;
+			}
+			const kept = [...entries, entry];
+			const removed = kept.splice(0, Math.max(0, kept.length - HISTORY_KEEP));
+			await writePrivateJson(this.indexPath, kept);
+			for (const old of removed) await rm(join(this.dir, old.file), { force: true });
+			await this.prune(kept);
+			return entry;
+		});
 	}
 
-	/** The latest scan against the kept scan before it, or null when there is none. */
+	/** The latest scan against the kept scan before it, or null when there is none or it could not be read. */
 	async latestChange(current: ScanReport): Promise<Comparison | null> {
-		const entries = await this.list();
+		const change = await this.compare(current);
+		return change.state === "compared" ? change.change : null;
+	}
+
+	/**
+	 * The latest scan against the kept scan of the same folders before it (B27). Scans of another folder
+	 * are passed over: their repositories share names with these, so comparing them would count every
+	 * difference as new or fixed. A kept scan that cannot be read is said, never taken for none (B68).
+	 */
+	async compare(current: ScanReport): Promise<LatestChange> {
+		let entries: HistoryEntry[];
+		try {
+			entries = await this.list();
+		} catch (err) {
+			return { state: "unreadable", reason: err instanceof Error ? err.message : String(err) };
+		}
 		const index = entries.findIndex((entry) => entry.scannedAt === current.scannedAt);
-		const before = index > 0 ? entries[index - 1] : index === -1 ? entries.at(-1) : undefined;
-		if (!before || before.scannedAt === current.scannedAt) return null;
-		const previous = await this.read(before.file);
-		return previous ? compareScans(previous, current) : null;
+		return this.compareWith(index === -1 ? entries : entries.slice(0, index), current);
+	}
+
+	private async compareWith(earlier: HistoryEntry[], current: ScanReport): Promise<LatestChange> {
+		const before = [...earlier].reverse().find((entry) => entry.scannedAt !== current.scannedAt && sameFolders(entry, current, entry.otherRoots !== undefined || !current.otherRoots?.length));
+		if (!before) return { state: "first" };
+		const kept = await this.readKept(before.file);
+		if (kept.state !== "read") return { state: "unreadable", reason: `The scan of ${before.scannedAt} ${kept.state === "missing" ? "is no longer kept" : `could not be read (${kept.reason})`}` };
+		return { state: "compared", change: compareScans(kept.value as ScanReport, current) };
 	}
 
 	/** Removes kept files the index no longer names, such as ones left by a crash. */
@@ -214,20 +254,75 @@ export class History {
 
 export type NotesFile = Record<string, FindingNote>;
 
+const NOTES = "Your finding notes";
+
+/** The notes this version understands, out of the file's value. Entries it does not understand are left out here and kept in the file. */
+function notesOf(parsed: unknown): NotesFile {
+	if (typeof parsed !== "object" || parsed === null) return {};
+	const notes: NotesFile = {};
+	for (const [key, value] of Object.entries(parsed as Record<string, Partial<FindingNote>>)) {
+		if (isStatus(value?.status) && typeof value.note === "string") {
+			notes[key] = { status: value.status, note: value.note.slice(0, MAX_NOTE), updatedAt: String(value.updatedAt ?? ""), ...(value.status === "accepted" && isDay(value.until) ? { until: value.until } : {}) };
+		}
+	}
+	return notes;
+}
+
+/** The owner's notes. A file that is there but cannot be read throws: it is never taken for none (B25). */
 export async function readNotes(path: string): Promise<NotesFile> {
+	const read = await readPrivateJson(path);
+	if (read.state === "missing") return {};
+	if (read.state === "unreadable") throw new UnreadableFileError(NOTES, read.reason);
+	return notesOf(read.value);
+}
+
+/** The notes, or none with the reason they could not be read, for a page that must still show the report. */
+export async function notesForPage(path: string): Promise<{ notes: NotesFile; problem?: string }> {
 	try {
-		const parsed = JSON.parse(await readFile(path, "utf8"));
-		if (typeof parsed !== "object" || parsed === null) return {};
-		const notes: NotesFile = {};
-		for (const [key, value] of Object.entries(parsed as Record<string, Partial<FindingNote>>)) {
-			if (isStatus(value?.status) && typeof value.note === "string") {
-				notes[key] = { status: value.status, note: value.note.slice(0, MAX_NOTE), updatedAt: String(value.updatedAt ?? ""), ...(value.status === "accepted" && isDay(value.until) ? { until: value.until } : {}) };
+		return { notes: await readNotes(path) };
+	} catch (err) {
+		return { notes: {}, problem: err instanceof Error ? err.message : String(err) };
+	}
+}
+
+/** Identifies a secret apart from the commit its finding names: the repository, the rule and the place. */
+function placeOf(key: string): string {
+	return key.split("\n").slice(0, 3).join("\n");
+}
+
+/**
+ * Moves each note on a secret to that secret's finding when its key no longer matches one: which commit
+ * a secret's finding names changed once, when its matches began to be put in a fixed order (B20). Only
+ * where one note and one secret share the repository, the rule and the place, and that secret has no
+ * note of its own, so no note ever moves to another finding. Returns how many moved.
+ */
+export async function carryNotes(path: string, report: ScanReport): Promise<number> {
+	let moved = 0;
+	await updatePrivateJson(path, NOTES, (current) => {
+		if (typeof current !== "object" || current === null) return undefined;
+		const all = { ...(current as Record<string, unknown>) };
+		const secrets = new Map<string, string[]>();
+		for (const repo of report.repos) {
+			const name = repoName(report, repo);
+			for (const finding of repo.findings) {
+				if (finding.kind !== "secret") continue;
+				const key = findingKey(name, finding);
+				secrets.set(placeOf(key), [...(secrets.get(placeOf(key)) ?? []), key]);
 			}
 		}
-		return notes;
-	} catch {
-		return {};
-	}
+		const currentKeys = new Set([...secrets.values()].flat());
+		const orphans = new Map<string, string[]>();
+		for (const key of Object.keys(all)) if (!currentKeys.has(key) && secrets.has(placeOf(key))) orphans.set(placeOf(key), [...(orphans.get(placeOf(key)) ?? []), key]);
+		for (const [place, keys] of orphans) {
+			const targets = secrets.get(place) ?? [];
+			if (keys.length !== 1 || targets.length !== 1 || all[targets[0]!] !== undefined) continue;
+			all[targets[0]!] = all[keys[0]!];
+			delete all[keys[0]!];
+			moved++;
+		}
+		return moved > 0 ? all : undefined;
+	});
+	return moved;
 }
 
 /**
@@ -235,20 +330,19 @@ export async function readNotes(path: string): Promise<NotesFile> {
  * holds only what the owner said.
  */
 export async function setNote(path: string, key: string, status: FindingNote["status"], note: string, now: Date = new Date(), until?: string): Promise<FindingNote | null> {
-	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-	const notes = await readNotes(path);
 	const trimmed = note.trim();
-	if (status === "open" && trimmed === "") delete notes[key];
-	// An end date belongs to an accepted risk alone; any other status drops it.
-	else notes[key] = { status, note: trimmed, updatedAt: now.toISOString(), ...(status === "accepted" && until ? { until } : {}) };
-	await writePrivate(path, notes);
-	return notes[key] ?? null;
-}
-
-/** Holds what the owner wrote about their own findings, so it is readable only by them, like the report. */
-async function writePrivate(path: string, value: unknown): Promise<void> {
-	const temporary = `${path}.${process.pid}.tmp`;
-	await writeFile(temporary, `${JSON.stringify(value, null, "\t")}\n`, { mode: 0o600 });
-	await chmod(temporary, 0o600);
-	await rename(temporary, path);
+	let saved: FindingNote | null = null;
+	// One change at a time, on the file as it is: every other entry is kept as written, including any
+	// an older or newer Porchlight wrote that this one does not understand (B21, B26).
+	await updatePrivateJson(path, NOTES, (current) => {
+		const all = typeof current === "object" && current !== null && !Array.isArray(current) ? { ...(current as Record<string, unknown>) } : {};
+		if (status === "open" && trimmed === "") delete all[key];
+		// An end date belongs to an accepted risk alone; any other status drops it.
+		else {
+			saved = { status, note: trimmed, updatedAt: now.toISOString(), ...(status === "accepted" && until ? { until } : {}) };
+			all[key] = saved;
+		}
+		return all;
+	});
+	return saved;
 }

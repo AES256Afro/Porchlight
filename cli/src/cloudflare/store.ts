@@ -11,6 +11,7 @@ import { readFile, rm } from "node:fs/promises";
 import { writePrivate } from "../investigate/ownership.ts";
 import { tokenShapeProblem } from "./client.ts";
 import type { CfReport } from "./types.ts";
+import { updatePrivateJson } from "../private-files.ts";
 
 export interface SavedToken {
 	token: string;
@@ -78,8 +79,16 @@ export async function readChanges(path: string): Promise<AppliedChange[]> {
 	}
 }
 
+/**
+ * Adds a change to the log, one at a time (a batch and a single approval may finish together, CF-S2). A log
+ * that is there but cannot be read is not written over: every change sent must stay on record.
+ */
 export async function recordChange(path: string, change: AppliedChange): Promise<AppliedChange[]> {
-	const changes = [...(await readChanges(path)), change].slice(-MAX_CHANGES);
-	await writePrivate(path, `${JSON.stringify({ changes }, null, "\t")}\n`);
+	let changes: AppliedChange[] = [];
+	await updatePrivateJson(path, "The log of Cloudflare changes", (current) => {
+		const saved = (current as { changes?: unknown } | undefined)?.changes;
+		changes = [...(Array.isArray(saved) ? (saved as AppliedChange[]) : []), change].slice(-MAX_CHANGES);
+		return { changes };
+	});
 	return changes;
 }

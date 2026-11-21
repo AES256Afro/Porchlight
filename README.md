@@ -264,7 +264,7 @@ It prints a link. Open it to get both tools in the browser:
 - **Discussions**: every answer a model gave on these pages, with your follow-up questions; see [Discussions](#discussions).
 - **Project** (above the sections): which project folder saved exports, discussions and the log go to; see [Projects](#projects).
 - **Domains**: add a website by its domain name, prove it is yours with one DNS record, scan, and read what changed, with a suggested fix for each finding. Until the monitor is connected the page walks through setting it up, with each command to copy. Connect it under **Settings → Monitor**: paste the monitor's address and admin token, Porchlight asks the monitor whether they work, and the page becomes your list of websites with no restart. The two can also be given at start-up as `PORCHLIGHT_MONITOR_URL` and `PORCHLIGHT_ADMIN_TOKEN` (see [Monitor domains](#monitor-domains)); a connection saved in Settings comes first.
-- **Settings**: add project folders under **Projects** (see [Projects](#projects)), pick one of twelve looks under **Appearance** (Standard, Light, Severity dashboard, Top tabs, Split view, Roadmap first, Terminal, Native Mac, Repository cards, Model plan view, High contrast, Compact), and where a model's answers appear: in a panel on the right (the default), below what you asked about, or in a drawer at the bottom. Both are saved beside the report (`ui-settings.json`) and used every time Porchlight opens. It also lists what Porchlight is connected to.
+- **Settings**: add project folders under **Projects** (see [Projects](#projects)), pick one of twelve looks under **Appearance** (Standard, Light, Severity dashboard, Top tabs, Split view, Roadmap first, Terminal, Native Mac, Repository cards, Model plan view, High contrast, Compact), and where a model's answers appear: in a panel on the right (the default), below what you asked about, or in a drawer at the bottom. Both are saved in the data folder (`ui-settings.json`) and used every time Porchlight opens. It also lists what Porchlight is connected to.
 
 Every page with findings has an **Export** button; see [Export a repair roadmap](#export-a-repair-roadmap). Beside it, **Send to model** sends the roadmap or the findings to a model you choose; see [Send to a model](#send-to-a-model).
 
@@ -276,7 +276,8 @@ With a model connected (Settings → Model), findings, the roadmap and domains a
 | --- | --- |
 | `--port <n>` | Port to listen on (default 4747; on this machine, the next free port if another copy already has it) |
 | `--host <address>` | Address to listen on (default 127.0.0.1). Any other address needs `PORCHLIGHT_UI_KEY`; see [Run on BoxPilot](#run-on-boxpilot) |
-| `--report <file>` | Scan report to show and update (default `~/.porchlight/repo-scan.json`) |
+| `--report <file>` | Scan report to show and update (default `repo-scan.json` in the data folder). Its history, your notes on findings and the model's judgements are kept beside it |
+| `--data <folder>` | Where settings, keys, tokens, fetched repositories, audits and discussions are kept (default `~/.porchlight`; `/data` in the container). An earlier version kept them beside the report; they are moved here when Porchlight starts, so a report kept in a project's folder never draws keys into it |
 | `--root <dir>` | Folder offered in the scan form (default: the current folder) |
 
 To browse a report made on the command line with `--json`, pass it with `--report`.
@@ -329,7 +330,7 @@ Porchlight can also be opened from your other devices, such as a Windows PC or a
 How it is protected:
 
 - Porchlight listens on that computer's Tailscale address only, on port 4747. Your Wi-Fi network and the internet get no answer.
-- Other devices need the access key: 43 random characters, kept in `access.json` beside the report and readable only by you. It is a different key from the one that computer's own page uses.
+- Other devices need the access key: 43 random characters, kept in `access.json` in the data folder and readable only by you. It is a different key from the one that computer's own page uses.
 - Only the page on that computer can turn access on or off, see the key, or **Make a new key**, which signs every device out.
 - Tailscale encrypts the connection. If other people share your tailnet, limit who can reach that computer with Tailscale's access controls.
 - It works while Porchlight is running there. Stopping `porchlight ui`, or closing the Mac app's window, stops it for every device. If Tailscale isn't connected yet, Porchlight keeps checking every 30 seconds.
@@ -566,7 +567,7 @@ A hosted provider is sent what the pages show, plus the import lines above, and 
 
 ## Fetch repositories from GitHub
 
-A copy of Porchlight on a server can only scan repositories that are on that server. The Overview page's **Get repositories from GitHub** section puts them there: type a GitHub account name to list its public repositories, tick the ones to check, and choose Fetch. They are copied beside the report (`/data/github` in the container) and scanned along with the folder; in a report they are named `github/<owner>/<repository>`.
+A copy of Porchlight on a server can only scan repositories that are on that server. The Overview page's **Get repositories from GitHub** section puts them there: type a GitHub account name to list its public repositories, tick the ones to check, and choose Fetch. They are copied into the data folder (`/data/github` in the container) and scanned along with the folder; in a report they are named `github/<owner>/<repository>`.
 
 Private repositories need a token. On GitHub, make a fine-grained personal access token with access to the repositories you want checked and **Contents: Read-only**, then give it to Porchlight as `PORCHLIGHT_GITHUB_TOKEN` (in BoxPilot: Apps → Porchlight → Settings → GitHub token). With a token set, leaving the account name empty lists everything the token can read.
 
@@ -696,7 +697,7 @@ Open a finding to give it a status (Open, In progress, Fixed, Accepted risk, Fal
 | --- | --- | --- |
 | TXT | `_porchlight-challenge.example.com` | `porchlight-verify=<token>` |
 
-It is the same record the monitor uses. If the monitor is set up and already watches the domain, its token is taken, so one record serves both; otherwise the token is made here. Tokens are kept in `investigate-domains.json` beside the report, readable only by you. They are not secret, since anyone can read the record, but they are never sent to a model. **Check DNS record** looks it up; DNS changes can take a few minutes to appear.
+It is the same record the monitor uses. If the monitor is set up and already watches the domain, its token is taken, so one record serves both; otherwise the token is made here. Tokens are kept in `investigate-domains.json` in the data folder, readable only by you. They are not secret, since anyone can read the record, but they are never sent to a model. **Check DNS record** looks it up; DNS changes can take a few minutes to appear.
 
 The record is looked up from this computer over DNS-over-HTTPS (Cloudflare's resolver), so investigating works whether or not the monitor is deployed. It is checked when a run starts and again before every action. If it is gone, or the lookup fails, the run stops and nothing more is sent: a lookup that could not be made never counts as proof.
 
@@ -726,7 +727,7 @@ How it is kept safe:
 - **Findings need evidence.** Every action keeps its full request and response as evidence. The model may report a finding only by citing evidence ids from this run; one that cites none, or one that does not exist, is discarded and counted.
 - **Advice, not results.** Findings are labelled as the model's judgement, with the model's name. They never change a scan's severities, counts, roadmap or exports. You can **Accept** or **Dismiss** each one; that is recorded with the run and in its export, and changes nothing else.
 
-Runs, with every step, piece of evidence and finding, are kept in `investigations/` beside the report (the last 50), readable only by you. **Export as Markdown** or **Export as JSON** saves one; Set-Cookie values are left out of both, and everything taken from your site or the model is escaped for the format.
+Runs, with every step, piece of evidence and finding, are kept in `investigations/` in the data folder (the last 50), readable only by you. **Export as Markdown** or **Export as JSON** saves one; Set-Cookie values are left out of both, and everything taken from your site or the model is escaped for the format.
 
 Investigations are run from the page on the computer that runs Porchlight. Opened from another device, the page shows them and its **Stop** button works, but nothing can be added, started or approved there, neither one request nor a whole run.
 
@@ -769,7 +770,7 @@ porchlight cloudflare audit        # add --json for JSON, --no-lookups to skip D
 ```
 
 1. Make an API token at Cloudflare → My Profile → API Tokens with **Read** permissions only. **Settings → Cloudflare** opens Cloudflare's "Create token" page with most of them ticked, and lists them all: Zone Read, Zone Settings Read, DNS Read, SSL and Certificates Read, Zone WAF Read, Bot Management Read (zone); Account Settings Read, Account API Tokens Read (account); API Tokens Read (user).
-2. Paste it in Settings → Cloudflare. Porchlight checks it with Cloudflare and keeps it in `cloudflare-settings.json` beside the report, readable only by you. In a terminal or as a service, set `PORCHLIGHT_CLOUDFLARE_TOKEN` instead (in BoxPilot: Apps → Porchlight → Settings → Cloudflare API token). As a service the audit only reads: a change can be approved only on the page of a computer that runs Porchlight itself.
+2. Paste it in Settings → Cloudflare. Porchlight checks it with Cloudflare and keeps it in `cloudflare-settings.json` in the data folder, readable only by you. In a terminal or as a service, set `PORCHLIGHT_CLOUDFLARE_TOKEN` instead (in BoxPilot: Apps → Porchlight → Settings → Cloudflare API token). As a service the audit only reads: a change can be approved only on the page of a computer that runs Porchlight itself.
 3. Choose **Audit my account**.
 
 Each domain is listed with its plan and its problems, worst first, each with why it matters, the fix (with links into Cloudflare's dashboard) and the API call that makes it. The rules, their severities and their sources are in [docs/CLOUDFLARE-AUDIT.md](docs/CLOUDFLARE-AUDIT.md). In short:
@@ -877,7 +878,7 @@ When you update Porchlight, run the `migrations apply` command again before `cf 
 
 To receive alerts, add `ALERT_WEBHOOK_URL=https://...` to `.secrets.production` before deploying. A Slack or Discord incoming webhook, or an ntfy topic on ntfy.sh, gets that service's own format; any other address gets JSON with a `text` field holding the summary, plus the structured report. To choose the format yourself (an ntfy server of your own, say), add `ALERT_FORMAT=slack`, `discord`, `ntfy` or `json`. Hosts, DNS values and titles are sent as text: Slack and Discord markup and mentions in them do nothing, and ntfy gets plain text. A new high finding, failing scans or a lost ownership record is sent as urgent where the service has a priority (ntfy). Without a webhook, alerts go to the Worker's log.
 
-In the interface, paste the URL `cf deploy` prints and the token under **Settings → Monitor**. They are kept in `monitor-settings.json` beside the report, readable only by you; the token is sent only to that address and never back to the page. From another device, or when Porchlight runs as a service, the page cannot change them.
+In the interface, paste the URL `cf deploy` prints and the token under **Settings → Monitor**. They are kept in `monitor-settings.json` in the data folder, readable only by you; the token is sent only to that address and never back to the page. From another device, or when Porchlight runs as a service, the page cannot change them.
 
 Each domain on the Cloudflare page has **Watch in Domains**, which adds it to the monitor's list, and **Investigate**, which adds it to the domains a model can investigate. Either only adds the name: proving ownership and starting anything happen on that page.
 

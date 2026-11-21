@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { assistantConfig, isHosted } from "./assist/ollama.ts";
 import { callMonitor, monitorConfig } from "./monitor/client.ts";
@@ -328,6 +328,21 @@ async function deliver(file: ExportFile, out: string | undefined): Promise<numbe
 }
 
 /** Starts the web interface. The process then stays up, serving it, until interrupted. */
+/**
+ * Started by the Mac app, the server stops when the app goes away, however it goes: the app holds the
+ * other end of this process's input open and never writes to it, and the system closes it when the app
+ * quits, crashes or is forced to quit. Without this, a server outlives a crashed app, keeps its port and
+ * any tailnet listener, and the next copy of the app cannot turn that off (B53). It stops as on SIGTERM,
+ * so temporary copies are removed first.
+ */
+function stopWithStdin(env: NodeJS.ProcessEnv): void {
+	if (env.PORCHLIGHT_STOP_WITH_STDIN !== "1") return;
+	const stop = () => process.kill(process.pid, "SIGTERM");
+	process.stdin.on("end", stop);
+	process.stdin.on("error", stop);
+	process.stdin.resume();
+}
+
 async function ui(args: string[]): Promise<number> {
 	const { values } = parseArgs({
 		args,
@@ -335,11 +350,13 @@ async function ui(args: string[]): Promise<number> {
 			host: { type: "string", default: "127.0.0.1" },
 			port: { type: "string" },
 			report: { type: "string" },
+			data: { type: "string" },
 			root: { type: "string", default: "." },
 		},
 	});
 	const port = Number.parseInt(values.port ?? String(DEFAULT_UI_PORT), 10);
 	if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error("--port must be a port number");
+	stopWithStdin(process.env);
 	// A port the user asked for is used or refused. The default on this
 	// machine is only a starting point: if another copy already has it, take
 	// the next free one. Elsewhere (a container) the port is part of the
@@ -368,7 +385,10 @@ async function ui(args: string[]): Promise<number> {
 	const githubError = githubToken ? (tokenProblem(githubToken) ?? undefined) : undefined;
 	const cloudflareToken = process.env.PORCHLIGHT_CLOUDFLARE_TOKEN?.trim() || undefined;
 	const cloudflareTokenError = cloudflareToken ? (tokenShapeProblem(cloudflareToken) ?? undefined) : undefined;
-	const reportPath = resolve(values.report ?? join(await dataFolder(homedir()), "repo-scan.json"));
+	// Settings, keys and tokens live in the data folder whatever --report names, so a report kept in a
+	// project's folder never draws keys into it (S34).
+	const dataDir = resolve(values.data ?? (await dataFolder(homedir())));
+	const reportPath = resolve(values.report ?? join(dataDir, "repo-scan.json"));
 	const scanDepth = wholeNumberSetting("PORCHLIGHT_SCAN_DEPTH", 0, 6);
 	const scanEveryHours = wholeNumberSetting("PORCHLIGHT_SCAN_EVERY_HOURS", 1, 720);
 	const notify = notifySetting();
@@ -383,8 +403,9 @@ async function ui(args: string[]): Promise<number> {
 			host: values.host,
 			sessionKey: fixedKey,
 			reportPath,
-			// Fetched repositories are kept beside the report: in a container, on its data volume.
-			github: { dir: join(dirname(reportPath), "github"), ...(githubToken && !githubError ? { token: githubToken } : {}) },
+			dataDir,
+			// Fetched repositories are kept in the data folder: in a container, on its data volume.
+			github: { dir: join(dataDir, "github"), ...(githubToken && !githubError ? { token: githubToken } : {}) },
 			githubError,
 			defaultRoot: resolve(values.root),
 			...(scanDepth !== undefined ? { scanDepth } : {}),

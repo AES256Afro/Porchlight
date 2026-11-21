@@ -6,10 +6,10 @@
  * a local server never sends Claude's key anywhere. A key for an owner's own server is kept with the
  * address it was given for and is only sent there. Keys are never returned to the page.
  */
-import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile, rm } from "node:fs/promises";
 import { MODEL_CHOICES, modelChoice } from "../../ui/models.js";
 import { assistantConfig, HOSTED, type AssistantConfig, type HostedProvider } from "./ollama.ts";
+import { writePrivateJson } from "../private-files.ts";
 
 export interface SavedModel {
 	choice: string;
@@ -57,11 +57,7 @@ export async function readSavedModel(path: string): Promise<SavedModel | null> {
 
 /** Holds API keys, so it is readable only by its owner, like the report. */
 export async function saveModel(path: string, saved: SavedModel): Promise<void> {
-	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-	const temporary = `${path}.${process.pid}.tmp`;
-	await writeFile(temporary, `${JSON.stringify(saved, null, "\t")}\n`, { mode: 0o600 });
-	await chmod(temporary, 0o600);
-	await rename(temporary, path);
+	await writePrivateJson(path, saved);
 }
 
 export async function forgetModel(path: string): Promise<void> {

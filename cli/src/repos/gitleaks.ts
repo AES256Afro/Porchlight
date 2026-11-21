@@ -387,14 +387,38 @@ interface Located {
 	changed?: boolean;
 }
 
+/** Where a finding was made, in the order its rows are taken: history first, then the files as they are, then files git does not track. */
+const SOURCE_ORDER: Record<SecretSource, number> = { history: 0, files: 1, local: 2 };
+
+/**
+ * gitleaks' rows in a fixed order: by where they were found, then the oldest commit first, then commit,
+ * line and column. gitleaks reports matches in a different order on every run, and the first row of a
+ * secret names the finding's commit, so without this one secret could name another commit each scan and
+ * count as new and fixed every time (B20).
+ */
+function inOrder(located: Located[]): Located[] {
+	const field = (row: unknown, name: string): unknown => (typeof row === "object" && row !== null ? (row as Record<string, unknown>)[name] : undefined);
+	const text = (row: unknown, name: string) => String(field(row, name) ?? "");
+	const number = (row: unknown, name: string) => (typeof field(row, name) === "number" ? (field(row, name) as number) : 0);
+	return [...located].sort(
+		(a, b) =>
+			SOURCE_ORDER[a.source] - SOURCE_ORDER[b.source] ||
+			text(a.row, "Date").localeCompare(text(b.row, "Date"), "en") ||
+			text(a.row, "Commit").localeCompare(text(b.row, "Commit"), "en") ||
+			text(a.row, "File").localeCompare(text(b.row, "File"), "en") ||
+			number(a.row, "StartLine") - number(b.row, "StartLine") ||
+			number(a.row, "StartColumn") - number(b.row, "StartColumn"),
+	);
+}
+
 function findingsOf(located: Located[]): Finding[] {
-	// The same secret is reported again by each commit that rewrote its line; keep the first.
-	// Which secret a match is cannot be told by its value (gitleaks runs with --redact), but its
-	// entropy is a property of the value: equal for the same secret, all but never for two others.
-	// It is used only to tell matches apart here and is never kept.
+	// The same secret is reported again by each commit that rewrote its line; keep the first, in a
+	// fixed order (inOrder). Which secret a match is cannot be told by its value (gitleaks runs with
+	// --redact), but its entropy is a property of the value: equal for the same secret, all but never
+	// for two others. It is used only to tell matches apart here and is never kept.
 	const bySecret = new Map<string, Finding>();
 	const details = new Set<string>();
-	for (const { row, source, changed } of located) {
+	for (const { row, source, changed } of inOrder(located)) {
 		if (typeof row !== "object" || row === null) continue;
 		const { RuleID, Description, StartLine, StartColumn, Entropy, Commit, Date: date } = row as Record<string, unknown>;
 		const File = fileOf(row);

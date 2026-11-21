@@ -124,7 +124,11 @@ PORCHLIGHT_CLOUDFLARE_TOKEN. It is sent only to Cloudflare's API.`,
   --port <n>             Port to listen on (default: 4747, or the next free port)
   --host <address>       Address to listen on (default: 127.0.0.1). Any other address needs
                          PORCHLIGHT_UI_KEY, a key of 32 or more characters
-  --report <file>        Scan report to show and update (default: ~/.porchlight/repo-scan.json)
+  --report <file>        Scan report to show and update (default: repo-scan.json in the data folder).
+                         Its history, notes and judgements are kept beside it
+  --data <dir>           Where settings, keys, tokens and fetched repositories are kept
+                         (default: ~/.porchlight). Ones an earlier version kept beside the report
+                         are moved here
   --root <dir>           Folder offered in the scan form (default: the current folder)
 
 Settings it reads when it starts (each can also be chosen in the interface's Settings):

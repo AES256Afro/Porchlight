@@ -10,7 +10,11 @@ import type { Notice } from "./format.ts";
 /** New findings named in a notice before the rest are counted. */
 const NEW_LISTED = 12;
 
-export function scanNotice(report: ScanReport, change: Comparison | null): Notice {
+/**
+ * `unreadable`: why the scan before this one could not be read, when that is so. Nothing is then marked
+ * new or fixed, and a critical or high finding keeps the notice urgent, since it may be new (B68).
+ */
+export function scanNotice(report: ScanReport, change: Comparison | null, unreadable?: string): Notice {
 	const findings = report.repos.flatMap((repo) => repo.findings);
 	const counts = SEVERITIES.map((severity) => [severity, findings.filter((finding) => finding.severity === severity).length] as const);
 	const total = findings.length;
@@ -19,6 +23,7 @@ export function scanNotice(report: ScanReport, change: Comparison | null): Notic
 	}`;
 	const lines = [`By severity: ${counts.map(([severity, count]) => `${count} ${severity}`).join(", ")}.`];
 
+	if (unreadable) lines.push("", `The scan before this one could not be read, so nothing is marked new or fixed: ${unreadable}`);
 	const notes = coverageNotes(report);
 	if (notes.length > 0) lines.push("", "Not covered, so this is not a clean bill of health:", ...notes.map((note) => `  ${note}`));
 
@@ -44,7 +49,7 @@ export function scanNotice(report: ScanReport, change: Comparison | null): Notic
 	return {
 		title,
 		lines,
-		urgent: worstNew.some((severity) => severity === "critical" || severity === "high"),
+		urgent: (unreadable ? findings.map((finding) => finding.severity) : worstNew).some((severity) => severity === "critical" || severity === "high"),
 		payload: { scannedAt: report.scannedAt, findings: Object.fromEntries(counts), ...(change ? { new: change.newCount, fixed: change.fixedCount } : {}) },
 	};
 }

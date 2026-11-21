@@ -71,7 +71,9 @@ if [ -f "$settings" ]; then
 			SECURITYX_[A-Z_]*=*) export "PORCHLIGHT_${line#SECURITYX_}" ;;
 		esac
 	done < "$settings"
-fi'
+fi
+# Set last, so no line in app.env turns it off: the server stops when the app that started it goes away.
+export PORCHLIGHT_STOP_WITH_STDIN=1'
 
 if [ "$mode" = --dmg ]; then
 	# The CLI as committed, with only what it runs: no tests, no development files.
