@@ -51,6 +51,8 @@ import { checkHost, type HostCheckOptions } from "../host/check.ts";
 import type { HostReport } from "../host/types.ts";
 import { CancelledError, run as runCommand } from "../repos/exec.ts";
 import { rescanRepo, scanRepos } from "../repos/scan.ts";
+import { noticeRequest, type Notice, type NotifyFormat } from "../notify/format.ts";
+import { failedScanNotice, scanNotice } from "../notify/scan.ts";
 import { findingKey, isDay, isStatus, MAX_NOTE } from "../../ui/tracking.js";
 import { SEVERITIES, type RepoResult, type ScanReport, type Severity, type ToolName } from "../repos/types.ts";
 import { domainSuggestions, type MonitorReport } from "../roadmap/domains.ts";
@@ -150,6 +152,13 @@ export interface UiOptions {
 	scanEveryHours?: number;
 	/** How often the schedule looks at the clock (default a minute). Tests pass a short one. */
 	scheduleTickMs?: number;
+	/**
+	 * Where the owner is told the outcome of a scan the schedule ran (PORCHLIGHT_NOTIFY_URL), and in
+	 * which format. Counts, titles, repositories and files only. Absent: nobody is told.
+	 */
+	notify?: { url: URL; format: NotifyFormat };
+	/** Compare packages against OSV's databases kept beside the report (`osv-db/`), not by asking api.osv.dev (PORCHLIGHT_OSV_OFFLINE). */
+	osvOffline?: boolean;
 	/** Used for the monitor and the local model alike. Tests pass a fake. */
 	fetchFn?: typeof fetch;
 	/** This machine's Tailscale address, for "Access from other devices". Tests pass their own. */
@@ -343,6 +352,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	const scan = options.scan ?? scanRepos;
 	const rescan = options.rescan ?? rescanRepo;
 	const defaultDepth = options.scanDepth ?? DEFAULT_DEPTH;
+	const osvDatabase = options.osvOffline ? join(dirname(options.reportPath), "osv-db") : undefined;
 	/** Stops the scan that is running, when there is one. */
 	let scanCancel: AbortController | null = null;
 	const github: GithubConfig = options.github ?? { dir: join(dirname(options.reportPath), "github") };
@@ -2237,7 +2247,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	 * Starts a scan of `root` and returns at once: the scan outlives the request, and the page polls
 	 * for progress. Used by the page's button and by the schedule.
 	 */
-	async function beginScan(root: string, depth: number): Promise<ScanStatus> {
+	async function beginScan(root: string, depth: number, scheduled = false): Promise<ScanStatus> {
 		scanMayStart();
 		const also = (await fetchedRepos(github.dir)).length > 0 ? [{ root: github.dir, depth: GITHUB_DEPTH }] : undefined;
 		const cancel = new AbortController();
@@ -2250,6 +2260,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			root,
 			depth,
 			...(also ? { also } : {}),
+			...(osvDatabase ? { osvDatabase } : {}),
 			signal: cancel.signal,
 			onProgress: ({ done, total, path }) => {
 				if (status.state === "running") status = { ...status, done, total, current: nameUnder(root, also?.map((other) => other.root), path) };
@@ -2275,6 +2286,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				await history.add(report).catch((err) => console.error(`porchlight ui: could not keep the scan in history: ${err instanceof Error ? err.message : String(err)}`));
 				status = { state: "done", root, finishedAt: new Date().toISOString() };
 				log(`Scan finished: ${scanCounts(report)}`, project);
+				if (scheduled) await tell(scanNotice(report, await history.latestChange(report).catch(() => null)), project);
 			})
 			.catch((err) => {
 				// A cancelled scan saved nothing: the last report stands, and the page goes back to it.
@@ -2286,11 +2298,25 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				const error = err instanceof Error ? err.message : String(err);
 				status = { state: "failed", root, finishedAt: new Date().toISOString(), error };
 				log(`Scan failed: ${error}`, project);
+				if (scheduled) void tell(failedScanNotice(root, error), project);
 			})
 			.finally(() => {
 				if (scanCancel === cancel) scanCancel = null;
 			});
 		return status;
+	}
+
+	/** Sends a notice where the owner asked, and says in the log whether it went. Never throws. */
+	async function tell(notice: Notice, project: Awaited<ReturnType<typeof projects.current>>): Promise<void> {
+		if (!options.notify) return;
+		const { headers, body } = noticeRequest(options.notify.format, notice);
+		try {
+			const response = await (options.fetchFn ?? fetch)(options.notify.url, { method: "POST", headers, body, redirect: "error", signal: AbortSignal.timeout(15_000) });
+			await response.body?.cancel();
+			log(response.ok ? `Sent the scan's outcome to ${options.notify.url.host}` : `${options.notify.url.host} refused the scan's outcome (HTTP ${response.status})`, project);
+		} catch (err) {
+			log(`Could not send the scan's outcome to ${options.notify.url.host}: ${err instanceof Error ? err.message : String(err)}`, project);
+		}
 	}
 
 	/**
@@ -2310,7 +2336,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		status = { state: "running", root: report.root, startedAt: new Date().toISOString(), done: 0, total: 1, current: name };
 		const project = await projects.current();
 		log(`Scanning ${name} again`, project);
-		void rescan(before.path, { signal: cancel.signal })
+		void rescan(before.path, { signal: cancel.signal, ...(osvDatabase ? { osvDatabase } : {}) })
 			.then(async ({ repo, tools }) => {
 				if (cancel.signal.aborted) throw new CancelledError();
 				// Scanners that did not look this time: not installed any more, or failed on the repository.
@@ -2361,7 +2387,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		const latest = [last, failedAt].filter((at): at is string => typeof at === "string").sort().at(-1);
 		if (latest && Date.now() - Date.parse(latest) < hours * 3_600_000) return;
 		try {
-			await beginScan(options.defaultRoot, defaultDepth);
+			await beginScan(options.defaultRoot, defaultDepth, true);
 		} catch (err) {
 			if (!(err instanceof HttpError && err.status === 409)) console.error(`porchlight ui: the scheduled scan could not start: ${err instanceof Error ? err.message : String(err)}`);
 		}

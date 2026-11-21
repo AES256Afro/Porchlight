@@ -462,6 +462,33 @@ describe("checks read from what a scan already fetches", () => {
 	});
 });
 
+describe("alert formats", () => {
+	it("sends Slack's format when asked, with what the DNS says kept as text", async () => {
+		const net = healthyNet();
+		const shop = `shop.${DOMAIN}`;
+		net.ct = [...(net.ct as []), { names: [shop], ...VALID_CERT }];
+		net.hosts![shop] = { cname: ["<!channel>.vendor.example"] };
+		const deps = fakeDeps(net);
+		await registerVerified(deps, DOMAIN);
+
+		await call(deps, "POST", `/domains/${DOMAIN}/scan`, { env: { ALERT_FORMAT: "slack" } });
+
+		expect(deps.alerts).toHaveLength(1);
+		const text = String(deps.alerts[0]!.text);
+		expect(Object.keys(deps.alerts[0]!)).toEqual(["text"]);
+		expect(text).toMatch(/^\*Porchlight: first scan of example\.test/);
+		expect(text).toContain("&lt;!channel&gt;");
+		expect(text).not.toContain("<!channel>");
+	});
+
+	it("sends nothing in an unknown format, and says so in the log", async () => {
+		const deps = fakeDeps(healthyNet());
+		await registerVerified(deps, DOMAIN);
+		await call(deps, "POST", `/domains/${DOMAIN}/scan`, { env: { ALERT_FORMAT: "pager" } });
+		expect(deps.alerts).toEqual([]);
+	});
+});
+
 describe("history", () => {
 	it("lists each kept scan newest first, and counts open findings in the domain list", async () => {
 		const deps = fakeDeps(healthyNet());

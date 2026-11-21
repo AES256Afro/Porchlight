@@ -402,3 +402,28 @@ test("--save keeps a terminal scan where the interface reads it, readable only b
 	assert.equal((await stat(join(dataDir, "repo-scan.json"))).mode & 0o777, 0o600);
 	assert.deepEqual((await new History(dataDir).list()).map((entry) => entry.scannedAt), [saved.scannedAt]);
 });
+
+test("with an OSV database folder, packages are compared against it and not looked up one by one", async () => {
+	const root = await twoRepos();
+	const database = join(await tempDir(), "osv-db");
+	const run = fakeRunner({
+		gitleaks: (args) => (args[0] === "version" ? { stdout: "8.30.1\n" } : { stdout: "[]" }),
+		"osv-scanner": (args) => (args[0] === "--version" ? { stdout: "2.7.1\n" } : { code: 128, stderr: "No package sources found" }),
+	});
+
+	await scanRepos({ root, depth: 2, run, osvDatabase: database });
+	const osvCalls = run.calls.map((call, index) => ({ call, env: run.envs[index] })).filter(({ call }) => call[0] === "osv-scanner" && call[1] === "scan");
+	assert.equal(osvCalls.length, 2);
+	for (const { call, env } of osvCalls) {
+		assert.ok(call.includes("--offline-vulnerabilities") && call.includes("--download-offline-databases"), call.join(" "));
+		assert.deepEqual(env, { OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY: database });
+	}
+
+	// Without one, nothing changes.
+	const online = fakeRunner({
+		gitleaks: (args) => (args[0] === "version" ? { stdout: "8.30.1\n" } : { stdout: "[]" }),
+		"osv-scanner": (args) => (args[0] === "--version" ? { stdout: "2.7.1\n" } : { code: 128, stderr: "No package sources found" }),
+	});
+	await scanRepos({ root, depth: 2, run: online });
+	assert.ok(online.calls.filter((call) => call[0] === "osv-scanner").every((call) => !call.includes("--offline-vulnerabilities")));
+});

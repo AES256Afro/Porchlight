@@ -90,6 +90,27 @@ env:
       - { value: "24", label: "Every day" }
       - { value: "168", label: "Every week" }
     default: ""
+  - name: PORCHLIGHT_OSV_OFFLINE
+    label: Keep the vulnerability databases on this server
+    type: boolean
+    description: "On: osv-scanner downloads each ecosystem's whole OSV database to the data volume (npm's is about 200 MB) and compares against it, so the names and versions of your packages are never sent to api.osv.dev. The databases are brought up to date before each scan. Off: each package is looked up at api.osv.dev."
+    default: false
+  - name: PORCHLIGHT_NOTIFY_URL
+    label: Send each scheduled scan's outcome to (optional)
+    type: password
+    secret: true
+    description: "A webhook address: Slack's or Discord's incoming webhook, an ntfy topic such as https://ntfy.sh/your-topic, or any address that takes JSON. After each scan that ran by itself, it gets the counts, what is new and what was fixed, by title, repository and file. Never a secret's value or a commit's author. Kept as a secret, because a Slack or Discord webhook address is one. Empty: nothing is sent."
+    default: ""
+  - name: PORCHLIGHT_NOTIFY_FORMAT
+    label: Format of that message
+    description: "Empty works out the format from the address (Slack, Discord, ntfy.sh, otherwise JSON). Choose one for an ntfy server of your own, or another service that takes one of these."
+    options:
+      - { value: "", label: "From the address" }
+      - { value: "slack", label: "Slack" }
+      - { value: "discord", label: "Discord" }
+      - { value: "ntfy", label: "ntfy" }
+      - { value: "json", label: "JSON" }
+    default: ""
   - name: SECURITYX_LLM_PROVIDER
     label: Model provider (optional)
     description: "Which model explains and analyses findings. Empty or ollama: this server's Ollama app. compatible: another server that speaks OpenAI's format, such as LM Studio, at the model address below. anthropic, openai or deepseek: a hosted model, which needs the API key below and sends what the pages show to that company."

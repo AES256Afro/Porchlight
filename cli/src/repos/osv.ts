@@ -11,9 +11,23 @@ import type { Finding, Severity } from "./types.ts";
 const VULNERABILITIES_FOUND = 1;
 const NO_PACKAGES_FOUND = 128;
 
+export interface OsvOptions {
+	/**
+	 * A folder for OSV's databases. With one, osv-scanner downloads each ecosystem's whole database
+	 * there (and brings it up to date) and compares against it, so the names and versions of a
+	 * repository's packages are never sent to api.osv.dev. Without, each package is looked up there.
+	 */
+	database?: string;
+}
+
 /** Checks the dependencies named in a repository's lockfiles against the OSV database. */
-export async function runOsvScanner(repo: string, run: Runner): Promise<Finding[]> {
-	const { code, stdout, stderr } = await run("osv-scanner", ["scan", "source", "--recursive", "--format", "json", repo]);
+export async function runOsvScanner(repo: string, run: Runner, options: OsvOptions = {}): Promise<Finding[]> {
+	const offline = options.database ? ["--offline-vulnerabilities", "--download-offline-databases"] : [];
+	const { code, stdout, stderr } = await run(
+		"osv-scanner",
+		["scan", "source", "--recursive", ...offline, "--format", "json", repo],
+		options.database ? { env: { OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY: options.database } } : undefined,
+	);
 	if (code === NO_PACKAGES_FOUND) return [];
 	if (code !== 0 && code !== VULNERABILITIES_FOUND) {
 		// Progress lines come first on stderr; the reason for the failure is last.

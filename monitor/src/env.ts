@@ -7,6 +7,8 @@ export interface AppEnv {
 	DB: D1Database;
 	ADMIN_TOKEN?: string;
 	ALERT_WEBHOOK_URL?: string;
+	/** json, slack, discord or ntfy; empty: the one ALERT_WEBHOOK_URL shows, else json. */
+	ALERT_FORMAT?: string;
 	SCAN_INTERVAL_HOURS?: string;
 	MAX_HOSTS?: string;
 	CERT_EXPIRY_WARN_DAYS?: string;

@@ -25,6 +25,8 @@ osv-scanner, and prints one ranked report. Progress goes to the error stream, on
   --depth <n>            Folder levels to search for repositories (default: 3)
   --out <file>           Write the report to a file instead of printing it
   --json                 Write the report as JSON, the form \`repos export\` and the interface read
+  --osv-db <folder>      Keep OSV's vulnerability databases in this folder and compare against them,
+                         so package names are not sent to api.osv.dev (the first scan downloads them)
   --save                 Also keep the scan where the interface reads it (~/.porchlight), in its
                          history too, so \`porchlight ui\` shows it. Replaces the scan shown there
   --fail-on <severity>   Exit 2 if any finding is at or above: ${SEVERITIES.join(", ")}
@@ -105,7 +107,11 @@ Settings it reads when it starts (each can also be chosen in the interface's Set
   PORCHLIGHT_CLOUDFLARE_TOKEN                       the Cloudflare audit
   PORCHLIGHT_SCAN_DEPTH                             folder levels a scan looks through (0 to 6)
   PORCHLIGHT_SCAN_EVERY_HOURS                       scan --root again this often while it runs (1 to 720;
-                                                    meant for a service, which is always running)`,
+                                                    meant for a service, which is always running)
+  PORCHLIGHT_OSV_OFFLINE=true                       keep OSV's databases beside the report and compare
+                                                    against them, instead of sending package names
+  PORCHLIGHT_NOTIFY_URL, PORCHLIGHT_NOTIFY_FORMAT   where a scheduled scan's outcome is sent, and as
+                                                    json, slack, discord or ntfy (default: by the address)`,
 	},
 	{
 		command: "doctor",

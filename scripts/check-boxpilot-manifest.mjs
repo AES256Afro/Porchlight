@@ -43,6 +43,9 @@ if (!depth || !(depth.options ?? []).every((option) => /^[0-6]$/.test(option)) |
 const every = raw.env?.find((entry) => entry.name === "PORCHLIGHT_SCAN_EVERY_HOURS");
 const hours = (every?.options ?? []).map((option) => (typeof option === "string" ? option : option.value));
 if (!every || every.default !== "" || !hours.every((value) => value === "" || (/^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= 720))) local.push("PORCHLIGHT_SCAN_EVERY_HOURS must be empty by default and offer hours from 1 to 720");
+// A Slack or Discord webhook address is a credential: anyone holding it can post as the owner's app.
+const notifyUrl = raw.env?.find((entry) => entry.name === "PORCHLIGHT_NOTIFY_URL");
+if (notifyUrl && (notifyUrl.type !== "password" || notifyUrl.secret !== true || notifyUrl.generate === true || notifyUrl.default !== "")) local.push("PORCHLIGHT_NOTIFY_URL must be a secret the owner supplies, empty by default");
 // BoxPilot's catalog file is catalog/securityx.yaml, and a manifest's id must match its file name.
 // Servers have Porchlight installed under this id, so it stays.
 if (raw.id !== "securityx") local.push(`id is ${raw.id}: BoxPilot's catalog lists Porchlight as securityx`);

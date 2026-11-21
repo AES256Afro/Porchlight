@@ -497,6 +497,49 @@ test("a schedule scans the folder again once the last scan is old enough, and no
 	assert.equal(scans.length, 2);
 });
 
+test("a scheduled scan tells the owner what is new and fixed, and a scan they start does not", async (t) => {
+	const sent: { url: string; body: string }[] = [];
+	const fetchFn = (async (url: URL | string, init?: RequestInit) => {
+		sent.push({ url: String(url), body: String(init?.body) });
+		return new Response("ok");
+	}) as unknown as typeof fetch;
+	let next = sampleReport("/work");
+	const server = await start(t, {
+		fetchFn,
+		scanEveryHours: 24,
+		scheduleTickMs: 20,
+		notify: { url: new URL("https://hooks.slack.com/services/T/B/x"), format: "slack" },
+		scan: async () => ({ ...next, scannedAt: new Date().toISOString() }),
+	});
+
+	// The first scheduled scan: counts only, there is nothing to compare with.
+	await untilScan(server, "done");
+	for (let i = 0; i < 50 && sent.length < 1; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.equal(sent.length, 1);
+	assert.equal(sent[0]!.url, "https://hooks.slack.com/services/T/B/x");
+	assert.match(JSON.parse(sent[0]!.body).text, /^\*Porchlight: 4 findings in 3 repositories\*/);
+
+	// A day later a new one appears, and the critical one is gone. osv-scanner, which reported it, is not
+	// installed, so its absence is not counted as fixed: the notice says it could not be checked.
+	next = sampleReport("/work");
+	next.repos[2]!.findings = [next.repos[2]!.findings[0]!, { ...next.repos[2]!.findings[0]!, ruleId: "rule-fresh", title: "A fresh problem" }];
+	await writeFile(join(server.dir, "state", "repo-scan.json"), JSON.stringify({ ...sampleReport("/work"), scannedAt: new Date(Date.now() - 48 * 3_600_000).toISOString() }));
+	for (let i = 0; i < 100 && sent.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 20));
+	const text = JSON.parse(sent[1]!.body).text as string;
+	assert.match(text, /1 new and 0 fixed since the last scan/);
+	assert.match(text, /New:\n {2}\[high\] group\/worst: A fresh problem \(package-lock\.json\)/);
+	assert.match(text, /1 finding of the last scan could not be checked again, so it is not counted as fixed/);
+	assert.match(text, /Not covered, so this is not a clean bill of health/);
+
+	// One started from the page is not announced.
+	await makeTree(server.dir, { "projects/": "" });
+	await send(server, "POST", "/api/repos/scan", { body: { root: join(server.dir, "projects") } });
+	await untilScan(server, "done");
+	await new Promise((resolve) => setTimeout(resolve, 60));
+	assert.equal(sent.length, 2);
+	assert.ok((await send(server, "GET", "/api/activity")).json.lines.some((line: { text: string }) => line.text === "Sent the scan's outcome to hooks.slack.com"));
+});
+
 test("reads a report that changed on disk, and serves the kept one until then", async (t) => {
 	const server = await start(t);
 	await makeTree(server.dir, { "state/": "" });

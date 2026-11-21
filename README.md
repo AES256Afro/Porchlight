@@ -112,7 +112,8 @@ Porchlight is one Node.js process. The browser page and the Mac app are clients 
 
 | Destination | What is sent | When |
 | --- | --- | --- |
-| OSV.dev | Names and versions of the packages in the repositories' lockfiles. With the host check, names and versions of installed npm and Python packages | Every repository scan. The host check's lookup can be turned off |
+| OSV.dev | Names and versions of the packages in the repositories' lockfiles. With the host check, names and versions of installed npm and Python packages | Every repository scan, unless OSV's databases are kept locally (`--osv-db`, `PORCHLIGHT_OSV_OFFLINE`): then each ecosystem's whole database is downloaded and nothing about your packages is sent. The host check's lookup can be turned off |
+| Where the operator asks (Slack, Discord, ntfy or a JSON webhook) | After a scheduled repository scan: counts, and what is new and fixed by title, repository and file. The monitor's alerts | Only with `PORCHLIGHT_NOTIFY_URL` or the monitor's `ALERT_WEBHOOK_URL` set |
 | Apple | macOS's own software update query | Host check on macOS, unless turned off |
 | Cloudflare API (`api.cloudflare.com`) | Read requests with the operator's token as a header; a change only after the operator approves that exact request | Cloudflare audit |
 | Cloudflare DNS over HTTPS | `_porchlight-challenge` lookups; an investigation's DNS lookups; the targets of a proven zone's CNAME records | Investigation; Cloudflare audit |
@@ -342,7 +343,9 @@ Porchlight is in the [BoxPilot](https://github.com/AES256Afro/BoxPilot) catalog:
 - **Access key**: BoxPilot generates `PORCHLIGHT_UI_KEY`. The page asks for it once per browser tab.
 - **Monitor address and admin token**: optional, for the Domains page.
 - **Folder levels to look through**: `PORCHLIGHT_SCAN_DEPTH`, 0 to 6 (default 3).
-- **Scan again by itself**: `PORCHLIGHT_SCAN_EVERY_HOURS`. Empty scans only when you ask; 24 scans once the last scan is a day old. The page then shows what is new and what was fixed. Nothing is sent anywhere.
+- **Scan again by itself**: `PORCHLIGHT_SCAN_EVERY_HOURS`. Empty scans only when you ask; 24 scans once the last scan is a day old. The page then shows what is new and what was fixed.
+- **Keep the vulnerability databases on this server**: `PORCHLIGHT_OSV_OFFLINE`. On, OSV's databases are kept on the data volume (`/data/osv-db`) and package names are not sent to api.osv.dev.
+- **Send each scheduled scan's outcome to**: optional, `PORCHLIGHT_NOTIFY_URL`, a Slack or Discord webhook, an ntfy topic, or any address that takes JSON (`PORCHLIGHT_NOTIFY_FORMAT` picks the format when the address does not show it). After a scan the schedule ran, it gets the counts, what is new and what was fixed, by title, repository and file, or that the scan failed. Never a secret's value or a commit's author. A scan you start from the page sends nothing.
 - It starts on the tailnet only, because a report names the files and commits where secrets were found.
 
 Outside BoxPilot:
@@ -454,6 +457,7 @@ porchlight repos scan ~/Projects --out reports/repos.md
 | `--depth <n>` | Directory levels searched for repositories (default 3) |
 | `--out <file>` | Write the Markdown report to a file and print a summary |
 | `--json` | Emit the report as JSON |
+| `--osv-db <folder>` | Keep OSV's databases in this folder and compare against them, so package names are not sent to api.osv.dev. The first scan downloads each ecosystem's database (npm's is about 200 MB); later scans bring them up to date |
 | `--save` | Also keep the scan where the interface reads it (`~/.porchlight`), and in its history, so `porchlight ui` shows it. It replaces the scan shown there |
 | `--fail-on <severity>` | Exit with code 2 if any finding is at or above `critical`, `high`, `medium` or `low`; exit with code 1 if a scanner was missing or failed, so an incomplete scan never passes |
 
@@ -478,7 +482,7 @@ What to know:
 - Secret values are never written to the report or the terminal. gitleaks always runs with `--redact`, and author names and emails are dropped.
 - A scanner that is not installed, or that failed on a repository, is listed under "Not covered" in the report. A report with that section is not a clean result. That includes gitleaks reporting nothing because git could not read a repository's history.
 - A scanned repository is treated as hostile input. gitleaks always uses its built-in rules, so a repository's own `.gitleaks.toml` cannot switch detection off, and git is told not to run the diff programs a repository's `.git/config` can name. Ignore files a repository carries (`.gitleaksignore`, `osv-scanner.toml`) are honoured, and the report names each one under "Left out by repository settings", since whatever they hide is not listed.
-- Dependency scanning needs network access: osv-scanner sends package names and versions to the OSV database (api.osv.dev). Offline, it is reported as not covered.
+- Dependency scanning needs network access: osv-scanner sends package names and versions to the OSV database (api.osv.dev). Offline, it is reported as not covered. With `--osv-db <folder>` it downloads each ecosystem's whole database there instead (npm's is about 200 MB; later scans only bring it up to date) and sends nothing about your packages.
 - Uncommitted and git-ignored files are not scanned.
 - `reports/` is git-ignored: a report names the files and commits where secrets were found.
 
@@ -816,7 +820,7 @@ npx cf deploy --secrets-file .secrets.production
 
 When you update Porchlight, run the `migrations apply` command again before `cf deploy`: a new version can add columns the Worker needs. Until you do, the monitor answers "The database is missing a migration".
 
-To receive alerts, add `ALERT_WEBHOOK_URL=https://...` to `.secrets.production` before deploying. Alerts are POSTed as JSON with a `text` field holding the summary, plus the structured report. Without a webhook, alerts go to the Worker's log.
+To receive alerts, add `ALERT_WEBHOOK_URL=https://...` to `.secrets.production` before deploying. A Slack or Discord incoming webhook, or an ntfy topic on ntfy.sh, gets that service's own format; any other address gets JSON with a `text` field holding the summary, plus the structured report. To choose the format yourself (an ntfy server of your own, say), add `ALERT_FORMAT=slack`, `discord`, `ntfy` or `json`. Hosts, DNS values and titles are sent as text: Slack and Discord markup and mentions in them do nothing, and ntfy gets plain text. A new high finding, failing scans or a lost ownership record is sent as urgent where the service has a priority (ntfy). Without a webhook, alerts go to the Worker's log.
 
 In the interface, paste the URL `cf deploy` prints and the token under **Settings → Monitor**. They are kept in `monitor-settings.json` beside the report, readable only by you; the token is sent only to that address and never back to the page. From another device, or when Porchlight runs as a service, the page cannot change them.
 
