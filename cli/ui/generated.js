@@ -47,7 +47,7 @@ export function waitingLabel(model) {
  */
 export function questionProblem(question) {
 	if (question.trim() === "") return "Write a question first.";
-	if (question.length > MAX_QUESTION) return `Keep the question to ${MAX_QUESTION} characters. It has ${question.length.toLocaleString()}.`;
+	if (question.length > MAX_QUESTION) return `Keep the question to ${MAX_QUESTION} characters. It has ${question.length.toLocaleString("en-GB")}.`;
 	return null;
 }
 
@@ -115,8 +115,8 @@ export function analysisProgress(summary) {
 	if (!summary) return "";
 	const urgent = (summary.waiting.critical ?? 0) + (summary.waiting.high ?? 0);
 	const left = summary.items - summary.judged;
-	if (left === 0) return `The model has judged all ${summary.items.toLocaleString()} items of this scan.`;
-	return `The model has judged ${summary.judged.toLocaleString()} of ${summary.items.toLocaleString()} items. ${urgent.toLocaleString()} critical or high ${urgent === 1 ? "one is" : "ones are"} waiting.`;
+	if (left === 0) return `The model has judged all ${summary.items.toLocaleString("en-GB")} items of this scan.`;
+	return `The model has judged ${summary.judged.toLocaleString("en-GB")} of ${summary.items.toLocaleString("en-GB")} items. ${urgent.toLocaleString("en-GB")} critical or high ${urgent === 1 ? "one is" : "ones are"} waiting.`;
 }
 
 /**

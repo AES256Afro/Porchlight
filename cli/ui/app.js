@@ -1,7 +1,7 @@
 // @ts-check
 import { renderActivity } from "./activity.js";
 import { adoptSessionKey, api, ApiError, hasSessionKey, setOfflineMessage, setSessionKey } from "./api.js";
-import { announce, emptyState, formatWhen, h, icon, plural, replace, severityBadge, stepNodes, toast } from "./dom.js";
+import { announce, emptyState, formatNumber, formatWhen, h, icon, isOff, plural, replace, scrollMotion, severityBadge, stepNodes, toast } from "./dom.js";
 import { keyRejectedWords, offlineWords } from "./hints.js";
 import { renderCloudflare } from "./cloudflare.js";
 import { renderDiscussions } from "./discussions.js";
@@ -10,7 +10,7 @@ import { renderFindings } from "./findings.js";
 import { renderInvestigate } from "./investigate.js";
 import { hostName, renderHost } from "./host.js";
 import { applyLook, homeSection, rememberedLook } from "./appearance.js";
-import { buildHash, parseHash } from "./list.js";
+import { buildHash, isPageAddress, parseHash } from "./list.js";
 import { settingsAnchor } from "./paths.js";
 import { renderOverview } from "./overview.js";
 import { projectSwitcher } from "./projects.js";
@@ -106,12 +106,43 @@ function rememberView() {
 // A Mac app built before the rename asks under the earlier name.
 /** @type {any} */ (window).securityxBusy = /** @type {any} */ (window).porchlightBusy;
 window.addEventListener("hashchange", route);
+// A button marked aria-disabled keeps keyboard focus but does nothing: its click, and a form's submit
+// through it (Return in a field), stop here before any handler hears them.
+document.addEventListener(
+	"click",
+	(event) => {
+		const off = event.target instanceof Element ? event.target.closest('[aria-disabled="true"]') : null;
+		if (off && off.matches("button, a, [role='button'], [role='tab']")) {
+			event.preventDefault();
+			event.stopImmediatePropagation();
+		}
+	},
+	true,
+);
+document.addEventListener(
+	"submit",
+	(event) => {
+		if (isOff(event.submitter)) {
+			event.preventDefault();
+			event.stopImmediatePropagation();
+		}
+	},
+	true,
+);
+// "Skip to content" moves focus to the page without changing the address, so the page and its filters stay (B45).
+document.querySelector(".skip-link")?.addEventListener("click", (event) => {
+	event.preventDefault();
+	view.focus();
+	view.scrollIntoView({ block: "start" });
+});
 void route();
 
 async function route() {
 	// On every navigation, not only the first: pasting the printed link into
 	// an already-open tab changes the fragment without reloading the page.
 	adoptSessionKey();
+	// A fragment that is not a page's address ("#view") leaves the page as it is.
+	if (!isPageAddress(location.hash)) return;
 	const { path, params } = parseHash(location.hash);
 	// Addresses from before the pages were reorganised still work.
 	if (path[0] === "repos") return void location.replace("#/findings/by-repo");
@@ -125,7 +156,7 @@ async function route() {
 	// On a phone the sections scroll sideways; the current one is brought into sight.
 	if (nav.scrollWidth > nav.clientWidth) {
 		const currentLink = /** @type {HTMLElement | null} */ (nav.querySelector('[aria-current="page"]'));
-		if (currentLink) nav.scrollTo({ left: currentLink.offsetLeft - (nav.clientWidth - currentLink.offsetWidth) / 2, behavior: "smooth" });
+		if (currentLink) nav.scrollTo({ left: currentLink.offsetLeft - (nav.clientWidth - currentLink.offsetWidth) / 2, behavior: scrollMotion() });
 	}
 	document.title = `${section === "host" ? hostName() : SECTIONS.find(([key]) => key === section)?.[1]} · Porchlight`;
 
@@ -133,6 +164,9 @@ async function route() {
 	leave = () => {};
 	const current = ++navigation;
 	if (!view.hasChildNodes()) replace(view, h("p", { class: "loading" }, "Loading…"));
+	// Each page draws into a slot of its own, put on screen only while it is still the page asked for:
+	// one that finishes after the owner has moved on draws nothing over the page they moved to (B43).
+	const slot = h("div", { class: "view-slot" });
 	// The last page stays on screen, dimmed, until the next one is ready (styles.css delays the dimming, so a quick page does not flicker).
 	view.setAttribute("aria-busy", "true");
 	view.classList.add("is-loading");
@@ -140,6 +174,7 @@ async function route() {
 	const context = {
 		path,
 		params,
+		isCurrent: () => current === navigation,
 		// Filters are written into the address without adding a history entry for every keystroke.
 		replace: (settings) => {
 			if (current !== navigation) return;
@@ -148,8 +183,9 @@ async function route() {
 		},
 	};
 	try {
-		const cleanup = await page(section, context);
+		const cleanup = await page(section, context, slot);
 		if (current !== navigation) return cleanup();
+		if (slot.parentNode !== view) view.replaceChildren(slot);
 		view.removeAttribute("aria-busy");
 		view.classList.remove("is-loading");
 		leave = cleanup;
@@ -187,14 +223,15 @@ async function route() {
 /**
  * @param {string} section
  * @param {import("./finding-parts.js").Route} context
+ * @param {HTMLElement} view the page's own slot
  * @returns {Promise<() => void>}
  */
-function page(section, context) {
+function page(section, context, view) {
 	if (section === "findings") return context.path[1] === "by-repo" ? renderByRepo(view, context) : renderFindings(view, context);
 	if (section === "roadmap") return renderRoadmap(view, context);
-	if (section === "domains") return renderDomains(view, context.path[1]);
-	if (section === "cloudflare") return renderCloudflare(view);
-	if (section === "investigate") return renderInvestigate(view, context.path[1]);
+	if (section === "domains") return renderDomains(view, context);
+	if (section === "cloudflare") return renderCloudflare(view, context);
+	if (section === "investigate") return renderInvestigate(view, context);
 	if (section === "discussions") return renderDiscussions(view, context);
 	if (section === "activity") return renderActivity(view);
 	if (section === "settings") return renderSettings(view);
@@ -206,7 +243,7 @@ function page(section, context) {
 function drawScanStatus() {
 	const scan = store.scan;
 	const rows = store.report ? findingRows() : [];
-	findingCount.textContent = store.report ? rows.length.toLocaleString() : "";
+	findingCount.textContent = store.report ? formatNumber(rows.length) : "";
 	replace(
 		severityStrip,
 		...(store.report
@@ -215,11 +252,13 @@ function drawScanStatus() {
 						"a",
 						{ class: "severity-count", href: `#/findings?severity=${severity}` },
 						severityBadge(severity),
-						h("strong", null, rows.filter((row) => row.severity === severity).length.toLocaleString()),
+						h("strong", null, formatNumber(rows.filter((row) => row.severity === severity).length)),
 					),
 				)
 			: []),
 	);
+	// Under 900 px the sidebar is a header without its foot; a running or failed scan still shows there (A-U4, I-U3).
+	scanStatus.classList.toggle("is-live", scan.state === "running" || scan.state === "failed");
 	if (scan.state === "running") {
 		const known = scan.total > 0;
 		const progress = known ? `Scanning ${Math.min(scan.done + 1, scan.total)} of ${scan.total}` : "Finding repositories";
@@ -265,9 +304,11 @@ function askForKey(where) {
 	// A key was given and refused: say so, rather than showing the same request again as if nothing happened.
 	const refused = keyPasted ? keyRejectedWords("pasted", where) : hasSessionKey() ? keyRejectedWords("stale", where) : null;
 	keyPasted = false;
+	// A password manager is offered the key under a fixed name, so it can be kept there rather than in a bookmark (R6U-5).
 	const input = /** @type {HTMLInputElement} */ (
-		h("input", { type: "password", name: "key", autocomplete: "off", required: true, "aria-label": service ? "Access key" : "Session key", "aria-invalid": refused ? "true" : null })
+		h("input", { type: "password", name: "key", autocomplete: "current-password", required: true, "aria-label": service ? "Access key" : "Session key", "aria-invalid": refused ? "true" : null })
 	);
+	const account = h("input", { type: "text", name: "username", autocomplete: "username", value: service ? "Porchlight access key" : "Porchlight session key", readOnly: true, hidden: true, tabindex: "-1", "aria-hidden": "true" });
 	replace(
 		view,
 		h(
@@ -309,6 +350,7 @@ function askForKey(where) {
 							h("code", null, "#k="),
 							", here.",
 						),
+				account,
 				h("div", { class: "inline-form" }, h("div", { class: "field grow" }, input), h("button", { type: "submit", class: "button primary" }, "Continue")),
 			),
 		),

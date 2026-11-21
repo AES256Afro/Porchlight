@@ -1,8 +1,9 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { lstat, mkdir, readFile, rename, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { cpus, homedir, hostname, networkInterfaces, totalmem } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { createGzip } from "node:zlib";
 import { judge, readAnalysis, saveAnalysis, unitKey, unitsOf, VERDICTS, type AnalysisFile } from "../analysis/analyse.ts";
 import { DEFAULT_OLLAMA, describeMachine, DownloadError, HUB_FORMATS, HUB_HOST, HUB_SIZES, HUB_SORTS, HUB_TASKS, installedModels, modelNameProblem, pullModel, searchHub } from "../assist/download.ts";
 import { AssistantError, chat, HOSTED, isHosted, listModels, type AssistantConfig, type HostedProvider } from "../assist/ollama.ts";
@@ -57,7 +58,7 @@ import { noticeRequest, type Notice, type NotifyFormat } from "../notify/format.
 import { failedScanNotice, scanNotice } from "../notify/scan.ts";
 import { ChoiceError, describeChoices, parseChoices, standardChoices } from "../../ui/scan-choices.js";
 import { findingKey, isDay, isStatus, MAX_NOTE } from "../../ui/tracking.js";
-import { SEVERITIES, type RepoResult, type ScanChoices, type ScanReport, type Severity, type ToolName } from "../repos/types.ts";
+import { SEVERITIES, type Finding, type RepoResult, type ScanChoices, type ScanReport, type Severity, type ToolName } from "../repos/types.ts";
 import { domainSuggestions, type MonitorReport } from "../roadmap/domains.ts";
 import { exportDomain, exportRepos, ExportError, parseFilter, type ExportFile } from "../roadmap/export.ts";
 import { buildRepoRoadmap, listRepoFindings, suggestionsFor } from "../roadmap/repos.ts";
@@ -298,7 +299,7 @@ export type AnalysisStatus =
 const UI_DIR = join(import.meta.dirname, "../../ui");
 /** The page's own modules. Nothing else in the folder is served. */
 /** Every script the page loads. A test checks it names each file in ui/, so none is left unserved. */
-export const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "finding-parts", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths", "investigate", "discussions", "discussion", "discussion-links", "panel", "projects", "cloudflare", "cloudflare-settings", "monitor-settings", "activity", "model-download", "scan-choices", "scan-options"];
+export const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "finding-parts", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths", "investigate", "discussions", "discussion", "discussion-links", "panel", "projects", "cloudflare", "cloudflare-settings", "monitor-settings", "activity", "model-download", "scan-choices", "scan-options", "poller"];
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
 	"/": { file: "index.html", type: "text/html; charset=utf-8" },
 	"/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
@@ -388,6 +389,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	// Every finished scan is kept, so the page can say what is new and what was fixed since the last one.
 	const history = new History(reportDir);
 	const notesPath = join(reportDir, "finding-notes.json");
+	/** The report's response as last built, and what identified its three files then (OP-5). */
+	let reportResponse: (Sendable & { stamp: string }) | null = null;
 	// Where the owner was, so the app opens there again however it was closed.
 	const viewPath = join(dataDir, "ui-view.json");
 	// A report from before history was kept starts it, so the next scan has something to compare with.
@@ -395,6 +398,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		.then((report) => (report ? history.add(report) : null))
 		.catch(() => {});
 	let analysing: AnalysisStatus = { state: "idle" };
+	/** Why a Deep scan's analysis did not start, the last time one did not (R6U-11). */
+	let analysisNotStarted: { at: string; why: string } | null = null;
 	let stopAnalysis: AbortController | null = null;
 	let port = options.port;
 	/** Ollama on a small server answers one request at a time, so this asks it one at a time. */
@@ -1961,8 +1966,15 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			if (req.method !== "GET") throw new HttpError(405, "Method not allowed");
 			const entry = STATIC_FILES[url.pathname];
 			if (!entry) throw new HttpError(404, "Not found");
-			res.writeHead(200, { ...SECURITY_HEADERS, "content-type": entry.type });
-			res.end(await readFile(join(UI_DIR, entry.file)));
+			// The page's own files hold no data, so the browser may keep them, asking each time whether they changed (OP-7).
+			const file = await staticFile(entry.file);
+			const headers = { ...SECURITY_HEADERS, "cache-control": "no-cache", etag: file.etag, vary: "accept-encoding", "content-type": entry.type };
+			if (etagMatches(req.headers["if-none-match"], file.etag)) {
+				res.writeHead(304, headers);
+				res.end();
+				return null;
+			}
+			await sendBytes(req, res, 200, headers, file);
 			return null;
 		}
 
@@ -2011,12 +2023,19 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			[(call) => call.url.pathname.startsWith("/api/assist/"), ({ req, res, url, body }) => assist(req, res, url.pathname.slice("/api/assist/".length), body)],
 			[
 				exact("GET /api/repos/report"),
-				async ({ res }) => {
-					// Notes that cannot be read are said beside the report, never a reason the report cannot be shown.
-					const notes = await notesForPage(notesPath);
-					return sendJson(res, 200, { ...(await loadReport(options.reportPath, analysisPath)), findingNotes: notes.notes, ...(notes.problem ? { notesProblem: notes.problem } : {}) });
+				async ({ req, res }) => {
+					// Built once for each version of the report, the judgements and the notes, and sent gzipped where the
+					// browser takes it (OP-5). Each file is looked at before it is read, so a change after the look only
+					// makes the next request build it again, never keeps an older answer under a newer file.
+					const stamp = (await Promise.all([options.reportPath, analysisPath, notesPath].map(fileStamp))).join("|");
+					if (reportResponse?.stamp !== stamp) {
+						// Notes that cannot be read are said beside the report, never a reason the report cannot be shown.
+						reportResponse = { stamp, body: await reportResponseBody(options.reportPath, analysisPath, await notesForPage(notesPath)) };
+					}
+					return sendBytes(req, res, 200, { ...SECURITY_HEADERS, "content-type": "application/json; charset=utf-8", vary: "accept-encoding" }, reportResponse);
 				},
 			],
+			[exact("GET /api/analysis/judgements"), ({ res, url }) => judgementsRoute(res, url.searchParams.get("since"))],
 			[paths("/api/analysis", "/api/analysis/stop"), ({ res, route, body }) => analysisRoute(res, route, body)],
 			[
 				exact("POST /api/repos/mural/stop"),
@@ -2199,6 +2218,26 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	 * at a time, saving each judgement as it arrives so a stop or a restart loses nothing. What it
 	 * reads is built here from this server's own copy of the report and the repository's files.
 	 */
+	/**
+	 * The judgements made at or after `since`, each under the key of every finding it judges, so the
+	 * page can put them beside their findings without fetching the report and history again (OP-6).
+	 * `scannedAt` names the report they belong to; a page holding another one fetches the report instead.
+	 */
+	async function judgementsRoute(res: ServerResponse, since: string | null): Promise<void> {
+		const report = await readReport(options.reportPath);
+		if (!report) return sendJson(res, 200, { scannedAt: null, judgements: [] });
+		const stored = await readAnalysis(analysisPath, report);
+		const judgements: { key: string; analysis: unknown }[] = [];
+		for (const repo of report.repos) {
+			const name = repoName(report, repo);
+			for (const finding of repo.findings) {
+				const judged = stored.items[unitKey(name, finding)];
+				if (judged && (!since || judged.at >= since)) judgements.push({ key: findingKey(name, finding), analysis: judged });
+			}
+		}
+		return sendJson(res, 200, { scannedAt: report.scannedAt, judgements });
+	}
+
 	async function analysisRoute(res: ServerResponse, route: string, body: unknown): Promise<void> {
 		if (route === "POST /api/analysis/stop") {
 			stopAnalysis?.abort();
@@ -2216,7 +2255,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				if (judged) verdicts[judged.verdict] = (verdicts[judged.verdict] ?? 0) + 1;
 				else waiting[unit.severity]++;
 			}
-			return sendJson(res, 200, { status: analysing, summary: { items: units.length, judged: units.length - Object.values(waiting).reduce((sum, count) => sum + count, 0), waiting, verdicts } });
+			return sendJson(res, 200, { status: analysing, notStarted: analysisNotStarted, summary: { items: units.length, judged: units.length - Object.values(waiting).reduce((sum, count) => sum + count, 0), waiting, verdicts } });
 		}
 		if (route !== "POST /api/analysis") throw new HttpError(404, "Not found");
 
@@ -2240,12 +2279,17 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	 * the log; the scan itself has finished either way.
 	 */
 	function analyseAfterScan(sendsToHosted: boolean, project: Awaited<ReturnType<typeof projects.current>>, shown?: { model: string; host: string }): void {
+		// Said on the Overview's analysis card too, not only in Activity and the log (R6U-11).
+		const notStarted = (why: string) => {
+			analysisNotStarted = { at: new Date().toISOString(), why };
+			log(`Deeper analysis did not start: ${why}`, project);
+		};
 		const assistant = model.config;
-		if (!assistant) return log("Deeper analysis did not start: no model is set up (Settings → Model)", project);
+		if (!assistant) return notStarted("no model is set up (Settings → Model)");
 		// The model may have been switched while the scan ran: the analysis uses only the one the page showed (S22).
-		if (shown && (shown.model !== assistant.model || shown.host !== assistant.url.host)) return log(`Deeper analysis did not start: the model is now ${modelWords(assistant)}, not the one the page showed when the scan started`, project);
-		if (isHosted(assistant) && !sendsToHosted) return log(`Deeper analysis did not start: ${modelWords(assistant)} is hosted, and the scan did not say yes to sending to it`, project);
-		void startAnalysis(DEFAULT_ANALYSE, ["critical", "high"]).catch((err) => log(`Deeper analysis did not start: ${err instanceof Error ? err.message : String(err)}`, project));
+		if (shown && (shown.model !== assistant.model || shown.host !== assistant.url.host)) return notStarted(`the model is now ${modelWords(assistant)}, not the one the page showed when the scan started`);
+		if (isHosted(assistant) && !sendsToHosted) return notStarted(`${modelWords(assistant)} is hosted, and the scan did not say yes to sending to it`);
+		void startAnalysis(DEFAULT_ANALYSE, ["critical", "high"]).catch((err) => notStarted(err instanceof Error ? err.message : String(err)));
 	}
 
 	/** Starts the model's judgement of the findings waiting at these severities, up to `limit`, and returns at once. */
@@ -2512,6 +2556,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			choices,
 			...(also ? { also } : {}),
 			...(osvDatabase ? { osvDatabase } : {}),
+			// An unchanged repository's history is not read again (OP-1); "Scan this repository again" always reads it.
+			historyReuse: { dir: join(dataDir, "history-scans") },
 			signal: cancel.signal,
 			onProgress: ({ done, total, path }) => {
 				if (status.state === "running") status = { ...status, done, total, current: nameUnder(root, also?.map((other) => other.root), path) };
@@ -2961,6 +3007,100 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 	res.end(JSON.stringify(body));
 }
 
+/** A repair as the page shows it beside a finding. */
+type Suggestion = ReturnType<typeof suggestionsFor> extends Map<Finding, infer S> ? S : never;
+
+/**
+ * A body sent as it is or gzipped, the gzipped copy made the first time a browser takes it and kept
+ * with the body. A body in parts is sent part by part, so parts shared between versions are never copied.
+ */
+interface Sendable {
+	body: Buffer | Buffer[];
+	gzipped?: Promise<Buffer>;
+}
+
+function gzipBody(body: Buffer | Buffer[]): Promise<Buffer> {
+	return new Promise((resolve, reject) => {
+		// Large output pieces: a report's response is hundreds of KB gzipped, and each piece is a buffer to free.
+		const zip = createGzip({ chunkSize: 256 * 1024 });
+		const out: Buffer[] = [];
+		zip.on("data", (chunk: Buffer) => out.push(chunk));
+		zip.on("end", () => resolve(Buffer.concat(out)));
+		zip.on("error", reject);
+		for (const part of Array.isArray(body) ? body : [body]) zip.write(part);
+		zip.end();
+	});
+}
+
+/** Bodies smaller than this are sent as they are: gzip would save less than its own cost. */
+const GZIP_FROM = 1024;
+
+/** Whether the request says gzip is welcome: named, or `*`, and not with q=0. */
+export function acceptsGzip(header: string | string[] | undefined): boolean {
+	const value = Array.isArray(header) ? header.join(",") : (header ?? "");
+	let star = false;
+	for (const part of value.split(",")) {
+		const [name = "", ...params] = part.trim().toLowerCase().split(";");
+		const q = params.map((param) => param.trim()).find((param) => param.startsWith("q="));
+		const welcome = q === undefined || Number(q.slice(2)) > 0;
+		if (name.trim() === "gzip") return welcome;
+		if (name.trim() === "*") star = welcome;
+	}
+	return star;
+}
+
+/** Sends a body, gzipped when the browser takes gzip and the body is large enough to gain from it. */
+async function sendBytes(req: IncomingMessage, res: ServerResponse, status: number, headers: Record<string, string>, sendable: Sendable): Promise<void> {
+	if (res.headersSent) return;
+	const parts = Array.isArray(sendable.body) ? sendable.body : [sendable.body];
+	const length = parts.reduce((sum, part) => sum + part.length, 0);
+	if (length >= GZIP_FROM && acceptsGzip(req.headers["accept-encoding"])) {
+		// A failed compression is not kept, so the next request tries again.
+		sendable.gzipped ??= gzipBody(sendable.body).catch((err: unknown) => {
+			sendable.gzipped = undefined;
+			throw err;
+		});
+		const gzipped = await sendable.gzipped;
+		res.writeHead(status, { ...headers, "content-encoding": "gzip", "content-length": String(gzipped.length) });
+		res.end(gzipped);
+		return;
+	}
+	res.writeHead(status, { ...headers, "content-length": String(length) });
+	for (const part of parts) res.write(part);
+	res.end();
+}
+
+/** What identifies a file as written: a save writes a new file and renames it into place, which changes it. "-" when there is none. */
+async function fileStamp(path: string): Promise<string> {
+	try {
+		const info = await stat(path, { bigint: true });
+		return `${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`;
+	} catch {
+		return "-";
+	}
+}
+
+/** The page's own files as last read, each with its validator, until the file changes (OP-7). */
+const staticFiles = new Map<string, Sendable & { stamp: string; etag: string }>();
+
+async function staticFile(file: string): Promise<Sendable & { etag: string }> {
+	const path = join(UI_DIR, file);
+	const stamp = await fileStamp(path);
+	const kept = staticFiles.get(file);
+	if (kept && kept.stamp === stamp && stamp !== "-") return kept;
+	const body = await readFile(path);
+	const entry = { stamp, body, etag: `"${createHash("sha256").update(body).digest("base64url").slice(0, 32)}"` };
+	staticFiles.set(file, entry);
+	return entry;
+}
+
+/** Whether If-None-Match names this validator (or `*`), so the browser's copy is still the file. */
+export function etagMatches(header: string | string[] | undefined, etag: string): boolean {
+	if (header === undefined) return false;
+	const tags = (Array.isArray(header) ? header.join(",") : header).split(",").map((tag) => tag.trim().replace(/^W\//, ""));
+	return tags.includes("*") || tags.includes(etag);
+}
+
 /** Sends a file to save. Its name is built from a fixed stem and a date, never from request input. */
 /** A local model being downloaded through Ollama. `step` is Ollama's own word for what it is doing. */
 export type DownloadStatus =
@@ -3107,30 +3247,104 @@ async function scanRequest(body: unknown, defaultDepth: number): Promise<{ root:
 }
 
 /**
- * The stored report, ordered worst first, each finding with its suggested fix,
- * what the scan did not cover, and what repositories told the scanners to leave out.
+ * The report's response: the stored report, ordered worst first, each finding with the place of its
+ * suggested fix in `suggestions` and the model's judgement, what the scan did not cover, what
+ * repositories told the scanners to leave out, and the owner's notes.
+ *
+ * Each repair is sent once and each finding names it by its place (OP-5): a package's advisories share
+ * one upgrade, so repeating it on each made the answer twice the report. The repairs are still planned
+ * from the whole report (invariant 12); only how they are sent changed. The text is built a repository
+ * at a time, so a large report never makes a second copy of itself in objects (R6O-1).
  */
-async function loadReport(path: string, analysisPath: string): Promise<{ report: unknown; notes: string[]; settingNotes: string[] }> {
+async function reportResponseBody(path: string, analysisPath: string, notes: { notes: unknown; problem?: string }): Promise<Buffer[]> {
+	const tail = { findingNotes: notes.notes, ...(notes.problem ? { notesProblem: notes.problem } : {}) };
 	const report = await readReport(path);
-	if (!report) return { report: null, notes: [], settingNotes: [] };
-	const suggestions = suggestionsFor(report);
+	if (!report) return [Buffer.from(JSON.stringify({ report: null, notes: [], settingNotes: [], ...tail }))];
+	const prepared = prepareReport(report);
 	const analysis: AnalysisFile = await readAnalysis(analysisPath, report);
-	return {
-		notes: coverageNotes(report),
-		settingNotes: settingNotes(report),
-		report: {
-			...report,
-			repos: rankRepos(report.repos).map((repo) => {
-				const name = repoName(report, repo);
-				return {
-					...repo,
-					name,
-					// The model's judgement rides beside the finding; it changes nothing about it.
-					findings: rank(repo.findings).map((finding) => ({ ...finding, suggestion: suggestions.get(finding), analysis: analysis.items[unitKey(name, finding)] })),
-				};
-			}),
-		},
+	const judged = Object.keys(analysis.items).length > 0;
+	const chunks: Buffer[] = [prepared.opening];
+	prepared.repos.forEach((repo, index) => {
+		// A repository none of whose findings is judged is sent as it was prepared; only the others are written again.
+		if (!judged || !repo.units.some((unit) => analysis.items[unit])) return chunks.push(repo.text);
+		chunks.push(Buffer.from(repoText(repo, index, prepared.fix, analysis)));
+	});
+	chunks.push(Buffer.from(`]},${JSON.stringify({ suggestions: prepared.suggestions, ...tail }).slice(1)}`));
+	return chunks;
+}
+
+/** A report's response as far as the report alone decides it, worked out once for each report (R6O-1). */
+interface PreparedReport {
+	/** Everything before the first repository. */
+	opening: Buffer;
+	repos: PreparedRepo[];
+	suggestions: Suggestion[];
+	/** Each finding's place in `suggestions`. */
+	fix: Map<Finding, number>;
+}
+
+interface PreparedRepo {
+	repo: RepoResult;
+	name: string;
+	/** Worst first. */
+	findings: Finding[];
+	/** The analysis's key for each of `findings`. */
+	units: string[];
+	/** The repository as sent when none of its findings is judged, with the comma before it. */
+	text: Buffer;
+}
+
+const preparedReports = new WeakMap<ScanReport, PreparedReport>();
+
+function prepareReport(report: ScanReport): PreparedReport {
+	const kept = preparedReports.get(report);
+	if (kept) return kept;
+	const planned = suggestionsFor(report);
+	const suggestions: Suggestion[] = [];
+	const fix = new Map<Finding, number>();
+	// Repairs alike in every word are one. Each action's steps are one list, so its text is worked out once.
+	const indexes = new Map<string, number>();
+	const stepsText = new Map<string[], string>();
+	for (const [finding, suggestion] of planned) {
+		let steps = stepsText.get(suggestion.how);
+		if (steps === undefined) stepsText.set(suggestion.how, (steps = JSON.stringify(suggestion.how)));
+		const key = `${suggestion.phase}\n${suggestion.title}\n${steps}`;
+		let index = indexes.get(key);
+		if (index === undefined) {
+			index = suggestions.push(suggestion) - 1;
+			indexes.set(key, index);
+		}
+		fix.set(finding, index);
+	}
+	const { repos, ...head } = report;
+	const opening = JSON.stringify({ notes: coverageNotes(report), settingNotes: settingNotes(report), report: { ...head, repos: [] } });
+	if (!opening.endsWith("[]}}")) throw new Error("The report's response could not be built");
+	const empty: AnalysisFile = { scannedAt: report.scannedAt, items: {} };
+	const prepared: PreparedReport = {
+		opening: Buffer.from(opening.slice(0, -3)),
+		suggestions,
+		fix,
+		repos: rankRepos(repos).map((repo, index) => {
+			const name = repoName(report, repo);
+			const findings = rank(repo.findings);
+			const entry = { repo, name, findings, units: findings.map((finding) => unitKey(name, finding)), text: Buffer.alloc(0) };
+			entry.text = Buffer.from(repoText(entry, index, fix, empty));
+			return entry;
+		}),
 	};
+	preparedReports.set(report, prepared);
+	return prepared;
+}
+
+/** One repository of the response, with the comma before it after the first. */
+function repoText(repo: Omit<PreparedRepo, "text">, index: number, fix: Map<Finding, number>, analysis: AnalysisFile): string {
+	const text = JSON.stringify({
+		...repo.repo,
+		name: repo.name,
+		// The model's judgement rides beside the finding; it changes nothing about it.
+		findings: repo.findings.map((finding, at) => ({ ...finding, fix: fix.get(finding), analysis: analysis.items[repo.units[at]!] })),
+	});
+	return index === 0 ? text : `,${text}`;
 }
 
 /** The report last parsed from each path, with what identified the file then. */

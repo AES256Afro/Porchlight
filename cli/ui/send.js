@@ -8,7 +8,7 @@ import { api } from "./api.js";
 import { generatedText } from "./assist.js";
 import { followUpBox } from "./discussion.js";
 import { answersPlace, retitle, showAnswer } from "./panel.js";
-import { banner, h, icon, replace, shownText, stepNodes, toast } from "./dom.js";
+import { announce, banner, h, icon, replace, setOff, shownText, stepNodes, toast } from "./dom.js";
 import { isFiltering } from "./filter.js";
 import { paramsFromFilter } from "./list.js";
 import { sendFilename, sendTargetNote, sendText } from "./send-text.js";
@@ -36,13 +36,13 @@ export function sendTargets() {
  * The button beside Export.
  *
  * @param {() => void} onClick
- * @param {boolean} [disabled]
+ * @param {boolean} [off] nothing to send; the button stays focusable
  */
-export function sendButton(onClick, disabled = false) {
+export function sendButton(onClick, off = false) {
 	const none = sendTargets().length === 0;
 	return h(
 		"button",
-		{ type: "button", class: "button", disabled: disabled || none, title: none ? "Set up a model under Settings → Model first" : null, onclick: onClick },
+		{ type: "button", class: "button", "aria-disabled": off || none ? "true" : null, title: none ? "Set up a model under Settings → Model first" : null, onclick: onClick },
 		icon("spark"),
 		"Send to model",
 	);
@@ -75,7 +75,8 @@ export function openSendDialog(target, initialContent = "roadmap") {
 		);
 
 	const error = h("p", { class: "form-error", role: "alert", hidden: true });
-	const result = h("section", { class: "assist send-result", "aria-live": "polite", "aria-label": "Answer from the model", hidden: true });
+	// Not a live region: the wait's clock moves every second and an answer can be long. The answer's arrival is said once.
+	const result = h("section", { class: "assist send-result", "aria-label": "Answer from the model", hidden: true });
 	const submit = /** @type {HTMLButtonElement} */ (h("button", { type: "submit", class: "button primary" }, icon("spark"), "Send"));
 	const form = /** @type {HTMLFormElement} */ (
 		h(
@@ -107,8 +108,8 @@ export function openSendDialog(target, initialContent = "roadmap") {
 						...choices(
 							"scope",
 							[
-								["filtered", `Only what the filters show (${target.shown.toLocaleString()} findings)`, "The model is told it sees only part of the scan."],
-								["all", `Everything in the scan (${target.total.toLocaleString()} findings)`, ""],
+								["filtered", `Only what the filters show (${target.shown.toLocaleString("en-GB")} findings)`, "The model is told it sees only part of the scan."],
+								["all", `Everything in the scan (${target.total.toLocaleString("en-GB")} findings)`, ""],
 							],
 							"filtered",
 						),
@@ -137,7 +138,7 @@ export function openSendDialog(target, initialContent = "roadmap") {
 		/** @type {Record<string, string>} */
 		const request = { target: model.id, content: String(chosen.get("content")), purpose: String(chosen.get("purpose")) };
 		if (filtering && chosen.get("scope") === "filtered") Object.assign(request, paramsFromFilter(target.filter));
-		submit.disabled = true;
+		setOff(submit, true);
 		replace(submit, icon("pending"), "Sending…");
 		error.hidden = true;
 		result.hidden = false;
@@ -172,6 +173,7 @@ export function openSendDialog(target, initialContent = "roadmap") {
 				typeof answer.partial === "string" ? `Sent only part of the scan: ${answer.partial}.` : undefined,
 				typeof answer.cut === "string" ? answer.cut : undefined,
 			];
+			announce(`${model.model} answered`);
 			const saved = sendText(text, { model: model.model, label: model.label, content: request.content, purpose: request.purpose, notes, scannedAt: store.report?.scannedAt ?? "" });
 			replace(
 				result,
@@ -187,10 +189,11 @@ export function openSendDialog(target, initialContent = "roadmap") {
 			);
 		} catch (err) {
 			if (inPanel) retitle(owner, { title: "The model could not answer" });
+			announce("The model could not answer");
 			replace(result, banner("error", "The model could not answer", [err instanceof Error ? err.message : String(err)]));
 		} finally {
 			clearInterval(timer);
-			submit.disabled = false;
+			setOff(submit, false);
 			replace(submit, icon("spark"), "Send again");
 		}
 	}

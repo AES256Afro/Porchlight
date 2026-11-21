@@ -12,7 +12,14 @@ import {
 import { deriveFindings, diffFindings } from "./findings.ts";
 import { checkOwnership } from "./ownership.ts";
 import { formatReport, hasNews, type ScanReport } from "./report.ts";
-import { collectSnapshot, type Snapshot } from "./snapshot.ts";
+import {
+	checkedSince,
+	collectSnapshot,
+	continueSnapshot,
+	MAX_KNOWN_HOSTS,
+	settled,
+	type Snapshot,
+} from "./snapshot.ts";
 import {
 	claimScan,
 	clearScheduleError,
@@ -21,10 +28,12 @@ import {
 	markFailed,
 	markUnverified,
 	nextDueDomain,
+	nextWaitingDomain,
 	postponeUnverified,
 	recordScheduleError,
 	releaseScan,
 	saveScan,
+	updateLatestScan,
 	type DomainRow,
 } from "./store.ts";
 
@@ -36,6 +45,14 @@ export type ScanOutcome =
 	| { status: "busy" }
 	/** The domain was removed (and perhaps another added) before or while it was scanned; nothing was kept or sent. */
 	| { status: "gone" };
+
+/**
+ * What a cron tick did: a scan, or, with none due, a pass over hosts the last scan left waiting (OP-11),
+ * put into that scan's snapshot and report. A pass's `report` says only what the pass found.
+ */
+export type TickOutcome =
+	| ScanOutcome
+	| { status: "continued"; domain: string; probed: number; report: ScanReport };
 
 const HOUR_MS = 3_600_000;
 const MINUTE_MS = 60_000;
@@ -223,12 +240,21 @@ export function buildReport(
 			`Whether ${snapshot.domain}'s DNS answers are signed could not be told this time; the last answer was kept.`,
 		);
 	}
-	const unprobed = hosts.filter((host) => !host.probed).length;
+	// A host a pass over waiting hosts has probed since the scan was checked too (OP-11).
+	const unprobed = hosts.filter(
+		(host) => !host.probed && !checkedSince(host, snapshot.takenAt),
+	).length;
 	if (unprobed > 0) {
 		notes.push(
 			// Said for the owner, not in the setting's name; the README says how to raise the limit.
 			`${unprobed} of ${hosts.length} known hosts were not checked this time: each scan checks ${settings.maxHosts}, ` +
 				"and the rest take turns in later scans.",
+		);
+	}
+	if (snapshot.leftOut) {
+		notes.push(
+			`${snapshot.leftOut.toLocaleString("en")} more names in the certificate log were not added: the monitor keeps at most ${MAX_KNOWN_HOSTS.toLocaleString("en")} names for a domain, ` +
+				"so they were not checked.",
 		);
 	}
 	const failedLookups = hosts.filter((host) => host.probed && host.dns === null).length;
@@ -253,8 +279,8 @@ export function buildReport(
  * a failure of the run itself (the database missing a migration, say) is recorded for the domain
  * list and alerted once, where it would otherwise reach only the Worker's log.
  */
-export async function runDueScan(env: AppEnv, deps: Deps): Promise<ScanOutcome | null> {
-	let outcome: ScanOutcome | null;
+export async function runDueScan(env: AppEnv, deps: Deps): Promise<TickOutcome | null> {
+	let outcome: TickOutcome | null;
 	try {
 		const intervalMs = settingsFrom(env).scanIntervalHours * HOUR_MS;
 		const now = deps.now().getTime();
@@ -266,7 +292,10 @@ export async function runDueScan(env: AppEnv, deps: Deps): Promise<ScanOutcome |
 			laterRetry: before(LATER_RETRY_MS),
 			staleClaim: new Date(now - CLAIM_LEASE_MS).toISOString(),
 		});
-		outcome = domain ? await runScan(env, domain, deps, { onlyIfDue: true }) : null;
+		// A tick with no scan due goes to hosts the last scans left waiting their turn (OP-11).
+		outcome = domain
+			? await runScan(env, domain, deps, { onlyIfDue: true })
+			: await continueWaiting(env, deps, new Date(now - CLAIM_LEASE_MS).toISOString());
 	} catch (err) {
 		const error = scrubbedError(env, err);
 		console.error(`The scheduled scan run failed: ${error}`);
@@ -277,6 +306,65 @@ export async function runDueScan(env: AppEnv, deps: Deps): Promise<ScanOutcome |
 		console.error(`Could not clear the scheduled run's last error: ${errorMessage(err)}`),
 	);
 	return outcome;
+}
+
+/**
+ * Probes the hosts a domain's latest scan left waiting their turn, up to MAX_HOSTS of them, so every
+ * known name is looked at about once a day rather than once every few weeks (OP-11). It holds the
+ * domain's claim like a scan, checks ownership first (invariant 1) and stops without a request about
+ * the domain if that does not pass; a scan will say so. What it finds goes into the latest scan's
+ * snapshot and report in place, and is alerted like a scan's news. A host still waiting stays "not
+ * observed" (invariant 5). The domain's last scan time does not move. Never throws past runDueScan.
+ */
+async function continueWaiting(
+	env: AppEnv,
+	deps: Deps,
+	staleClaim: string,
+): Promise<TickOutcome | null> {
+	const row = await nextWaitingDomain(env.DB, staleClaim);
+	if (!row) return null;
+	const settings = settingsFrom(env);
+	const startedAt = deps.now().toISOString();
+	const claimed = await claimScan(env.DB, row, startedAt, staleClaim, row.last_scan_at);
+	if (!claimed) return null;
+	let lapsed = false;
+	try {
+		const stored = await latestScan(env.DB, claimed.id);
+		if (!stored || stored.snapshot.domain !== claimed.name) return null;
+		if (!(await checkOwnership(claimed.name, claimed.challenge_token, deps.fetch))) {
+			lapsed = true;
+			return null;
+		}
+		const pass = await continueSnapshot(stored.snapshot, settings, deps);
+		if (!pass) return null;
+		const found = buildReport(pass.snapshot, stored.snapshot, stored.report, settings, deps.now());
+		const report: ScanReport = {
+			...found,
+			takenAt: stored.report.takenAt,
+			baseline: stored.report.baseline,
+			changes: [...stored.report.changes, ...found.changes],
+			newFindings: [
+				...stored.report.newFindings.filter(
+					(finding) => !found.resolvedFindings.some((gone) => gone.id === finding.id),
+				),
+				...found.newFindings,
+			],
+			resolvedFindings: [...stored.report.resolvedFindings, ...found.resolvedFindings],
+		};
+		if (
+			!(await updateLatestScan(env.DB, claimed, startedAt, stored.id, {
+				snapshot: settled(pass.snapshot, pass.probed),
+				report,
+			}))
+		)
+			return null;
+		if (hasNews(found)) await sendAlert(env, deps, formatReport(found), found);
+		return { status: "continued", domain: claimed.name, probed: pass.probed.length, report: found };
+	} finally {
+		await releaseScan(env.DB, claimed, startedAt).catch(() => {});
+		// The record is gone: a scan records that and tells the owner, as it would have at its own time.
+		if (lapsed) await runScan(env, claimed, deps);
+	}
 }
 
 /**

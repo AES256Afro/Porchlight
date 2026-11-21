@@ -2,7 +2,7 @@
 // "This Mac": what Porchlight can see of the computer it runs on. The check only reads; this page
 // starts it, follows it, and shows what it found. Every element is built with h(): program names,
 // paths and update titles come from the system and are never treated as HTML.
-import { formatWhen, h, icon, plural, replace, severityBadge, shownText, statTile, stepNodes, tileRow, toast } from "./dom.js";
+import { announce, formatWhen, h, icon, plural, replace, setOff, severityBadge, shownText, statTile, stepNodes, tileRow, toast } from "./dom.js";
 import { AREA_TITLES, combinedCommands, hostName as nameFor, splitChecks } from "./host-areas.js";
 import { load, loadHost, startHostCheck, store, subscribe } from "./store.js";
 
@@ -25,8 +25,12 @@ export async function renderHost(view) {
 	const askApple = /** @type {HTMLInputElement} */ (h("input", { type: "checkbox", name: "askApple", checked: true }));
 	const lookUp = /** @type {HTMLInputElement} */ (h("input", { type: "checkbox", name: "lookUpPackages", checked: true }));
 	const button = /** @type {HTMLButtonElement} */ (h("button", { type: "submit", class: "button primary" }, label));
-	const statusSlot = h("div", { "aria-live": "polite" });
+	// Not a live region: the check moves every second. Its start, each area and its end are said with announce() (G-U1).
+	const statusSlot = h("div");
 	const results = h("div");
+	/** The report last drawn, so a poll redraws it only when a new check has finished (G-F3). */
+	let drawnAt = /** @type {string | null} */ (null);
+	let said = "";
 	const mac = (store.settings?.platform ?? "darwin") === "darwin";
 
 	replace(
@@ -123,9 +127,9 @@ export async function renderHost(view) {
 	function draw() {
 		const { status, report } = store.host;
 		const running = status.state === "running";
-		button.disabled = running;
-		button.textContent = report ? "Check again" : label;
-		if (running) {
+		setOff(button, running);
+		button.textContent = running ? "Checking…" : report ? "Check again" : label;
+		if (status.state === "running") {
 			const known = status.total > 0;
 			replace(
 				statusSlot,
@@ -136,11 +140,23 @@ export async function renderHost(view) {
 					h("progress", { max: known ? status.total : null, value: known ? status.done : null, "aria-label": "Check progress" }),
 				),
 			);
+			// The start, then each area as it begins: not every poll.
+			const step = known && status.current ? `Checking ${status.current}` : "The check started";
+			if (step !== said) announce(step, { topic: "host", every: said.startsWith("Checking") ? 10_000 : 0 });
+			said = step;
 		} else if (status.state === "failed") {
-			replace(statusSlot, h("p", { class: "form-error", role: "alert" }, `The check stopped: ${status.error}`));
+			// Said once: a later redraw with the same failure leaves the alert as it is.
+			const text = `The check stopped: ${status.error}`;
+			if (statusSlot.textContent !== text) replace(statusSlot, h("p", { class: "form-error", role: "alert" }, text));
+			said = "";
 		} else {
 			replace(statusSlot);
+			if (said !== "" && status.state === "done") announce("The check finished");
+			said = "";
 		}
+		const at = report?.checkedAt ?? "";
+		if (at === drawnAt) return;
+		drawnAt = at;
 		replace(results, ...(report ? drawReport(report) : store.host.service ? [] : [h("p", { class: "sub" }, `${name} has not been checked yet.`)]));
 	}
 }
@@ -154,6 +170,7 @@ function drawReport(report) {
 	const unknown = report.checks.filter((check) => check.status === "unknown");
 	const passed = report.checks.filter((check) => check.status === "passed");
 	const os = report.os ? `${report.os.name} ${report.os.version}${report.os.build ? ` (${report.os.build})` : ""}` : null;
+	const commands = combinedCommands(report.checks);
 	return [
 		h("p", { class: "sub scan-line" }, `Last checked ${formatWhen(report.checkedAt)}${os ? ` · ${os}` : ""}.`),
 		tileRow(
@@ -161,6 +178,8 @@ function drawReport(report) {
 			statTile("Could not check", unknown.length, unknown.length > 0 ? icon("pending") : null),
 			statTile("Passed", passed.length, icon("good")),
 		),
+		// The one card to act on comes first, under the tiles, not after every area (G-D1).
+		commandsCard(commands),
 		...AREA_TITLES.map(([area, title]) => {
 			const checks = report.checks.filter((check) => check.area === area);
 			if (checks.length === 0) return null;
@@ -182,7 +201,6 @@ function drawReport(report) {
 			h("p", { class: "sub" }, "A clean result here does not mean these are safe:"),
 			h("ul", { class: "host-not-covered" }, ...report.notCovered.map((line) => h("li", null, line))),
 		),
-		commandsCard(combinedCommands(report.checks)),
 	].filter((node) => node !== null);
 }
 
@@ -216,7 +234,7 @@ function commandsCard(commands) {
 		h(
 			"p",
 			{ class: "sub" },
-			"The repairs above that need no decision first, in one place, to paste into Terminal. Read each line before you run it: lines with sudo ask for your password, and updates can take a while. Steps that need a decision, such as turning off a Sharing service or adding a passphrase to an SSH key, stay with their checks.",
+			"The repairs below that need no decision first, in one place, to paste into Terminal. Read each line before you run it: lines with sudo ask for your password, and updates can take a while. Steps that need a decision, such as turning off a Sharing service or adding a passphrase to an SSH key, stay with their checks.",
 		),
 		block,
 	);

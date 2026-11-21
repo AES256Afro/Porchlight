@@ -3,7 +3,8 @@
 // every Cloudflare change as it is sent and answered. The lines are Porchlight's own words, kept in
 // memory by the server since it started; like everything else they are shown as text, built with h().
 import { api } from "./api.js";
-import { h, icon, replace } from "./dom.js";
+import { h, icon, LOCALE, pageVisibility, replace } from "./dom.js";
+import { poller } from "./poller.js";
 
 /** @typedef {import("../src/ui/server.ts").ActivityLine} ActivityLine */
 
@@ -26,74 +27,62 @@ const ICONS = /** @type {const} */ ({ info: "minus", good: "good", warning: "war
 /** The time of day, to the second: a log is read by the clock. @param {string} iso */
 export function clock(iso) {
 	const at = new Date(iso);
-	return Number.isNaN(at.getTime()) ? "" : at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+	return Number.isNaN(at.getTime()) ? "" : at.toLocaleTimeString(LOCALE, { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 }
 
 /**
- * A live list of activity lines, newest last, that follows the server until `stop` is called.
+ * A live list of activity lines, newest last, that follows the server until `stop` is called. It is a
+ * log (`role="log"`): new lines are added at the end and the oldest dropped from the top, so a screen
+ * reader hears each new line once rather than the whole list again (I-U2).
  *
  * @param {{ limit?: number, since?: number, empty?: string }} [options] `since`: only lines after this number
  * @returns {{ node: HTMLElement, stop: () => void }}
  */
 export function activityList(options = {}) {
 	const limit = options.limit ?? 400;
-	const list = h("ol", { class: "activity-list", "aria-live": "polite", "aria-label": "Activity" });
+	const list = h("ol", { class: "activity-list", role: "log", "aria-label": "Activity" });
 	const node = h("div", { class: "activity" }, list);
-	/** @type {ActivityLine[]} */
-	let lines = [];
+	const empty = h("li", { class: "activity-empty hint" }, options.empty ?? "Nothing has happened yet.");
+	list.append(empty);
 	let last = options.since ?? 0;
-	let stopped = false;
-	/** @type {ReturnType<typeof setTimeout> | undefined} */
-	let timer;
 	let wait = POLL_MS;
 
-	const draw = () => {
+	/** @param {ActivityLine[]} lines */
+	const add = (lines) => {
 		// Stay at the bottom while the reader is there; leave them alone once they scroll up.
 		const following = node.scrollHeight - node.scrollTop - node.clientHeight < 40;
-		replace(
-			list,
-			...(lines.length === 0
-				? [h("li", { class: "activity-empty hint" }, options.empty ?? "Nothing has happened yet.")]
-				: lines.map((line) => h("li", { class: `activity-line activity-${line.kind}` }, h("time", { datetime: line.at }, clock(line.at)), icon(ICONS[line.kind] ?? "minus"), h("span", null, line.text)))),
-		);
+		empty.remove();
+		for (const line of lines) {
+			list.append(h("li", { class: `activity-line activity-${line.kind}` }, h("time", { datetime: line.at }, clock(line.at)), icon(ICONS[line.kind] ?? "minus"), h("span", null, line.text)));
+		}
+		while (list.childElementCount > limit) list.firstElementChild?.remove();
 		if (following) node.scrollTop = node.scrollHeight;
 	};
 
-	const poll = async () => {
-		let arrived = false;
-		try {
+	const follow = poller({
+		every: POLL_MS,
+		// The server keeps its lines in memory: a missed poll is made up by the next one, so it never gives up.
+		tries: Number.POSITIVE_INFINITY,
+		maxWait: IDLE_POLL_MS,
+		visibility: pageVisibility(),
+		run: async () => {
 			const answer = await api("GET", `/activity?after=${last}`);
-			if (stopped) return;
-			if (Array.isArray(answer.lines) && answer.lines.length > 0) {
-				lines = [...lines, ...answer.lines].slice(-limit);
-				last = lines.at(-1)?.n ?? last;
-				arrived = true;
-				draw();
+			// Porchlight started again (a service with a fixed key): its lines start again from 1 (UI-B12).
+			if (typeof answer.last === "number" && answer.last < last) {
+				last = 0;
+				return 0;
 			}
-		} catch {
-			// A missed poll is made up by the next one.
-		}
-		wait = nextPoll(wait, arrived);
-		if (!stopped && !document.hidden) timer = setTimeout(poll, wait);
-	};
-	// A hidden tab is not asked for; shown again, it asks at once.
-	const shown = () => {
-		if (stopped || document.hidden) return;
-		clearTimeout(timer);
-		wait = POLL_MS;
-		void poll();
-	};
-	document.addEventListener("visibilitychange", shown);
-	draw();
-	void poll();
-	return {
-		node,
-		stop: () => {
-			stopped = true;
-			clearTimeout(timer);
-			document.removeEventListener("visibilitychange", shown);
+			const lines = Array.isArray(answer.lines) ? /** @type {ActivityLine[]} */ (answer.lines) : [];
+			if (lines.length > 0) {
+				add(lines);
+				last = lines.at(-1)?.n ?? last;
+			}
+			wait = nextPoll(wait, lines.length > 0);
+			return wait;
 		},
-	};
+	});
+	follow.now();
+	return { node, stop: () => follow.stop() };
 }
 
 /**

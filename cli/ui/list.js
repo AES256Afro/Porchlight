@@ -166,3 +166,13 @@ export function debounce(fn, ms) {
 		timer = setTimeout(() => fn(...args), ms);
 	};
 }
+
+/**
+ * Whether a fragment is a page's address: none at all, `#`, or `#/…`. Any other fragment, such as the
+ * skip link's `#view`, is a place on the page, and following it must not change the page (B45).
+ *
+ * @param {string} hash
+ */
+export function isPageAddress(hash) {
+	return hash === "" || hash === "#" || hash.startsWith("#/");
+}

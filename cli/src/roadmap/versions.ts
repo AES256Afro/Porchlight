@@ -15,9 +15,30 @@ export function compareVersions(a: string, b: string): number {
 
 type Part = number | string | undefined;
 
-function parts(version: string): (number | string)[] {
+/** Versions already split, since a large report names the same few over and over (R6O-1). Never changed by a caller. */
+const split = new Map<string, readonly (number | string)[]>();
+const SPLIT_KEPT = 4096;
+
+function parts(version: string): readonly (number | string)[] {
+	const kept = split.get(version);
+	if (kept) return kept;
 	const tokens = version.toLowerCase().replace(/^v/, "").match(/\d+|[a-z]+/g) ?? [];
-	return tokens.map((token) => (/^\d+$/.test(token) ? Number(token) : token));
+	const result = Object.freeze(tokens.map((token) => (/^\d+$/.test(token) ? Number(token) : token)));
+	if (split.size >= SPLIT_KEPT) split.clear();
+	split.set(version, result);
+	return result;
+}
+
+/** The numeric parts of a version, kept like `parts`. */
+const numbered = new Map<string, readonly number[]>();
+
+function numbers(version: string): readonly number[] {
+	const kept = numbered.get(version);
+	if (kept) return kept;
+	const result = Object.freeze(parts(version).filter((part) => typeof part === "number"));
+	if (numbered.size >= SPLIT_KEPT) numbered.clear();
+	numbered.set(version, result);
+	return result;
 }
 
 /** Words that mark a release as later than the plain version; every other word marks a pre-release. */
@@ -44,7 +65,6 @@ function wordRank(word: string): number {
 
 /** How big a jump an upgrade is, judged by the first numeric part that differs. */
 export function bumpKind(from: string, to: string): "major" | "minor" | "patch" {
-	const numbers = (version: string) => parts(version).filter((part) => typeof part === "number");
 	const [a, b] = [numbers(from), numbers(to)];
 	if ((a[0] ?? 0) !== (b[0] ?? 0)) return "major";
 	if ((a[1] ?? 0) !== (b[1] ?? 0)) return "minor";
@@ -58,13 +78,12 @@ export function bumpKind(from: string, to: string): "major" | "minor" | "patch" 
  * 0.0.4), since before 1.0 a minor release can change anything.
  */
 export function mayBreak(from: string, to: string): boolean {
-	const numbers = (version: string) => parts(version).filter((part) => typeof part === "number");
 	const [a, b] = [numbers(from), numbers(to)];
 	const length = Math.max(a.length, b.length, 3);
 	const firstNonZero = a.findIndex((part) => part !== 0);
 	const promise = firstNonZero === -1 ? length - 1 : firstNonZero;
-	const firstChange = Array.from({ length }, (_, i) => i).find((i) => (a[i] ?? 0) !== (b[i] ?? 0));
-	return firstChange !== undefined && firstChange <= promise;
+	for (let i = 0; i < length; i++) if ((a[i] ?? 0) !== (b[i] ?? 0)) return i <= promise;
+	return false;
 }
 
 /** The highest of `versions`, or undefined for an empty list. */

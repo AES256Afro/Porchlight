@@ -54,9 +54,10 @@ export function rank(findings: Finding[]): Finding[] {
 
 /** Repositories with the worst findings first, clean ones last. */
 export function rankRepos(repos: RepoResult[]): RepoResult[] {
-	const key = (repo: RepoResult) => SEVERITIES.map((severity) => countBySeverity(repo.findings)[severity]);
+	// Counted once for each repository, not again at every comparison (R6O-1).
+	const keys = new Map(repos.map((repo) => [repo, SEVERITIES.map((severity) => countBySeverity(repo.findings)[severity])]));
 	return [...repos].sort((a, b) => {
-		const [ka, kb] = [key(a), key(b)];
+		const [ka, kb] = [keys.get(a)!, keys.get(b)!];
 		for (let i = 0; i < ka.length; i++) {
 			if (ka[i] !== kb[i]) return kb[i]! - ka[i]!;
 		}

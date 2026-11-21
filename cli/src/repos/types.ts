@@ -90,6 +90,11 @@ export interface RepoResult {
 	 */
 	rescannedAt?: string;
 	/**
+	 * When gitleaks' history was not read again because nothing that decides its findings had changed
+	 * since a full reading (OP-1, history-reuse.ts): the time of that reading, whose findings these are.
+	 */
+	historyReusedFrom?: string;
+	/**
 	 * Tracked files a scan of the current files did not read: larger than it reads, or not a file it
 	 * could open. Missing when none were.
 	 */

@@ -1,12 +1,13 @@
 // @ts-check
 import { api, download } from "./api.js";
-import { h, icon, stepNodes, toast } from "./dom.js";
+import { announce, h, icon, replace, setOff, stepNodes, toast } from "./dom.js";
 import { isFiltering } from "./filter.js";
 import { paramsFromFilter } from "./list.js";
 import { announceSaved } from "./projects.js";
 import { openSendDialog, sendTargets } from "./send.js";
 import { currentProject, store } from "./store.js";
 import { modelFields } from "./generated.js";
+import { isStopped, waitUntil } from "./poller.js";
 
 /** @typedef {import("./filter.js").FindingFilter} FindingFilter */
 
@@ -54,7 +55,8 @@ export function openExportDialog(target, initialContent = "roadmap") {
 	const muralBox = /** @type {HTMLInputElement} */ (h("input", { type: "checkbox", name: "mural" }));
 	// With a project in use, the file goes into its folder; downloading stays a choice.
 	const project = currentProject();
-	const progress = h("p", { class: "hint", role: "status", hidden: true });
+	// Not a live region: its clock moves every two seconds. That the mural is being written is said once.
+	const progress = h("p", { class: "hint", hidden: true });
 	const error = h("p", { class: "form-error", role: "alert", hidden: true });
 	const submit = /** @type {HTMLButtonElement} */ (h("button", { type: "submit", class: "button primary" }, "Export"));
 	const form = /** @type {HTMLFormElement} */ (
@@ -72,8 +74,8 @@ export function openExportDialog(target, initialContent = "roadmap") {
 						...choices(
 							"scope",
 							[
-								["filtered", `Only what the filters show (${target.shown.toLocaleString()} findings)`, "The file says at the top that it is partial."],
-								["all", `Everything in the scan (${target.total.toLocaleString()} findings)`, ""],
+								["filtered", `Only what the filters show (${target.shown.toLocaleString("en-GB")} findings)`, "The file says at the top that it is partial."],
+								["all", `Everything in the scan (${target.total.toLocaleString("en-GB")} findings)`, ""],
 							],
 							"filtered",
 						),
@@ -148,11 +150,17 @@ export function openExportDialog(target, initialContent = "roadmap") {
 	);
 	/** Whether a mural is being written for this dialog: closing it then stops the model (AI-B8). */
 	let writing = false;
+	/**
+	 * Cancel or Escape ends the export: the wait for a mural stops, and nothing is downloaded or
+	 * saved afterwards (UI-B9).
+	 */
+	const cancel = new AbortController();
 	const dialog = /** @type {HTMLDialogElement} */ (
 		h("dialog", {
 			class: "dialog wide",
 			"aria-labelledby": "export-title",
 			onclose: () => {
+				cancel.abort();
 				if (writing) void api("POST", "/repos/mural/stop").catch(() => {});
 				dialog.remove();
 			},
@@ -169,11 +177,11 @@ export function openExportDialog(target, initialContent = "roadmap") {
 		}
 		const withMural = muralOffered && muralBox.checked;
 		if (withMural && settings.get("format") === "csv") {
-			error.textContent = "A mural cannot go in a spreadsheet. Choose HTML, Markdown or JSON.";
+			replace(error, "A mural cannot go in a spreadsheet. Choose HTML, Markdown or JSON.");
 			error.hidden = false;
 			return;
 		}
-		submit.disabled = true;
+		setOff(submit, true);
 		submit.textContent = "Exporting…";
 		error.hidden = true;
 		try {
@@ -182,6 +190,7 @@ export function openExportDialog(target, initialContent = "roadmap") {
 				await writeMural(settings);
 				settings.set("mural", "1");
 			}
+			if (cancel.signal.aborted) return;
 			const path = forDomain ? `/domains/${encodeURIComponent(target.domain)}/export?${settings}` : `/repos/export?${settings}`;
 			if (project && chosen.get("where") === "project") {
 				// The server writes it into the project's folder under a name of its own, and says where.
@@ -194,11 +203,13 @@ export function openExportDialog(target, initialContent = "roadmap") {
 			dialog.close();
 			toast(`Saved ${filename}`);
 		} catch (err) {
+			// Cancelled: the dialog is gone, and nothing more is said.
+			if (cancel.signal.aborted || isStopped(err)) return;
 			// Stay open: the choices are still there to change or retry.
 			progress.hidden = true;
-			error.textContent = err instanceof Error ? err.message : String(err);
+			replace(error, err instanceof Error ? err.message : String(err));
 			error.hidden = false;
-			submit.disabled = false;
+			setOff(submit, false);
 			submit.textContent = "Export";
 		}
 	}
@@ -214,19 +225,28 @@ export function openExportDialog(target, initialContent = "roadmap") {
 		query.delete("content");
 		query.delete("format");
 		const started = Date.now();
-		await api("POST", `/repos/mural?${query}`, modelFields(assistant));
+		await api("POST", `/repos/mural?${query}`, modelFields(assistant), { signal: cancel.signal });
 		writing = true;
 		progress.hidden = false;
-		for (;;) {
-			if (!dialog.open) return;
-			await new Promise((resolve) => setTimeout(resolve, 2000));
-			const job = await api("GET", `/repos/mural?${query}`);
-			if (job.state === "done" && job.current) break;
-			if (job.state === "failed") throw new Error(job.error);
-			const seconds = Math.round((Date.now() - started) / 1000);
-			progress.textContent = `${assistant?.model} is writing the mural: ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")} so far. Cancel stops it.`;
+		announce(`${assistant?.model ?? "The model"} is writing the mural. Cancel stops it.`);
+		try {
+			await waitUntil({
+				every: 2000,
+				signal: cancel.signal,
+				check: async () => {
+					const job = await api("GET", `/repos/mural?${query}`, undefined, { signal: cancel.signal });
+					if (job.state === "done" && job.current) return { done: true, value: null };
+					if (job.state === "failed") throw new Error(job.error);
+					// Another tab's mural replaced this one: it will not finish here, so the wait ends rather than going on for ever.
+					if (job.state !== "running" || !job.current) throw new Error("The mural was replaced or stopped elsewhere. Export again to write a new one.");
+					const seconds = Math.round((Date.now() - started) / 1000);
+					replace(progress, `${assistant?.model} is writing the mural: ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")} so far. Cancel stops it.`);
+					return { done: false };
+				},
+			});
+		} finally {
+			writing = false;
 		}
-		writing = false;
 		progress.hidden = true;
 	}
 
@@ -235,11 +255,11 @@ export function openExportDialog(target, initialContent = "roadmap") {
 }
 
 /**
- * The button that opens the dialog.
+ * The button that opens the dialog. `off`: nothing to export; it stays focusable, saying so.
  *
  * @param {() => void} onClick
- * @param {boolean} [disabled]
+ * @param {boolean} [off]
  */
-export function exportButton(onClick, disabled = false) {
-	return h("button", { type: "button", class: "button", disabled, onclick: onClick }, icon("download"), "Export");
+export function exportButton(onClick, off = false) {
+	return h("button", { type: "button", class: "button", "aria-disabled": off ? "true" : null, title: off ? "Nothing to export yet" : null, onclick: onClick }, icon("download"), "Export");
 }

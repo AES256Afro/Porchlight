@@ -104,17 +104,17 @@ export async function accessSection() {
 				{ class: "actions" },
 				h(
 					"button",
-					{ type: "button", class: state.enabled ? "button" : "button primary", disabled: busy, onclick: () => void change("/access", { enabled: !state.enabled }, state.enabled ? "Access from other devices is off" : "Access from other devices is on") },
+					{ type: "button", class: state.enabled ? "button" : "button primary", "aria-disabled": busy ? "true" : null, onclick: () => void change("/access", { enabled: !state.enabled }, state.enabled ? "Access from other devices is off" : "Access from other devices is on") },
 					busy ? "Working…" : state.enabled ? "Turn off" : "Turn on",
 				),
-				state.enabled && !state.listening ? h("button", { type: "button", class: "button", disabled: busy, onclick: () => void change("/access", { enabled: true }) }, "Try again") : null,
+				state.enabled && !state.listening ? h("button", { type: "button", class: "button", "aria-disabled": busy ? "true" : null, onclick: () => void change("/access", { enabled: true }) }, "Try again") : null,
 				state.enabled
 					? h(
 							"button",
 							{
 								type: "button",
 								class: "button quiet",
-								disabled: busy,
+								"aria-disabled": busy ? "true" : null,
 								onclick: () => {
 									if (window.confirm("Make a new key? Every device using the old link or key is signed out.")) void change("/access/key", undefined, "New key made. Give your devices the new link.");
 								},

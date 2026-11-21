@@ -85,12 +85,20 @@ export function listRepoFindings(report: ScanReport, filter: FindingFilter = noF
 	};
 }
 
+/** The plan of each frozen report, made once. */
+const plannedReports = new WeakMap<ScanReport, Map<Finding, { title: string; how: string[]; phase: PhaseKey }>>();
+
 /** The repair for each finding of a report, for showing beside it. Keyed by the finding objects of `report`. */
 export function suggestionsFor(report: ScanReport): Map<Finding, { title: string; how: string[]; phase: PhaseKey }> {
+	// A frozen report (the UI server's kept copy) cannot change, so its plan is made once: a Deeper
+	// analysis asks for it on every judgement, and at 20,000 findings each plan is tens of MB of garbage (R6O-1).
+	const kept = Object.isFrozen(report) ? plannedReports.get(report) : undefined;
+	if (kept) return kept;
 	const suggestions = new Map<Finding, { title: string; how: string[]; phase: PhaseKey }>();
 	for (const { phase, action, findings } of plan(report)) {
 		for (const finding of findings) suggestions.set(finding, { title: action.title, how: action.how, phase });
 	}
+	if (Object.isFrozen(report)) plannedReports.set(report, suggestions);
 	return suggestions;
 }
 

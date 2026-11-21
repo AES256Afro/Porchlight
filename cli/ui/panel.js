@@ -20,6 +20,8 @@ export function answersPlace() {
 /** @type {{ owner: object, body: HTMLElement, head: PanelHead } | null} */
 let current = null;
 let wide = false;
+/** Where focus was when the panel opened, so Close gives it back there (H-U2). @type {HTMLElement | null} */
+let returnTo = null;
 
 function element() {
 	return /** @type {HTMLElement | null} */ (document.getElementById("answers"));
@@ -35,11 +37,17 @@ function element() {
 export function showAnswer(owner, body, head) {
 	const panel = element();
 	if (!panel) return;
+	const opening = panel.hidden || current?.owner !== owner;
+	if (opening && !(document.activeElement instanceof Node && panel.contains(document.activeElement))) {
+		returnTo = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
+	}
 	current = { owner, body, head };
 	draw(panel);
 	panel.hidden = false;
 	document.body.dataset.answers = answersPlace();
 	document.body.classList.add("answers-open");
+	// Focus moves into the panel, so a keyboard or screen-reader user is where the answer is; on a narrow screen it covers the page.
+	if (opening) /** @type {HTMLElement | null} */ (panel.querySelector(".answers-title"))?.focus({ preventScroll: true });
 }
 
 /**
@@ -62,12 +70,16 @@ export function isShowing(owner) {
 
 export function closeAnswers() {
 	const panel = element();
+	const hadFocus = panel !== null && document.activeElement instanceof Node && panel.contains(document.activeElement);
 	if (panel) {
 		panel.hidden = true;
 		replace(panel);
 	}
 	current = null;
 	document.body.classList.remove("answers-open");
+	// Focus goes back to what opened the panel, if it is still on the page, rather than to the top of it.
+	if (hadFocus) (returnTo?.isConnected ? returnTo : /** @type {HTMLElement | null} */ (document.getElementById("view")))?.focus({ preventScroll: true });
+	returnTo = null;
 }
 
 /** After the place changes in Settings: "below" closes the panel; another place moves it there. */
@@ -111,7 +123,7 @@ function draw(panel) {
 					if (event.key === "Escape") closeAnswers();
 				},
 			},
-			h("h2", { class: "answers-title" }, icon("spark"), head.title),
+			h("h2", { class: "answers-title", tabindex: "-1" }, icon("spark"), head.title),
 			h(
 				"div",
 				{ class: "answers-tools" },

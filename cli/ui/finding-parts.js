@@ -4,7 +4,7 @@
 import { judgementBlock } from "./analysis.js";
 import { download } from "./api.js";
 import { assistAction } from "./assist.js";
-import { banner, emptyState, formatWhen, h, icon, plural, select, severityBadge, statTile, stepNodes, tileRow, toast } from "./dom.js";
+import { banner, emptyState, formatNumber, formatWhen, h, icon, plural, select, severityBadge, statTile, stepNodes, tileRow, toast } from "./dom.js";
 import { exportButton, openExportDialog } from "./export.js";
 import { openSendDialog, sendButton } from "./send.js";
 import { noteEditor } from "./finding-notes.js";
@@ -15,7 +15,12 @@ import { findingRows, store } from "./store.js";
 /** @typedef {import("./filter.js").FindingFilter} FindingFilter */
 /** @typedef {import("./filter.js").Severity} Severity */
 /** @typedef {import("./store.js").FindingRow} FindingRow */
-/** @typedef {{ path: string[], params: URLSearchParams, replace: (settings: Record<string, string | number | undefined>) => void }} Route */
+/**
+ * What a page is given by the router. `isCurrent`: whether it is still the page the owner asked for;
+ * a page checks it after each wait before changing the address (B43).
+ *
+ * @typedef {{ path: string[], params: URLSearchParams, replace: (settings: Record<string, string | number | undefined>) => void, isCurrent: () => boolean }} Route
+ */
 
 const SEVERITY_LABELS = { critical: "Critical", high: "High", medium: "Medium", low: "Low" };
 
@@ -300,10 +305,27 @@ export function filterBar(filter, onChange, { extras = [], onCleared }) {
 			},
 		})
 	);
-	return h(
+	// On a phone the filters fold behind one button, so the first finding is not two screens down (W8).
+	const toggle = /** @type {HTMLButtonElement} */ (
+		h(
+			"button",
+			{
+				type: "button",
+				class: "button filters-toggle",
+				"aria-expanded": "false",
+				onclick: () => {
+					const open = bar.classList.toggle("open");
+					toggle.setAttribute("aria-expanded", String(open));
+				},
+			},
+			isFiltering(filter) ? "Filters (on)" : "Filters",
+		)
+	);
+	const bar = h(
 		"div",
-		{ class: "filters" },
+		{ class: "filters foldable" },
 		h("div", { class: "field grow" }, search),
+		toggle,
 		severityChips(filter, changedNow),
 		select(
 			"Type",
@@ -320,6 +342,7 @@ export function filterBar(filter, onChange, { extras = [], onCleared }) {
 		...extras,
 		clear.button,
 	);
+	return bar;
 }
 
 /**
@@ -333,9 +356,17 @@ export function severityTiles(rows, filtering) {
 	const counts = { critical: 0, high: 0, medium: 0, low: 0 };
 	for (const row of rows) counts[row.severity]++;
 	const affected = new Set(rows.map((row) => row.repo)).size;
-	return tileRow(
+	const tiles = tileRow(
 		statTile(filtering ? "Matching findings" : "Total findings", rows.length),
 		...ALL_SEVERITIES.map((severity) => statTile(SEVERITY_LABELS[severity], counts[severity], icon(severity, `severity-${severity}`))),
-		statTile("Repositories affected", `${affected.toLocaleString()} of ${(store.report?.repos.length ?? 0).toLocaleString()}`),
+		statTile("Repositories affected", `${formatNumber(affected)} of ${formatNumber(store.report?.repos.length ?? 0)}`),
 	);
+	tiles.classList.add("findings-tiles");
+	// On a phone the tiles fold into one line (W8); styles.css shows one or the other.
+	const line = h(
+		"p",
+		{ class: "findings-line" },
+		`${plural(rows.length, filtering ? "matching finding" : "finding", filtering ? "matching findings" : "findings")}: ${ALL_SEVERITIES.map((severity) => `${formatNumber(counts[severity])} ${SEVERITY_LABELS[severity].toLowerCase()}`).join(", ")}, in ${plural(affected, "repository", "repositories")}.`,
+	);
+	return h("div", null, tiles, line);
 }

@@ -4,7 +4,7 @@
 // so what it writes is never trusted as markup and never acted on.
 import { api, ApiError } from "./api.js";
 import { followUpBox } from "./discussion.js";
-import { banner, h, icon, replace, stepNodes } from "./dom.js";
+import { announce, banner, h, icon, replace, stepNodes } from "./dom.js";
 import { generatedLabel, localModelSetup, MAX_QUESTION, modelFields, paragraphs, questionProblem, waitingLabel } from "./generated.js";
 import { answersPlace, retitle, showAnswer } from "./panel.js";
 
@@ -87,7 +87,8 @@ function createAssist(path, assistant, labels, body, submit) {
 	// Where the answer belongs on the page. It holds the answer itself, or, when answers appear in the
 	// answers panel, a line saying so with a link to bring this answer back there.
 	const panel = h("section", { class: "assist", "aria-label": "Answer from the local model", hidden: true });
-	const content = h("div", { class: "assist-content", "aria-live": "polite" });
+	// Not a live region: an answer can run to 1,500 words and is drawn again when answers move. Its arrival is said once (H-U1).
+	const content = h("div", { class: "assist-content" });
 	/** @type {Assist} */
 	const self = { button, panel, run };
 	draw();
@@ -131,6 +132,8 @@ function createAssist(path, assistant, labels, body, submit) {
 		answering = null;
 		redrawAnswers();
 		retitle(self, head);
+		if (state.state === "done") announce(`${state.model} answered. ${answersPlace() === "below" ? "The answer is below the button." : "The answer is in the answers panel."}`);
+		else if (state.state === "failed") announce("The model could not answer");
 	}
 
 	function draw() {

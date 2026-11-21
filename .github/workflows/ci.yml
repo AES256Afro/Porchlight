@@ -10,6 +10,9 @@ permissions:
   contents: read
 
 jobs:
+  # The checks and the tests of both packages, in one job so the three packages are installed once
+  # per push (OP-13). Beside the image, not before it: the two jobs take about as long as the slower,
+  # and publishing waits for both.
   check:
     runs-on: ubuntu-latest
     steps:
@@ -45,26 +48,6 @@ jobs:
       - name: The tag names this tree's version
         if: startsWith(github.ref, 'refs/tags/v')
         run: node -e 'const v = require("./cli/package.json").version; if (process.env.GITHUB_REF_NAME !== `v${v}`) { console.error(`tag ${process.env.GITHUB_REF_NAME} but cli/package.json says ${v}`); process.exit(1); }'
-
-  # The tests of both packages. Beside the checks and the image, not after them: the three jobs take
-  # about as long as the slowest, and publishing waits for all of them.
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            monitor/package-lock.json
-            cli/package-lock.json
-      - run: npm ci
-      - run: npm --prefix monitor ci
-      - run: npm --prefix cli ci
       # The tests that run the real gitleaks and osv-scanner (the hostile-repository ones among them)
       # skip on a computer without them. Here they must run, with the image's pinned versions and checksums.
       - name: Install the scanners
@@ -132,7 +115,7 @@ jobs:
   # the same Dockerfile with these layers cached.
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [check, test, container]
+    needs: [check, container]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -211,7 +194,7 @@ jobs:
   # handed to the release job.
   dmg:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [check, test, container]
+    needs: [check, container]
     runs-on: macos-15
     permissions:
       contents: read

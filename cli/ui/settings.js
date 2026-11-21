@@ -1,7 +1,7 @@
 // @ts-check
 // Settings: the model, projects, access from other devices, the look of the interface, and what Porchlight is connected to.
 import { api } from "./api.js";
-import { h, icon, replace, toast } from "./dom.js";
+import { h, icon, replace, scrollMotion, toast } from "./dom.js";
 import { applyLook, currentLook } from "./appearance.js";
 import { redrawAnswers } from "./assist.js";
 import { ANSWER_PLACES, DEFAULT_ANSWER_PLACE, LOOKS } from "./looks.js";
@@ -12,7 +12,7 @@ import { modelDownloadSection } from "./model-download.js";
 import { monitorSection } from "./monitor-settings.js";
 import { modelSection } from "./model-settings.js";
 import { projectsSection } from "./projects.js";
-import { load, store } from "./store.js";
+import { load, store, subscribe } from "./store.js";
 
 /**
  * @param {HTMLElement} view
@@ -28,6 +28,8 @@ export async function renderSettings(view) {
 	const projects = projectsSection();
 	const cloudflare = await cloudflareSection();
 	const monitor = monitorSection();
+	/** What is connected, at the top as an index of the page (I-D2); drawn again when a connection changes (UI-B12). */
+	const index = h("section", { class: "card full settings-index", "aria-labelledby": "settings-index-title" });
 	let saving = Promise.resolve();
 
 	/** @param {string} id */
@@ -73,7 +75,10 @@ export async function renderSettings(view) {
 	};
 
 	draw();
-	return () => {};
+	const unsubscribe = subscribe((change) => {
+		if (change === "settings" || change === "cloudflare" || change === "projects") replace(index, ...connections());
+	});
+	return () => unsubscribe();
 
 	function draw() {
 		const chosen = currentLook();
@@ -84,6 +89,7 @@ export async function renderSettings(view) {
 				"section",
 				{ class: "page" },
 				h("div", { class: "page-head" }, h("div", null, h("h1", null, "Settings"), h("p", { class: "sub" }, "Which model Porchlight uses, where it keeps your files, how it looks, and what it's connected to."))),
+				(replace(index, ...connections()), index),
 				model,
 				downloads,
 				projects,
@@ -131,39 +137,79 @@ export async function renderSettings(view) {
 						),
 					),
 				),
-				connections(),
 			),
 		);
 	}
 }
 
-/** Read-only: where each connection is set, never its secret. */
+/**
+ * A link to a section of this page: it scrolls there and moves focus there without drawing the page
+ * again, so nothing half-typed in another section is lost.
+ *
+ * @param {string} name the section's part of the address, as `settingsAnchor` knows it
+ * @param {string} text
+ */
+function sectionLink(name, text) {
+	return h(
+		"a",
+		{
+			href: `#/settings/${name}`,
+			onclick: (/** @type {MouseEvent} */ event) => {
+				const target = document.getElementById(`settings-${name}`);
+				if (!target) return;
+				event.preventDefault();
+				history.replaceState(null, "", `#/settings/${name}`);
+				target.scrollIntoView({ block: "start", behavior: scrollMotion() });
+				target.focus({ preventScroll: true });
+			},
+		},
+		text,
+	);
+}
+
+/** Read-only: where each connection is set, never its secret, with a link to the section that sets it. */
 function connections() {
 	const settings = store.settings;
-	if (!settings) return null;
-	/** @param {boolean} ok @param {string} text */
-	const line = (ok, text) => h("li", null, h("span", { class: `severity ${ok ? "status-good" : "status-pending"}` }, icon(ok ? "good" : "pending")), " ", text);
-	return h(
-		"section",
-		{ class: "card full" },
-		h("h2", null, "Connections"),
+	if (!settings) return [];
+	/** @param {boolean} ok @param {string} text @param {string | null} section */
+	const line = (ok, text, section) => h("li", null, h("span", { class: `severity ${ok ? "status-good" : "status-pending"}` }, icon(ok ? "good" : "pending")), " ", section ? sectionLink(section, text) : text);
+	return [
+		h("h2", { id: "settings-index-title" }, "Connections"),
 		h(
 			"ul",
 			{ class: "plain-list" },
-			line(settings.monitor.configured, settings.monitor.configured ? `Monitor: ${settings.monitor.host}` : "Monitor: not connected"),
+			line(settings.monitor.configured, settings.monitor.configured ? `Monitor: ${settings.monitor.host}` : "Monitor: not connected", settings.service ? null : "monitor"),
 			line(
 				settings.assistant.configured,
 				settings.assistant.configured ? `Model: ${settings.assistant.model} at ${settings.assistant.host}` : "Model: not connected",
+				settings.service ? null : "model",
 			),
-			line(settings.github.token, settings.github.token ? "GitHub: token set, private repositories can be fetched" : "GitHub: public repositories only"),
-			line(settings.cloudflare.configured, settings.cloudflare.configured ? "Cloudflare: token saved, your account can be audited" : "Cloudflare: not connected"),
+			line(settings.github.token, settings.github.token ? "GitHub: token set, private repositories can be fetched" : "GitHub: public repositories only", null),
+			line(settings.cloudflare.configured, settings.cloudflare.configured ? "Cloudflare: token saved, your account can be audited" : "Cloudflare: not connected", "cloudflare"),
+		),
+		h(
+			"p",
+			{ class: "settings-jump" },
+			"On this page: ",
+			...[
+				["model", "Model"],
+				["download", "Download a model"],
+				["projects", "Projects"],
+				["cloudflare", "Cloudflare"],
+				["monitor", "Monitor"],
+				["access", "Access from other devices"],
+				["appearance", "Appearance"],
+			]
+				// A service sets its model and access where it is managed, so those sections are not here.
+				.filter(([name]) => !settings.service || !["model", "download", "access"].includes(name))
+				.flatMap(([name, text], index) => [index > 0 ? " · " : null, sectionLink(name, text)]),
 		),
 		h(
 			"p",
 			{ class: "hint" },
 			settings.service
 				? "These are set in the service's settings."
-				: "The model, the monitor and Cloudflare are connected in the sections above. A GitHub token is set when Porchlight starts: in the Mac app, in ~/.porchlight/app.env; in a terminal, with PORCHLIGHT_GITHUB_TOKEN.",
+				: "The model, the monitor and Cloudflare are connected in their sections below. A GitHub token is set when Porchlight starts: in the Mac app, in ~/.porchlight/app.env; in a terminal, with PORCHLIGHT_GITHUB_TOKEN.",
 		),
-	);
+	];
 }

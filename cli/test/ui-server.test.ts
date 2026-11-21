@@ -106,7 +106,8 @@ test("serves the page with headers that confine it to this server", async (t) =>
 	assert.match(page.text, /<title>Porchlight<\/title>/);
 	assert.match(String(page.headers["content-security-policy"]), /default-src 'none'.*script-src 'self'.*frame-ancestors 'none'/);
 	assert.equal(page.headers["x-content-type-options"], "nosniff");
-	assert.equal(page.headers["cache-control"], "no-store");
+	// The page's own files hold no data: kept by the browser, asked about each time (OP-7).
+	assert.equal(page.headers["cache-control"], "no-cache");
 	assert.ok(!page.text.includes(server.sessionKey), "the page itself must not contain the session key");
 	const scripts = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "overview", "findings", "roadmap", "repos", "domains"];
 	for (const asset of ["/styles.css", "/favicon.svg", ...scripts.map((name) => `/${name}.js`)]) {
@@ -665,12 +666,13 @@ test("gives every finding in the report its suggested fix", async (t) => {
 	await makeTree(server.dir, { "state/": "" });
 	await writeFile(join(server.dir, "state", "repo-scan.json"), JSON.stringify(sampleReport("/work")));
 
-	const { report } = (await send(server, "GET", "/api/repos/report")).json;
+	const { report, suggestions } = (await send(server, "GET", "/api/repos/report")).json;
 
 	const worst = report.repos[0];
 	assert.equal(worst.name, "group/worst");
+	// Each repair is sent once, and each finding names its own by its place in the list (OP-5).
 	assert.deepEqual(
-		worst.findings.map((entry: { severity: string; suggestion: { title: string; phase: string } }) => [entry.severity, entry.suggestion.title, entry.suggestion.phase]),
+		worst.findings.map((entry: { severity: string; fix: number }) => [entry.severity, suggestions[entry.fix].title, suggestions[entry.fix].phase]),
 		[
 			["critical", "Replace or mitigate pkg 1.0.0: no fixed release is published", "now"],
 			["high", "Rotate the credential in package-lock.json", "now"],

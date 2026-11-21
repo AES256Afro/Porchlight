@@ -425,9 +425,11 @@ test("with an OSV database folder, packages are compared against it and not look
 	const osvCalls = run.calls.map((call, index) => ({ call, env: run.envs[index] })).filter(({ call }) => call[0] === "osv-scanner" && call[1] === "scan");
 	assert.equal(osvCalls.length, 2);
 	for (const { call, env } of osvCalls) {
-		assert.ok(call.includes("--offline-vulnerabilities") && call.includes("--download-offline-databases"), call.join(" "));
+		assert.ok(call.includes("--offline-vulnerabilities"), call.join(" "));
 		assert.deepEqual(env, { OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY: database });
 	}
+	// The databases are brought up to date by one run, not by every repository at once (OP-4).
+	assert.equal(osvCalls.filter(({ call }) => call.includes("--download-offline-databases")).length, 1);
 
 	// Without one, nothing changes.
 	const online = fakeRunner({

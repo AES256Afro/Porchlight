@@ -4,6 +4,7 @@ import { findRepos, type NotSearched } from "./discover.ts";
 import { CancelledError, quotedValuesOut, run as defaultRun, ToolMissingError, type Runner } from "./exec.ts";
 import { standardChoices } from "../../ui/scan-choices.js";
 import { scanSecrets } from "./gitleaks.ts";
+import type { HistoryReuse } from "./history-reuse.ts";
 import { scanDependencies } from "./osv.ts";
 import { nameUnder } from "./report.ts";
 import { scannerSettingFiles } from "./settings.ts";
@@ -15,7 +16,7 @@ interface Tool {
 	installHint: string;
 	/** Whether the choices ask for this scanner's check. */
 	chosen: (choices: ScanChoices) => boolean;
-	scan: (repo: string, run: Runner, settings: ScannerSettings) => Promise<{ findings: Finding[]; unreadFiles?: number; notCovered?: NotCovered[]; settingFiles?: string[] }>;
+	scan: (repo: string, run: Runner, settings: ScannerSettings) => Promise<{ findings: Finding[]; unreadFiles?: number; notCovered?: NotCovered[]; settingFiles?: string[]; reusedFrom?: string }>;
 }
 
 const TOOLS: Tool[] = [
@@ -25,8 +26,8 @@ const TOOLS: Tool[] = [
 		installHint: "brew install gitleaks",
 		// One gitleaks pass finds secrets and, with Porchlight's rules beside its own, private data.
 		chosen: (choices) => choices.secrets || choices.privateData === true,
-		scan: (repo, run, { choices, scanned, notSearched }) =>
-			scanSecrets(repo, run, { history: choices.history, localFiles: choices.localFiles, secrets: choices.secrets, privateData: choices.privateData === true, scanned, notSearched }),
+		scan: (repo, run, { choices, scanned, notSearched, historyReuse }) =>
+			scanSecrets(repo, run, { history: choices.history, localFiles: choices.localFiles, secrets: choices.secrets, privateData: choices.privateData === true, scanned, notSearched }, historyReuse),
 	},
 	{
 		name: "osv-scanner",
@@ -88,6 +89,8 @@ export interface ScanOptions {
 	osvDatabase?: string;
 	/** What to look at (default: Standard, everything a scan looked at before there were choices). Saved with the report. */
 	choices?: ScanChoices;
+	/** Where readings of history are kept, so an unchanged repository's is not read again (OP-1). Absent: always read. */
+	historyReuse?: HistoryReuse;
 }
 
 /** What the scanners are told beyond the repository. */
@@ -98,6 +101,7 @@ interface ScannerSettings {
 	scanned: Set<string>;
 	/** Where a scanner adds folders it found that the scan did not cover. */
 	notSearched: NotSearched[];
+	historyReuse?: HistoryReuse;
 }
 
 export async function scanRepos(options: ScanOptions): Promise<ScanReport> {
@@ -123,7 +127,13 @@ export async function scanRepos(options: ScanOptions): Promise<ScanReport> {
 	const skipped = named.filter(({ name }) => choices.skip.includes(name)).map(({ name }) => name);
 	const paths = named.filter(({ name }) => !choices.skip.includes(name)).map(({ path }) => path);
 	const passedOver: NotSearched[] = found.flatMap((place) => place.notSearched);
-	const settings: ScannerSettings = { choices, scanned: new Set(named.map(({ path }) => path)), notSearched: passedOver, ...(options.osvDatabase ? { osvDatabase: options.osvDatabase } : {}) };
+	const settings: ScannerSettings = {
+		choices,
+		scanned: new Set(named.map(({ path }) => path)),
+		notSearched: passedOver,
+		...(options.osvDatabase ? { osvDatabase: options.osvDatabase } : {}),
+		...(options.historyReuse ? { historyReuse: options.historyReuse } : {}),
+	};
 
 	const repos: RepoResult[] = [];
 	const queue = [...paths];
@@ -225,6 +235,7 @@ async function scanRepo(path: string, tools: Tool[], run: Runner, settingFiles: 
 		}
 		result.findings.push(...outcome.findings);
 		if (outcome.unreadFiles) result.unreadFiles = outcome.unreadFiles;
+		if (outcome.reusedFrom) result.historyReusedFrom = outcome.reusedFrom;
 		if (outcome.notCovered?.length) result.notCovered = [...(result.notCovered ?? []), ...outcome.notCovered];
 		// What a scanner reports it applied, wherever it was: the search for setting files skips some folders.
 		const applied = (outcome.settingFiles ?? []).filter((file) => !result.settingFiles?.includes(file));

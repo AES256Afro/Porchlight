@@ -1,8 +1,9 @@
 import { realpath } from "node:fs/promises";
-import { isAbsolute, relative, sep } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { GIT_SAFE_ARGS } from "../github/github.ts";
+import { oneAtATime, readPrivateJson, writePrivateJson } from "../private-files.ts";
 import { compareVersions, highestVersion } from "../roadmap/versions.ts";
-import { lastLine, type Runner } from "./exec.ts";
+import { CancelledError, lastLine, type Runner } from "./exec.ts";
 import { gitReadEnv } from "./git-copy.ts";
 import { outsideWords, readsOutside } from "./includes.ts";
 import type { Finding, NotCovered, Severity } from "./types.ts";
@@ -32,6 +33,8 @@ export interface OsvOptions {
 	 * repository's packages are never sent to api.osv.dev. Without, each package is looked up there.
 	 */
 	database?: string;
+	/** The time, for deciding whether the databases are a day old; tests set it. */
+	now?: () => Date;
 }
 
 /** Checks the dependencies named in a repository's lockfiles against the OSV database. */
@@ -39,12 +42,60 @@ export async function runOsvScanner(repo: string, run: Runner, options: OsvOptio
 	return (await osvScan(repo, run, options)).findings;
 }
 
+/** How long OSV's offline databases are compared against before they are brought up to date (R6O-3). */
+export const OSV_DATABASE_FRESH_MS = 24 * 60 * 60 * 1000;
+/** Porchlight's note in the database folder of when a run last brought the databases up to date. */
+const REFRESHED_FILE = "porchlight-refreshed.json";
+
+/** When the databases in `database` were last brought up to date by a scan, or null when never (or unreadably). */
+export async function osvDatabaseRefreshedAt(database: string): Promise<Date | null> {
+	const read = await readPrivateJson(join(database, REFRESHED_FILE)).catch(() => null);
+	const at = read?.state === "read" ? (read.value as { refreshedAt?: unknown } | null)?.refreshedAt : undefined;
+	const date = typeof at === "string" ? new Date(at) : null;
+	return date && !Number.isNaN(date.getTime()) ? date : null;
+}
+
+/**
+ * With a database folder, the databases are brought up to date at most once a day, by one run at a time
+ * (OP-4, R6O-3): the first repository of a scan whose copy is a day old or more downloads, the others wait
+ * for it and then compare against what it fetched, side by side. A repository that needs an ecosystem the
+ * folder does not hold yet (osv-scanner then fails offline) is run once more, downloading, again one at a time.
+ */
 async function osvScan(repo: string, run: Runner, options: OsvOptions): Promise<{ findings: Finding[]; stderr: string }> {
-	const offline = options.database ? ["--offline-vulnerabilities", "--download-offline-databases"] : [];
+	const database = options.database;
+	if (!database) return osvRun(repo, run);
+	const now = options.now ?? (() => new Date());
+	const stale = async () => {
+		const at = await osvDatabaseRefreshedAt(database);
+		const age = at === null ? Infinity : now().getTime() - at.getTime();
+		// A note from the future (a clock put back) is not trusted either.
+		return !(age >= 0 && age < OSV_DATABASE_FRESH_MS);
+	};
+	const downloading = () => osvRun(repo, run, database, true);
+	if (await stale()) {
+		const refreshed = await oneAtATime(join(database, REFRESHED_FILE), async () => {
+			if (!(await stale())) return null;
+			const result = await downloading();
+			await writePrivateJson(join(database, REFRESHED_FILE), { refreshedAt: now().toISOString() });
+			return result;
+		});
+		if (refreshed) return refreshed;
+	}
+	try {
+		return await osvRun(repo, run, database, false);
+	} catch (err) {
+		if (err instanceof CancelledError) throw err;
+		return oneAtATime(join(database, REFRESHED_FILE), downloading);
+	}
+}
+
+/** One osv-scanner run: online, or against the databases in `database`, downloading them first when `download`. */
+async function osvRun(repo: string, run: Runner, database?: string, download = false): Promise<{ findings: Finding[]; stderr: string }> {
+	const offline = database ? ["--offline-vulnerabilities", ...(download ? ["--download-offline-databases"] : [])] : [];
 	const { code, stdout, stderr } = await run(
 		"osv-scanner",
 		["scan", "source", "--recursive", ...OSV_LIMITS, ...offline, "--format", "json", repo],
-		options.database ? { env: { OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY: options.database } } : undefined,
+		database ? { env: { OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY: database } } : undefined,
 	);
 	if (code === NO_PACKAGES_FOUND) return { findings: [], stderr };
 	if (code !== 0 && code !== VULNERABILITIES_FOUND) {

@@ -763,6 +763,8 @@ B33, B34, B35, B48, B52, B56, B58, B59, B69, B72, S28, S44, R2B-6, R2B-7, R6F-2,
 
 ### M14: A steadier, quieter page. Size: L
 
+**Status, 2026-11-21: built, in most part.** Tests in `cli/test/poller.test.ts`, `ui-sweep.test.ts` (the static sweeps), `ui-steady.test.ts`; checked by keyboard through all 11 views at 1280×700 and with no sideways scroll at 375×812 on made-up data. One `poller()` for every poll (OP-8, UI-B10); a page draws only while it is current (B43); the Overview redraws only what changed, keeps the typed folder and the last scan's choices (B41, B42); note drafts survive redraws (B44); "Skip to content" stays on the page (B45); a refused scan shows the server's reason (B40); `h()` refuses markup, inline style and unsafe links, and no working button uses `disabled` (S46, UI-B6); progress is announced, never an `aria-live` slot (UI-B7); paging on every long list (UI-B13, F-D1, D-D1); project folders added only after their check is shown (S30); an investigation's limits shown open (S29); B49's page part, UI-B9, UI-B12, I-D1, R6U-1 to R6U-4, R6U-8, R6U-9, R6U-11, R6V-6, R6V-7; the monitor's alert status and each domain's last error on Domains. **Not done:** depth kept in the report (B42); telling the model it is on its last turn (E-F5); a server-side plain-error helper (R6U-10); the README's `#k=` bookmark advice (R6U-5); folding Settings' download and Cloudflare sections (I-D2).
+
 B40–B45, B49, the accessibility and hierarchy items above, S29, S30, S46, UI-B9–B13, F-D1, D-D1, I-D1, R6U-1 to R6U-5, R6U-8 to R6U-11, R6V-6 and R6V-7.
 
 - **Route currency:** a page that finishes after the owner has moved on draws nothing.
@@ -791,7 +793,7 @@ QL-1, QL-3, QL-5, QL-8, US-1, US-2, US-4, US-5, US-8, US-9, US-10, B-Q1, B-Q2, B
 
 ### M16: Speed. Size: M
 
-**Status, 2026-11-21: in part.** Built: OP-2 (keywords for four private-data rules), OP-3 (committed photos read with one batched `cat-file`), OP-9 (kept scans gzipped; older plain ones still read), R6O-2 (`doctor` says the data folder's size), R6O-4 (Activity backs off when idle and stops while hidden). Not done: OP-1, OP-4 with R6O-3, OP-5 to OP-8, OP-11 to OP-13, R6O-1.
+**Status, 2026-11-21: built, but R6O-1's limit is not met.** OP-1 (an unchanged repository's history scan reused, keyed on code, versions, rules, choices, ignore file and every ref; UI scans only), OP-2, OP-3, OP-4 with R6O-3 (OSV databases refreshed one run at a time, at most daily), OP-5 (repairs indexed, the response gzipped and cached: 140 KB on the wire at 5,000 findings), OP-6 (judgements fetched alone, 483 bytes each), OP-7 (ETag and gzip for the page's files), OP-8 (with M14), OP-9, OP-11 (idle cron ticks probe waiting hosts: 200 names within 2 days), OP-12 and MON-B8 (compact waiting hosts, inventory capped with a note), OP-13 (one CI check job), R6O-2, R6O-4. Measured by `scripts/measure-speed.ts`. **R6O-1:** 25 report requests at 20,000 findings peak at 236 MB on Node 26.7 (was 412 MB; 188 MB on Node 26.13), above the 200 MB limit; starting the server with `--max-semi-space-size` is the likely remaining step. Not done: the OSV database's age on the page; history reuse for `repos scan` and "Scan again".
 
 OP-1 to OP-9, OP-11, OP-12, OP-13, and R6O-1 to R6O-4.
 

@@ -1,8 +1,9 @@
 // @ts-check
 import { api } from "./api.js";
-import { banner, h, icon, replace, stepNodes, toast } from "./dom.js";
+import { announce, banner, formatNumber, formatWhen, h, icon, pageVisibility, replace, toast } from "./dom.js";
 import { analysisNotice, analysisProgress, generatedLabel, modelFields, VERDICT_LABELS } from "./generated.js";
-import { loadReport, store } from "./store.js";
+import { poller } from "./poller.js";
+import { loadJudgements, store } from "./store.js";
 
 /** @typedef {import("../src/ui/server.ts").AnalysisStatus} AnalysisStatus */
 /** @typedef {import("./store.js").Judgement} Judgement */
@@ -53,9 +54,9 @@ export function judgementBlock(finding) {
 						h("dt", null, "Declared as"),
 						h("dd", null, evidence.declared),
 						h("dt", null, "Imported in"),
-						h("dd", null, evidence.usedInFiles === 0 ? "No file of this repository's own code" : `${evidence.usedInFiles.toLocaleString()} ${evidence.usedInFiles === 1 ? "file" : "files"}${evidence.onlyInTests ? ", all of them tests" : ""}`),
+						h("dd", null, evidence.usedInFiles === 0 ? "No file of this repository's own code" : `${evidence.usedInFiles.toLocaleString("en-GB")} ${evidence.usedInFiles === 1 ? "file" : "files"}${evidence.onlyInTests ? ", all of them tests" : ""}`),
 						h("dt", null, "Looked through"),
-						h("dd", null, `${evidence.filesRead.toLocaleString()} source files${evidence.complete ? "" : " (stopped there: the repository is larger)"}`),
+						h("dd", null, `${evidence.filesRead.toLocaleString("en-GB")} source files${evidence.complete ? "" : " (stopped there: the repository is larger)"}`),
 					),
 					evidence.uses.length > 0 ? h("ul", { class: "uses" }, ...evidence.uses.map((use) => h("li", null, h("span", { class: "mono wrap" }, use.file), h("code", { class: "wrap" }, use.line)))) : null,
 				)
@@ -72,16 +73,17 @@ export function judgementBlock(finding) {
 export function analysisCard() {
 	const assistant = store.settings?.assistant;
 	if (!assistant?.configured || !store.report) return null;
-	let stopped = false;
-	/** @type {ReturnType<typeof setTimeout> | undefined} */
-	let timer;
 	/** @type {AnalysisStatus} */
 	let status = { state: "idle" };
+	/** Why a Deep scan's analysis did not start, when the server says so (R6U-11). @type {{ at: string, why: string } | null} */
+	let notStarted = null;
+	let said = "";
 	/** @type {{ items: number, judged: number, waiting: Record<string, number>, verdicts: Record<string, number> } | null} */
 	let summary = null;
 	let judgedShown = -1;
 
-	const body = h("div", { "aria-live": "polite" });
+	// Not a live region: progress moves with each judgement. The start and the end are said with announce().
+	const body = h("div");
 	const countInput = /** @type {HTMLInputElement} */ (h("input", { type: "number", name: "limit", value: "25", min: "1", max: "500", class: "narrow", "aria-label": "How many to analyse now" }));
 	const everything = /** @type {HTMLInputElement} */ (h("input", { type: "checkbox", name: "all" }));
 	const node = h(
@@ -95,39 +97,35 @@ export function analysisCard() {
 		),
 		body,
 	);
-	void refresh();
-	return {
-		node,
-		stop: () => {
-			stopped = true;
-			clearTimeout(timer);
-		},
-	};
-
-	async function refresh() {
-		try {
+	const follow = poller({
+		every: POLL_MS,
+		visibility: pageVisibility(),
+		run: async () => {
 			const answer = await api("GET", "/analysis");
-			if (stopped) return;
 			status = answer.status;
 			summary = answer.summary;
+			notStarted = answer.notStarted && typeof answer.notStarted.why === "string" ? answer.notStarted : null;
 			draw();
 			// New judgements belong on the findings pages too.
 			if (summary && summary.judged !== judgedShown) {
-				if (judgedShown !== -1) void loadReport();
+				if (judgedShown !== -1) void loadJudgements();
 				judgedShown = summary.judged;
 			}
-			if (status.state === "running") timer = setTimeout(refresh, POLL_MS);
-		} catch (err) {
-			if (!stopped) replace(body, banner("error", "Could not read the analysis", [message(err)]));
-		}
-	}
+			if (status.state === "running" && said !== "running") announce(`${assistant.model} started analysing`);
+			else if (status.state !== "running" && said === "running") announce(status.state === "stopped" ? "The analysis stopped" : "The analysis finished");
+			said = status.state;
+			return status.state === "running";
+		},
+		onGiveUp: (err) => replace(body, banner("error", "Could not read the analysis", [message(err)])),
+	});
+	follow.now();
+	return { node, stop: () => follow.stop() };
 
 	/** @param {string} path @param {unknown} [send] */
 	async function act(path, send) {
 		try {
 			await api("POST", path, path === "/analysis" ? { .../** @type {object} */ (send ?? {}), ...modelFields(store.settings?.assistant) } : send);
-			clearTimeout(timer);
-			await refresh();
+			follow.now();
 		} catch (err) {
 			toast(message(err), "error");
 		}
@@ -137,8 +135,12 @@ export function analysisCard() {
 		const running = status.state === "running";
 		const waiting = summary ? summary.items - summary.judged : 0;
 		const verdicts = summary?.verdicts ?? {};
+		// A Deep scan's analysis that did not start is said here, where it would have run, not only in Activity.
+		const finishedAt = status.state === "done" || status.state === "stopped" ? status.finishedAt : "";
+		const missed = notStarted && !running && notStarted.at > finishedAt ? notStarted : null;
 		replace(
 			body,
+			missed ? banner("warning", "The analysis after the Deep scan did not start", [`${missed.why} (${formatWhen(missed.at)}).`, "Analyse below to start it now."]) : null,
 			h("p", null, analysisProgress(summary)),
 			summary && summary.judged > 0
 				? h(
@@ -146,7 +148,7 @@ export function analysisCard() {
 						{ class: "hint" },
 						Object.entries(VERDICT_LABELS)
 							.filter(([verdict]) => (verdicts[verdict] ?? 0) > 0)
-							.map(([verdict, label]) => `${label.replace("Model: ", "")}: ${verdicts[verdict]?.toLocaleString()}`)
+							.map(([verdict, label]) => `${label.replace("Model: ", "")}: ${verdicts[verdict]?.toLocaleString("en-GB")}`)
 							.join(" · "),
 						" · ",
 						h("a", { href: "#/findings?sort=verdict" }, "See them, confirmed first"),
@@ -163,7 +165,7 @@ export function analysisCard() {
 			(status.state === "done" || status.state === "stopped") && status.failed > 0
 				? banner(
 						"warning",
-						status.gaveUp ? `Stopped after ${status.failed.toLocaleString()} ${status.failed === 1 ? "item" : "items"} could not be analysed in a row` : `${status.failed.toLocaleString()} of ${status.total.toLocaleString()} could not be analysed`,
+						status.gaveUp ? `Stopped after ${status.failed.toLocaleString("en-GB")} ${status.failed === 1 ? "item" : "items"} could not be analysed in a row` : `${status.failed.toLocaleString("en-GB")} of ${status.total.toLocaleString("en-GB")} could not be analysed`,
 						[...(status.lastError ? [status.lastError] : []), ...(status.gaveUp ? ["The rest were not sent. Check the model under Settings → Model, then analyse again."] : [])],
 					)
 				: null,

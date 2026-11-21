@@ -3,7 +3,7 @@
 // typed here and sent once to Porchlight's own server, which checks it with Cloudflare, keeps it on
 // this computer (0600) and never sends it back. The page only ever learns whether one is saved.
 import { api } from "./api.js";
-import { h, icon, replace, stepNodes, toast } from "./dom.js";
+import { formatDay, h, icon, replace, stepNodes, toast } from "./dom.js";
 import { updateCloudflare } from "./store.js";
 
 /** @typedef {import("./store.js").CloudflareToken} CloudflareToken */
@@ -69,12 +69,12 @@ export async function cloudflareSection() {
 					null,
 					h("span", { class: "severity status-good" }, icon("good"), "Connected"),
 					" ",
-					token.source === "startup" ? "Using PORCHLIGHT_CLOUDFLARE_TOKEN, set when Porchlight started." : `Token saved${token.savedAt ? ` ${new Date(token.savedAt).toLocaleDateString()}` : ""}.`,
+					token.source === "startup" ? "Using PORCHLIGHT_CLOUDFLARE_TOKEN, set when Porchlight started." : `Token saved${token.savedAt ? ` ${formatDay(token.savedAt)}` : ""}.`,
 					verified
 						? h(
 								"span",
 								{ class: "hint block" },
-								`Cloudflare says it is ${verified.status}, ${verified.kind === "account" ? "an account token" : "a user token"}${verified.expiresOn ? `, expiring ${new Date(verified.expiresOn).toLocaleDateString()}` : ", with no end date"}.`,
+								`Cloudflare says it is ${verified.status}, ${verified.kind === "account" ? "an account token" : "a user token"}${verified.expiresOn ? `, expiring ${formatDay(verified.expiresOn)}` : ", with no end date"}.`,
 							)
 						: null,
 				)
@@ -129,8 +129,8 @@ export async function cloudflareSection() {
 							},
 						},
 						h("div", { class: "field grow" }, input),
-						h("button", { type: "submit", class: "button primary", disabled: busy }, busy ? "Checking…" : token.source === "settings" ? "Replace token" : "Check and save"),
-						token.source === "settings" ? h("button", { type: "button", class: "button", disabled: busy, onclick: () => void remove() }, "Remove") : null,
+						h("button", { type: "submit", class: "button primary", "aria-disabled": busy ? "true" : null }, busy ? "Checking…" : token.source === "settings" ? "Replace token" : "Check and save"),
+						token.source === "settings" ? h("button", { type: "button", class: "button", "aria-disabled": busy ? "true" : null, onclick: () => void remove() }, "Remove") : null,
 					)
 				: h(
 						"p",

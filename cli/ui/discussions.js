@@ -6,10 +6,13 @@
 import { api, ApiError, apiText, download } from "./api.js";
 import { aboutLink, filterDiscussions, KIND_LABELS, kindLabel } from "./discussion-links.js";
 import { followUpBox, turnNodes } from "./discussion.js";
-import { emptyState, formatWhen, h, icon, plural, replace, select, toast } from "./dom.js";
-import { debounce } from "./list.js";
+import { emptyState, formatWhen, h, icon, pager, plural, replace, select, toast } from "./dom.js";
+import { debounce, paginate } from "./list.js";
 import { announceSaved, ownFolder, revealButton } from "./projects.js";
 import { currentProject, load, store } from "./store.js";
+
+/** Discussions listed at a time. */
+const PAGE_SIZE = 25;
 
 /** @typedef {import("../src/discussions/discussions.ts").DiscussionSummary} DiscussionSummary */
 /** @typedef {import("../src/discussions/discussions.ts").DiscussionView} DiscussionView */
@@ -36,8 +39,10 @@ async function renderList(view, context) {
 	let kind = context.params.get("kind") ?? "";
 	let project = context.params.get("project") ?? "";
 	let query = context.params.get("q") ?? "";
+	// Up to 200 are kept: they are listed a page at a time, the page in the address (UI-B13).
+	let page = Number(context.params.get("page")) || 1;
 	const results = h("div");
-	const remember = () => context.replace({ kind, project, q: query });
+	const remember = () => context.replace({ kind, project, q: query, page: page > 1 ? page : undefined });
 	const search = /** @type {HTMLInputElement} */ (
 		h("input", {
 			type: "search",
@@ -46,14 +51,14 @@ async function renderList(view, context) {
 			"aria-label": "Search discussions",
 			oninput: debounce(() => {
 				query = search.value;
-				remember();
+				page = 1;
 				draw();
 			}, 150),
 		})
 	);
 	const kinds = select("Kind of discussion", [["", "Every kind"], ...KIND_LABELS.map(([key, label]) => /** @type {[string, string]} */ ([key, label]))], kind, (value) => {
 		kind = value;
-		remember();
+		page = 1;
 		draw();
 	});
 	// Which project a discussion's transcript is kept in, once there are projects to choose from.
@@ -66,7 +71,7 @@ async function renderList(view, context) {
 					project,
 					(value) => {
 						project = value;
-						remember();
+						page = 1;
 						draw();
 					},
 				)
@@ -112,15 +117,18 @@ async function renderList(view, context) {
 			);
 			return;
 		}
-		const shown = filterDiscussions(all, { kind, project, q: query });
+		const matching = filterDiscussions(all, { kind, project, q: query });
+		const paged = paginate(matching, page, PAGE_SIZE);
+		page = paged.page;
+		remember();
 		replace(
 			results,
-			shown.length === 0
+			matching.length === 0
 				? emptyState("Nothing matches", "Clear the search, or choose every kind and every project.")
 				: h(
 						"ul",
 						{ class: "discussion-list" },
-						...shown.map((discussion) =>
+						...paged.items.map((discussion) =>
 							h(
 								"li",
 								{ class: "discussion-row" },
@@ -133,6 +141,10 @@ async function renderList(view, context) {
 							),
 						),
 					),
+			pager(paged, "discussions", (next) => {
+				page = next;
+				draw();
+			}),
 		);
 	}
 }

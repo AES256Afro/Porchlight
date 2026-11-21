@@ -3,7 +3,8 @@
 // download it. Porchlight runs no model itself. The search sends your search words to Hugging Face
 // and nothing else; the names and numbers it returns are someone else's text, shown as text.
 import { api } from "./api.js";
-import { banner, formatWhen, h, icon, replace, select, toast } from "./dom.js";
+import { announce, banner, formatWhen, h, icon, pageVisibility, replace, select, toast } from "./dom.js";
+import { poller } from "./poller.js";
 import { downloadLine, formatBytes, machineLine } from "./hints.js";
 import { setAssistant } from "./store.js";
 
@@ -24,8 +25,8 @@ export async function modelDownloadSection() {
 	let searching = false;
 	/** @type {string} */
 	let problem = "";
-	/** @type {ReturnType<typeof setTimeout> | undefined} */
-	let timer;
+	/** The download last said to a screen reader. */
+	let said = "";
 	const query = /** @type {HTMLInputElement} */ (h("input", { type: "search", name: "model-search", autocomplete: "off", spellcheck: false, placeholder: "qwen, llama, security…", "aria-label": "Search for a model" }));
 	const author = /** @type {HTMLInputElement} */ (h("input", { type: "text", name: "model-author", autocomplete: "off", spellcheck: false, placeholder: "unsloth", "aria-label": "Publisher" }));
 	const tag = /** @type {HTMLInputElement} */ (h("input", { type: "text", name: "model-tag", autocomplete: "off", spellcheck: false, placeholder: "conversational", "aria-label": "Tag" }));
@@ -34,16 +35,28 @@ export async function modelDownloadSection() {
 	const fits = /** @type {HTMLInputElement} */ (h("input", { type: "checkbox", name: "model-fits", checked: true }));
 	const named = /** @type {HTMLInputElement} */ (h("input", { type: "text", name: "model-name", autocomplete: "off", spellcheck: false, placeholder: "qwen3:8b", "aria-label": "Model name" }));
 
-	async function refresh() {
-		try {
+	/** Follows a download while it runs and this section is on screen; a missed poll is made up by the next one. */
+	const follow = poller({
+		every: POLL_MS,
+		tries: Number.POSITIVE_INFINITY,
+		maxWait: 10_000,
+		visibility: pageVisibility(),
+		run: async () => {
+			if (!section.isConnected) return false;
 			state = /** @type {any} */ (await api("GET", "/model/local"));
-		} catch {
-			// A missed poll is made up by the next one.
-		}
-		draw();
-		clearTimeout(timer);
-		if (state.download.state === "running" && section.isConnected) timer = setTimeout(refresh, POLL_MS);
-	}
+			draw();
+			const download = state.download;
+			const now = download.state === "idle" ? "idle" : `${download.state} ${download.name}`;
+			if (now !== said) {
+				if (download.state === "running") announce(`Downloading ${download.name}`);
+				else if (download.state === "done") announce(`${download.name} is downloaded`);
+				else if (download.state === "failed") announce(`${download.name} was not downloaded`);
+				said = now;
+			}
+			return state.download.state === "running";
+		},
+	});
+	const refresh = () => follow.now();
 
 	/** @param {string} name */
 	async function start(name) {
@@ -52,7 +65,7 @@ export async function modelDownloadSection() {
 			const answer = await api("POST", "/model/local/download", { name });
 			state.download = answer.download;
 			toast(`Downloading ${name}`);
-			await refresh();
+			refresh();
 		} catch (err) {
 			problem = err instanceof Error ? err.message : String(err);
 			draw();
@@ -93,8 +106,8 @@ export async function modelDownloadSection() {
 		[
 			model.params ? `${model.params}B` : "size not in the name",
 			state.tasks.find(([id]) => id === model.task)?.[1],
-			`${model.downloads.toLocaleString()} downloads`,
-			`${model.likes.toLocaleString()} likes`,
+			`${model.downloads.toLocaleString("en-GB")} downloads`,
+			`${model.likes.toLocaleString("en-GB")} likes`,
 			model.updated ? `updated ${formatWhen(model.updated)}` : "",
 		]
 			.filter(Boolean)
@@ -106,7 +119,7 @@ export async function modelDownloadSection() {
 	/** @param {string} name @param {string} label */
 	function getButton(name, label = "Download") {
 		if (has(name)) return h("button", { type: "button", class: "button", onclick: () => void use(name) }, "Use this model");
-		return h("button", { type: "button", class: "button", disabled: state.download.state === "running" || !state.ollama.reachable, onclick: () => void start(name) }, icon("download"), label);
+		return h("button", { type: "button", class: "button", "aria-disabled": state.download.state === "running" || !state.ollama.reachable ? "true" : null, onclick: () => void start(name) }, icon("download"), label);
 	}
 
 	/**
@@ -140,7 +153,7 @@ export async function modelDownloadSection() {
 			const known = download.total > 0;
 			return h(
 				"div",
-				{ class: "host-progress", "aria-live": "polite" },
+				{ class: "host-progress" },
 				h("strong", null, downloadLine(download)),
 				h("progress", { max: known ? download.total : null, value: known ? download.completed : null, "aria-label": "Download progress" }),
 				h("div", { class: "actions" }, h("button", { type: "button", class: "button danger", onclick: () => void api("POST", "/model/local/stop").then(refresh, refresh) }, "Stop"), h("span", { class: "hint" }, "You can leave this page. The download carries on, and the Activity page says when it is done.")),
@@ -159,7 +172,7 @@ export async function modelDownloadSection() {
 	}
 
 	draw();
-	if (state.download.state === "running") timer = setTimeout(refresh, POLL_MS);
+	if (state.download.state === "running") follow.start();
 	return section;
 
 	function draw() {
@@ -227,7 +240,7 @@ export async function modelDownloadSection() {
 							state.ollama.onThisComputer === false
 								? h("p", { class: "hint" }, `Ollama runs at ${state.ollama.host}, not on this computer, so which models fit depends on that machine's memory.`)
 								: h("label", { class: "check-line" }, fits, `Only models that fit this computer (up to about ${state.machine.fitsUpTo}B). Sizes are read from each model's name, so one that does not give its size is left out.`),
-							h("div", { class: "actions" }, h("button", { type: "submit", class: "button primary", disabled: searching }, searching ? "Searching…" : "Search")),
+							h("div", { class: "actions" }, h("button", { type: "submit", class: "button primary", "aria-disabled": searching ? "true" : null }, searching ? "Searching…" : "Search")),
 						),
 						found !== null && filters.format === "mlx"
 							? h("p", { class: "hint" }, "Ollama cannot run MLX models. Load one in Unsloth Studio, which can also train it, or in LM Studio, then choose that program in the model form above. Porchlight talks to either once the model is loaded.")
@@ -254,7 +267,7 @@ export async function modelDownloadSection() {
 								},
 							},
 							h("div", { class: "field grow" }, named),
-							h("button", { type: "submit", class: "button", disabled: state.download.state === "running" || !reachable }, icon("download"), "Download"),
+							h("button", { type: "submit", class: "button", "aria-disabled": state.download.state === "running" || !reachable ? "true" : null }, icon("download"), "Download"),
 						),
 					)
 				: null,

@@ -196,6 +196,9 @@ main:focus {
 	flex-direction: column;
 	gap: 20px;
 	height: 100vh;
+	/* In a short window the foot (scan status, the Dashboard look's counts) stays reachable (I-D1). */
+	overflow-y: auto;
+	overscroll-behavior: contain;
 	padding: 16px 12px;
 	background: var(--surface);
 	border-right: 1px solid var(--hairline);
@@ -317,13 +320,33 @@ main:focus {
 	text-align: center;
 }
 
+/*
+ * Three states, three looks (R6V-6). Content being worked out again keeps its colours, with a line
+ * saying so above it; a page on its way fades a little, late; a control that cannot be used now is
+ * drawn in muted ink on the page colour, not faded.
+ */
 .stale {
-	opacity: 0.55;
+	position: relative;
 }
 
-/* Between pages the last one stays, dimmed only if the next takes a moment, so a quick page does not flicker. */
-#view.is-loading > * {
-	opacity: 0.55;
+.stale::before {
+	content: "Updating…";
+	display: block;
+	margin-bottom: 8px;
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+}
+
+/* Each page draws into a slot of its own (app.js); the slot itself takes no room. */
+.view-slot {
+	display: contents;
+}
+
+/* Between pages the last one stays, faded only if the next takes a moment, so a quick page does not flicker. */
+#view.is-loading > .view-slot > *,
+#view.is-loading > .page {
+	opacity: 0.7;
+	cursor: progress;
 	transition: opacity 0.15s ease 0.2s;
 }
 
@@ -424,8 +447,22 @@ input::placeholder {
 
 .button:disabled,
 .button[aria-disabled="true"] {
-	opacity: 0.55;
+	border-style: dashed;
+	border-color: var(--field-border);
+	background: var(--page);
+	color: var(--ink-2);
 	cursor: default;
+}
+
+.button.primary[aria-disabled="true"],
+.button.primary:disabled {
+	border-color: var(--field-border);
+	background: var(--page);
+	color: var(--ink-2);
+}
+
+.button[aria-disabled="true"]:hover {
+	background: var(--page);
 }
 
 .button.primary {
@@ -434,7 +471,7 @@ input::placeholder {
 	color: var(--on-accent);
 }
 
-.button.primary:hover:not(:disabled) {
+.button.primary:hover:not(:disabled):not([aria-disabled="true"]) {
 	background: var(--accent-hover);
 }
 
@@ -581,6 +618,17 @@ progress {
 .urgent-list {
 	margin: 8px 0 0;
 	padding-left: 20px;
+}
+
+/* Each place is a target at least 24px tall, with room between them (R6U-2, WCAG 2.5.8). */
+.urgent-list li + li {
+	margin-top: 4px;
+}
+
+.urgent-list a {
+	display: inline-block;
+	min-height: 24px;
+	padding: 2px 0;
 }
 
 .urgent .card-foot {
@@ -1091,7 +1139,8 @@ table.nested {
 
 .columns {
 	display: grid;
-	grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+	/* Never wider than the page: at 320px the columns stack instead of scrolling sideways (R6U-1). */
+	grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
 	gap: 20px;
 	align-items: start;
 }
@@ -1187,7 +1236,7 @@ table.nested {
 	cursor: pointer;
 }
 
-.phase-tab:hover:not(:disabled) {
+.phase-tab:hover:not(:disabled):not([aria-disabled="true"]) {
 	border-color: var(--border);
 }
 
@@ -1196,7 +1245,8 @@ table.nested {
 	box-shadow: inset 0 -3px 0 var(--accent-hover);
 }
 
-.phase-tab:disabled {
+.phase-tab:disabled,
+.phase-tab[aria-disabled="true"] {
 	color: var(--muted);
 	cursor: default;
 }
@@ -3865,4 +3915,135 @@ fieldset.looks legend {
 	flex-wrap: wrap;
 	align-items: baseline;
 	gap: 4px 8px;
+}
+
+/* M14: a steadier, quieter page. */
+
+/* Focus is never left under the sticky header or the answers drawer (R6U-3, WCAG 2.4.11). */
+html {
+	scroll-padding-top: 16px;
+	scroll-padding-bottom: 16px;
+}
+
+html:has(body.answers-open[data-answers="bottom"]) {
+	scroll-padding-bottom: 46vh;
+}
+
+/* Radios and checkboxes keep their size beside long labels (R6U-2). */
+.choice input,
+.check-line input {
+	flex: none;
+}
+
+.monitor-status {
+	margin-bottom: 16px;
+}
+
+.plain-list.tight {
+	gap: 2px;
+	margin: 0;
+}
+
+.tag-new + .wrap,
+td > .tag-new {
+	margin-right: 6px;
+}
+
+.settings-jump {
+	margin-top: 8px;
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+}
+
+.cf-not-covered > summary h2 {
+	display: inline;
+}
+
+.cf-zones {
+	margin-top: 24px;
+}
+
+.cf-zones > h2 {
+	margin-bottom: 12px;
+}
+
+/* Once there is a scan, the scan card is a bar above the results (A-D1). */
+.scan-card.compact > .sub {
+	display: none;
+}
+
+.scan-card.compact > h2 {
+	font-size: var(--text-md);
+}
+
+.github-box {
+	margin-top: 16px;
+}
+
+/* A toggle for the filters, shown only on a narrow screen (W8). */
+.filters-toggle {
+	display: none;
+}
+
+.findings-line {
+	display: none;
+}
+
+@media (max-width: 900px) {
+	html {
+		scroll-padding-top: 112px;
+	}
+
+	.sidebar {
+		overflow: visible;
+	}
+
+	/* A running or failed scan still shows in the header (A-U4, I-U3). */
+	.scan-status.is-live {
+		display: flex;
+		flex: 1 0 100%;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 4px 12px;
+		order: 4;
+		margin: 0 -12px;
+		padding: 6px 12px;
+	}
+
+	.scan-status.is-live progress {
+		flex: 1 1 120px;
+	}
+}
+
+@media (max-width: 600px) {
+	.filters-toggle {
+		display: inline-flex;
+	}
+
+	.filters.foldable:not(.open) > :not(.grow):not(.filters-toggle) {
+		display: none;
+	}
+
+	/* The severity tiles repeat the chips; one line says the same (W8). */
+	.findings-tiles {
+		display: none;
+	}
+
+	.findings-line {
+		display: block;
+		margin-bottom: 12px;
+		color: var(--ink-2);
+		font-size: var(--text-sm);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	html {
+		scroll-behavior: auto;
+	}
+
+	#view.is-loading > .view-slot > *,
+	#view.is-loading > .page {
+		transition: none;
+	}
 }

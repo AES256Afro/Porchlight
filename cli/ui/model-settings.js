@@ -2,7 +2,7 @@
 // Settings → Model: where the model behind Explain, Summarise, Ask and Deeper analysis runs.
 // Keys are typed here and sent to Porchlight's own server once; the server never sends one back.
 import { api } from "./api.js";
-import { banner, h, icon, replace, stepNodes, toast } from "./dom.js";
+import { banner, h, icon, replace, setOff, stepNodes, toast } from "./dom.js";
 import { MODEL_CHOICES, modelChoice } from "./models.js";
 import { setAssistant } from "./store.js";
 
@@ -195,12 +195,12 @@ export async function modelSection() {
 			h(
 				"div",
 				{ class: "actions" },
-				h("button", { type: "button", class: "button primary", disabled: Boolean(busy) || !unsaved, onclick: () => void save() }, busy === "Saving…" || busy === "Asking the model before saving…" ? busy : "Save and use"),
+				h("button", { type: "button", class: "button primary", "aria-disabled": Boolean(busy) || !unsaved ? "true" : null, onclick: () => void save() }, busy === "Saving…" || busy === "Asking the model before saving…" ? busy : "Save and use"),
 				choice.provider === null
 					? null
-					: h("button", { type: "button", class: "button", disabled: Boolean(busy), onclick: test }, busy === "Waiting for the model…" ? busy : "Send a test message"),
+					: h("button", { type: "button", class: "button", "aria-disabled": Boolean(busy) ? "true" : null, onclick: test }, busy === "Waiting for the model…" ? busy : "Send a test message"),
 				state.source === "settings" && state.startup
-					? h("button", { type: "button", class: "button quiet", disabled: Boolean(busy), onclick: useStartup }, "Use the start-up model")
+					? h("button", { type: "button", class: "button quiet", "aria-disabled": Boolean(busy) ? "true" : null, onclick: useStartup }, "Use the start-up model")
 					: null,
 			),
 			h("div", { "aria-live": "polite" }, result),
@@ -299,7 +299,7 @@ export async function modelSection() {
 					"div",
 					{ class: "inline-form" },
 					Object.assign(modelInput, { id: "model-name" }),
-					h("button", { type: "button", class: "button", disabled: Boolean(busy), onclick: findModels }, busy === "Finding models…" ? busy : "Find models"),
+					h("button", { type: "button", class: "button", "aria-disabled": Boolean(busy) ? "true" : null, onclick: findModels }, busy === "Finding models…" ? busy : "Find models"),
 				),
 				found.length > 0
 					? h(
@@ -322,6 +322,6 @@ export async function modelSection() {
 	/** Typing changes only whether Save is offered; the rest of the form stays as it is, focus included. */
 	function refreshSave() {
 		const button = /** @type {HTMLButtonElement | null} */ (section.querySelector(".actions .button.primary"));
-		if (button && !busy) button.disabled = false;
+		if (button && !busy) setOff(button, false);
 	}
 }

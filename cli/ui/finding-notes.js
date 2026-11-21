@@ -1,11 +1,19 @@
 // @ts-check
 // The owner's own tracking beside a finding: "New since the last scan", and a status and note they
 // set. Built with h() like everything else; the note is the owner's text, shown as text.
-import { h, replace, toast } from "./dom.js";
+import { formatWhen, h, isOff, replace, setOff, toast } from "./dom.js";
 import { isNew, noteFor, saveFindingNote } from "./store.js";
-import { acceptanceEnded, localDay, MAX_NOTE, statusesFor, statusLabel } from "./tracking.js";
+import { acceptanceEnded, createDrafts, findingKey, localDay, MAX_NOTE, statusesFor, statusLabel } from "./tracking.js";
 
 /** @typedef {{ ruleId: string, location: string, detail: string, kind?: string }} FindingId */
+
+/**
+ * What is being typed in each open editor, by finding, so a redraw (a poll while a scan runs, a save
+ * of another note) builds the editor again with it instead of the saved note (B44).
+ *
+ * @type {ReturnType<typeof createDrafts<{ status: string, note: string, until: string }>>}
+ */
+const drafts = createDrafts();
 
 /**
  * Small marks for a finding's row: new since the previous scan, and the owner's status when it is
@@ -38,13 +46,22 @@ export function trackingMarks(repo, finding) {
  */
 export function noteEditor(repo, finding) {
 	const saved = noteFor(repo, finding);
-	const until = /** @type {HTMLInputElement} */ (h("input", { type: "date", min: localDay(), value: saved?.until ?? "", "aria-label": "Accept this risk until" }));
+	const key = findingKey(repo, finding);
+	const draft = drafts.get(key);
+	const keep = () => drafts.set(key, { status: status.value, note: note.value, until: until.value });
+	const until = /** @type {HTMLInputElement} */ (h("input", { type: "date", min: localDay(), value: draft?.until ?? saved?.until ?? "", "aria-label": "Accept this risk until", oninput: () => keep() }));
 	const untilField = h("label", { class: "field" }, h("span", { class: "hint" }, "Until (optional)"), until);
 	const status = /** @type {HTMLSelectElement} */ (
 		h(
 			"select",
-			{ "aria-label": "Status", onchange: () => showUntil() },
-			...statusesFor(finding.kind ?? "").map(([value, label]) => h("option", { value, selected: value === (saved?.status ?? "open") }, label)),
+			{
+				"aria-label": "Status",
+				onchange: () => {
+					showUntil();
+					keep();
+				},
+			},
+			...statusesFor(finding.kind ?? "").map(([value, label]) => h("option", { value, selected: value === (draft?.status ?? saved?.status ?? "open") }, label)),
 		)
 	);
 	// The end date belongs to an accepted risk alone.
@@ -56,10 +73,10 @@ export function noteEditor(repo, finding) {
 		? h("p", { class: "form-error", role: "note" }, `You accepted this risk until ${saved?.until}. That day has passed: look at it again, then set a new date or another status.`)
 		: null;
 	const note = /** @type {HTMLTextAreaElement} */ (
-		h("textarea", { rows: 2, maxLength: MAX_NOTE, "aria-label": "Note", placeholder: "Your note: a ticket, who is on it, why the risk is accepted…" })
+		h("textarea", { rows: 2, maxLength: MAX_NOTE, "aria-label": "Note", placeholder: "Your note: a ticket, who is on it, why the risk is accepted…", oninput: () => keep() })
 	);
-	note.value = saved?.note ?? "";
-	const when = h("span", { class: "hint" }, saved?.updatedAt ? `Saved ${new Date(saved.updatedAt).toLocaleString()}` : "");
+	note.value = draft?.note ?? saved?.note ?? "";
+	const when = h("span", { class: "hint" }, draft ? "Not saved yet" : saved?.updatedAt ? `Saved ${formatWhen(saved.updatedAt)}` : "");
 	const button = /** @type {HTMLButtonElement} */ (
 		h(
 			"button",
@@ -67,15 +84,20 @@ export function noteEditor(repo, finding) {
 				type: "button",
 				class: "button",
 				onclick: async () => {
-					button.disabled = true;
+					if (isOff(button)) return;
+					setOff(button, true);
+					const sent = { status: status.value, note: note.value, until: until.value };
 					try {
-						await saveFindingNote(repo, finding, status.value, note.value, until.value);
+						await saveFindingNote(repo, finding, sent.status, sent.note, sent.until);
+						// Saved: the draft goes, unless more was typed while it was saving.
+						const now = drafts.get(key);
+						if (!now || (now.status === sent.status && now.note === sent.note && now.until === sent.until)) drafts.clear(key);
 						replace(when, "Saved just now");
 						toast("Saved");
 					} catch (err) {
 						toast(err instanceof Error ? err.message : String(err), "error");
 					} finally {
-						button.disabled = false;
+						setOff(button, false);
 					}
 				},
 			},

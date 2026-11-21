@@ -7,8 +7,9 @@
 import { activityList } from "./activity.js";
 import { api, ApiError, download } from "./api.js";
 import { assistAction } from "./assist.js";
-import { banner, formatWhen, h, icon, plural, replace, select, severityBadge, shownText, statTile, stepNodes, tileRow, toast } from "./dom.js";
+import { announce, banner, formatNumber, formatWhen, h, icon, pager, plural, replace, scrollMotion, select, setOff, severityBadge, shownText, statTile, stepNodes, tileRow, toast } from "./dom.js";
 import { fixBrief, fixGroups, tokenFixSteps } from "./hints.js";
+import { debounce, paginate } from "./list.js";
 import { announceSaved } from "./projects.js";
 import { currentProject, load, loadCloudflare, startCloudflareAudit, store, subscribe, updateCloudflare } from "./store.js";
 
@@ -16,6 +17,7 @@ import { currentProject, load, loadCloudflare, startCloudflareAudit, store, subs
 /** @typedef {ReturnType<typeof import("../src/cloudflare/apply.ts").describeChange>} PendingChange */
 /** @typedef {import("../src/cloudflare/types.ts").CfReport} CfReport */
 /** @typedef {import("../src/cloudflare/types.ts").CfZoneReport} CfZoneReport */
+/** @typedef {import("./store.js").AppliedChange} AppliedChange */
 /**
  * @typedef {(
  *   | { state: "loading" }
@@ -29,8 +31,14 @@ import { currentProject, load, loadCloudflare, startCloudflareAudit, store, subs
 const AREA_TITLES = /** @type {const} */ ({ tls: "SSL/TLS", dns: "DNS", email: "Email", firewall: "Firewall and bots", ownership: "Proof of ownership", account: "Account" });
 const SEVERITIES = /** @type {const} */ (["critical", "high", "medium", "low"]);
 
+/** Domains shown at a time, and changes in the log. */
+const ZONE_PAGE = 10;
+const CHANGE_PAGE = 20;
+
 /**
- * Changes asked for while the page is open, by zone and change, so a redraw keeps the request on show.
+ * Changes asked for while the page is open, by audit, zone and change, so a redraw keeps the request
+ * on show. Keyed by the audit's time: after a new audit a problem that came back is offered again,
+ * not shown as "Applied" from before (UI-B12).
  *
  * @type {Map<string, ChangeState>}
  */
@@ -38,16 +46,28 @@ const changes = new Map();
 
 /**
  * @param {HTMLElement} view
+ * @param {import("./finding-parts.js").Route} route the zones' filter and page live in its address
  * @returns {Promise<() => void>}
  */
-export async function renderCloudflare(view) {
+export async function renderCloudflare(view, route) {
 	await load();
 	await loadCloudflare();
 	const lookups = /** @type {HTMLInputElement} */ (h("input", { type: "checkbox", name: "lookups", checked: true }));
 	const button = /** @type {HTMLButtonElement} */ (h("button", { type: "submit", class: "button primary" }, "Audit my account"));
-	const statusSlot = h("div", { "aria-live": "polite" });
+	// Not a live region: the bar moves every second. A screen reader hears the start, then where it is twice a minute, then the end.
+	const statusSlot = h("div");
 	const intro = h("div");
 	const results = h("div");
+	/** Which domains are listed: those with something to look at, or all; matching a name; which page. */
+	let zoneShow = route.params.get("zones") === "all" ? "all" : "problems";
+	let zoneQuery = route.params.get("q") ?? "";
+	let zonePage = Number(route.params.get("page")) || 1;
+	let changePage = 1;
+	const zoneSlot = h("div");
+	/** What the results were last drawn from: a poll that changes none of it redraws only the status (F-F2). */
+	let drawnFrom = "";
+	/** The audit's state last said to a screen reader. */
+	let said = "";
 	/** With a project in use, exports go into its folder unless the owner chooses to download. */
 	let exportTo = "project";
 	/**
@@ -126,7 +146,8 @@ export async function renderCloudflare(view) {
 
 	draw();
 	const unsubscribe = subscribe((change) => {
-		if (change === "cloudflare" || change === "settings" || change === "projects") draw();
+		if (change === "cloudflare") drawStatus();
+		else if (change === "settings" || change === "projects") draw();
 	});
 	return () => {
 		unsubscribe();
@@ -149,7 +170,9 @@ export async function renderCloudflare(view) {
 		}
 		if (batch) {
 			drawBatch();
-			batchSlot.scrollIntoView({ block: "start", behavior: "smooth" });
+			// Focus goes to the requests to approve, not only the view (F-U3).
+			batchSlot.scrollIntoView({ block: "start", behavior: scrollMotion() });
+			/** @type {HTMLElement | null} */ (batchSlot.querySelector("h2"))?.focus({ preventScroll: true });
 		}
 	}
 
@@ -211,7 +234,7 @@ export async function renderCloudflare(view) {
 				h(
 					"div",
 					{ class: "card full cf-batch", role: "group", "aria-label": `Fix these: ${waiting.scope}` },
-					h("h2", null, `Fix these: ${waiting.scope}`),
+					h("h2", { tabindex: "-1" }, `Fix these: ${waiting.scope}`),
 					h(
 						"p",
 						null,
@@ -287,8 +310,8 @@ export async function renderCloudflare(view) {
 					h(
 						"div",
 						{ class: "actions" },
-						h("button", { type: "button", class: "button primary", disabled: chosen === 0 || batchBusy, onclick: () => void answerBatch(true) }, `Approve and send ${chosen}`),
-						h("button", { type: "button", class: "button", disabled: batchBusy, onclick: () => void answerBatch(false) }, "Cancel"),
+						h("button", { type: "button", class: "button primary", "aria-disabled": chosen === 0 || batchBusy ? "true" : null, onclick: () => chosen > 0 && void answerBatch(true) }, `Approve and send ${chosen}`),
+						h("button", { type: "button", class: "button", "aria-disabled": batchBusy ? "true" : null, onclick: () => void answerBatch(false) }, "Cancel"),
 						h("span", { class: "hint" }, `You can approve them until ${formatWhen(waiting.expiresAt)}.`),
 					),
 				),
@@ -328,31 +351,125 @@ export async function renderCloudflare(view) {
 		);
 	}
 
+	/** Everything: the form, the status and the results. */
 	function draw() {
+		drawnFrom = "";
+		drawStatus();
+	}
+
+	/**
+	 * What a poll changes: the button, the progress and a set of changes being sent. The report under it
+	 * is drawn again only when a new audit, a change or the token's state says so, so a section the owner
+	 * opened stays open while the audit runs (F-F2, UI-B12).
+	 */
+	function drawStatus() {
 		drawBatch();
 		const state = store.cloudflare;
 		const running = state.status.state === "running";
-		button.disabled = running || !state.token.configured;
-		button.textContent = state.report ? "Audit again" : "Audit my account";
-		if (running && state.status.state === "running") {
+		setOff(button, running || !state.token.configured);
+		button.textContent = running ? "Auditing…" : state.report ? "Audit again" : "Audit my account";
+		if (state.status.state === "running") {
 			const status = state.status;
 			const known = status.total > 0;
+			const where = known && status.current ? `Reading ${Math.min(status.done + 1, status.total)} of ${status.total}: ${status.current}` : "Starting";
 			replace(
 				statusSlot,
 				h(
 					"div",
 					{ class: "host-progress" },
-					h("strong", null, known && status.current ? `Reading ${Math.min(status.done + 1, status.total)} of ${status.total}: ${status.current}` : "Starting"),
+					h("strong", null, where),
 					h("progress", { max: known ? status.total : null, value: known ? status.done : null, "aria-label": "Audit progress" }),
 				),
 			);
+			if (said !== "running") announce("The audit started", { topic: "cloudflare" });
+			else announce(where, { topic: "cloudflare", every: 30_000 });
 		} else if (state.status.state === "failed") {
-			replace(statusSlot, h("p", { class: "form-error", role: "alert" }, `The audit stopped: ${state.status.error}`));
+			// Said once: a later redraw with the same failure leaves the alert as it is.
+			const text = `The audit stopped: ${state.status.error}`;
+			if (statusSlot.textContent !== text) replace(statusSlot, h("p", { class: "form-error", role: "alert" }, text));
 		} else {
 			replace(statusSlot);
+			if (said === "running" && state.status.state === "done") announce("The audit finished");
 		}
+		said = state.status.state;
+		const from = [state.report?.checkedAt ?? "", state.changes.length, state.token.configured, state.canChange, state.lacking.join(","), state.batch.state].join("|");
+		if (from === drawnFrom) return;
+		drawnFrom = from;
 		replace(intro, state.token.configured ? form : connectCard(state.service));
 		replace(results, batchSlot, ...(state.report ? drawReport(state.report) : state.token.configured ? [h("p", { class: "sub" }, "Your account has not been audited yet.")] : []), changesCard());
+	}
+
+	/** Writes the zones' filter and page into the address, so a reload or a shared link keeps them. */
+	function rememberZones() {
+		route.replace({ zones: zoneShow === "all" ? "all" : undefined, q: zoneQuery.trim() || undefined, page: zonePage > 1 ? zonePage : undefined });
+	}
+
+	/**
+	 * Every domain of the audit as a card, a page at a time, with those needing a look first by default
+	 * and a box to find one by name (F-D1).
+	 *
+	 * @param {CfReport} report
+	 */
+	function zonesSection(report) {
+		const needsLook = (/** @type {CfZoneReport} */ zone) => zone.checks.some((item) => item.status === "failed" || item.status === "unknown");
+		const looking = report.zones.filter(needsLook).length;
+		const search = /** @type {HTMLInputElement} */ (
+			h("input", {
+				type: "search",
+				value: zoneQuery,
+				placeholder: "Find a domain",
+				"aria-label": "Find a domain",
+				oninput: debounce(() => {
+					zoneQuery = search.value;
+					zonePage = 1;
+					drawZones();
+				}, 150),
+			})
+		);
+		const drawZones = () => {
+			const query = zoneQuery.trim().toLowerCase();
+			const chosen = report.zones.filter((zone) => (zoneShow === "all" || needsLook(zone)) && (query === "" || zone.name.toLowerCase().includes(query)));
+			const shown = paginate(chosen, zonePage, ZONE_PAGE);
+			zonePage = shown.page;
+			rememberZones();
+			replace(
+				zoneSlot,
+				chosen.length === 0
+					? h("p", { class: "sub" }, query ? "No domain matches that name." : zoneShow === "problems" ? "No domain has anything to look at. Show all domains to see each one's checks." : "No domains.")
+					: null,
+				...shown.items.map((zone) => zoneCard(zone)),
+				pager(shown, "domains", (next) => {
+					zonePage = next;
+					drawZones();
+					/** @type {HTMLElement | null} */ (view.querySelector("#cf-zones-title"))?.focus();
+				}),
+			);
+		};
+		drawZones();
+		return h(
+			"section",
+			{ class: "cf-zones", "aria-labelledby": "cf-zones-title" },
+			h("h2", { id: "cf-zones-title", tabindex: "-1" }, `Domains (${formatNumber(report.zones.length)})`),
+			h(
+				"div",
+				{ class: "filters" },
+				h("div", { class: "field grow" }, search),
+				select(
+					"Which domains",
+					[
+						["problems", `With something to look at (${formatNumber(looking)})`],
+						["all", `All domains (${formatNumber(report.zones.length)})`],
+					],
+					zoneShow,
+					(value) => {
+						zoneShow = value === "all" ? "all" : "problems";
+						zonePage = 1;
+						drawZones();
+					},
+				),
+			),
+			zoneSlot,
+		);
 	}
 
 	/** @param {CfReport} report */
@@ -383,7 +500,7 @@ export async function renderCloudflare(view) {
 				? h(
 						"div",
 						{ class: "cf-severities", "aria-label": "Problems by severity" },
-						...SEVERITIES.map((severity) => h("span", { class: "cf-severity-count" }, severityBadge(severity), h("strong", null, failed.filter((item) => item.severity === severity).length.toLocaleString()))),
+						...SEVERITIES.map((severity) => h("span", { class: "cf-severity-count" }, severityBadge(severity), h("strong", null, failed.filter((item) => item.severity === severity).length.toLocaleString("en-GB")))),
 					)
 				: null,
 			denied.length > 0
@@ -426,18 +543,19 @@ export async function renderCloudflare(view) {
 					)
 				: null,
 			remainingCard(report),
-			...report.zones.map((zone) => zoneCard(zone)),
-			...report.accounts.map((account) => groupCard(`Account: ${account.name}`, null, account.checks, null)),
-			report.userChecks.length > 0 ? groupCard("Your user", null, report.userChecks, null) : null,
+			// Said before the domains, so they are not at the foot of a long list (F-D1).
 			h(
-				"div",
-				{ class: "card full" },
-				h("h2", null, "Not covered"),
+				"details",
+				{ class: "card full cf-not-covered" },
+				h("summary", null, h("h2", null, `Not covered (${formatNumber(report.notCovered.length)})`)),
 				h("p", { class: "sub" }, "A clean result here does not mean these are safe:"),
 				h("ul", { class: "host-not-covered" }, ...report.notCovered.map((line) => h("li", null, line))),
 			),
 			exportCard(),
 			analysisCard(report),
+			...report.accounts.map((account) => groupCard(`Account: ${account.name}`, null, account.checks, null)),
+			report.userChecks.length > 0 ? groupCard("Your user", null, report.userChecks, null) : null,
+			zonesSection(report),
 		].filter((node) => node !== null);
 	}
 
@@ -606,7 +724,7 @@ export async function renderCloudflare(view) {
 	 */
 	function changeBlock(zone, check) {
 		if (!store.cloudflare.canChange) return h("p", { class: "hint" }, "Porchlight can make this change from the page on the computer it runs on, once you approve the exact request.");
-		const key = `${zone.id} ${check.change}`;
+		const key = `${store.cloudflare.report?.checkedAt ?? ""} ${zone.id} ${check.change}`;
 		const state = changes.get(key);
 		const ask = async () => {
 			changes.set(key, { state: "loading" });
@@ -734,12 +852,29 @@ export async function renderCloudflare(view) {
 	function changesCard() {
 		const log = store.cloudflare.changes;
 		if (log.length === 0) return null;
+		// The log only grows, so it is paged (UI-B13).
+		const card = h("div", { class: "card full" });
+		const fill = () => {
+			const shown = paginate(log, changePage, CHANGE_PAGE);
+			changePage = shown.page;
+			replace(
+				card,
+				h("h2", null, "Changes Porchlight made"),
+				h("p", { class: "sub" }, "Each one after you approved the exact request, newest first. Just before sending, Porchlight reads the current value; a change no longer needed is not sent."),
+				changeList(shown.items),
+				pager(shown, "changes", (next) => {
+					changePage = next;
+					fill();
+				}),
+			);
+		};
+		fill();
+		return card;
+	}
+
+	/** @param {AppliedChange[]} log */
+	function changeList(log) {
 		return h(
-			"div",
-			{ class: "card full" },
-			h("h2", null, "Changes Porchlight made"),
-			h("p", { class: "sub" }, "Each one after you approved the exact request, newest first. Just before sending, Porchlight reads the current value; a change no longer needed is not sent."),
-			h(
 				"ul",
 				{ class: "plain-list" },
 				...log.map((entry) =>
@@ -752,7 +887,6 @@ export async function renderCloudflare(view) {
 						h("span", { class: "hint block" }, `${formatWhen(entry.at)} · ${entry.request.method} ${entry.request.url} · ${entry.result}`),
 					),
 				),
-			),
 		);
 	}
 }

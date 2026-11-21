@@ -1,10 +1,20 @@
 // @ts-check
-import { splitPaths } from "./paths.js";
+import { linkAllowed, splitPaths } from "./paths.js";
+
+/**
+ * What `h()` refuses to set (invariant 8, S46): anything that parses markup or carries inline style,
+ * which the Content-Security-Policy forbids anyway. A key here is a mistake in the page's own code,
+ * so it throws rather than being dropped in silence.
+ */
+export const REFUSED_PROPS = ["innerHTML", "outerHTML", "srcdoc", "insertAdjacentHTML", "style", "srcObject"];
+/** Properties and attributes that hold an address, checked with `linkAllowed`. */
+const ADDRESS_PROPS = ["href", "src", "action", "formaction", "xlink:href"];
 
 /**
  * Builds an element. Text is always set as text, never parsed as HTML: what
  * this page shows comes from repositories and DNS records, which an attacker
- * may control.
+ * may control. Keys that would parse markup or set inline style are refused,
+ * and so is an address in a scheme the page never uses, such as `javascript:`.
  *
  * @param {string} tag
  * @param {Record<string, unknown> | null} [props] `class`, `dataset`, `on<event>` handlers, properties, or attributes
@@ -12,8 +22,12 @@ import { splitPaths } from "./paths.js";
  * @returns {HTMLElement}
  */
 export function h(tag, props, ...children) {
+	if (/^(iframe|frame|object|embed|script|style)$/i.test(tag)) throw new Error(`h() does not build <${tag}>`);
 	const element = document.createElement(tag);
 	for (const [key, value] of Object.entries(props ?? {})) {
+		if (REFUSED_PROPS.includes(key)) throw new Error(`h() does not set ${key}`);
+		if (key.startsWith("on") && typeof value !== "function" && value !== null && value !== undefined && value !== false) throw new Error(`h() sets ${key} only to a function`);
+		if (ADDRESS_PROPS.includes(key.toLowerCase()) && typeof value === "string" && !linkAllowed(value)) throw new Error(`h() does not link to ${value.slice(0, 40)}`);
 		if (value === null || value === undefined || value === false) continue;
 		if (key === "class") element.className = String(value);
 		else if (key === "dataset") Object.assign(element.dataset, value);
@@ -131,7 +145,7 @@ export function announce(message, { topic = "", every = 0 } = {}) {
 	if (topic) lastSaid.set(topic, now);
 	// Cleared first, so the same words twice in a row are still read out.
 	region.textContent = "";
-	setTimeout(() => (region.textContent = message), 50);
+	setTimeout(() => (region.textContent = shownText(message)), 50);
 }
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -239,18 +253,75 @@ export function severityBadge(severity) {
 export function formatWhen(iso) {
 	const date = new Date(iso);
 	if (Number.isNaN(date.getTime())) return iso;
-	return date.toLocaleString(undefined, { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+	// English, like the sentences around it, whatever the browser's language (R6U-8).
+	return date.toLocaleString(LOCALE, { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+/** The page's one locale for dates and numbers: it is written in English (`lang="en"`), so they are too (R6U-8). */
+export const LOCALE = "en-GB";
+
+/** A whole number as the page writes it: "1,860". @param {number} count */
+export function formatNumber(count) {
+	return count.toLocaleString(LOCALE);
 }
 
 /** @param {number} count @param {string} one @param {string} many */
 export function plural(count, one, many) {
-	return `${count.toLocaleString()} ${count === 1 ? one : many}`;
+	return `${formatNumber(count)} ${count === 1 ? one : many}`;
 }
+
+/**
+ * "smooth", unless the owner asked their system for less motion (R6V-7).
+ *
+ * @returns {ScrollBehavior}
+ */
+export function scrollMotion() {
+	return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+}
+
+/**
+ * The tab's visibility as `poller()` wants it: polls wait while the tab is hidden (OP-8).
+ *
+ * @returns {import("./poller.js").Visibility}
+ */
+export function pageVisibility() {
+	return {
+		hidden: () => document.hidden,
+		onChange: (listener) => {
+			document.addEventListener("visibilitychange", listener);
+			return () => document.removeEventListener("visibilitychange", listener);
+		},
+	};
+}
+
+/**
+ * Marks a button as not usable now, or usable again, with `aria-disabled`: unlike `disabled` it keeps
+ * keyboard focus where it is. app.js swallows a click or a submit from such a button, and handlers
+ * check `isOff` as well.
+ *
+ * @param {Element} button
+ * @param {boolean} off
+ */
+export function setOff(button, off) {
+	if (off) button.setAttribute("aria-disabled", "true");
+	else button.removeAttribute("aria-disabled");
+}
+
+/** @param {Element | null | undefined} button */
+export function isOff(button) {
+	return button?.getAttribute("aria-disabled") === "true";
+}
+
+/** Toasts with a button stay this long, and longer while the pointer or focus is on them (R6U-4). */
+const ACTION_TOAST_MS = 20_000;
+let escapeInstalled = false;
 
 /**
  * Shows a short message that announces itself to screen readers. News leaves
  * on its own; an error stays until it is dismissed, so it cannot be missed by
- * someone who looked away or reads slowly.
+ * someone who looked away or reads slowly. The same message already on show is
+ * not shown twice (B49). A toast waits while the pointer or focus is on it, and
+ * Escape dismisses the newest one.
  *
  * @param {string} message
  * @param {"info" | "error"} [kind]
@@ -259,13 +330,42 @@ export function plural(count, one, many) {
 export function toast(message, kind = "info", action) {
 	const region = document.getElementById("toasts");
 	if (!region) return;
+	installEscape();
+	const showing = [...region.children].map((child) => ({ message: /** @type {HTMLElement} */ (child).dataset.message ?? "", kind: /** @type {HTMLElement} */ (child).dataset.kind ?? "" }));
+	if (isDuplicateToast(showing, message, kind)) return;
+	/** @type {ReturnType<typeof setTimeout> | undefined} */
+	let timer;
+	const life = kind === "error" ? 0 : action ? ACTION_TOAST_MS : 5000;
+	const wait = () => clearTimeout(timer);
+	const go = () => {
+		clearTimeout(timer);
+		if (life > 0) timer = setTimeout(dismiss, life);
+	};
 	const dismiss = () => {
 		clearTimeout(timer);
 		item.remove();
 	};
 	const item = h(
 		"div",
-		{ class: `toast toast-${kind}`, role: kind === "error" ? "alert" : null },
+		{
+			class: `toast toast-${kind}`,
+			role: kind === "error" ? "alert" : null,
+			dataset: { message, kind },
+			onmouseenter: wait,
+			onmouseleave: () => {
+				if (!item.contains(document.activeElement)) go();
+			},
+			onfocusin: wait,
+			onfocusout: (/** @type {FocusEvent} */ event) => {
+				if (!(event.relatedTarget instanceof Node && item.contains(event.relatedTarget))) go();
+			},
+			onkeydown: (/** @type {KeyboardEvent} */ event) => {
+				if (event.key === "Escape") {
+					event.preventDefault();
+					dismiss();
+				}
+			},
+		},
 		h("span", { class: "toast-message" }, message),
 		action
 			? h(
@@ -284,7 +384,32 @@ export function toast(message, kind = "info", action) {
 		h("button", { type: "button", class: "toast-close", "aria-label": "Dismiss", onclick: dismiss }, "×"),
 	);
 	region.append(item);
-	const timer = kind === "error" ? undefined : setTimeout(dismiss, action ? 10_000 : 5000);
+	go();
+}
+
+/** Escape dismisses the newest toast, wherever focus is, unless something else on the page wants Escape (R6U-3). */
+function installEscape() {
+	if (escapeInstalled) return;
+	escapeInstalled = true;
+	document.addEventListener("keydown", (event) => {
+		if (event.key !== "Escape" || event.defaultPrevented) return;
+		if (document.querySelector("dialog[open]")) return;
+		const active = document.activeElement;
+		if (active instanceof Element && active.closest("#answers, input, textarea, select")) return;
+		const newest = document.getElementById("toasts")?.lastElementChild;
+		newest?.remove();
+	});
+}
+
+/**
+ * Whether a toast says what one already on show says, so a repeated failure is said once (B49).
+ *
+ * @param {{ message: string, kind: string }[]} showing
+ * @param {string} message
+ * @param {string} kind
+ */
+export function isDuplicateToast(showing, message, kind) {
+	return showing.some((item) => item.message === message && item.kind === kind);
 }
 
 /**
@@ -362,7 +487,7 @@ export function pager(view, noun, go) {
 	return h(
 		"nav",
 		{ class: "pager", "aria-label": "Pages" },
-		h("span", null, `Showing ${view.from.toLocaleString()} to ${view.to.toLocaleString()} of ${view.total.toLocaleString()} ${noun}`),
+		h("span", null, `Showing ${view.from.toLocaleString("en-GB")} to ${view.to.toLocaleString("en-GB")} of ${view.total.toLocaleString("en-GB")} ${noun}`),
 		view.pages > 1
 			? h(
 					"span",
@@ -440,6 +565,15 @@ export function statTile(label, value, mark = null, href = "") {
 		href ? "a" : "div",
 		{ class: href ? "tile tile-link" : "tile", href: href || null },
 		h("div", { class: "tile-label" }, mark, label),
-		h("div", { class: "tile-value" }, typeof value === "number" ? value.toLocaleString() : value),
+		h("div", { class: "tile-value" }, typeof value === "number" ? value.toLocaleString("en-GB") : value),
 	);
+}
+
+/**
+ * @param {string} iso
+ * @returns {string} for example "17 Nov 2026"
+ */
+export function formatDay(iso) {
+	const date = new Date(iso);
+	return Number.isNaN(date.getTime()) ? iso : date.toLocaleDateString(LOCALE, { day: "numeric", month: "short", year: "numeric" });
 }

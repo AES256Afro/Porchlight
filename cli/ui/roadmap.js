@@ -204,7 +204,7 @@ export async function renderRoadmap(view, route) {
 	 * @param {KeyboardEvent} event
 	 */
 	function moveBetweenTabs(event) {
-		const tabs = /** @type {HTMLButtonElement[]} */ ([...(/** @type {HTMLElement} */ (event.currentTarget)).querySelectorAll('[role="tab"]:not(:disabled)')]);
+		const tabs = /** @type {HTMLButtonElement[]} */ ([...(/** @type {HTMLElement} */ (event.currentTarget)).querySelectorAll('[role="tab"]:not([aria-disabled="true"])')]);
 		const at = tabs.indexOf(/** @type {HTMLButtonElement} */ (document.activeElement));
 		if (at === -1) return;
 		const next = { ArrowRight: at + 1, ArrowDown: at + 1, ArrowLeft: at - 1, ArrowUp: at - 1, Home: 0, End: tabs.length - 1 }[event.key];
@@ -229,7 +229,7 @@ export async function renderRoadmap(view, route) {
 				"aria-selected": String(selected),
 				"aria-controls": "roadmap-phase",
 				tabindex: selected ? "0" : "-1",
-				disabled: actions.length === 0,
+				"aria-disabled": actions.length === 0 ? "true" : null,
 				onclick: () => {
 					phaseKey = phase.key;
 					pages.clear();
@@ -237,7 +237,7 @@ export async function renderRoadmap(view, route) {
 				},
 			},
 			h("span", { class: "phase-name" }, `${index + 1}. ${PHASE_TITLES[phase.key]}`),
-			h("span", { class: "phase-count" }, actions.length.toLocaleString()),
+			h("span", { class: "phase-count" }, actions.length.toLocaleString("en-GB")),
 			h("span", { class: "hint" }, actions.length === 0 ? "Nothing here" : `${actions.length === 1 ? "action clears" : "actions clear"} ${plural(findings, "finding", "findings")}`),
 		);
 	}
@@ -260,8 +260,8 @@ function header(action) {
  */
 function actionCard(action, place, filter) {
 	const total = SEVERITIES.reduce((sum, severity) => sum + action.counts[severity], 0);
-	const breakdown = SEVERITIES.filter((severity) => action.counts[severity] > 0).map((severity) => `${action.counts[severity].toLocaleString()} ${severity}`).join(", ");
-	const ids = action.clears.length > MAX_IDS ? [...action.clears.slice(0, MAX_IDS), `and ${(action.clears.length - MAX_IDS).toLocaleString()} more`] : action.clears;
+	const breakdown = SEVERITIES.filter((severity) => action.counts[severity] > 0).map((severity) => `${action.counts[severity].toLocaleString("en-GB")} ${severity}`).join(", ");
+	const ids = action.clears.length > MAX_IDS ? [...action.clears.slice(0, MAX_IDS), `and ${(action.clears.length - MAX_IDS).toLocaleString("en-GB")} more`] : action.clears;
 	return h(
 		"li",
 		{ class: "action-card" },
@@ -277,6 +277,6 @@ function actionCard(action, place, filter) {
 			h("dd", null, h("ol", null, ...action.how.map((step) => h("li", null, ...stepNodes(step))))),
 		),
 		// The findings behind the action, on the Findings page, where each has its detail and notes.
-		action.match ? h("p", { class: "hint" }, viewLink(["findings"], { ...filter, query: action.match, repo: place }, {}, `See ${total === 1 ? "this finding" : `these ${total.toLocaleString()} findings`}`)) : null,
+		action.match ? h("p", { class: "hint" }, viewLink(["findings"], { ...filter, query: action.match, repo: place }, {}, `See ${total === 1 ? "this finding" : `these ${total.toLocaleString("en-GB")} findings`}`)) : null,
 	);
 }

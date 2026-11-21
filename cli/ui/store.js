@@ -3,12 +3,14 @@
 // the state of a running scan. Pages read from here and are told when it
 // changes, so a scan started on one page updates all of them.
 import { api, ApiError } from "./api.js";
+import { pageVisibility } from "./dom.js";
+import { poller } from "./poller.js";
 import { findingKey } from "./tracking.js";
 
 /** @typedef {import("../src/repos/types.ts").Finding} Finding */
 /** @typedef {{ title: string, how: string[], phase: "now" | "next" | "schedule" | "later" }} Suggestion */
 /** @typedef {import("../src/analysis/analyse.ts").Judgement} Judgement */
-/** @typedef {Finding & { suggestion?: Suggestion, analysis?: Judgement }} SuggestedFinding */
+/** @typedef {Finding & { suggestion?: Suggestion, fix?: number, analysis?: Judgement }} SuggestedFinding */
 /** @typedef {Omit<import("../src/repos/types.ts").RepoResult, "findings"> & { name: string, findings: SuggestedFinding[] }} Repo */
 /** @typedef {Omit<import("../src/repos/types.ts").ScanReport, "repos"> & { repos: Repo[] }} ScanReport */
 /** @typedef {import("../src/ui/server.ts").ScanStatus} ScanStatus */
@@ -94,12 +96,17 @@ const listeners = new Set();
 let loading = null;
 /** @type {FindingRow[] | null} */
 let rows = null;
-/** @type {ReturnType<typeof setTimeout> | undefined} */
-let pollTimer;
-/** @type {ReturnType<typeof setTimeout> | undefined} */
-let hostTimer;
-/** @type {ReturnType<typeof setTimeout> | undefined} */
-let cloudflareTimer;
+/**
+ * The three things the page follows while they run on the server: a scan, the host check and the
+ * Cloudflare audit (or a set of its changes being sent). Each asks once at a time, forgives a few
+ * failures in a row with a growing wait, and waits while the tab is hidden (OP-8, UI-B10).
+ */
+/** @type {ReturnType<typeof poller> | null} */
+let scanPoll = null;
+/** @type {ReturnType<typeof poller> | null} */
+let hostPoll = null;
+/** @type {ReturnType<typeof poller> | null} */
+let cloudflarePoll = null;
 
 /**
  * @param {(change: Change) => void} listener
@@ -191,9 +198,9 @@ export function currentProject() {
 
 /** Forgets everything, so the next `load` starts again. Used after the session key changes. */
 export function reset() {
-	clearTimeout(pollTimer);
-	clearTimeout(hostTimer);
-	clearTimeout(cloudflareTimer);
+	scanPoll?.stop();
+	hostPoll?.stop();
+	cloudflarePoll?.stop();
 	loading = null;
 	rows = null;
 	store.settings = null;
@@ -205,6 +212,12 @@ export function reset() {
 export async function loadReport() {
 	const data = await api("GET", "/repos/report");
 	store.report = /** @type {ScanReport | null} */ (data.report);
+	// Each repair is sent once; a finding names its own by its place in the list (OP-5).
+	/** @type {Suggestion[]} */
+	const repairs = Array.isArray(data.suggestions) ? data.suggestions : [];
+	for (const repo of store.report?.repos ?? []) {
+		for (const finding of repo.findings) if (typeof finding.fix === "number" && repairs[finding.fix]) finding.suggestion = repairs[finding.fix];
+	}
 	store.notes = data.notes;
 	store.settingNotes = data.settingNotes ?? [];
 	store.findingNotes = data.findingNotes ?? {};
@@ -222,6 +235,30 @@ export async function loadReport() {
 		store.changeProblem = err instanceof Error ? err.message : String(err);
 	}
 	newKeys = new Set(store.change?.newKeys ?? []);
+	emit("report");
+}
+
+/**
+ * Puts the deeper analysis's newer judgements beside their findings, without fetching the report and
+ * history again (OP-6). A report other than the one shown is fetched whole instead.
+ */
+export async function loadJudgements() {
+	const report = store.report;
+	if (!report) return loadReport();
+	let since = "";
+	for (const repo of report.repos) for (const finding of repo.findings) if (finding.analysis && finding.analysis.at > since) since = finding.analysis.at;
+	const data = await api("GET", `/analysis/judgements${since ? `?since=${encodeURIComponent(since)}` : ""}`);
+	if (data.scannedAt !== report.scannedAt || store.report !== report) return loadReport();
+	/** @type {Map<string, Judgement>} */
+	const judged = new Map((Array.isArray(data.judgements) ? data.judgements : []).map((/** @type {{ key: string, analysis: Judgement }} */ item) => [item.key, item.analysis]));
+	if (judged.size === 0) return;
+	for (const repo of report.repos) {
+		for (const finding of repo.findings) {
+			const analysis = judged.get(findingKey(repo.name, finding));
+			if (analysis) finding.analysis = analysis;
+		}
+	}
+	rows = null;
 	emit("report");
 }
 
@@ -275,8 +312,12 @@ export async function startScan(root, depth, choices, sendsToHosted = false) {
 		const { scan } = await api("POST", "/repos/scan", { root, depth, choices, sendsToHosted, ...shown });
 		setScan(scan);
 	} catch (err) {
-		// Someone else, or another tab, started one: follow that scan instead.
+		// Another tab started a scan: follow that one. The server also answers 409 while a model analyses
+		// or GitHub fetches, and then nothing is running to follow: its reason is said instead (B40).
 		if (!(err instanceof ApiError && err.status === 409)) throw err;
+		const { scan } = await api("GET", "/repos/scan");
+		setScan(scan);
+		if (scan.state !== "running") throw err;
 	}
 	poll();
 }
@@ -309,24 +350,21 @@ function setScan(scan) {
 	emit("scan");
 }
 
-/** Polls in a row that may fail (a busy machine, a moment off the network) before the scan is given up on. */
-const POLL_TRIES = 5;
-
-/** @param {number} [failures] how many polls in a row have failed so far */
-function poll(failures = 0) {
-	clearTimeout(pollTimer);
-	pollTimer = setTimeout(async () => {
-		try {
+/** Follows the scan until it ends. One failed poll says nothing about the scan, which runs on the server either way. */
+function poll() {
+	scanPoll ??= poller({
+		every: POLL_MS,
+		visibility: pageVisibility(),
+		run: async () => {
 			const { scan } = await api("GET", "/repos/scan");
 			setScan(scan);
-			if (scan.state === "running") return poll();
+			if (scan.state === "running") return true;
 			if (scan.state === "done") await loadReport();
-		} catch (err) {
-			// One failed poll says nothing about the scan, which runs on the server either way: ask again, more slowly.
-			if (failures + 1 < POLL_TRIES) return poll(failures + 1);
-			setScan({ state: "failed", root: "", finishedAt: "", error: `Lost touch with the scan: ${err instanceof Error ? err.message : String(err)}` });
-		}
-	}, POLL_MS * 2 ** failures);
+			return false;
+		},
+		onGiveUp: (err) => setScan({ state: "failed", root: "", finishedAt: "", error: `Lost touch with the scan: ${err instanceof Error ? err.message : String(err)}` }),
+	});
+	scanPoll.start();
 }
 
 /** Every finding of the report as one list, each carrying its repository's name. Built once per report. */
@@ -361,19 +399,23 @@ export async function startHostCheck(options) {
 	pollHost();
 }
 
+/** Follows the host check until it ends; a dropped request is asked again, not taken for the end (UI-B10). */
 function pollHost() {
-	clearTimeout(hostTimer);
-	hostTimer = setTimeout(async () => {
-		try {
+	hostPoll ??= poller({
+		every: POLL_MS,
+		visibility: pageVisibility(),
+		run: async () => {
 			const data = await api("GET", "/host");
 			store.host = { status: data.status, report: data.report ?? null, service: data.service === true };
 			emit("host");
-			if (data.status.state === "running") pollHost();
-		} catch (err) {
-			store.host.status = { state: "failed", finishedAt: "", error: err instanceof Error ? err.message : String(err) };
+			return data.status.state === "running";
+		},
+		onGiveUp: (err) => {
+			store.host.status = { state: "failed", finishedAt: "", error: `Lost touch with the check: ${err instanceof Error ? err.message : String(err)}` };
 			emit("host");
-		}
-	}, POLL_MS);
+		},
+	});
+	hostPoll.start();
 }
 
 /** @param {Record<string, any>} data */
@@ -412,8 +454,11 @@ export async function startCloudflareAudit(options) {
 		store.cloudflare.status = status;
 		emit("cloudflare");
 	} catch (err) {
-		// Already running, started from another tab: follow it instead.
-		if (!(err instanceof ApiError && err.status === 409 && store.cloudflare.status.state === "running")) throw err;
+		// Already running, started from another tab: follow it instead. This page may not know yet that it
+		// runs, so it asks before saying anything (UI-B12).
+		if (!(err instanceof ApiError && err.status === 409)) throw err;
+		setCloudflare(await api("GET", "/cloudflare"));
+		if (store.cloudflare.status.state !== "running") throw err;
 	}
 	pollCloudflare();
 }
@@ -443,18 +488,19 @@ export function updateCloudflare(update) {
 	emit("cloudflare");
 }
 
-/** @param {number} [failures] how many polls in a row have failed so far */
-function pollCloudflare(failures = 0) {
-	clearTimeout(cloudflareTimer);
-	cloudflareTimer = setTimeout(async () => {
-		try {
+/** Follows the audit, or a set of changes being sent, until it ends. One failed poll says nothing about the audit (F-F1). */
+function pollCloudflare() {
+	cloudflarePoll ??= poller({
+		every: POLL_MS,
+		visibility: pageVisibility(),
+		run: async () => {
 			setCloudflare(await api("GET", "/cloudflare"));
-			if (store.cloudflare.status.state === "running" || store.cloudflare.batch.state === "running") pollCloudflare();
-		} catch (err) {
-			// One failed poll says nothing about the audit, which runs on the server either way: ask again, more slowly (F-F1).
-			if (failures + 1 < POLL_TRIES) return pollCloudflare(failures + 1);
+			return store.cloudflare.status.state === "running" || store.cloudflare.batch.state === "running";
+		},
+		onGiveUp: (err) => {
 			store.cloudflare.status = { state: "failed", finishedAt: "", error: `Lost touch with the audit: ${err instanceof Error ? err.message : String(err)}` };
 			emit("cloudflare");
-		}
-	}, POLL_MS * 2 ** failures);
+		},
+	});
+	cloudflarePoll.start();
 }

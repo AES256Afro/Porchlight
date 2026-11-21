@@ -271,3 +271,37 @@ export function looksFor(choices = standardChoices(), finding) {
 	if (source === "files") return choices.history !== "all";
 	return choices.localFiles;
 }
+
+/** The settings of the scan form an address can carry. */
+const CHOICE_PARAMS = ["preset", "secrets", "dependencies", "private", "history", "analyse", "local", "skip"];
+
+/**
+ * What the scan form starts with: the choices the address names, or, when it names none (the
+ * sidebar's plain link), the ones the last scan used, so "Check again" checks what was checked before
+ * rather than falling back to Standard (B42). A carried-over Deep keeps its analysis: the form then
+ * opens its Options, where what that sends is said, before Check is pressed.
+ *
+ * @param {URLSearchParams} params
+ * @param {ScanChoices | undefined} last the last report's choices, if it has any
+ * @returns {ScanChoices}
+ */
+export function startingChoices(params, last) {
+	if (!last || CHOICE_PARAMS.some((name) => params.has(name))) return choicesFromParams(params);
+	return { ...last, skip: [...last.skip] };
+}
+
+/** The most folder levels a scan looks down (the server's MAX_DEPTH). */
+export const MAX_DEPTH = 6;
+
+/**
+ * Folder levels to look through, from the box or the address. An empty box or anything that is not a
+ * whole number from 0 to 6 means the fallback, the same for the preview and the scan (UI-B11).
+ *
+ * @param {string | null | undefined} value
+ * @param {number} fallback
+ */
+export function depthOf(value, fallback) {
+	const text = (value ?? "").trim();
+	const depth = text === "" ? Number.NaN : Number(text);
+	return Number.isInteger(depth) && depth >= 0 && depth <= MAX_DEPTH ? depth : fallback;
+}

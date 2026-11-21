@@ -4,7 +4,8 @@
 // own. Settings → Projects adds and removes them, on the computer that runs Porchlight or a
 // service's own page; the switcher at the top of the sidebar moves between them from any page.
 import { api } from "./api.js";
-import { banner, h, icon, replace, toast } from "./dom.js";
+import { banner, h, icon, isOff, replace, setOff, toast } from "./dom.js";
+import { readyToAdd } from "./hints.js";
 import { currentProject, setProjects, store, subscribe } from "./store.js";
 
 /** @typedef {import("./store.js").Project} Project */
@@ -144,6 +145,11 @@ export function projectsSection() {
 			spellcheck: false,
 			// Looked into once the box is settled (left, or Return), never on each keystroke.
 			onchange: () => void preview(),
+			// What was checked no longer describes the box.
+			oninput: () => {
+				warnedFor = null;
+				if (addButton.lastChild) addButton.lastChild.textContent = "Add project";
+			},
 		})
 	);
 	const previewBox = h("div", { class: "project-preview", "aria-live": "polite" });
@@ -151,15 +157,21 @@ export function projectsSection() {
 	const addButton = /** @type {HTMLButtonElement} */ (h("button", { type: "submit", class: "button primary" }, icon("plus"), "Add project"));
 	/** @type {FolderCheck | null} */
 	let check = null;
+	/** The folder, as typed, that `check` is about. */
+	let checkedFor = "";
+	/** The folder whose warning was shown at Add: a second Add then adds it. */
+	let warnedFor = /** @type {string | null} */ (null);
 	let asked = 0;
 	/** The project whose Remove was pressed once, waiting for the second press. */
 	let removing = /** @type {string | null} */ (null);
 
+	/** Checks the folder in the box and shows what adding it would do. @returns {Promise<void>} */
 	async function preview() {
 		const typed = folderBox.value.trim();
 		const mine = ++asked;
 		if (typed === "") {
 			check = null;
+			checkedFor = "";
 			drawPreview();
 			return;
 		}
@@ -171,6 +183,7 @@ export function projectsSection() {
 			if (mine !== asked) return;
 			check = { folder: typed, creates: [], warnings: [], error: err instanceof Error ? err.message : String(err) };
 		}
+		checkedFor = typed;
 		drawPreview();
 	}
 
@@ -194,11 +207,36 @@ export function projectsSection() {
 		);
 	}
 
-	/** @param {SubmitEvent} event */
+	/**
+	 * Adds the folder only once its check is on show for exactly what is typed, and, when that check
+	 * warned (inside a git repository, inside a scanned folder), only at a second press (S30, invariant 23).
+	 *
+	 * @param {SubmitEvent} event
+	 */
 	async function add(event) {
 		event.preventDefault();
+		if (isOff(addButton)) return;
 		formError.hidden = true;
-		addButton.disabled = true;
+		const typed = folderBox.value.trim();
+		let ready = readyToAdd(check, checkedFor, typed, warnedFor);
+		if (ready === "look") {
+			setOff(addButton, true);
+			await preview();
+			setOff(addButton, false);
+			ready = readyToAdd(check, checkedFor, folderBox.value.trim(), warnedFor);
+		}
+		if (ready === "look" || ready === "refused") {
+			/** @type {HTMLElement | null} */ (previewBox.querySelector(".form-error, .banner"))?.scrollIntoView({ block: "nearest" });
+			return;
+		}
+		if (ready === "confirm") {
+			warnedFor = typed;
+			if (addButton.lastChild) addButton.lastChild.textContent = "Add it anyway";
+			replace(formError, "Read the warning above first. Press Add it anyway to add this folder as it is.");
+			formError.hidden = false;
+			return;
+		}
+		setOff(addButton, true);
 		try {
 			const state = /** @type {any} */ (await api("POST", "/projects", { name: nameBox.value, folder: folderBox.value }));
 			setProjects(state);
@@ -206,6 +244,8 @@ export function projectsSection() {
 			nameBox.value = "";
 			folderBox.value = "";
 			check = null;
+			checkedFor = "";
+			warnedFor = null;
 			drawPreview();
 			if (project) toast(`Using ${project.name}. Saved exports, discussions and the log go to ${ownFolder(project)}.`, "info", { label: inMacApp() ? "Show in Finder" : "Copy path", run: () => void reveal(ownFolder(project)) });
 		} catch (err) {
@@ -214,10 +254,11 @@ export function projectsSection() {
 				check = null;
 				drawPreview();
 			}
-			formError.textContent = err instanceof Error ? err.message : String(err);
+			replace(formError, err instanceof Error ? err.message : String(err));
 			formError.hidden = false;
 		} finally {
-			addButton.disabled = false;
+			setOff(addButton, false);
+			if (addButton.lastChild) addButton.lastChild.textContent = "Add project";
 		}
 	}
 

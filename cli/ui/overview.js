@@ -2,12 +2,12 @@
 import { api } from "./api.js";
 import { analysisCard } from "./analysis.js";
 import { askCard, localModelCard } from "./assist.js";
-import { banner, formatWhen, h, icon, PHASE_TITLES, plural, replace, severityBadge, statTile, stepNodes, tileRow, toast } from "./dom.js";
+import { banner, formatNumber, formatWhen, h, icon, isOff, PHASE_TITLES, plural, replace, setOff, severityBadge, statTile, stepNodes, tileRow, toast } from "./dom.js";
 import { coverageBanner } from "./finding-parts.js";
 import { githubPanel } from "./github.js";
-import { emptyScanHints, previewAdvice, scheduleWords } from "./hints.js";
+import { emptyScanHints, overviewRedraws, previewAdvice, scheduleWords } from "./hints.js";
 import { buildHash } from "./list.js";
-import { choicesFromParams, choicesToParams, describeChoices, PRESETS } from "./scan-choices.js";
+import { choicesToParams, depthOf, describeChoices, PRESETS, startingChoices } from "./scan-choices.js";
 import { scanOptions, sendsToHosted } from "./scan-options.js";
 import { cancelScan, findingRows, load, loadCloudflare, startScan, store, subscribe } from "./store.js";
 import { changeSummary } from "./tracking.js";
@@ -22,7 +22,9 @@ const TOP = 6;
 const CHIPS = 14;
 
 /**
- * The Overview page: start a scan, see where things stand, and go to what needs doing first.
+ * The Overview page: start a scan, see where things stand, and go to what needs doing first. Once a
+ * scan exists its results come first, with a smaller "Check again" card under them (A-D1, W3). A change in the
+ * shared store redraws only the part that shows it (B41).
  *
  * @param {HTMLElement} view
  * @param {import("./finding-parts.js").Route} context
@@ -35,87 +37,115 @@ export async function renderOverview(view, context) {
 	void loadCloudflare().catch(() => {});
 	let left = false;
 	const service = store.settings?.service === true;
+	const defaultDepth = store.settings?.scanDepth ?? 3;
 	/** The answer to the latest "what is in this folder" question; an earlier one arriving late is dropped. */
 	let asked = 0;
 	/** @type {import("./hints.js").ScanPreview | null} */
 	let preview = null;
 	/** @type {ReturnType<typeof analysisCard>} */
 	let analysis = null;
+	/** Whether the owner has typed in the folder box: a new report then leaves it alone (B41). */
+	let typed = false;
+	/** The report the folder box was last set from. */
+	let rootFrom = store.report?.root ?? null;
+	/** Whether the page is laid out for a report (results first) or for a first scan. */
+	let laidOutForReport = /** @type {boolean | null} */ (null);
 	const scanSlot = h("div");
 	const previewSlot = h("div", { class: "preview", "aria-live": "polite" });
 	const summary = h("div");
+	const analysisSlot = h("div");
+	const cloudflareSlot = h("div");
+	const monitorSlot = h("div");
+	const assistantSlot = h("div");
 	/** Credentials that look live, at the top of the page: until they are rotated they can be used. */
 	const urgent = h("div");
 	const intro = h("p", { class: "sub" });
+	const parts = h("div", { class: "overview-parts" });
 	const rootInput = /** @type {HTMLInputElement} */ (
 		h("input", { type: "text", name: "root", value: store.report?.root ?? store.settings?.defaultRoot ?? "", spellcheck: false, autocomplete: "off", required: true })
 	);
-	const depthInput = /** @type {HTMLInputElement} */ (h("input", { type: "number", name: "depth", value: String(store.settings?.scanDepth ?? 3), min: "0", max: "6", class: "narrow" }));
+	// The depth the address names, else the one set for this Porchlight; the preview and the scan read it the same way (UI-B11).
+	const depthInput = /** @type {HTMLInputElement} */ (
+		h("input", { type: "number", name: "depth", value: String(depthOf(context.params.get("depth"), defaultDepth)), min: "0", max: "6", class: "narrow" })
+	);
 	const scanButton = /** @type {HTMLButtonElement} */ (h("button", { type: "submit", class: "button primary" }, "Check"));
 	// Fetching or removing a repository changes what a scan would cover.
 	const github = githubPanel(() => void look());
 	// A half-typed path is not looked into: that would walk folders nobody asked about. What was
 	// shown no longer describes the box, so it is taken away until the folder is settled.
-	rootInput.addEventListener("input", forget);
+	rootInput.addEventListener("input", () => {
+		typed = true;
+		forget();
+	});
 	rootInput.addEventListener("change", () => void look());
-	depthInput.addEventListener("change", () => void look());
-	// What the scan looks at lives in the address, like a page's filters, so a reload or a shared link keeps it.
-	const initial = choicesFromParams(context.params);
+	depthInput.addEventListener("change", () => {
+		remember();
+		void look();
+	});
+	// What the scan looks at lives in the address, like a page's filters, so a reload or a shared link
+	// keeps it. With nothing named there, it starts from what the last scan used (B42).
+	const initial = startingChoices(context.params, store.report?.choices);
 	const optionsSummary = h("summary", null);
-	const options = scanOptions(initial, h("label", { class: "field" }, h("span", null, "Folder levels to look through for repositories (0 to 6)"), depthInput), (choices) => {
-		context.replace(choicesToParams(choices));
+	const options = scanOptions(initial, h("label", { class: "field" }, h("span", null, "Folder levels to look through for repositories (0 to 6)"), depthInput), () => {
+		remember();
 		nameOptions();
 		drawPreview();
 		drawScan();
 	});
 	nameOptions();
 
-	replace(
-		view,
+	const scanHeading = h("h2", null);
+	const scanIntro = h("p", { class: "sub" });
+	const githubBox = /** @type {HTMLDetailsElement} */ (h("details", { class: "options github-box" }, h("summary", null, "Get repositories from GitHub"), github.node));
+	const scanCard = h(
+		"div",
+		{ class: "card full scan-card" },
+		scanHeading,
+		scanIntro,
 		h(
-			"section",
-			{ class: "page" },
-			h("div", { class: "page-head" }, h("div", null, h("h1", null, "Overview"), intro)),
-			urgent,
-			h(
-				"div",
-				{ class: "card full" },
-				h("h2", null, "Check your code"),
-				h("p", { class: "sub" }, "Finds passwords and keys saved in your git repositories, old commits included, and packages with known security holes. Deep also looks for personal data."),
-				h(
-					"form",
-					{
-						class: "scan-form",
-						onsubmit: async (/** @type {SubmitEvent} */ event) => {
-							event.preventDefault();
-							try {
-								const choices = options.choices();
-								await startScan(rootInput.value, Number(depthInput.value), choices, sendsToHosted(choices));
-							} catch (err) {
-								toast(err instanceof Error ? err.message : String(err), "error");
-							}
-						},
-					},
-					// A service checks the one folder its server gave it, so there is nothing to type.
-					service ? null : h("label", { class: "field grow" }, h("span", null, "Folder that holds your projects"), rootInput),
-					previewSlot,
-					// Open when the address asks for anything but a Standard scan, so what will run is in sight.
-					h("details", { class: "options", open: Object.values(choicesToParams(initial)).some((value) => value !== undefined) }, optionsSummary, options.node),
-					h("div", { class: "actions" }, scanButton, h("button", { type: "button", class: "button quiet", onclick: () => void look() }, "Look again")),
-				),
-				scanSlot,
-				github.node,
-			),
-			summary,
+			"form",
+			{
+				class: "scan-form",
+				onsubmit: async (/** @type {SubmitEvent} */ event) => {
+					event.preventDefault();
+					if (isOff(scanButton)) return;
+					try {
+						const choices = options.choices();
+						remember();
+						await startScan(rootInput.value, depthOf(depthInput.value, defaultDepth), choices, sendsToHosted(choices));
+					} catch (err) {
+						// Nothing is running to follow (a model analysing, GitHub fetching): the server's reason is said (B40).
+						toast(err instanceof Error ? err.message : String(err), "error");
+					}
+				},
+			},
+			// A service checks the one folder its server gave it, so there is nothing to type.
+			service ? null : h("label", { class: "field grow" }, h("span", null, "Folder that holds your projects"), rootInput),
+			previewSlot,
+			// Open when the choices are anything but a Standard scan, so what will run, and what it sends, is in sight.
+			h("details", { class: "options", open: Object.values(choicesToParams(initial)).some((value) => value !== undefined) }, optionsSummary, options.node),
+			h("div", { class: "actions" }, scanButton, h("button", { type: "button", class: "button quiet", onclick: () => void look() }, "Look again")),
 		),
+		scanSlot,
+		githubBox,
 	);
 
+	replace(view, h("section", { class: "page" }, h("div", { class: "page-head" }, h("div", null, h("h1", null, "Overview"), intro)), urgent, parts));
+
+	layOut();
 	drawScan();
-	void drawSummary();
+	drawSummary();
+	drawAnalysis();
+	drawCards(["cloudflare", "monitor", "assistant"]);
 	void look();
 	const unsubscribe = subscribe((change) => {
-		if (change === "scan") drawScan();
-		else void drawSummary();
+		const redraw = overviewRedraws(change);
+		if (redraw.length === 0) return;
+		if (change === "report") layOut();
+		if (redraw.includes("scan")) drawScan();
+		if (redraw.includes("summary")) drawSummary();
+		if (redraw.includes("analysis")) drawAnalysis();
+		drawCards(redraw);
 	});
 	return () => {
 		left = true;
@@ -124,10 +154,38 @@ export async function renderOverview(view, context) {
 		unsubscribe();
 	};
 
+	/**
+	 * Results first once there is a scan, the scan card under them; the full scan card first before
+	 * there is one. The parts are kept, so moving them loses nothing typed or opened.
+	 */
+	function layOut() {
+		const hasReport = store.report !== null;
+		if (hasReport === laidOutForReport) return;
+		laidOutForReport = hasReport;
+		scanCard.classList.toggle("compact", hasReport);
+		scanHeading.textContent = hasReport ? "Check again" : "Check your code";
+		scanIntro.textContent = hasReport
+			? "Scan the folder again, with the same options as last time unless you change them."
+			: "Finds passwords and keys saved in your git repositories, old commits included, and packages with known security holes. Deep also looks for personal data.";
+		// Before the first scan GitHub may be where the repositories come from, so it is open.
+		githubBox.open = !hasReport;
+		intro.textContent = hasReport
+			? "Where your code and your websites stand, and what to do first."
+			: "Porchlight checks two things you own: your code and your websites. Start with either one below.";
+		// With a scan, its results lead and the scan card follows them; before one, the scan card is the start.
+		replace(parts, ...(hasReport ? [summary, analysisSlot, scanCard] : [scanCard, summary, analysisSlot]), cloudflareSlot, monitorSlot, assistantSlot);
+	}
+
 	/** "Options: Quick", so the preset is in sight with the panel closed. */
 	function nameOptions() {
 		const preset = options.choices().preset;
 		optionsSummary.textContent = `Options: ${PRESETS.find((entry) => entry.key === preset)?.label ?? "Custom"}`;
+	}
+
+	/** Keeps the choices and the depth in the address, so "Check again" after a reload checks the same. */
+	function remember() {
+		const depth = depthOf(depthInput.value, defaultDepth);
+		context.replace({ ...choicesToParams(options.choices()), depth: depth === defaultDepth ? undefined : depth });
 	}
 
 	/** The repositories the choices leave out, among those the folder holds. */
@@ -151,7 +209,7 @@ export async function renderOverview(view, context) {
 		if (root === "") return;
 		replace(previewSlot, h("p", { class: "hint" }, "Looking for repositories…"));
 		try {
-			const answer = await api("GET", `/repos/preview?root=${encodeURIComponent(root)}&depth=${encodeURIComponent(depthInput.value || "3")}`);
+			const answer = await api("GET", `/repos/preview?root=${encodeURIComponent(root)}&depth=${depthOf(depthInput.value, defaultDepth)}`);
 			if (left || current !== asked) return;
 			preview = /** @type {import("./hints.js").ScanPreview} */ (answer.preview);
 			drawPreview();
@@ -180,7 +238,7 @@ export async function renderOverview(view, context) {
 							"ul",
 							{ class: "chips" },
 							...shown.map((name) => (skip.includes(name) ? h("li", { class: "skipped" }, h("s", null, name), " skipped") : h("li", null, name))),
-							preview.total > shown.length ? h("li", { class: "more" }, `and ${(preview.total - shown.length).toLocaleString()} more`) : null,
+							preview.total > shown.length ? h("li", { class: "more" }, `and ${formatNumber(preview.total - shown.length)} more`) : null,
 						),
 					)
 				: h(
@@ -198,7 +256,7 @@ export async function renderOverview(view, context) {
 		const running = scan.state === "running";
 		const total = preview ? preview.total - skippedHere().length : 0;
 		// Nothing to check is said above the button; pressing it would only say so again.
-		scanButton.disabled = running || (preview !== null && total <= 0);
+		setOff(scanButton, running || (preview !== null && total <= 0));
 		const count = preview && total > 0 ? ` ${plural(total, "repository", "repositories")}` : "";
 		scanButton.textContent = running ? "Checking…" : store.report ? `Check${count} again` : `Check${count}`;
 		if (running) {
@@ -240,23 +298,40 @@ export async function renderOverview(view, context) {
 		}
 	}
 
-	async function drawSummary() {
+	/** The cards beside the results that a change names: Cloudflare, the monitor, the model. @param {string[]} which */
+	function drawCards(which) {
+		if (which.includes("cloudflare")) replace(cloudflareSlot, cloudflareCard());
+		if (which.includes("monitor")) replace(monitorSlot, monitorCard());
+		if (which.includes("assistant")) replace(assistantSlot, assistantCard());
+	}
+
+	/** The model's deeper analysis, started again only when the report or the model changes. */
+	function drawAnalysis() {
+		analysis?.stop();
+		analysis = store.report ? analysisCard() : null;
+		replace(analysisSlot, analysis?.node);
+	}
+
+	function drawSummary() {
 		const report = store.report;
-		intro.textContent = report
-			? "Where your code and your websites stand, and what to do first."
-			: "Porchlight checks two things you own: your code and your websites. Start with either one below.";
 		if (!report) {
 			replace(urgent);
-			return replace(summary, cloudflareCard(), monitorCard(), assistantCard());
+			replace(summary);
+			return;
+		}
+		// The folder box follows a new report only when the owner has not typed in it, and is then looked into again.
+		if (report.root !== rootFrom) {
+			rootFrom = report.root;
+			if (!typed && rootInput.value !== report.root) {
+				rootInput.value = report.root;
+				void look();
+			}
 		}
 		const rows = findingRows();
 		/** @type {Record<Severity, number>} */
 		const counts = { critical: 0, high: 0, medium: 0, low: 0 };
 		for (const row of rows) counts[row.severity]++;
 		const affected = report.repos.filter((repo) => repo.findings.length > 0);
-		rootInput.value = report.root;
-		analysis?.stop();
-		analysis = analysisCard();
 
 		const phases = h("div", { class: "card" }, h("h2", null, "What to repair first"), h("p", { class: "loading" }, "Working it out…"));
 		replace(
@@ -272,7 +347,7 @@ export async function renderOverview(view, context) {
 				// Each number opens the findings it counts.
 				statTile("Total findings", rows.length, null, "#/findings"),
 				...SEVERITIES.map((severity) => statTile(SEVERITY_LABELS[severity], counts[severity], icon(severity, `severity-${severity}`), buildHash(["findings"], { severity }))),
-				statTile("Repositories affected", `${affected.length.toLocaleString()} of ${report.repos.length.toLocaleString()}`, null, "#/findings/by-repo"),
+				statTile("Repositories affected", `${formatNumber(affected.length)} of ${formatNumber(report.repos.length)}`, null, "#/findings/by-repo"),
 			),
 			h(
 				"div",
@@ -297,7 +372,7 @@ export async function renderOverview(view, context) {
 											"a",
 											{ href: buildHash(["findings"], { repo: repo.name }) },
 											h("span", { class: "link-title wrap" }, repo.name),
-											h("span", { class: "link-meta" }, severityBadge(worst), `${count.toLocaleString()} of ${plural(repo.findings.length, "finding", "findings")}`),
+											h("span", { class: "link-meta" }, severityBadge(worst), `${formatNumber(count)} of ${plural(repo.findings.length, "finding", "findings")}`),
 										),
 									);
 								}),
@@ -305,13 +380,18 @@ export async function renderOverview(view, context) {
 					h("p", { class: "card-foot" }, h("a", { href: "#/findings/by-repo" }, "All repositories")),
 				),
 			),
-			analysis?.node,
 			historyCard(),
-			cloudflareCard(),
-			monitorCard(),
-			assistantCard(),
 		);
+		void drawRoadmap(report, phases);
+	}
 
+	/**
+	 * "What to repair first" and the live credentials, from the roadmap.
+	 *
+	 * @param {NonNullable<typeof store.report>} report
+	 * @param {HTMLElement} phases
+	 */
+	async function drawRoadmap(report, phases) {
 		try {
 			const { roadmap } = /** @type {{ roadmap: Roadmap }} */ (await api("GET", "/repos/roadmap"));
 			if (left || store.report !== report) return;
@@ -371,7 +451,7 @@ function liveCredentials(rotate) {
 		h(
 			"p",
 			{ class: "card-foot" },
-			h("a", { class: "button", href: buildHash(["roadmap"], { kind: "secret" }) }, rotate.length > TOP ? `See all ${rotate.length.toLocaleString()} on the Roadmap` : "See how to rotate them"),
+			h("a", { class: "button", href: buildHash(["roadmap"], { kind: "secret" }) }, rotate.length > TOP ? `See all ${formatNumber(rotate.length)} on the Roadmap` : "See how to rotate them"),
 		),
 	);
 }
@@ -404,7 +484,7 @@ function historyCard() {
 					...fixedShown.map((item) => h("li", null, severityBadge(item.severity), " ", h("span", { class: "wrap" }, item.title), h("span", { class: "hint" }, ` · ${item.repo}`))),
 				)
 			: null,
-		change && change.fixedCount > fixedShown.length ? h("p", { class: "hint" }, `And ${(change.fixedCount - fixedShown.length).toLocaleString()} more fixed.`) : null,
+		change && change.fixedCount > fixedShown.length ? h("p", { class: "hint" }, `And ${(change.fixedCount - fixedShown.length).toLocaleString("en-GB")} more fixed.`) : null,
 		change && change.newCount > 0 ? h("p", { class: "hint" }, "New findings are marked New on the Findings page.") : null,
 		scans.length > 1
 			? h(
@@ -419,11 +499,11 @@ function historyCard() {
 								"tr",
 								null,
 								h("td", null, formatWhen(scan.scannedAt)),
-								h("td", { class: "num" }, scan.findings.toLocaleString()),
-								h("td", { class: "num" }, (scan.counts.critical ?? 0).toLocaleString()),
-								h("td", { class: "num" }, (scan.counts.high ?? 0).toLocaleString()),
-								h("td", { class: "num" }, scan.newCount === undefined ? "–" : scan.newCount.toLocaleString()),
-								h("td", { class: "num" }, scan.fixedCount === undefined ? "–" : scan.fixedCount.toLocaleString()),
+								h("td", { class: "num" }, scan.findings.toLocaleString("en-GB")),
+								h("td", { class: "num" }, (scan.counts.critical ?? 0).toLocaleString("en-GB")),
+								h("td", { class: "num" }, (scan.counts.high ?? 0).toLocaleString("en-GB")),
+								h("td", { class: "num" }, scan.newCount === undefined ? "–" : scan.newCount.toLocaleString("en-GB")),
+								h("td", { class: "num" }, scan.fixedCount === undefined ? "–" : scan.fixedCount.toLocaleString("en-GB")),
 							),
 						),
 					),

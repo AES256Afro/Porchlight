@@ -38,7 +38,9 @@ export async function renderFindings(view, route) {
 	const results = h("div");
 	draw();
 	return subscribe((change) => {
-		if (change === "report" || change === "notes") draw();
+		// A saved note changes the marks in the list, not the filters: only the list is drawn again.
+		if (change === "report") draw();
+		else if (change === "notes") update();
 	});
 
 	function draw() {

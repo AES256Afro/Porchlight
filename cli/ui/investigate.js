@@ -6,8 +6,10 @@
 // steps, the evidence and what the model judged. Everything here comes from the target or the
 // model, so every element is built with h() and shown as text.
 import { api, ApiError, download } from "./api.js";
-import { emptyState, formatWhen, h, icon, plural, replace, shownText, stepNodes, toast } from "./dom.js";
-import { approvalLine, ownershipSteps, runLimits } from "./hints.js";
+import { announce, banner, emptyState, formatWhen, h, icon, isOff, pager, pageVisibility, plural, replace, setOff, shownText, stepNodes, toast } from "./dom.js";
+import { approvalLine, ownershipSteps, runLimits, runStatusWord } from "./hints.js";
+import { paginate } from "./list.js";
+import { poller } from "./poller.js";
 import { announceSaved } from "./projects.js";
 import { currentProject, loadCloudflare, store } from "./store.js";
 import { modelFields } from "./generated.js";
@@ -32,14 +34,8 @@ import { modelFields } from "./generated.js";
  */
 
 const POLL_MS = 1000;
-
-const STATUS_WORDS = /** @type {Record<Run["status"], string>} */ ({
-	running: "Running",
-	waiting: "Waiting for you",
-	done: "Finished",
-	stopped: "Stopped",
-	failed: "Failed",
-});
+/** Earlier investigations listed at a time. */
+const HISTORY_PAGE = 10;
 
 const OUTCOME_WORDS = /** @type {Record<Step["outcome"], string>} */ ({
 	ran: "Ran",
@@ -53,19 +49,26 @@ const OUTCOME_WORDS = /** @type {Record<Step["outcome"], string>} */ ({
 
 /**
  * @param {HTMLElement} view
- * @param {string | undefined} runId a run to show, from the address
+ * @param {import("./finding-parts.js").Route} route a run to show is the second part of its address
  * @returns {Promise<() => void>}
  */
-export async function renderInvestigate(view, runId) {
+export async function renderInvestigate(view, route) {
+	/** @type {string | undefined} */
+	let runId = route.path[1];
 	/** @type {InvestigateState} */
 	let state = /** @type {any} */ (await api("GET", "/investigate"));
 	// Whether a domain is in the Cloudflare account decides what the ownership steps say.
 	if (!store.cloudflare.loaded) await loadCloudflare().catch(() => {});
 	const setupSlot = h("div");
-	const runSlot = h("div", { "aria-live": "polite" });
+	// Not a live region: the run card is rebuilt on every step. What changed is said once with announce() (E-U1).
+	const runSlot = h("div");
+	/** One notice while Porchlight does not answer, in place of a toast a second (B49). */
+	const offlineSlot = h("div");
 	const historySlot = h("div");
-	let timer = /** @type {ReturnType<typeof setInterval> | undefined} */ (undefined);
+	let historyPage = 1;
 	let wasActive = state.active !== null;
+	/** What was last said about the run, so each change is said once. */
+	let said = "";
 	/** The run that was going on when last asked, so it stays on show once it ends. */
 	let lastActive = state.active?.id ?? "";
 	/** The pending step drawn last, so a poll does not redraw the approval card under the pointer. */
@@ -90,25 +93,22 @@ export async function renderInvestigate(view, runId) {
 					),
 				),
 			),
+			offlineSlot,
 			runSlot,
 			setupSlot,
 			historySlot,
 		),
 	);
 
+	/** Reads the state again, and draws what changed. Throws when Porchlight does not answer. */
 	async function refresh() {
-		try {
-			state = /** @type {any} */ (await api("GET", "/investigate"));
-		} catch (err) {
-			if (err instanceof ApiError && err.status === 0) toast(err.message, "error");
-			return;
-		}
+		state = /** @type {any} */ (await api("GET", "/investigate"));
 		const active = state.active !== null;
 		// A run that just ended here stays on show, under its own address.
 		if (state.active) lastActive = state.active.id;
 		else if (lastActive && !runId) {
 			runId = lastActive;
-			history.replaceState(null, "", `#/investigate/${runId}`);
+			if (route.isCurrent()) history.replaceState(null, "", `#/investigate/${runId}`);
 		}
 		if (active !== wasActive) {
 			wasActive = active;
@@ -130,8 +130,22 @@ export async function renderInvestigate(view, runId) {
 		}
 		const key = run ? `${run.id} ${run.status} ${run.steps.length} ${run.findings.map((finding) => finding.status).join()} ${run.pending?.stepId ?? ""}` : "";
 		if (key === drawn) return;
+		const pendingBefore = drawn.split(" ")[4] ?? "";
 		drawn = key;
 		replace(runSlot, run ? runView(run) : runId ? emptyState("No such investigation", "It may have been removed. Start a new one below.") : null);
+		if (!run) return;
+		// Said once per change: a step taken, a request waiting, the end.
+		const now = `${run.id} ${run.status} ${run.steps.length} ${run.pending?.stepId ?? ""}`;
+		if (now !== said) {
+			said = now;
+			if (run.pending) announce(`An action is waiting for your approval: ${run.pending.tool}`);
+			else if (run.status === "running") announce(`Turn ${run.turns} of ${run.maxTurns}`, { topic: "investigate", every: 15_000 });
+			else announce(`The investigation of ${run.domain}: ${runStatusWord(run)}`);
+		}
+		// A request that has just arrived takes focus, so it is not missed by a keyboard or screen-reader user (E-U2).
+		if (run.pending && state.canChange && String(run.pending.stepId) !== pendingBefore) {
+			/** @type {HTMLElement | null} */ (runSlot.querySelector(".investigate-approval h3"))?.focus();
+		}
 	}
 
 	function drawSetup() {
@@ -140,6 +154,8 @@ export async function renderInvestigate(view, runId) {
 
 	function drawHistory() {
 		const past = state.runs.filter((summary) => summary.id !== state.active?.id);
+		const shown = paginate(past, historyPage, HISTORY_PAGE);
+		historyPage = shown.page;
 		replace(
 			historySlot,
 			past.length === 0
@@ -151,7 +167,7 @@ export async function renderInvestigate(view, runId) {
 						h(
 							"ul",
 							{ class: "plain-list" },
-							...past.map((summary) =>
+							...shown.items.map((summary) =>
 								h(
 									"li",
 									null,
@@ -159,11 +175,15 @@ export async function renderInvestigate(view, runId) {
 									h(
 										"span",
 										{ class: "hint" },
-										` · ${STATUS_WORDS[summary.status]} ${formatWhen(summary.finishedAt ?? summary.startedAt)} · ${plural(summary.findings, "finding", "findings")} · ${summary.model}`,
+										` · ${runStatusWord(summary)} ${formatWhen(summary.finishedAt ?? summary.startedAt)} · ${plural(summary.findings, "finding", "findings")} · ${summary.model}`,
 									),
 								),
 							),
 						),
+						pager(shown, "investigations", (next) => {
+							historyPage = next;
+							drawHistory();
+						}),
 					),
 		);
 	}
@@ -221,7 +241,8 @@ export async function renderInvestigate(view, runId) {
 					type: "button",
 					class: "button",
 					onclick: async () => {
-						check.disabled = true;
+						if (isOff(check)) return;
+						setOff(check, true);
 						try {
 							const answer = await api("POST", "/investigate/verify", { domain: domain.name });
 							state.domains = answer.domains;
@@ -229,7 +250,7 @@ export async function renderInvestigate(view, runId) {
 							drawSetup();
 						} catch (err) {
 							toast(err instanceof Error ? err.message : String(err), "error");
-							check.disabled = false;
+							setOff(check, false);
 						}
 					},
 				},
@@ -290,7 +311,11 @@ export async function renderInvestigate(view, runId) {
 		const turns = /** @type {HTMLInputElement} */ (h("input", { type: "number", name: "turns", min: 1, max: state.defaults.maxTurnsLimit, value: String(state.defaults.maxTurns), "aria-label": "Turns" }));
 		// With a hosted model the page says above what is sent, and the button says where it goes: pressing it is the yes.
 		const startButton = /** @type {HTMLButtonElement} */ (
-			h("button", { type: "submit", class: "button primary", disabled: state.active !== null }, assistant.hosted ? `Start, sending to ${assistant.model}` : "Start investigation")
+			h(
+				"button",
+				{ type: "submit", class: "button primary", "aria-disabled": state.active !== null ? "true" : null, title: state.active !== null ? "One investigation runs at a time" : null },
+				assistant.hosted ? `Start, sending to ${assistant.model}` : "Start investigation",
+			)
 		);
 		// The model chooses each step as it goes, so what can be shown before a run is what every step is held to.
 		const limits = h("ul", { class: "investigate-limits" });
@@ -312,7 +337,8 @@ export async function renderInvestigate(view, runId) {
 				class: "card",
 				onsubmit: async (/** @type {SubmitEvent} */ event) => {
 					event.preventDefault();
-					startButton.disabled = true;
+					if (isOff(startButton)) return;
+					setOff(startButton, true);
 					replace(startProblem);
 					try {
 						const answer = await api("POST", "/investigate/start", {
@@ -323,15 +349,15 @@ export async function renderInvestigate(view, runId) {
 							...modelFields(assistant),
 						});
 						runId = undefined;
-						if (location.hash !== "#/investigate") history.replaceState(null, "", "#/investigate");
+						if (route.isCurrent() && location.hash !== "#/investigate") history.replaceState(null, "", "#/investigate");
 						state.active = answer.run;
-						await refresh();
+						follow.now();
 					} catch (err) {
 						const text = err instanceof Error ? err.message : String(err);
 						// The ownership record is not found: that is a job to do, so the steps are shown.
 						if (err instanceof ApiError && err.status === 409 && /TXT record/.test(text)) replace(startProblem, ownershipHelp(domainSelect.value, `The ownership record for ${domainSelect.value} was not found`));
 						else toast(text, "error");
-						startButton.disabled = state.active !== null;
+						setOff(startButton, state.active !== null);
 					}
 				},
 			},
@@ -412,7 +438,7 @@ export async function renderInvestigate(view, runId) {
 			h(
 				"div",
 				{ class: "investigate-run-head" },
-				h("h2", null, `${run.domain}: ${STATUS_WORDS[run.status]}`),
+				h("h2", { tabindex: "-1" }, `${run.domain}: ${runStatusWord(run)}`),
 				live
 					? h(
 							"button",
@@ -421,7 +447,7 @@ export async function renderInvestigate(view, runId) {
 								class: "button danger",
 								onclick: async () => {
 									await api("POST", "/investigate/stop").catch(() => {});
-									await refresh();
+									follow.now();
 								},
 							},
 							"Stop",
@@ -466,16 +492,22 @@ export async function renderInvestigate(view, runId) {
 			} catch (err) {
 				toast(err instanceof Error ? err.message : String(err), "error");
 			}
-			await refresh();
+			// The card goes once answered: focus goes to the run's heading rather than the top of the page (E-U2).
+			try {
+				await refresh();
+			} catch {
+				// The poll says so if Porchlight stopped answering.
+			}
+			/** @type {HTMLElement | null} */ (runSlot.querySelector(".investigate-run-head h2"))?.focus();
 		};
 		return h(
 			"div",
-			{ class: "banner banner-warning investigate-approval", role: "alert" },
+			{ class: "banner banner-warning investigate-approval", role: "group", "aria-labelledby": "investigate-approval-title" },
 			icon("warning"),
 			h(
 				"div",
 				null,
-				h("strong", null, "Approve this action?"),
+				h("h3", { id: "investigate-approval-title", tabindex: "-1" }, "Approve this action?"),
 				h("p", null, "It would be sent from this computer to your site exactly as shown:"),
 				h("pre", { class: "investigate-pre" }, `${pending.tool} ${JSON.stringify(pending.args, null, 2)}`),
 				pending.rationale ? h("p", { class: "generated-label" }, icon("spark"), `The model's reason: ${pending.rationale}`) : null,
@@ -483,23 +515,23 @@ export async function renderInvestigate(view, runId) {
 					? h(
 							"div",
 							null,
+							// What "Approve all the rest" allows is listed, open, above the button that allows it (S29, invariant 20).
+							h(
+								"div",
+								{ class: "investigate-rest" },
+								h("p", { class: "hint" }, "\u201cApprove all the rest\u201d sends this request and every later one of this run without stopping to ask. Nothing else changes:"),
+								h(
+									"ul",
+									{ class: "investigate-limits" },
+									...runLimits({ tools: state.tools, domain: run.domain, maxTurns: run.maxTurns, minGapMs: run.minGapMs, turnsLeft: run.maxTurns - run.turns }).map((line) => h("li", null, line)),
+								),
+							),
 							h(
 								"div",
 								{ class: "actions" },
 								h("button", { type: "button", class: "button primary", onclick: () => void answer(true) }, "Approve"),
 								h("button", { type: "button", class: "button", onclick: () => void answer(true, true) }, "Approve all the rest"),
 								h("button", { type: "button", class: "button", onclick: () => void answer(false) }, "Deny"),
-							),
-							h(
-								"details",
-								{ class: "investigate-rest" },
-								h("summary", null, "What \u201cApprove all the rest\u201d allows"),
-								h("p", { class: "hint" }, "This request and every later one of this run are sent without stopping to ask. Nothing else changes:"),
-								h(
-									"ul",
-									{ class: "investigate-limits" },
-									...runLimits({ tools: state.tools, domain: run.domain, maxTurns: run.maxTurns, minGapMs: run.minGapMs, turnsLeft: run.maxTurns - run.turns }).map((line) => h("li", null, line)),
-								),
 							),
 						)
 					: h("p", { class: "hint" }, "Approve it on the computer that runs Porchlight."),
@@ -622,14 +654,35 @@ export async function renderInvestigate(view, runId) {
 		);
 	}
 
+	/**
+	 * Follows a run while one is going: one request at a time, each after the last has answered (R6U-9),
+	 * paused while the tab is hidden. While Porchlight does not answer, one notice says so (B49).
+	 */
+	const follow = poller({
+		every: POLL_MS,
+		tries: 30,
+		visibility: pageVisibility(),
+		run: async () => {
+			// Only while something is running, or a run shown here might still change.
+			if (!(state.active || wasActive)) return POLL_MS * 5;
+			await refresh();
+			return true;
+		},
+		onFailure: (err) => replace(offlineSlot, banner("error", "Lost touch with Porchlight", [err instanceof Error ? err.message : String(err), "The run goes on there. This page asks again, more slowly."])),
+		onRecover: () => replace(offlineSlot),
+		onGiveUp: (err) =>
+			replace(
+				offlineSlot,
+				banner("error", "Lost touch with Porchlight", [err instanceof Error ? err.message : String(err)]),
+				h("p", null, h("button", { type: "button", class: "button", onclick: () => (replace(offlineSlot), follow.now()) }, "Try again")),
+			),
+	});
+
 	drawSetup();
 	drawHistory();
 	await drawRun();
-	timer = setInterval(() => {
-		// Only while something is running, or a run shown here might still change.
-		if (state.active || wasActive) void refresh();
-	}, POLL_MS);
-	return () => clearInterval(timer);
+	follow.start();
+	return () => follow.stop();
 }
 
 /** @param {string} text @param {string} what */

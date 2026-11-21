@@ -122,6 +122,20 @@ export function splitPaths(text) {
 }
 
 /**
+ * Whether the page may link to an address (S46): one of its own pages (`#/…`), a file of its own
+ * (`/…`, not `//host`), a web page over https, a System Settings pane, or a file the page made
+ * itself (`blob:`). Nothing else, so a `javascript:` or `data:` address from data never becomes a link.
+ *
+ * @param {string} href
+ */
+export function linkAllowed(href) {
+	const value = href.trim();
+	if (value === "" || value.startsWith("#")) return true;
+	if (value.startsWith("/") && !value.startsWith("//") && !value.startsWith("/\\")) return true;
+	return /^(https:\/\/|x-apple\.systempreferences:|blob:)/i.test(value);
+}
+
+/**
  * The section of the Settings page an address names, as an element id, or null.
  *
  * @param {string[]} path the address's path, as `parseHash` gives it

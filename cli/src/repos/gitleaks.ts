@@ -6,6 +6,7 @@ import { GIT_SAFE_ARGS } from "../github/github.ts";
 import { firstLine, type Runner } from "./exec.ts";
 import type { NotSearched } from "./discover.ts";
 import { copyHistory, gitReadEnv, type HistoryCopy } from "./git-copy.ts";
+import { historyKey, keepHistory, keptHistory, type HistoryReuse } from "./history-reuse.ts";
 import { hasGpsPosition, isPrivateRule, namedFindings, PHOTO_TYPES, photoFinding, placeOf, privateFindings, type Match, type NamedFile } from "./private.ts";
 import { gitleaksConfig } from "./rules.ts";
 import { makeTemp, removeTemp } from "./temp.ts";
@@ -82,13 +83,32 @@ function common(ignoreFrom: string, config: string): string[] {
  * The same secret found twice is reported once, from history first. With `privateData`, gitleaks
  * runs once with Porchlight's private-data rules beside its own, and its matches are split by rule.
  */
-export async function scanSecrets(repo: string, run: Runner, scope: SecretScope = FULL_HISTORY): Promise<{ findings: Finding[]; unreadFiles: number; notCovered: NotCovered[] }> {
+export async function scanSecrets(
+	repo: string,
+	run: Runner,
+	scope: SecretScope = FULL_HISTORY,
+	reuse?: HistoryReuse,
+): Promise<{ findings: Finding[]; unreadFiles: number; notCovered: NotCovered[]; reusedFrom?: string }> {
+	// An unchanged history read in full before is not read again (OP-1, history-reuse.ts): only where
+	// history is all gitleaks reads, since the other reaches compare it with files that change without a commit.
+	const reusable = reuse !== undefined && scope.history === "all" && !scope.localFiles && !scope.privateData && scope.secrets !== false;
+	const asked = { history: scope.history, localFiles: scope.localFiles, secrets: scope.secrets !== false, privateData: scope.privateData === true };
+	const config = gitleaksConfig({ privateData: false });
+	const key = reusable ? await historyKey(repo, run, asked, config) : null;
+	if (reuse && key) {
+		const kept = await keptHistory(reuse, repo, key);
+		if (kept) return { findings: kept.findings, unreadFiles: 0, notCovered: kept.notCovered, reusedFrom: kept.scannedAt };
+	}
 	const copy = scope.history === "none" ? null : await copyHistory(repo, run);
+	let result: { findings: Finding[]; unreadFiles: number; notCovered: NotCovered[] };
 	try {
-		return await scanWith(repo, copy, run, scope);
+		result = await scanWith(repo, copy, run, scope);
 	} finally {
 		if (copy) await removeTemp(copy.dir);
 	}
+	// Kept only when nothing changed while it was read, so a commit made meanwhile never stands under the older key.
+	if (reuse && key && (await historyKey(repo, run, asked, config)) === key) await keepHistory(reuse, repo, key, result).catch(() => {});
+	return result;
 }
 
 async function scanWith(repo: string, copy: HistoryCopy | null, run: Runner, scope: SecretScope): Promise<{ findings: Finding[]; unreadFiles: number; notCovered: NotCovered[] }> {

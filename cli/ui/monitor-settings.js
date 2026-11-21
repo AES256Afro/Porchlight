@@ -4,7 +4,7 @@
 // keeps them on this computer (0600) and never sends the token back. The page only ever learns the
 // monitor's host name and whether a connection is saved.
 import { api } from "./api.js";
-import { h, icon, replace, stepNodes, toast } from "./dom.js";
+import { formatDay, h, icon, replace, stepNodes, toast } from "./dom.js";
 import { store, updateMonitor } from "./store.js";
 
 /** @returns {HTMLElement} */
@@ -65,7 +65,7 @@ export function monitorSection() {
 					null,
 					h("span", { class: "severity status-good" }, icon("good"), "Connected"),
 					` ${monitor.host}. `,
-					saved ? `Saved here${monitor.savedAt ? ` ${new Date(monitor.savedAt).toLocaleDateString()}` : ""}.` : "Given when Porchlight started.",
+					saved ? `Saved here${monitor.savedAt ? ` ${formatDay(monitor.savedAt)}` : ""}.` : "Given when Porchlight started.",
 				)
 			: h(
 					"p",
@@ -100,8 +100,8 @@ export function monitorSection() {
 						h(
 							"div",
 							{ class: "actions" },
-							h("button", { type: "submit", class: "button primary", disabled: busy }, busy ? "Checking…" : monitor?.configured ? "Check and replace" : "Check and connect"),
-							saved ? h("button", { type: "button", class: "button", disabled: busy, onclick: () => void remove() }, "Remove") : null,
+							h("button", { type: "submit", class: "button primary", "aria-disabled": busy ? "true" : null }, busy ? "Checking…" : monitor?.configured ? "Check and replace" : "Check and connect"),
+							saved ? h("button", { type: "button", class: "button", "aria-disabled": busy ? "true" : null, onclick: () => void remove() }, "Remove") : null,
 						),
 						h("p", { class: "hint" }, "Porchlight asks the monitor for its list of websites with this token before saving anything, so a mistake never replaces a connection that works. No restart is needed."),
 					)

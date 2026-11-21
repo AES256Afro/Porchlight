@@ -266,18 +266,66 @@ export function nextDueDomain(db: D1Database, cutoffs: DueCutoffs): Promise<Doma
 		.first<DomainRow>();
 }
 
-export async function latestScan(db: D1Database, domainId: number): Promise<StoredScan | null> {
+export async function latestScan(
+	db: D1Database,
+	domainId: number,
+): Promise<(StoredScan & { id: number }) | null> {
 	const row = await db
 		.prepare(
-			"SELECT data, report FROM snapshots WHERE domain_id = ? ORDER BY taken_at DESC, id DESC LIMIT 1",
+			"SELECT id, data, report FROM snapshots WHERE domain_id = ? ORDER BY taken_at DESC, id DESC LIMIT 1",
 		)
 		.bind(domainId)
-		.first<{ data: string; report: string }>();
+		.first<{ id: number; data: string; report: string }>();
 	if (!row) return null;
 	return {
-		snapshot: JSON.parse(row.data) as Snapshot,
+		id: row.id,
+		snapshot: decodeSnapshot(row.data),
 		report: JSON.parse(row.report) as ScanReport,
 	};
+}
+
+/**
+ * A waiting host as kept: when it was last probed, and the certificate the log last showed for it,
+ * each "" when there is none. Hosts waiting their turn hold nothing observed, so they are kept this
+ * short (OP-12): a hundred bytes each instead of about 170, so a row holds an inventory of thousands.
+ */
+type Waiting = [checkedAt: string, notBefore: string, notAfter: string];
+
+/** A snapshot as stored: hosts waiting their turn in `waiting`, the rest as they are. */
+export function encodeSnapshot(snapshot: Snapshot): string {
+	const hosts: Snapshot["hosts"] = {};
+	const waiting: Record<string, Waiting> = {};
+	for (const [host, state] of Object.entries(snapshot.hosts)) {
+		if (!state.probed && state.dns === null && state.http === null)
+			waiting[host] = [
+				state.checkedAt ?? "",
+				state.cert?.notBefore ?? "",
+				state.cert?.notAfter ?? "",
+			];
+		else hosts[host] = state;
+	}
+	return JSON.stringify({
+		...snapshot,
+		hosts,
+		...(Object.keys(waiting).length > 0 ? { waiting } : {}),
+	});
+}
+
+/** A stored snapshot as the code reads it; one stored before `waiting` reads as it was written. */
+export function decodeSnapshot(text: string): Snapshot {
+	const { waiting, ...snapshot } = JSON.parse(text) as Snapshot & {
+		waiting?: Record<string, Waiting>;
+	};
+	for (const [host, [checkedAt, notBefore, notAfter]] of Object.entries(waiting ?? {})) {
+		snapshot.hosts[host] = {
+			probed: false,
+			dns: null,
+			cert: notBefore && notAfter ? { notBefore, notAfter } : null,
+			http: null,
+			...(checkedAt ? { checkedAt } : {}),
+		};
+	}
+	return snapshot;
 }
 
 /**
@@ -305,7 +353,7 @@ export async function saveScan(
 			.bind(
 				domain.id,
 				takenAt,
-				JSON.stringify(scan.snapshot),
+				encodeSnapshot(scan.snapshot),
 				JSON.stringify(scan.report),
 				...claim,
 			),
@@ -325,6 +373,60 @@ export async function saveScan(
 			.bind(domain.id, ...claim, domain.id, keep),
 	]);
 	return (updated?.meta.changes ?? 0) > 0;
+}
+
+/**
+ * Puts a pass over waiting hosts in place of the latest scan it continued (OP-11), only while that scan
+ * is still the domain's latest and the pass's claim, taken at `claimedAt`, is still held. The domain's
+ * last scan time does not move: the pass is not a scan, and the next one is due when it was.
+ */
+export async function updateLatestScan(
+	db: D1Database,
+	domain: DomainKey,
+	claimedAt: string,
+	id: number,
+	scan: StoredScan,
+): Promise<boolean> {
+	const result = await db
+		.prepare(
+			`UPDATE snapshots SET data = ?, report = ?
+			 WHERE id = ? AND domain_id = ?
+			   AND id = (SELECT id FROM snapshots WHERE domain_id = ? ORDER BY taken_at DESC, id DESC LIMIT 1)
+			   AND EXISTS (SELECT 1 FROM domains WHERE ${SAME_DOMAIN} AND scan_claimed_at = ?)`,
+		)
+		.bind(
+			encodeSnapshot(scan.snapshot),
+			JSON.stringify(scan.report),
+			id,
+			domain.id,
+			domain.id,
+			...keyOf(domain),
+			claimedAt,
+		)
+		.run();
+	return result.meta.changes > 0;
+}
+
+/**
+ * A verified domain whose latest scan succeeded and left hosts waiting their turn, for a tick with no
+ * scan due: the one whose waiting hosts were looked at least recently. None when no host waits.
+ */
+export function nextWaitingDomain(db: D1Database, staleClaim: string): Promise<DomainRow | null> {
+	return db
+		.prepare(
+			`SELECT d.* FROM domains d
+			 JOIN snapshots s ON s.id = (
+			   SELECT id FROM snapshots WHERE domain_id = d.id ORDER BY taken_at DESC, id DESC LIMIT 1
+			 )
+			 WHERE d.verified_at IS NOT NULL AND d.last_scan_status = 'ok'
+			   AND (d.scan_claimed_at IS NULL OR d.scan_claimed_at < ?)
+			   AND json_extract(s.data, '$.waiting') IS NOT NULL
+			   AND json_extract(s.data, '$.waiting') != '{}'
+			 ORDER BY json_extract(s.data, '$.continuedAt') IS NOT NULL, json_extract(s.data, '$.continuedAt'), d.id
+			 LIMIT 1`,
+		)
+		.bind(staleClaim)
+		.first<DomainRow>();
 }
 
 /** When something was seen to go wrong, and what. */

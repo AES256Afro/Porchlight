@@ -88,11 +88,34 @@ export function changeSummary(change) {
 	const unchecked = change.uncheckedCount ?? 0;
 	const caveat =
 		unchecked > 0
-			? ` ${unchecked.toLocaleString()} ${unchecked === 1 ? "finding" : "findings"} of the previous scan could not be checked again, so ${unchecked === 1 ? "it is" : "they are"} not counted as fixed.`
+			? ` ${unchecked.toLocaleString("en-GB")} ${unchecked === 1 ? "finding" : "findings"} of the previous scan could not be checked again, so ${unchecked === 1 ? "it is" : "they are"} not counted as fixed.`
 			: "";
 	if (change.newCount === 0 && change.fixedCount === 0) return `Nothing new and nothing fixed since the previous scan.${caveat}`;
 	const parts = [];
-	if (change.newCount > 0) parts.push(`${change.newCount.toLocaleString()} new`);
-	if (change.fixedCount > 0) parts.push(`${change.fixedCount.toLocaleString()} fixed`);
+	if (change.newCount > 0) parts.push(`${change.newCount.toLocaleString("en")} new`);
+	if (change.fixedCount > 0) parts.push(`${change.fixedCount.toLocaleString("en")} fixed`);
 	return `${parts.join(", ")} since the previous scan.${caveat}`;
+}
+
+/**
+ * Note text, status and date being typed, by `findingKey`, so a redraw of the page (a poll, a save of
+ * another note) builds the editor again with what was typed rather than what was saved (B44). Save
+ * clears a finding's draft.
+ *
+ * @template T
+ */
+export function createDrafts() {
+	/** @type {Map<string, T>} */
+	const drafts = new Map();
+	return {
+		/** @param {string} key @returns {T | undefined} */
+		get: (key) => drafts.get(key),
+		/** @param {string} key @param {T} draft */
+		set: (key, draft) => void drafts.set(key, draft),
+		/** @param {string} key */
+		clear: (key) => void drafts.delete(key),
+		get size() {
+			return drafts.size;
+		},
+	};
 }

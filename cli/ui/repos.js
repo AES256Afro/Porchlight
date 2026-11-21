@@ -1,5 +1,5 @@
 // @ts-check
-import { banner, emptyState, formatWhen, h, icon, pager, replace, severityBadge, toast } from "./dom.js";
+import { banner, emptyState, formatNumber, formatWhen, h, icon, pager, replace, setOff, severityBadge, toast } from "./dom.js";
 import { coverageBanner, filterBar, findingDetail, findingsHeader, noScanYet, settingsBanner, severityTiles } from "./finding-parts.js";
 import { ALL_SEVERITIES, isFiltering, matchesFilter } from "./filter.js";
 import { filterFromParams, paginate, paramsFromFilter, repoSortFromParams, repoSortParams } from "./list.js";
@@ -14,6 +14,8 @@ import { findingRows, load, rescanRepo, store, subscribe } from "./store.js";
 const SEVERITY_LABELS = { critical: "Critical", high: "High", medium: "Medium", low: "Low" };
 /** Findings listed for a repository at a time; a large repository is paged, so it opens quickly. */
 const DETAIL_PAGE = 50;
+/** Repositories listed at a time (UI-B13). */
+const REPO_PAGE = 50;
 
 /**
  * Findings grouped by repository, worst repository first.
@@ -33,14 +35,31 @@ export async function renderByRepo(view, route) {
 	const pages = new Map();
 	/** @type {Set<string>} */
 	const openFindings = new Set();
+	/** The page of repositories on show; kept in the address. */
+	let page = Number(route.params.get("page")) || 1;
+	/** Each open repository's "Scan this repository again", by name: a scan's progress changes only these (B44). @type {Map<string, HTMLButtonElement>} */
+	const rescanButtons = new Map();
 
 	const results = h("div");
 	draw();
 	return subscribe((change) => {
 		if (change === "report") draw();
-		// "Scan this repository again" follows whether a scan is running.
-		else if (change === "scan" && expanded.size > 0) update();
+		// "Scan this repository again" follows whether a scan is running; nothing else is drawn again.
+		else if (change === "scan") rescanState();
 	});
+
+	/** Says on each open repository's button whether it can be scanned again now. */
+	function rescanState() {
+		const running = store.scan.state === "running";
+		for (const [name, button] of rescanButtons) {
+			if (!button.isConnected) {
+				rescanButtons.delete(name);
+				continue;
+			}
+			setOff(button, running);
+			button.textContent = running && store.scan.state === "running" && store.scan.current === name ? "Scanning…" : "Scan this repository again";
+		}
+	}
 
 	function draw() {
 		if (!store.report) return replace(view, h("section", { class: "page" }, findingsHeader("by-repo"), noScanYet()));
@@ -52,7 +71,7 @@ export async function renderByRepo(view, route) {
 				findingsHeader("by-repo", filter),
 				coverageBanner(),
 				settingsBanner(),
-				filterBar(filter, () => (pages.clear(), update()), { onCleared: () => (pages.clear(), draw()) }),
+				filterBar(filter, () => (pages.clear(), (page = 1), update()), { onCleared: () => (pages.clear(), (page = 1), draw()) }),
 				results,
 			),
 		);
@@ -62,7 +81,6 @@ export async function renderByRepo(view, route) {
 	function update() {
 		const report = store.report;
 		if (!report) return;
-		route.replace({ ...paramsFromFilter(filter), ...repoSortParams(sort) });
 		const filtering = isFiltering(filter);
 
 		const rows = report.repos.map((repo, rank) => {
@@ -100,10 +118,13 @@ export async function renderByRepo(view, route) {
 			return direction * (value(a) - value(b)) || a.rank - b.rank;
 		});
 
+		const shown = paginate(visible, page, REPO_PAGE);
+		page = shown.page;
+		route.replace({ ...paramsFromFilter(filter), ...repoSortParams(sort), page: page > 1 ? page : undefined });
 		if (visible.length === 0) return replace(results, severityTiles(matching, filtering), emptyState("No findings match", "Loosen the filters to see more."));
 
 		const body = h("tbody");
-		for (const row of visible) {
+		for (const row of shown.items) {
 			const open = expanded.has(row.repo.path);
 			// Every row opens, so a clean or failed repository can be scanned again too (B47).
 			const expandable = true;
@@ -172,6 +193,13 @@ export async function renderByRepo(view, route) {
 					body,
 				),
 			),
+			shown.pages > 1
+				? pager(shown, "repositories", (next) => {
+						page = next;
+						update();
+						results.scrollIntoView({ block: "start" });
+					})
+				: null,
 		);
 	}
 
@@ -203,6 +231,31 @@ export async function renderByRepo(view, route) {
 		);
 	}
 
+	/** @param {Repo} repo @param {boolean} running */
+	function rescanButton(repo, running) {
+		const button = /** @type {HTMLButtonElement} */ (
+			h(
+				"button",
+				{
+					type: "button",
+					class: "button",
+					"aria-disabled": running ? "true" : null,
+					onclick: async () => {
+						if (store.scan.state === "running") return;
+						try {
+							await rescanRepo(repo.name);
+						} catch (err) {
+							toast(err instanceof Error ? err.message : String(err), "error");
+						}
+					},
+				},
+				store.scan.state === "running" && store.scan.current === repo.name ? "Scanning…" : "Scan this repository again",
+			)
+		);
+		rescanButtons.set(repo.name, button);
+		return button;
+	}
+
 	/** @param {Repo} repo @param {Finding[]} findings */
 	function findingsList(repo, findings) {
 		const paged = paginate(findings, pages.get(repo.path) ?? 1, DETAIL_PAGE);
@@ -215,23 +268,7 @@ export async function renderByRepo(view, route) {
 				"p",
 				{ class: "repo-actions" },
 				// After a fix: check this repository alone, without waiting for a scan of them all.
-				h(
-					"button",
-					{
-						type: "button",
-						class: "button",
-						"aria-disabled": running ? "true" : null,
-						onclick: async () => {
-							if (store.scan.state === "running") return;
-							try {
-								await rescanRepo(repo.name);
-							} catch (err) {
-								toast(err instanceof Error ? err.message : String(err), "error");
-							}
-						},
-					},
-					store.scan.state === "running" && store.scan.current === repo.name ? "Scanning…" : "Scan this repository again",
-				),
+				rescanButton(repo, running),
 				repo.rescannedAt ? h("span", { class: "hint" }, `Scanned again ${formatWhen(repo.rescannedAt)}, after the scan of them all.`) : null,
 			),
 			repo.errors.length > 0
@@ -306,7 +343,7 @@ export async function renderByRepo(view, route) {
  */
 function countCell(count, label) {
 	// The label is shown only where the column headings are not, as on repository cards.
-	return h("td", { class: count === 0 ? "num zero" : "num", dataset: { label } }, count.toLocaleString());
+	return h("td", { class: count === 0 ? "num zero" : "num", dataset: { label } }, formatNumber(count));
 }
 
 /**

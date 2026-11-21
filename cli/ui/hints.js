@@ -43,11 +43,11 @@ export function emptyScanHints(scan, settings) {
  */
 export function previewAdvice(preview, settings) {
 	if (preview.total > 0) {
-		const count = (/** @type {number} */ n) => `${n.toLocaleString()} ${n === 1 ? "repository" : "repositories"}`;
+		const count = (/** @type {number} */ n) => `${n.toLocaleString("en-GB")} ${n === 1 ? "repository" : "repositories"}`;
 		const inFolder = preview.total - preview.fetched;
 		const where = settings?.service ? "on this server" : `in ${preview.root}`;
 		let title = `${count(preview.total)} ${where}`;
-		if (preview.fetched > 0) title = inFolder > 0 ? `${count(preview.total)}: ${inFolder.toLocaleString()} ${where}, ${preview.fetched.toLocaleString()} fetched from GitHub` : `${count(preview.total)} fetched from GitHub`;
+		if (preview.fetched > 0) title = inFolder > 0 ? `${count(preview.total)}: ${inFolder.toLocaleString("en-GB")} ${where}, ${preview.fetched.toLocaleString("en-GB")} fetched from GitHub` : `${count(preview.total)} fetched from GitHub`;
 		return { found: true, title, lines: [], steps: [] };
 	}
 	if (settings?.service) {
@@ -291,7 +291,7 @@ export function ownershipSteps({ domain, onCloudflare }) {
  * @returns {string[]}
  */
 export function runLimits({ tools, domain, maxTurns, minGapMs, turnsLeft }) {
-	const pace = minGapMs === 1000 ? "one action a second" : `one action every ${(minGapMs / 1000).toLocaleString()} seconds`;
+	const pace = minGapMs === 1000 ? "one action a second" : `one action every ${(minGapMs / 1000).toLocaleString("en-GB")} seconds`;
 	const turns = turnsLeft === undefined ? `At most ${maxTurns} ${maxTurns === 1 ? "turn" : "turns"}` : `At most ${turnsLeft} more ${turnsLeft === 1 ? "turn" : "turns"} (${maxTurns} in all)`;
 	return [
 		...tools.filter((tool) => tool.needsApproval).map((tool) => (tool.args.method ? `${tool.description} Methods: ${tool.args.method.split("|").join(", ")}.` : tool.description)),
@@ -369,4 +369,105 @@ export function scheduleWords(hours) {
 	if (hours === 24) return "It is scanned again every day.";
 	if (hours % 24 === 0) return `It is scanned again every ${hours / 24} days.`;
 	return hours === 1 ? "It is scanned again every hour." : `It is scanned again every ${hours} hours.`;
+}
+
+/**
+ * Which parts of the Overview a change in the shared store redraws (B41). Only what shows that data:
+ * a host check or a project switch redraws nothing, so the folder being typed and the cards being
+ * read stay as they are.
+ *
+ * @param {"report" | "scan" | "settings" | "notes" | "host" | "cloudflare" | "projects"} change
+ * @returns {("summary" | "scan" | "cloudflare" | "monitor" | "assistant" | "analysis")[]}
+ */
+export function overviewRedraws(change) {
+	if (change === "report") return ["summary", "assistant", "analysis"];
+	if (change === "scan") return ["scan"];
+	if (change === "settings") return ["monitor", "assistant", "analysis", "cloudflare"];
+	if (change === "cloudflare") return ["cloudflare"];
+	return [];
+}
+
+/**
+ * Whether a project folder can be added now (S30, invariant 23): only once the page has shown the
+ * check of exactly the folder in the box, and, when that check warned, after a second press.
+ * "look": check the folder first; "refused": the check said it cannot be used; "confirm": show the
+ * warning and ask again; "add": send it.
+ *
+ * @param {{ warnings: string[], error?: string } | null} check the check on show
+ * @param {string} checkedFor the folder, as typed, that check is about
+ * @param {string} typed the folder in the box now
+ * @param {string | null} warnedFor the folder whose warning the owner has already been shown at Add
+ * @returns {"look" | "refused" | "confirm" | "add"}
+ */
+export function readyToAdd(check, checkedFor, typed, warnedFor) {
+	const folder = typed.trim();
+	if (!check || folder === "" || checkedFor !== folder) return "look";
+	if (check.error) return "refused";
+	if (check.warnings.length > 0 && warnedFor !== folder) return "confirm";
+	return "add";
+}
+
+/**
+ * A network failure said in the page's words (R6U-10): Node's bare "fetch failed" and a DNS answer's
+ * status number mean nothing to the owner. The rest of the message is kept as it was.
+ *
+ * @param {string} message
+ */
+export function plainError(message) {
+	return message
+		.replace(/\bno answer \(DNS status 2\)/g, "the domain's DNS answered with an error (SERVFAIL), often a DNSSEC problem")
+		.replace(/\bno answer \(DNS status 3\)/g, "the name does not exist in DNS")
+		.replace(/\bDNS status 2\b/g, "a DNS error (SERVFAIL), often a DNSSEC problem")
+		.replace(/:\s*fetch failed\.?$/i, ": no connection could be made (the address could not be found, or nothing answered)")
+		.replace(/^fetch failed\.?$/i, "No connection could be made: the address could not be found, or nothing answered.");
+}
+
+/**
+ * How an investigation ended, in a word: a run that used up its turns is not "Finished" (B49, E-F5).
+ *
+ * @param {{ status: "running" | "waiting" | "done" | "stopped" | "failed", ended?: string }} run
+ */
+export function runStatusWord(run) {
+	if (run.status === "done" && /turn budget/i.test(run.ended ?? "")) return "Turn budget used up";
+	return { running: "Running", waiting: "Waiting for you", done: "Finished", stopped: "Stopped", failed: "Failed" }[run.status];
+}
+
+/** @typedef {{ at: string, error: string }} MonitorProblem */
+/**
+ * The monitor's own state as `GET /domains` gives it beside the list (monitor/src/types.ts,
+ * `MonitorStatus`). Missing from a monitor deployed before it was added.
+ *
+ * @typedef {{
+ *   alerts: { to: "webhook" | "log", host?: string, format?: string, problem?: string, delivery: { lastDeliveredAt: string | null, lastError: MonitorProblem | null } | null },
+ *   schedule: { lastError: MonitorProblem | null } | null,
+ * }} MonitorStatus
+ */
+
+/**
+ * Where the monitor's alerts go and what last went wrong with them or with its daily run, in the
+ * page's words. Null for a monitor too old to say. A record the monitor could not read is said as not
+ * known, never as "nothing went wrong" (invariant 5).
+ *
+ * @param {MonitorStatus | null | undefined} status
+ * @param {(iso: string) => string} when how a time is written
+ * @returns {{ alerts: string, good: boolean, problems: string[], unknown: string[] } | null}
+ */
+export function monitorStatusWords(status, when) {
+	if (!status || typeof status !== "object" || !status.alerts) return null;
+	const { alerts, schedule } = status;
+	const delivered = alerts.delivery?.lastDeliveredAt ? ` The last one was delivered ${when(alerts.delivery.lastDeliveredAt)}.` : "";
+	const line =
+		alerts.to === "webhook"
+			? `Alerts go to ${alerts.host ?? "a webhook"}${alerts.format ? ` (${alerts.format})` : ""}.${delivered}`
+			: alerts.problem
+				? `Alerts go only to the monitor's own log: the webhook it was given is not used. ${alerts.problem}`
+				: "Alerts go only to the monitor's own log, so nobody is told when something changes. Set a webhook where the monitor is deployed to be told.";
+	/** @type {string[]} */
+	const problems = [];
+	if (alerts.delivery?.lastError) problems.push(`The last alert could not be delivered (${when(alerts.delivery.lastError.at)}): ${alerts.delivery.lastError.error}`);
+	if (schedule?.lastError) problems.push(`The monitor's daily run failed (${when(schedule.lastError.at)}): ${schedule.lastError.error}`);
+	/** @type {string[]} */
+	const unknown = [];
+	if (alerts.delivery === null || schedule === null) unknown.push("Whether alerts were delivered and the daily run worked is not known: the monitor could not read its record of them. Apply its database migrations (0004) and deploy it again.");
+	return { alerts: line, good: alerts.to === "webhook" && problems.length === 0, problems, unknown };
 }

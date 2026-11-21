@@ -5,7 +5,7 @@
 // model reads (invariant 13). Every answer is generated text, built with h(), and never acted on.
 import { api, ApiError } from "./api.js";
 import { generatedText } from "./assist.js";
-import { banner, h, icon, replace, stepNodes } from "./dom.js";
+import { banner, h, icon, replace, setOff, stepNodes } from "./dom.js";
 import { MAX_QUESTION, questionProblem, waitingLabel } from "./generated.js";
 
 /** @typedef {import("../src/discussions/discussions.ts").DiscussionTurn} Turn */
@@ -83,8 +83,9 @@ export function followUpBox(discussion, options = {}) {
 
 	/** @param {string} question */
 	async function ask(question) {
-		button.disabled = true;
-		input.disabled = true;
+		// aria-disabled and read-only rather than disabled: focus stays where it was while the model answers.
+		setOff(button, true);
+		input.readOnly = true;
 		replace(status, h("div", { class: "turn-question" }, h("p", { class: "turn-who" }, "You"), h("p", { class: "turn-text" }, question)), h("p", { class: "assist-wait" }, icon("pending"), waitingLabel(discussion.model)));
 		try {
 			const answer = await api("POST", "/discussions/ask", { id: discussion.id, question });
@@ -102,8 +103,8 @@ export function followUpBox(discussion, options = {}) {
 				return;
 			}
 		} finally {
-			button.disabled = false;
-			input.disabled = false;
+			setOff(button, false);
+			input.readOnly = false;
 		}
 		input.focus();
 	}
