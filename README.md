@@ -652,6 +652,22 @@ Personal data in a repository is a leak even when it is not a key. A scan that l
 - The repair for data in a committed file is to rewrite history (`git filter-repo`), one action per file, since deleting it leaves it in every earlier commit and every clone. Network names, a project's own contact details and example values get a check instead; data in files git does not track is kept out of git.
 - A model judging private data gets no file content, the same as for a secret.
 
+### GitHub Actions workflows
+
+Every scan that looks for secrets also reads the repository's workflows (`.github/workflows/*.yml` and `*.yaml`) for four patterns that let an outsider run code with the repository's secrets, or widen what a run may do (`cli/src/repos/workflows.ts`):
+
+| Finding | Severity | What it means |
+| --- | --- | --- |
+| `workflow-pr-target-checkout` | Critical | A `pull_request_target` workflow checks out the pull request's own code, so anyone's pull request runs with the repository's secrets and a write token |
+| `workflow-script-injection` | High | An event's text an outsider writes (an issue's or a pull request's title or body, a branch name, a comment) is placed in a `run:` step with `${{ }}`, where the shell runs it |
+| `workflow-unpinned-action` | Medium | A third-party action is named by a tag or a branch its owner can move. GitHub's own `actions/` and `github/` are left out |
+| `workflow-write-all` | Medium | `permissions: write-all` |
+
+- The workflows are read from git's index with `git cat-file`, which converts nothing and runs nothing a repository names, as text, line by line, with no YAML library. A check that cannot tell is left out, not guessed.
+- They are read again on every scan, even when an unchanged history is reused, since a workflow can change without a commit. A workflow that cannot be read is said under "Not covered".
+- The roadmap gives one repair per workflow file, with the steps for each pattern it holds: `pull_request` for building a pull request's code, text passed through `env:`, actions pinned to a full commit id, and only the permissions the jobs need.
+- Nothing is sent anywhere, and no request is made to GitHub: the check reads files the scan already has.
+
 ### How deep a scan goes
 
 The scan form's **Options** on the Overview, and the flags above, choose what a scan looks at:

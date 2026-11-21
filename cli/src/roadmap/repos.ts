@@ -60,7 +60,7 @@ export function listRepoFindings(report: ScanReport, filter: FindingFilter = noF
 			rows.push({
 				place: group,
 				severity: finding.severity,
-				type: finding.kind === "secret" ? "Secret" : finding.kind === "private-data" ? "Private data" : "Vulnerability",
+				type: finding.kind === "secret" ? "Secret" : finding.kind === "private-data" ? "Private data" : finding.kind === "workflow" ? "Workflow" : "Vulnerability",
 				id: finding.ruleId,
 				title: finding.title,
 				where: finding.location,
@@ -140,6 +140,11 @@ function plan(report: ScanReport): Planned<Finding>[] {
 			entries.push({ group: name, phase: PHASE_OF[action.priority], action, findings: typed });
 		}
 		entries.push(...privateActions(name, findings.filter((finding) => finding.kind === "private-data")));
+		// One repair per workflow file: every risk in it is fixed by editing that file (FT-2).
+		for (const group of groupBy(findings.filter((finding) => finding.kind === "workflow"), (finding) => finding.location.replace(/:\d+$/, ""))) {
+			const action = workflowAction(group);
+			entries.push({ group: name, phase: PHASE_OF[action.priority], action, findings: group });
+		}
 		const secrets = findings.filter((finding) => finding.kind === "secret" && finding.source !== "local");
 		for (const secret of secrets.filter((finding) => finding.severity === "high")) {
 			// A credential that looks live outranks its own severity label: until it is rotated it is usable.
@@ -151,6 +156,34 @@ function plan(report: ScanReport): Planned<Finding>[] {
 		}
 	}
 	return entries;
+}
+
+/** The steps that repair each workflow risk, by rule (workflows.ts), in the words a reader acts on. */
+const WORKFLOW_STEPS: Record<string, string> = {
+	"workflow-pr-target-checkout":
+		"Do not check out the pull request's code in a `pull_request_target` workflow. Use `pull_request` for anything that builds or tests the pull request, which runs without the repository's secrets; keep `pull_request_target` for labelling and commenting only.",
+	"workflow-script-injection":
+		"Pass the event's text to the step through an environment variable (`env: TITLE: ${{ github.event.pull_request.title }}`) and use `\"$TITLE\"` in the script, so the shell treats it as text and never as a command.",
+	"workflow-unpinned-action":
+		"Name the action by the full commit id of the release you checked (`owner/action@<40-character sha> # v1.2.3`), and let Dependabot's GitHub Actions updates move it.",
+	"workflow-write-all":
+		"Replace `permissions: write-all` with only what the jobs need, for example `permissions: contents: read`, and give a job more in its own `permissions:` block.",
+};
+
+/** One workflow file: every risk in it is repaired by editing it. */
+function workflowAction(findings: Finding[]): Action {
+	const file = findings[0]!.location.replace(/:\d+$/, "").replace(/`/g, "");
+	const rules = unique(findings.map((finding) => finding.ruleId));
+	return {
+		kind: "workflow",
+		priority: worst(findings),
+		title: `Fix the workflow ${file}`,
+		where: file,
+		how: [...rules.map((rule) => WORKFLOW_STEPS[rule] ?? "Look at this workflow step and remove what lets an outsider steer it."), "Commit the change: GitHub runs a workflow as the default branch holds it, so the risk is gone once it is merged there."],
+		clears: findings.map((finding) => `${finding.ruleId} (${finding.location})`),
+		counts: count(findings),
+		match: file,
+	};
 }
 
 /** One package at one version in one lockfile: a single upgrade clears every advisory against it. */

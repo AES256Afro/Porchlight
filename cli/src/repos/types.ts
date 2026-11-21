@@ -6,7 +6,8 @@ export type ToolName = "gitleaks" | "osv-scanner";
 /** One problem found in one repository, in a shape common to every scanner. */
 export interface Finding {
 	tool: ToolName;
-	kind: "secret" | "vulnerability" | "private-data";
+	/** `workflow`: a risk in a GitHub Actions workflow (workflows.ts), found in the secrets pass and following its coverage. */
+	kind: "secret" | "vulnerability" | "private-data" | "workflow";
 	severity: Severity;
 	/** Scanner rule ID for a secret; advisory ID for a vulnerability. */
 	ruleId: string;

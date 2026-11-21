@@ -263,6 +263,8 @@ export function secretSource(finding) {
  */
 export function looksFor(choices = standardChoices(), finding) {
 	if (finding.kind === "vulnerability") return choices.dependencies;
+	// Workflows are read as git's index holds them, in every scan that looks for secrets (FT-2).
+	if (finding.kind === "workflow") return choices.secrets;
 	// Reports from before private data was looked for have no such switch: off.
 	if (!(finding.kind === "private-data" ? choices.privateData === true : choices.secrets)) return false;
 	const source = secretSource(finding);

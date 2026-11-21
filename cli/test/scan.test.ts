@@ -503,13 +503,15 @@ test("a check switched off runs no scanner, and a Quick scan never runs git's ow
 	});
 	const report = await scanRepos({ root, depth: 1, run, settingFiles: async () => [], choices: { ...presetChoices("quick"), dependencies: false } });
 	const scans = run.calls.filter((call) => !["version", "--version"].includes(call[1]!));
-	// gitleaks reads the copied files; git is asked only for its index and HEAD's tree, with nothing a repository sets able to run.
-	assert.deepEqual(scans.map((call) => call[0]), ["git", "git", "gitleaks"]);
-	for (const gitCall of scans.slice(0, 2)) assert.ok(gitCall.includes("core.fsmonitor=false") && gitCall.includes("core.hooksPath=/dev/null"));
-	assert.deepEqual(scans[0]!.slice(-3), ["ls-files", "--stage", "-z"]);
-	assert.deepEqual(scans[1]!.slice(-5), ["ls-tree", "-r", "-z", "--full-tree", "HEAD"]);
-	assert.deepEqual(scans[2]!.slice(0, 2), ["gitleaks", "dir"]);
-	assert.ok(scans[2]!.includes("--redact"));
+	// gitleaks reads the copied files; git is asked only for the workflows in its index (FT-2), its index and
+	// HEAD's tree, with nothing a repository sets able to run.
+	assert.deepEqual(scans.map((call) => call[0]), ["git", "git", "git", "gitleaks"]);
+	for (const gitCall of scans.slice(0, 3)) assert.ok(gitCall.includes("core.fsmonitor=false") && gitCall.includes("core.hooksPath=/dev/null"));
+	assert.deepEqual(scans[0]!.slice(-5), ["ls-files", "--stage", "-z", "--", ".github/workflows"]);
+	assert.deepEqual(scans[1]!.slice(-3), ["ls-files", "--stage", "-z"]);
+	assert.deepEqual(scans[2]!.slice(-5), ["ls-tree", "-r", "-z", "--full-tree", "HEAD"]);
+	assert.deepEqual(scans[3]!.slice(0, 2), ["gitleaks", "dir"]);
+	assert.ok(scans[3]!.includes("--redact"));
 	assert.equal(report.repos[0]!.errors.length, 0);
 	assert.deepEqual(report.choices?.dependencies, false);
 });

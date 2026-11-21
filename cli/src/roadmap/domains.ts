@@ -47,6 +47,7 @@ const TYPE_OF: Record<Action["kind"], string> = {
 	rotate: "Other",
 	keep: "Other",
 	purge: "Other",
+	workflow: "Other",
 };
 
 /** Every open finding for the domain with the repair that clears it, most severe first. */

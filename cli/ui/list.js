@@ -78,7 +78,7 @@ export function filterFromParams(params, newKeys) {
 		if (known.length > 0 || severity === "none") filter.severities = known;
 	}
 	const kind = params.get("kind");
-	if (kind === "secret" || kind === "vulnerability" || kind === "private-data") filter.kind = kind;
+	if (kind === "secret" || kind === "vulnerability" || kind === "private-data" || kind === "workflow") filter.kind = kind;
 	filter.query = params.get("q") ?? "";
 	filter.repo = params.get("repo") ?? "";
 	if (params.get("new") === "1") filter.newOnly = true;

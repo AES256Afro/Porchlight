@@ -489,7 +489,7 @@ test("private data in history is removed from it, file by file; network names an
 	// The type filter and its words know private data.
 	assert.equal(listRepoFindings(report, parseFilter({ kind: "private-data" })).rows.length, 8);
 	assert.equal(listRepoFindings(report, parseFilter({ kind: "secret" })).rows.length, 0);
-	assert.throws(() => parseFilter({ kind: "personal" }), /Choose secret, vulnerability or private-data/);
+	assert.throws(() => parseFilter({ kind: "personal" }), /Choose secret, vulnerability, private-data or workflow/);
 });
 
 test("an upgrade clears every advisory: never to a release another advisory still lists as affected (B23)", async () => {

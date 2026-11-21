@@ -81,7 +81,7 @@ Without a path, exports the scan the interface shows (repo-scan.json in the data
   --format <format>      ${FORMATS.join(", ")} (default: md)
   --out <file>           Write to a file instead of printing it
   --severity <list>      Only these severities, comma-separated
-  --kind <type>          Only secret, vulnerability or private-data findings
+  --kind <type>          Only secret, vulnerability, private-data or workflow findings
   --match <text>         Only findings mentioning this text
   --repo <name>          Only this repository`,
 	},

@@ -192,7 +192,7 @@ function plain(text: string): string {
 	return text.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g, "");
 }
 
-const KIND_WORDS: Record<Finding["kind"], string> = { secret: "secret", vulnerability: "vulnerability", "private-data": "private data" };
+const KIND_WORDS: Record<Finding["kind"], string> = { secret: "secret", vulnerability: "vulnerability", "private-data": "private data", workflow: "workflow" };
 
 /** "GHSA-bi62" before "GHSA-bi610": numbers in an ID compared as numbers. */
 function naturally(a: string, b: string): number {

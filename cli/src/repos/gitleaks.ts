@@ -12,6 +12,7 @@ import { gitleaksConfig } from "./rules.ts";
 import { makeTemp, removeTemp } from "./temp.ts";
 import { triageSecret } from "./triage.ts";
 import { severityRank, type Finding, type HistoryReach, type NotCovered, type SecretSource } from "./types.ts";
+import { scanWorkflows } from "./workflows.ts";
 
 /**
  * What gitleaks hands to `git log`, which reads Porchlight's own copy of the history (git-copy.ts), so
@@ -95,9 +96,17 @@ export async function scanSecrets(
 	const asked = { history: scope.history, localFiles: scope.localFiles, secrets: scope.secrets !== false, privateData: scope.privateData === true };
 	const config = gitleaksConfig({ privateData: false });
 	const key = reusable ? await historyKey(repo, run, asked, config) : null;
+	// Workflows are read fresh every time: they can change in git's index without a commit, which the
+	// history key does not see (FT-2).
+	const workflows = scope.secrets !== false ? await scanWorkflows(repo, run) : { findings: [], unread: 0 };
+	const withWorkflows = <T extends { findings: Finding[]; notCovered: NotCovered[] }>(result: T): T => ({
+		...result,
+		findings: [...result.findings, ...workflows.findings],
+		notCovered: workflows.unread > 0 ? [...result.notCovered, { tool: "gitleaks" as const, message: `${workflows.unread === 1 ? "a GitHub Actions workflow" : `${workflows.unread} GitHub Actions workflows`} could not be read, so ${workflows.unread === 1 ? "it was" : "they were"} not checked` }] : result.notCovered,
+	});
 	if (reuse && key) {
 		const kept = await keptHistory(reuse, repo, key);
-		if (kept) return { findings: kept.findings, unreadFiles: 0, notCovered: kept.notCovered, reusedFrom: kept.scannedAt };
+		if (kept) return withWorkflows({ findings: kept.findings, unreadFiles: 0, notCovered: kept.notCovered, reusedFrom: kept.scannedAt });
 	}
 	const copy = scope.history === "none" ? null : await copyHistory(repo, run);
 	let result: { findings: Finding[]; unreadFiles: number; notCovered: NotCovered[] };
@@ -108,7 +117,7 @@ export async function scanSecrets(
 	}
 	// Kept only when nothing changed while it was read, so a commit made meanwhile never stands under the older key.
 	if (reuse && key && (await historyKey(repo, run, asked, config)) === key) await keepHistory(reuse, repo, key, result).catch(() => {});
-	return result;
+	return withWorkflows(result);
 }
 
 async function scanWith(repo: string, copy: HistoryCopy | null, run: Runner, scope: SecretScope): Promise<{ findings: Finding[]; unreadFiles: number; notCovered: NotCovered[] }> {
