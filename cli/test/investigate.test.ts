@@ -561,3 +561,10 @@ test("a port this computer could not reach, or a Stop, is never given as the hos
 		assert.match(result.response, /this says nothing about the port/, local);
 	}
 });
+
+test("a domain written in its own script is taken in the ASCII form DNS uses (B58)", () => {
+	assert.equal(parseDomain("München.de"), "xn--mnchen-3ya.de");
+	assert.equal(parseDomain("example.com."), "example.com");
+	assert.equal(parseDomain("bad..example"), null);
+	assert.equal(new Scope("münchen.de").domain, "xn--mnchen-3ya.de");
+});

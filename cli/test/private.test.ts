@@ -181,3 +181,26 @@ test("a file name holding a control character or a space never forges a commit i
 	assert.equal(added.get("modules/theme")?.blob, "", "a submodule has no content to read");
 	assert.equal(added.get("two.txt")?.commit, one);
 });
+
+test("committed photos are read in one batch, byte for byte, and a blob git cannot give is left out (OP-3)", async (t) => {
+	if (!(await installed("git"))) return t.skip("git is not installed");
+	const { readBlobs } = await import("../src/repos/gitleaks.ts");
+	const { run } = await import("../src/repos/exec.ts");
+	const { git, makeTree } = await import("./helpers.ts");
+	const { execFile } = await import("node:child_process");
+	const repo = await tempDir();
+	await makeTree(repo, { "a.txt": "a" });
+	await git(repo, "init", "-q");
+	const hash = (content: Buffer) =>
+		new Promise<string>((done, fail) => {
+			const child = execFile("git", ["-C", repo, "hash-object", "-w", "--stdin"], { encoding: "utf8" }, (err, stdout) => (err ? fail(err) : done(stdout.trim())));
+			child.stdin!.end(content);
+		});
+	const photos = Array.from({ length: 40 }, (_, n) => photoWithGps([n % 89, 1, 2], [n % 179, 3, 4]));
+	const ids = await Promise.all(photos.map(hash));
+	const missing = "f".repeat(40);
+	const read = await readBlobs(repo, [...ids, missing], run);
+	assert.equal(read.size, 40);
+	for (const [index, id] of ids.entries()) assert.ok(read.get(id)?.equals(photos[index]!), `blob ${index} is read whole`);
+	assert.equal(read.has(missing), false);
+});

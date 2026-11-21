@@ -35,7 +35,7 @@ Findings are ranked by severity and grouped into an ordered repair plan. A langu
 8. [Limits](#8-limits)
 9. [Interface](#9-interface)
 
-Reference: [Setup](#setup) · [Web interface](#web-interface) · [Mac app](#mac-app) · [Open it from other devices](#open-it-from-other-devices) · [Run on BoxPilot](#run-on-boxpilot) · [Model](#model) · [Scan repositories](#scan-repositories) · [Deeper analysis](#deeper-analysis-with-a-model) · [Fetch from GitHub](#fetch-repositories-from-github) · [Export](#export-a-repair-roadmap) · [Send to a model](#send-to-a-model) · [Discussions](#discussions) · [Projects](#projects) · [History](#history-status-and-notes) · [Investigate](#investigate-with-a-model) · [Check the computer](#check-the-computer) · [Cloudflare audit](#audit-your-cloudflare-account) · [Monitor domains](#monitor-domains) · [Development](#development)
+Reference: [Setup](#setup) · [Web interface](#web-interface) · [Mac app](#mac-app) · [Verify a download](#verify-a-download) · [Open it from other devices](#open-it-from-other-devices) · [Run on BoxPilot](#run-on-boxpilot) · [Model](#model) · [Scan repositories](#scan-repositories) · [Deeper analysis](#deeper-analysis-with-a-model) · [Fetch from GitHub](#fetch-repositories-from-github) · [Export](#export-a-repair-roadmap) · [Send to a model](#send-to-a-model) · [Discussions](#discussions) · [Projects](#projects) · [History](#history-status-and-notes) · [Investigate](#investigate-with-a-model) · [Check the computer](#check-the-computer) · [Cloudflare audit](#audit-your-cloudflare-account) · [Monitor domains](#monitor-domains) · [Development](#development)
 
 ## 1. Quick start
 
@@ -51,7 +51,7 @@ Open the link it prints and choose **Check your code**. `node cli/bin/porchlight
 
 The commands above use Homebrew, which runs on macOS and Linux. Without it, install Node.js 22.18 or later, git, gitleaks and osv-scanner from their own releases or the distribution's packages.
 
-On a Mac with Apple silicon, the alternative is `Porchlight-<version>-arm64.dmg` from the [latest release](https://github.com/AES256Afro/Porchlight/releases/latest); see [Mac app](#mac-app).
+On a Mac with Apple silicon, the alternative is `Porchlight-<version>-arm64.dmg` from the [latest release](https://github.com/AES256Afro/Porchlight/releases/latest); see [Mac app](#mac-app) and [Verify a download](#verify-a-download).
 
 ## 2. System overview
 
@@ -299,11 +299,32 @@ Porchlight.app opens Porchlight like any other app, with no terminal. It starts 
 
 On a Mac with Apple silicon (M1 or later) and macOS 13.5 or later:
 
-1. Download `Porchlight-<version>-arm64.dmg` from the [latest release](https://github.com/AES256Afro/Porchlight/releases/latest).
+1. Download `Porchlight-<version>-arm64.dmg` from the [latest release](https://github.com/AES256Afro/Porchlight/releases/latest), and check it as [Verify a download](#verify-a-download) describes.
 2. Open it and drag Porchlight into Applications.
 3. Open Porchlight. It is not notarized by Apple, so the first time macOS says "Porchlight Not Opened". Choose **Done**, then open System Settings → Privacy & Security and choose **Open Anyway** beside "Porchlight was blocked". After that it opens like any other app.
 
 The app carries its own Node.js, gitleaks and osv-scanner, so nothing else needs installing except git: macOS offers Apple's command line tools the first time a scan needs them. If you install newer scanners with Homebrew (`brew install gitleaks osv-scanner`), it uses those instead.
+
+### Verify a download
+
+From the first release whose DMG CI built, each release carries `SHA256SUMS` beside the DMG, and both the DMG and the container image have a GitHub artifact attestation: a statement, signed through Sigstore, of the repository, workflow and commit that built the file. Earlier releases have neither.
+
+The checksum, in the folder that holds the DMG and `SHA256SUMS`, both from the release page:
+
+```bash
+shasum -a 256 -c SHA256SUMS
+```
+
+It prints `Porchlight-<version>-arm64.dmg: OK`. A checksum shows that the file is the one listed, not who built it.
+
+The attestation, with the [GitHub CLI](https://cli.github.com) signed in (`gh auth login`):
+
+```bash
+gh attestation verify Porchlight-<version>-arm64.dmg --repo AES256Afro/Porchlight --source-ref refs/tags/v<version>
+gh attestation verify oci://ghcr.io/aes256afro/porchlight:<version> --repo AES256Afro/Porchlight --source-ref refs/tags/v<version>
+```
+
+Each succeeds only when the file's digest matches one that this repository's CI built from the tag `v<version>`; anything else is an error. The image under its earlier path, `ghcr.io/aes256afro/securityx`, is the same image with the same attestation. The image also carries buildx's SBOM and provenance: `docker buildx imagetools inspect ghcr.io/aes256afro/porchlight:<version> --format '{{ json .Provenance }}'`.
 
 ### Or build it from a checkout
 
@@ -337,7 +358,7 @@ How it is protected:
 
 ## Run on BoxPilot
 
-Porchlight is in the [BoxPilot](https://github.com/AES256Afro/BoxPilot) catalog: install it from Apps → Browse like any other app. BoxPilot runs the public image `ghcr.io/aes256afro/porchlight` (published under its earlier path too, which servers installed before the rename still pin), the web interface with gitleaks and osv-scanner built in. The monitor still runs on Cloudflare; the image is only its client.
+Porchlight is in the [BoxPilot](https://github.com/AES256Afro/BoxPilot) catalog: install it from Apps → Browse like any other app. BoxPilot runs the public image `ghcr.io/aes256afro/porchlight` (published under its earlier path too, which servers installed before the rename still pin), the web interface with gitleaks and osv-scanner built in. The monitor still runs on Cloudflare; the image is only its client. [Verify a download](#verify-a-download) shows how to check that an image was built by this repository's CI.
 
 - **Repositories to scan**: fetch them from GitHub on the page (see [Fetch repositories from GitHub](#fetch-repositories-from-github)), or use a folder of checkouts on the server (default `/srv/projects`), mounted read-only at `/repos`. Both are scanned together.
 - **GitHub token**: optional, `PORCHLIGHT_GITHUB_TOKEN`, for fetching private repositories.
@@ -788,7 +809,7 @@ How it is kept safe:
 - It only reads, through Cloudflare's API at `api.cloudflare.com`. The token is sent there as a header and nowhere else: never to the page after you paste it, a log, a report, an export or a model.
 - A domain's plan decides what is a problem: a Free domain is never told to turn on a paid feature. Something the token may not read is shown as **Could not check**, with the permission to add, never as passed.
 - Looking up where a CNAME record points (to find one left pointing at a deleted site that someone else could claim) happens only for a domain whose `_porchlight-challenge` record proves it is yours, checked in the same audit. You can turn it off.
-- **Changes that need a look.** Five fixes can affect how a site or its mail behaves: turning on HSTS (for 6 months), setting the encryption mode from Full to Full (strict), Bot Fight Mode, DNSSEC, and adding a DMARC record that only reports where there is none. Porchlight can make them too, but each is listed with what could go wrong, starts unticked, and is sent only if you tick it. Bot Fight Mode needs "Bot Management Write" on the token. Authenticated origin pulls, SPF, CAA and deleting records stay yours to do.
+- **Changes that need a look.** Four fixes can affect how a site or its mail behaves: turning on HSTS (for 6 months), setting the encryption mode from Full to Full (strict), DNSSEC, and adding a DMARC record that only reports where there is none. Porchlight can make them too, but each is listed with what could go wrong, starts unticked, and is sent only if you tick it. Bot Fight Mode is checked but not changed: Cloudflare's API refused the change on a real account, so the audit says where to turn it on. Authenticated origin pulls, SPF, CAA and deleting records stay yours to do.
 - **Fix these.** With the write permissions on the token, **Fix these…** on a domain, or **Fix what Porchlight can** above the list, shows every change the audit offers as its exact request. Untick any you do not want and approve once: Porchlight sends them one after another, each once, and shows each answer as it arrives. If the token lacks a permission, the first request that needs it is refused and the rest that need it are not sent; the page then says which permission to add and where on Cloudflare to add it, and since editing a token keeps the token there is nothing to paste again. The same steps appear for a permission the audit could not read with. **Stop** ends it, leaving what was sent in place. The **Activity** page shows the same lines, with everything else Porchlight is doing since it was opened.
 - **Changes are yours to approve.** With DNS Write or Zone Settings Write added to the token, Porchlight can add its ownership record, turn on Always Use HTTPS, TLS 1.3, Automatic HTTPS Rewrites or Browser Integrity Check, or set the minimum TLS version to 1.2. It shows the exact request first, and sends it once, only when you choose **Approve and send** on the computer that runs Porchlight. Every change is listed on the page and kept in `cloudflare-changes.json`.
 - Members are shown by a masked email (`a…@example.com`). The audit is kept in `cloudflare-audit.json`, readable only by you. Exports (Markdown, HTML, CSV, JSON) escape everything for their format.

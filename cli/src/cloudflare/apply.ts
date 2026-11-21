@@ -30,6 +30,8 @@ export interface PlannedChange {
 	body: unknown;
 	/** For the ownership record: the token its value holds, kept by this computer once it is added. */
 	ownershipToken?: string;
+	/** The audit (its `checkedAt`) that found the problem this change repairs. A newer audit ends the request. */
+	auditAt?: string;
 	createdAt: number;
 }
 
@@ -90,9 +92,9 @@ export function isChangeId(value: unknown): value is CfChangeId {
 }
 
 /** The exact request for a change to one zone. `ownershipToken` is needed for the ownership record. */
-export function planChange(zone: { id: string; name: string }, change: CfChangeId, ownershipToken?: string): PlannedChange {
+export function planChange(zone: { id: string; name: string }, change: CfChangeId, ownershipToken?: string, auditAt?: string): PlannedChange {
 	if (!isCloudflareId(zone.id)) throw new Error("Not a Cloudflare zone ID");
-	const base = { id: randomBytes(12).toString("hex"), zoneId: zone.id, zone: zone.name, change, createdAt: Date.now() };
+	const base = { id: randomBytes(12).toString("hex"), zoneId: zone.id, zone: zone.name, change, createdAt: Date.now(), ...(auditAt ? { auditAt } : {}) };
 	if (change === "ownership-record") {
 		if (!ownershipToken || !/^[0-9a-f]{16,128}$/.test(ownershipToken)) throw new Error("No ownership token for this zone");
 		const path = zonePath(zone.id, "/dns_records");
@@ -150,8 +152,83 @@ export function describeChange(planned: PlannedChange) {
 	};
 }
 
-/** Sends one approved change, exactly as planned. `denied`: the token lacks the permission for it. */
-export async function sendChange(client: CfClient, planned: PlannedChange): Promise<{ ok: boolean; result: string; denied?: boolean }> {
+/**
+ * Whether a change still repairs what the audit found, from the value Cloudflare holds now. The owner
+ * may have changed it in Cloudflare's dashboard since the request was shown, perhaps to something
+ * stronger than the fixed template (HSTS with preload, TLS 1.3 as the minimum), which sending it
+ * would lower (S28). Each reads one fixed path of the same zone; a value that cannot be read or is not
+ * understood means the change is not sent.
+ */
+export async function stillNeeded(client: CfClient, planned: PlannedChange): Promise<{ needed: true } | { needed: false; why: string }> {
+	const unread = (message: string) => ({ needed: false as const, why: `Porchlight could not read the current value first (${message}), so it did not send the change.` });
+	const changed = { needed: false as const, why: "the setting is no longer what the audit found: it was changed after the audit. Audit again to see it." };
+	const setting = async (id: string, failing: (value: unknown) => boolean | null) => {
+		const answer = await client.get<{ value?: unknown } | null>(zonePath(planned.zoneId, `/settings/${id}`));
+		if (!answer.ok) return unread(answer.message);
+		const verdict = failing(answer.result?.value);
+		return verdict === null ? unread("its answer was not understood") : verdict ? { needed: true as const } : changed;
+	};
+	const records = async (query: Record<string, string>, failing: (records: { type?: unknown; name?: unknown; content?: unknown }[]) => boolean) => {
+		const answer = await client.list<{ type?: unknown; name?: unknown; content?: unknown }>(zonePath(planned.zoneId, "/dns_records"), query, 100);
+		if (!answer.ok) return unread(answer.message);
+		if (answer.truncated) return unread("the list of records is too long to read whole");
+		return failing(answer.result) ? { needed: true as const } : changed;
+	};
+	const named = (name: string) => (record: { name?: unknown }) => typeof record.name === "string" && record.name.toLowerCase().replace(/\.$/, "") === name.toLowerCase();
+	const text = (content: unknown) => (typeof content === "string" ? content.replace(/^"|"$/g, "").replace(/"\s*"/g, "") : "");
+	const notOn = (value: unknown) => (typeof value === "string" ? value !== "on" : null);
+	switch (planned.change) {
+		case "always-use-https":
+		case "automatic-https-rewrites":
+		case "browser-check":
+			return setting(SETTING_CHANGES[planned.change].settingId, notOn);
+		case "tls-1.3":
+			return setting("tls_1_3", (value) => (typeof value === "string" ? value !== "on" && value !== "zrt" : null));
+		// Only TLS 1.0 or 1.1 is what the audit faults; a minimum of 1.3 set since must not be lowered.
+		case "min-tls-1.2":
+			return setting("min_tls_version", (value) => (typeof value === "string" ? value === "1.0" || value === "1.1" : null));
+		// Only HSTS that is off: one turned on since, with any max-age, subdomains or preload, is the owner's.
+		case "hsts":
+			return setting("security_header", (value) => {
+				if (typeof value !== "object" || value === null) return null;
+				return (value as { strict_transport_security?: { enabled?: unknown } }).strict_transport_security?.enabled !== true;
+			});
+		// Offered from Full only (rules.ts): from Flexible or Off the server may not answer over HTTPS at all.
+		case "ssl-strict":
+			return setting("ssl", (value) => (typeof value === "string" ? value === "full" : null));
+		case "dnssec": {
+			const answer = await client.get<{ status?: unknown } | null>(zonePath(planned.zoneId, "/dnssec"));
+			if (!answer.ok) return unread(answer.message);
+			const status = answer.result?.status;
+			if (typeof status !== "string") return unread("its answer was not understood");
+			return status !== "active" && status !== "pending" ? { needed: true } : changed;
+		}
+		case "bot-fight-mode": {
+			const answer = await client.get<{ fight_mode?: unknown } | null>(zonePath(planned.zoneId, "/bot_management"));
+			if (!answer.ok) return unread(answer.message);
+			if (typeof answer.result !== "object" || answer.result === null) return unread("its answer was not understood");
+			return answer.result.fight_mode !== true ? { needed: true } : changed;
+		}
+		// Only where there is no DMARC record at all, a TXT or a CNAME to a reporting service.
+		case "dmarc-monitor": {
+			const name = `_dmarc.${planned.zone}`;
+			return records({ name }, (found) => !found.some((record) => named(name)(record) && (record.type === "CNAME" || (record.type === "TXT" && /^v=DMARC1/i.test(text(record.content))))));
+		}
+		case "ownership-record": {
+			const name = challengeName(planned.zone);
+			const value = planned.ownershipToken ? challengeValue(planned.ownershipToken) : "";
+			return records({ type: "TXT", name }, (found) => !found.some((record) => named(name)(record) && record.type === "TXT" && text(record.content) === value));
+		}
+	}
+}
+
+/**
+ * Sends one approved change, exactly as planned, once it is clear the change still repairs what the
+ * audit found. `denied`: the token lacks the permission for it. `notSent`: it was not sent, and why.
+ */
+export async function sendChange(client: CfClient, planned: PlannedChange): Promise<{ ok: boolean; result: string; denied?: boolean; notSent?: boolean }> {
+	const current = await stillNeeded(client, planned);
+	if (!current.needed) return { ok: false, notSent: true, result: `Not sent: ${current.why}` };
 	const answer = await client.send<unknown>(planned.method, planned.path, planned.body);
 	if (answer.ok) return { ok: true, result: "Cloudflare accepted the change." };
 	const hint = answer.denied ? ` The token needs "${planned.permission}" for this.` : "";
@@ -169,13 +246,18 @@ export const MAX_BATCH = 300;
 export function planBatch(
 	zones: readonly { id: string; name: string; checks: readonly { status: string; change?: CfChangeId }[] }[],
 	ownershipToken: (zone: string) => string,
-): PlannedChange[] {
+	auditAt?: string,
+): { changes: PlannedChange[]; offered: number } {
 	const planned: PlannedChange[] = [];
+	// Counted past the limit too, so the page can say how many were left for the next "Fix these" (F-F5).
+	let offered = 0;
 	for (const zone of zones) {
 		for (const check of zone.checks) {
-			if (check.status !== "failed" || !check.change || planned.length >= MAX_BATCH) continue;
-			planned.push(planChange(zone, check.change, check.change === "ownership-record" ? ownershipToken(zone.name) : undefined));
+			if (check.status !== "failed" || !check.change) continue;
+			offered += 1;
+			if (planned.length >= MAX_BATCH) continue;
+			planned.push(planChange(zone, check.change, check.change === "ownership-record" ? ownershipToken(zone.name) : undefined, auditAt));
 		}
 	}
-	return planned;
+	return { changes: planned, offered };
 }

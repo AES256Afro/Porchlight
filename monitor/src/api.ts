@@ -1,8 +1,9 @@
+import { alertTarget } from "./alert.ts";
 import { normalizeDomain } from "./domain.ts";
 import { errorMessage, type AppEnv, type Deps } from "./env.ts";
 import { challengeName, challengeValue, checkOwnership, newChallengeToken } from "./ownership.ts";
 import { formatReport } from "./report.ts";
-import type { DomainView, HistoryEntry, ScanReport, Severity } from "./types.ts";
+import type { DomainView, HistoryEntry, MonitorStatus, ScanReport, Severity } from "./types.ts";
 import { runScan } from "./scan.ts";
 import {
 	addDomain,
@@ -11,6 +12,7 @@ import {
 	latestScan,
 	listDomainsWithReports,
 	markVerified,
+	readMonitorStatus,
 	scanHistory,
 	type DomainRow,
 } from "./store.ts";
@@ -18,9 +20,19 @@ import {
 const MIN_TOKEN_LENGTH = 32;
 const MAX_BODY_BYTES = 1024;
 
-export async function handleRequest(request: Request, env: AppEnv, deps: Deps): Promise<Response> {
+/** What a request may leave running after its answer: a manual scan must reach its alert. */
+export interface RequestContext {
+	waitUntil(promise: Promise<unknown>): void;
+}
+
+export async function handleRequest(
+	request: Request,
+	env: AppEnv,
+	deps: Deps,
+	ctx?: RequestContext,
+): Promise<Response> {
 	try {
-		return await route(request, env, deps);
+		return await route(request, env, deps, ctx);
 	} catch (err) {
 		// Details go to the log, never to the caller.
 		console.error(`Unhandled error: ${errorMessage(err)}`);
@@ -35,7 +47,12 @@ export async function handleRequest(request: Request, env: AppEnv, deps: Deps): 
 	}
 }
 
-async function route(request: Request, env: AppEnv, deps: Deps): Promise<Response> {
+async function route(
+	request: Request,
+	env: AppEnv,
+	deps: Deps,
+	ctx: RequestContext | undefined,
+): Promise<Response> {
 	const url = new URL(request.url);
 	const segments = url.pathname.split("/").filter(Boolean);
 
@@ -48,7 +65,10 @@ async function route(request: Request, env: AppEnv, deps: Deps): Promise<Respons
 	if (segments.length === 1) {
 		if (request.method === "GET") {
 			const listed = await listDomainsWithReports(env.DB);
-			return json({ domains: listed.map(({ domain, report }) => describeDomain(domain, report)) });
+			return json({
+				domains: listed.map(({ domain, report }) => describeDomain(domain, report)),
+				status: await monitorStatus(env),
+			});
 		}
 		if (request.method === "POST") return createDomain(request, env, deps);
 		return methodNotAllowed("GET, POST");
@@ -92,7 +112,7 @@ async function route(request: Request, env: AppEnv, deps: Deps): Promise<Respons
 
 	if (request.method !== "POST") return methodNotAllowed("POST");
 	if (segments[2] === "verify") return verifyDomain(domain, env, deps);
-	if (segments[2] === "scan") return scanDomain(domain, env, deps);
+	if (segments[2] === "scan") return scanDomain(domain, env, deps, ctx);
 	return json({ error: "Not found" }, 404);
 }
 
@@ -138,7 +158,12 @@ async function verifyDomain(domain: DomainRow, env: AppEnv, deps: Deps): Promise
 	return json({ domain: describeDomain(updated, report) });
 }
 
-async function scanDomain(domain: DomainRow, env: AppEnv, deps: Deps): Promise<Response> {
+async function scanDomain(
+	domain: DomainRow,
+	env: AppEnv,
+	deps: Deps,
+	ctx: RequestContext | undefined,
+): Promise<Response> {
 	if (!domain.verified_at) {
 		return json(
 			{
@@ -148,7 +173,11 @@ async function scanDomain(domain: DomainRow, env: AppEnv, deps: Deps): Promise<R
 			403,
 		);
 	}
-	const outcome = await runScan(env, domain, deps);
+	// The scan is saved before its alert is sent. Should the caller give up waiting (the CLI stops
+	// after two minutes), the Worker keeps running it to the end, so a saved change is never left unalerted.
+	const running = runScan(env, domain, deps);
+	ctx?.waitUntil(running);
+	const outcome = await running;
 	switch (outcome.status) {
 		case "ok":
 			return json({ report: outcome.report, text: formatReport(outcome.report) });
@@ -243,9 +272,27 @@ function describeDomain(domain: DomainRow, latest: ScanReport | null): DomainVie
 		lastScanStatus: domain.last_scan_status,
 		/** Scans that have failed in a row; 0 unless the last scan failed. */
 		errorStreak: domain.error_streak,
+		lastError: domain.last_error ?? null,
 		openFindings: latest ? countOpen(latest) : null,
 		challenge: challengeOf(domain),
 	};
+}
+
+/** Where alerts go and what last went wrong; see `MonitorStatus`. */
+async function monitorStatus(env: AppEnv): Promise<MonitorStatus> {
+	const target = alertTarget(env);
+	const alerts: MonitorStatus["alerts"] =
+		"url" in target
+			? { to: "webhook", host: target.url.host, format: target.format, delivery: null }
+			: { to: "log", ...(target.problem ? { problem: target.problem } : {}), delivery: null };
+	try {
+		const stored = await readMonitorStatus(env.DB);
+		alerts.delivery = { lastDeliveredAt: stored.alertSentAt, lastError: stored.alertError };
+		return { alerts, schedule: { lastError: stored.scheduleError } };
+	} catch (err) {
+		console.error(`Could not read the monitor's status: ${errorMessage(err)}`);
+		return { alerts, schedule: null };
+	}
 }
 
 function json(body: unknown, status = 200, headers: Record<string, string> = {}): Response {

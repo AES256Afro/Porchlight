@@ -35,7 +35,9 @@ export function deriveFindings(
 				title: `CNAME target ${state.dns.cname.at(-1)} does not resolve; check for subdomain takeover`,
 			});
 		}
-		if (live && state.cert) {
+		// A certificate carried from an older scan says nothing about now: it would age into a false
+		// "expired" while the log cannot be read. Its findings are carried instead (see `reobserved`).
+		if (live && state.cert && certObserved(snapshot, host)) {
 			const finding = certFinding(host, state.cert, settings, now);
 			if (finding) add(finding);
 		}
@@ -44,6 +46,9 @@ export function deriveFindings(
 				if (finding) add(finding);
 			}
 			for (const header of missingHeaders(state.http)) {
+				// Browsers ignore Strict-Transport-Security without a max-age they can read (RFC 6797), so it is as good as missing.
+				const unreadable =
+					header === "strict-transport-security" && state.http.hsts?.maxAge === null;
 				add({
 					id: `missing-header:${host}:${header}`,
 					severity:
@@ -52,7 +57,9 @@ export function deriveFindings(
 							: "low",
 					host,
 					basis: "http",
-					title: `Missing ${header} header`,
+					title: unreadable
+						? "Strict-Transport-Security has no max-age browsers can read, so they ignore it"
+						: `Missing ${header} header`,
 				});
 			}
 		}
@@ -64,7 +71,13 @@ export function deriveFindings(
 			severity: "low",
 			host: snapshot.domain,
 			basis: "apex",
-			title: "No CAA record: any certificate authority may issue for this domain",
+			// Certificate authorities climb to the parent's CAA record (RFC 8659), and the parent of a
+			// subdomain is not proven, so it is not looked up (invariant 1). Without a public suffix list
+			// a name of three labels or more may be a subdomain, so the title says what was not checked.
+			title:
+				snapshot.domain.split(".").length > 2
+					? "No CAA record on this name; a CAA record on a parent domain, which is not checked, may still limit who can issue"
+					: "No CAA record: any certificate authority may issue for this domain",
 		});
 	}
 	if (snapshot.dnssec === false) {
@@ -151,6 +164,8 @@ function hstsFinding(host: string, probe: Extract<HttpProbe, { ok: true }>): Fin
 
 /** A cookie that carries a sign-in, by its name: the ones a script should never be able to read. */
 const SESSION_COOKIE = /sess|sid$|^sid|auth|token|login|jwt/i;
+/** Anti-forgery cookies (Django's csrftoken, Angular's XSRF-TOKEN) are made for scripts to read. */
+const CSRF_COOKIE = /csrf|xsrf/i;
 /** Cookie names listed in a finding's title before the rest are counted. */
 const COOKIES_NAMED = 4;
 
@@ -175,7 +190,10 @@ function cookieFindings(host: string, probe: Extract<HttpProbe, { ok: true }>): 
 			title: `Cookies set without the Secure flag, so a browser would also send them over plain HTTP: ${named(insecure)}`,
 		});
 	}
-	const readable = cookies.filter((cookie) => !cookie.httpOnly && SESSION_COOKIE.test(cookie.name));
+	const readable = cookies.filter(
+		(cookie) =>
+			!cookie.httpOnly && SESSION_COOKIE.test(cookie.name) && !CSRF_COOKIE.test(cookie.name),
+	);
 	if (readable.length > 0) {
 		findings.push({
 			id: `script-readable-cookies:${host}`,
@@ -227,6 +245,13 @@ function spfFinding(domain: string, txt: string[] | undefined): Finding | null {
 			"low",
 			"The SPF record ends in ?all, which says nothing about mail from other servers; use ~all or -all",
 		);
+	// No `all` and no `redirect=` ends the same as ?all (RFC 7208 section 4.7).
+	if (all === undefined && !/(?:^|\s)redirect=/i.test(records[0]!))
+		return finding(
+			"weak-spf",
+			"low",
+			"The SPF record has no all at its end, which says nothing about mail from other servers; end it with ~all or -all",
+		);
 	return null;
 }
 
@@ -250,6 +275,7 @@ function missingHeaders(probe: Extract<HttpProbe, { ok: true }>): SecurityHeader
 		expected = ["strict-transport-security"];
 	}
 	return expected.filter((header) => {
+		if (header === "strict-transport-security" && probe.hsts?.maxAge === null) return true;
 		if (probe.present.includes(header)) return false;
 		return !(header === "x-frame-options" && probe.frameAncestors);
 	});
@@ -277,11 +303,25 @@ function reobserved(snapshot: Snapshot, finding: Finding): boolean {
 	const state = snapshot.hosts[finding.host];
 	if (!state) return true; // The host left the inventory, which clears its findings.
 	if (state.dns === null) return false;
+	if (!resolves(state.dns)) return true;
+	if (finding.basis === "cert") return certObserved(snapshot, finding.host);
 	if (finding.basis === "http") {
-		if (!resolves(state.dns)) return true;
-		return state.http?.ok === true && !pageUnavailable(state.http.status);
+		if (state.http?.ok !== true || pageUnavailable(state.http.status)) return false;
+		// Many sites set cookies only on some responses (a first visit, an A/B test, bot checks), so a
+		// response that set none says nothing about the cookies, and would make these findings flap.
+		if (/^(insecure|script-readable)-cookies:/.test(finding.id))
+			return (state.http.cookies?.length ?? 0) > 0;
+		return true;
 	}
 	return true;
+}
+
+/**
+ * Whether this scan read the certificate log for `host`: not while the log could not be read, and
+ * for the bare domain not while its own query failed (a certificate naming it alone would be missing).
+ */
+function certObserved(snapshot: Snapshot, host: string): boolean {
+	return snapshot.ctOk && !(host === snapshot.domain && snapshot.ctApexOk === false);
 }
 
 /**
@@ -295,7 +335,7 @@ export function diffFindings(
 	previous: Finding[],
 	current: Finding[],
 ): { added: Finding[]; resolved: Finding[] } {
-	const before = new Set(previous.map((finding) => finding.id));
+	const before = new Map(previous.map((finding) => [finding.id, finding]));
 	const after = new Set(current.map((finding) => finding.id));
 	const worsened = (finding: Finding) => {
 		const kind = finding.id.slice(0, finding.id.indexOf(":"));
@@ -303,7 +343,12 @@ export function diffFindings(
 		return worse !== undefined && after.has(`${worse}${finding.id.slice(kind.length)}`);
 	};
 	return {
-		added: current.filter((finding) => !before.has(finding.id)),
+		// A finding that grows more severe under the same id (HSTS from an hour to max-age=0, SPF from
+		// ?all to +all) is reported again, as new: otherwise the worse state would never be alerted.
+		added: current.filter((finding) => {
+			const was = before.get(finding.id);
+			return !was || SEVERITY_ORDER[finding.severity] < SEVERITY_ORDER[was.severity];
+		}),
 		resolved: previous.filter((finding) => !after.has(finding.id) && !worsened(finding)),
 	};
 }

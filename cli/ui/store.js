@@ -20,7 +20,7 @@ import { findingKey } from "./tracking.js";
 /** @typedef {{ configured: boolean, source: "settings" | "startup" | null, savedAt?: string, error?: string, verified?: { status: string, kind: "user" | "account", expiresOn?: string, checkedAt: string } }} CloudflareToken */
 /** @typedef {{ name: string, scope: string, purpose: string }} CloudflarePermission */
 /** @typedef {{ read: CloudflarePermission[], write: CloudflarePermission[], templateUrl: string }} CloudflareGuide */
-/** @typedef {{ at: string, zone: string, zoneId: string, change: string, title: string, request: { method: string, url: string, body: unknown }, ok: boolean, result: string }} AppliedChange */
+/** @typedef {{ at: string, zone: string, zoneId: string, change: string, title: string, request: { method: string, url: string, body: unknown }, ok: boolean, result: string, notSent?: boolean }} AppliedChange */
 /** @typedef {"report" | "scan" | "settings" | "notes" | "host" | "cloudflare" | "projects"} Change */
 /** @typedef {import("../src/projects/projects.ts").Project} Project */
 /**
@@ -443,15 +443,18 @@ export function updateCloudflare(update) {
 	emit("cloudflare");
 }
 
-function pollCloudflare() {
+/** @param {number} [failures] how many polls in a row have failed so far */
+function pollCloudflare(failures = 0) {
 	clearTimeout(cloudflareTimer);
 	cloudflareTimer = setTimeout(async () => {
 		try {
 			setCloudflare(await api("GET", "/cloudflare"));
 			if (store.cloudflare.status.state === "running" || store.cloudflare.batch.state === "running") pollCloudflare();
 		} catch (err) {
-			store.cloudflare.status = { state: "failed", finishedAt: "", error: err instanceof Error ? err.message : String(err) };
+			// One failed poll says nothing about the audit, which runs on the server either way: ask again, more slowly (F-F1).
+			if (failures + 1 < POLL_TRIES) return pollCloudflare(failures + 1);
+			store.cloudflare.status = { state: "failed", finishedAt: "", error: `Lost touch with the audit: ${err instanceof Error ? err.message : String(err)}` };
 			emit("cloudflare");
 		}
-	}, POLL_MS);
+	}, POLL_MS * 2 ** failures);
 }

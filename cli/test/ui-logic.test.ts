@@ -212,6 +212,15 @@ test("setting up website checks gives every command to paste, and ends where the
 		["npx cf auth login", "npx cf d1 create --name porchlight-monitor", "npx cf d1 migrations apply <DATABASE_ID>", "npx cf deploy --secrets-file .secrets.production"],
 	);
 	assert.ok(commands.includes(`printf 'ADMIN_TOKEN=%s\\n' "$(openssl rand -hex 32)" > .secrets.production`));
+	// The monitor's own packages (cf among them) are installed in monitor/: an install at the
+	// repository's root never reaches them (B48). Nothing installs before the move into monitor/.
+	const intoMonitor = commands.indexOf("cd monitor");
+	assert.ok(intoMonitor >= 0);
+	assert.equal(commands.indexOf("npm install"), intoMonitor + 1);
+	assert.ok(commands.slice(0, intoMonitor).every((command) => !/npm (install|ci)/.test(command)));
+	assert.ok(commands.indexOf("npm install") < commands.indexOf("npx cf auth login"));
+	// Without a webhook alerts reach only the Worker's log, and the page says so before the deploy.
+	assert.ok(local.some((step) => /ALERT_WEBHOOK_URL/.test(step.text) && /Worker's log/.test(step.text)));
 	// A step never says to read instructions somewhere else, and no command changes anything but the monitor's own folder.
 	assert.ok(local.every((step) => !/README|instructions/i.test(step.text)));
 	assert.ok(commands.every((command) => !/sudo|rm |curl /.test(command)));

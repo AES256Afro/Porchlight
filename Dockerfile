@@ -9,14 +9,17 @@ FROM node:24-alpine@sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea
 
 # gitleaks reads history with git. The repositories are someone else's files mounted read-only,
 # and git refuses to read a repository owned by another user unless told it is safe: only /repos
-# and those under it are. Porchlight's git ignores the system's and the user's git settings (a
-# repository's own .git/config could otherwise name programs to run), so the exception is given
+# and those under it are. '/repos/*' matches only folders below /repos, so /repos itself is named
+# too: one repository mounted directly there, or a scan at depth 0 (BLD-B1). Porchlight's git
+# ignores the system's and the user's git settings (a repository's own .git/config could otherwise
+# name programs to run), so the exception is given
 # through PORCHLIGHT_GIT_SAFE_DIRECTORY (see cli/src/repos/git-copy.ts). History is read from a copy
 # Porchlight makes of each repository, which holds none of its settings. Repositories fetched from
 # GitHub belong to this image's own user and need no exception.
 # tini runs as PID 1, so `docker stop` reaches Porchlight as SIGTERM and a scan in progress removes
 # its temporary copies before the container stops.
 RUN apk add --no-cache git tini \
+ && git config --system --add safe.directory /repos \
  && git config --system --add safe.directory '/repos/*'
 ENV PORCHLIGHT_GIT_SAFE_DIRECTORY=/repos:/repos/*
 

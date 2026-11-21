@@ -10,6 +10,8 @@ export interface FakeNet {
 	apex?: Partial<Record<"NS" | "MX" | "CAA", string[]>>;
 	/** Certificate log rows, or "down" to make crt.sh fail. */
 	ct?: { names: string[]; notBefore: string; notAfter: string }[] | "down";
+	/** Make only the bare-domain query fail, as crt.sh's busier query sometimes does alone. */
+	ctBareDown?: boolean;
 	/** HTTPS responses by host. A host absent from here refuses the connection. `cookies` are whole Set-Cookie headers. */
 	https?: Record<string, { status?: number; headers?: Record<string, string>; cookies?: string[] }>;
 	/** Whether the resolver says answers are DNSSEC-validated (the AD flag). Absent: it does not say. */
@@ -98,14 +100,21 @@ function dns(net: FakeNet, url: URL): Response {
 
 function ct(net: FakeNet, url: URL): Response {
 	if (net.ct === "down") return new Response("bad gateway", { status: 502 });
-	// The real service answers the "%.domain" and bare-domain queries
-	// separately; returning every row for both is equivalent after dedup.
-	void url;
+	// As the real service: "%.domain" lists certificates naming a subdomain (wildcards included),
+	// and the bare-domain query those naming the domain itself, so a certificate for the bare
+	// domain alone comes only from the second.
+	const query = url.searchParams.get("q") ?? "";
+	const bare = !query.startsWith("%.");
+	if (bare && net.ctBareDown) return new Response("bad gateway", { status: 502 });
+	const domain = bare ? query : query.slice(2);
+	const listed = (name: string) => (bare ? name === domain : name.endsWith(`.${domain}`));
 	return Response.json(
-		(net.ct ?? []).map((cert) => ({
-			name_value: cert.names.join("\n"),
-			not_before: cert.notBefore.replace(/\.\d+Z$|Z$/, ""),
-			not_after: cert.notAfter.replace(/\.\d+Z$|Z$/, ""),
-		})),
+		(net.ct ?? [])
+			.filter((cert) => cert.names.some(listed))
+			.map((cert) => ({
+				name_value: cert.names.join("\n"),
+				not_before: cert.notBefore.replace(/\.\d+Z$|Z$/, ""),
+				not_after: cert.notAfter.replace(/\.\d+Z$|Z$/, ""),
+			})),
 	);
 }

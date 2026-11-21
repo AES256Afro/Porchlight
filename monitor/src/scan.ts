@@ -1,18 +1,28 @@
 import { sendAlert } from "./alert.ts";
+import { APEX_TYPES } from "./collect/dns.ts";
 import { diffSnapshots } from "./diff.ts";
-import { errorMessage, settingsFrom, type AppEnv, type Deps, type Settings } from "./env.ts";
+import {
+	errorMessage,
+	scrubbedError,
+	settingsFrom,
+	type AppEnv,
+	type Deps,
+	type Settings,
+} from "./env.ts";
 import { deriveFindings, diffFindings } from "./findings.ts";
 import { checkOwnership } from "./ownership.ts";
 import { formatReport, hasNews, type ScanReport } from "./report.ts";
 import { collectSnapshot, type Snapshot } from "./snapshot.ts";
 import {
 	claimScan,
+	clearScheduleError,
 	isRegistered,
 	latestScan,
 	markFailed,
 	markUnverified,
 	nextDueDomain,
 	postponeUnverified,
+	recordScheduleError,
 	releaseScan,
 	saveScan,
 	type DomainRow,
@@ -44,6 +54,14 @@ export const FAILURES_BEFORE_ALERT = 3;
 /** A claim older than this was left by a scan that died. Scans take about a minute at most. */
 const CLAIM_LEASE_MS = 15 * MINUTE_MS;
 
+export interface ScanOptions {
+	/**
+	 * Set by the scheduled run, which read `row` to find the domain due: the scan then runs only if
+	 * no other scan has finished since, so a domain is not scanned twice minutes apart.
+	 */
+	onlyIfDue?: boolean;
+}
+
 /**
  * Scans one domain: re-check ownership, observe, compare with the last scan,
  * store, and alert if anything is new. Never throws; failures are recorded on
@@ -52,7 +70,12 @@ const CLAIM_LEASE_MS = 15 * MINUTE_MS;
  * Every write matches the domain's name and token as well as its id, so a scan
  * of a domain removed while it ran ("gone") changes and sends nothing.
  */
-export async function runScan(env: AppEnv, row: DomainRow, deps: Deps): Promise<ScanOutcome> {
+export async function runScan(
+	env: AppEnv,
+	row: DomainRow,
+	deps: Deps,
+	options: ScanOptions = {},
+): Promise<ScanOutcome> {
 	const settings = settingsFrom(env);
 	const startedAt = deps.now().toISOString();
 	let claimed: DomainRow | null = null;
@@ -62,7 +85,13 @@ export async function runScan(env: AppEnv, row: DomainRow, deps: Deps): Promise<
 		const staleBefore = new Date(Date.parse(startedAt) - CLAIM_LEASE_MS).toISOString();
 		// The row as it is now, not as the caller read it: another scan may have just finished.
 		// The claim matches the name and token too, so a domain removed since it was read is not scanned.
-		claimed = await claimScan(env.DB, row, startedAt, staleBefore);
+		claimed = await claimScan(
+			env.DB,
+			row,
+			startedAt,
+			staleBefore,
+			options.onlyIfDue ? row.last_scan_at : undefined,
+		);
 		if (!claimed)
 			return (await isRegistered(env.DB, row)) ? { status: "busy" } : { status: "gone" };
 		const domain = claimed;
@@ -114,7 +143,8 @@ export async function runScan(env: AppEnv, row: DomainRow, deps: Deps): Promise<
 		}
 		return { status: "ok", report };
 	} catch (err) {
-		const error = errorMessage(err);
+		// Kept on the domain and shown through the API, so nothing secret may be left in it.
+		const error = scrubbedError(env, err);
 		console.error(`Scan of ${row.name} failed: ${error}`);
 		if (claimed) await recordFailure(env, deps, claimed, startedAt, error, ownershipObserved);
 		return { status: "error", error };
@@ -143,7 +173,7 @@ async function recordFailure(
 			await postponeUnverified(env.DB, domain, startedAt);
 			return;
 		}
-		const streak = await markFailed(env.DB, domain, startedAt);
+		const streak = await markFailed(env.DB, domain, startedAt, error);
 		if (streak !== FAILURES_BEFORE_ALERT) return;
 		await sendAlert(
 			env,
@@ -172,7 +202,25 @@ export function buildReport(
 	const notes: string[] = [];
 	if (!snapshot.ctOk) {
 		notes.push(
-			"The certificate log could not be read, so newly issued hostnames may be missing from this scan.",
+			"The certificate log could not be read, so newly issued hostnames may be missing from this scan, " +
+				"and certificate findings were carried over from the last scan.",
+		);
+	} else if (snapshot.ctApexOk === false) {
+		notes.push(
+			`The certificate log could not be asked about ${snapshot.domain} itself, so its certificate findings were carried over from the last scan.`,
+		);
+	}
+	// A missing type is a lookup that failed (`ApexRecords`): its changes and findings were not checked.
+	const failedApex = APEX_TYPES.filter((type) => snapshot.apex[type] === undefined);
+	if (failedApex.length > 0) {
+		notes.push(
+			`DNS lookups of ${failedApex.join(", ")} for ${snapshot.domain} failed, so changes to them were not checked ` +
+				"and their findings were carried over.",
+		);
+	}
+	if (prevSnapshot?.dnssec !== undefined && snapshot.dnssec === undefined) {
+		notes.push(
+			`Whether ${snapshot.domain}'s DNS answers are signed could not be told this time; the last answer was kept.`,
 		);
 	}
 	const unprobed = hosts.filter((host) => !host.probed).length;
@@ -200,17 +248,62 @@ export function buildReport(
 	};
 }
 
-/** Scans the most overdue verified domain, if one is due. Called on every cron tick. */
+/**
+ * Scans the most overdue verified domain, if one is due. Called on every cron tick. Never throws:
+ * a failure of the run itself (the database missing a migration, say) is recorded for the domain
+ * list and alerted once, where it would otherwise reach only the Worker's log.
+ */
 export async function runDueScan(env: AppEnv, deps: Deps): Promise<ScanOutcome | null> {
-	const intervalMs = settingsFrom(env).scanIntervalHours * HOUR_MS;
-	const now = deps.now().getTime();
-	const before = (ms: number) =>
-		new Date(now - Math.min(ms, intervalMs) + SCHEDULE_SLACK_MS).toISOString();
-	const domain = await nextDueDomain(env.DB, {
-		interval: before(intervalMs),
-		firstRetry: before(FIRST_RETRY_MS),
-		laterRetry: before(LATER_RETRY_MS),
-		staleClaim: new Date(now - CLAIM_LEASE_MS).toISOString(),
-	});
-	return domain ? runScan(env, domain, deps) : null;
+	let outcome: ScanOutcome | null;
+	try {
+		const intervalMs = settingsFrom(env).scanIntervalHours * HOUR_MS;
+		const now = deps.now().getTime();
+		const before = (ms: number) =>
+			new Date(now - Math.min(ms, intervalMs) + SCHEDULE_SLACK_MS).toISOString();
+		const domain = await nextDueDomain(env.DB, {
+			interval: before(intervalMs),
+			firstRetry: before(FIRST_RETRY_MS),
+			laterRetry: before(LATER_RETRY_MS),
+			staleClaim: new Date(now - CLAIM_LEASE_MS).toISOString(),
+		});
+		outcome = domain ? await runScan(env, domain, deps, { onlyIfDue: true }) : null;
+	} catch (err) {
+		const error = scrubbedError(env, err);
+		console.error(`The scheduled scan run failed: ${error}`);
+		await reportScheduleFailure(env, deps, error);
+		return { status: "error", error };
+	}
+	await clearScheduleError(env.DB).catch((err) =>
+		console.error(`Could not clear the scheduled run's last error: ${errorMessage(err)}`),
+	);
+	return outcome;
+}
+
+/**
+ * Records the failure and alerts when the run was working before. When even that cannot be
+ * recorded (the database is missing migration 0004, or cannot be reached), there is no memory of
+ * having alerted, so the alert goes once a day, on the first tick after midnight UTC, instead of
+ * every ten minutes.
+ */
+async function reportScheduleFailure(env: AppEnv, deps: Deps, error: string): Promise<void> {
+	let fresh: boolean;
+	try {
+		fresh = await recordScheduleError(env.DB, deps.now().toISOString(), error);
+	} catch (err) {
+		console.error(`Could not record the failed run: ${errorMessage(err)}`);
+		const now = deps.now();
+		fresh = now.getUTCHours() === 0 && now.getUTCMinutes() < 10;
+	}
+	if (!fresh) return;
+	try {
+		await sendAlert(
+			env,
+			deps,
+			`Porchlight: the monitor's scheduled scans have stopped working. The error was: ${error}. ` +
+				"No domain is scanned until this is fixed; if the database is missing a migration, apply the migrations (see the README).",
+			{ status: "error", schedule: true },
+		);
+	} catch (err) {
+		console.error(`Could not alert the failed run: ${errorMessage(err)}`);
+	}
 }

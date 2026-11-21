@@ -41,6 +41,15 @@ function page(
 	};
 }
 
+const ALL_HEADERS = [
+	"strict-transport-security",
+	"content-security-policy",
+	"x-content-type-options",
+	"x-frame-options",
+	"referrer-policy",
+	"permissions-policy",
+];
+
 const ids = (s: Snapshot, previous = [] as ReturnType<typeof deriveFindings>) =>
 	deriveFindings(s, previous, SETTINGS, NOW).map((finding) => finding.id);
 
@@ -213,9 +222,26 @@ describe("HSTS and cookies", () => {
 		expect(withHttp({ hsts: { maxAge: 0, includeSubDomains: false } })).toEqual([
 			"medium weak-hsts:example.com",
 		]);
-		// Unreadable, or a snapshot from before it was kept: nothing is claimed.
-		expect(withHttp({ hsts: { maxAge: null, includeSubDomains: false } })).toEqual([]);
+		// A snapshot from before it was kept: nothing is claimed.
 		expect(withHttp({})).toEqual([]);
+	});
+
+	it("counts HSTS without a max-age browsers can read as missing (MON-B2)", () => {
+		// Browsers ignore such a header (RFC 6797), so the site has no HSTS.
+		const found = deriveFindings(
+			snapshot({
+				"example.com": host({
+					http: page(ALL, { hsts: { maxAge: null, includeSubDomains: true } }),
+				}),
+			}),
+			[],
+			SETTINGS,
+			NOW,
+		);
+		expect(found.map((finding) => `${finding.severity} ${finding.id}`)).toEqual([
+			"medium missing-header:example.com:strict-transport-security",
+		]);
+		expect(found[0]!.title).toContain("no max-age");
 	});
 
 	it("flags cookies without Secure, and sign-in cookies a script can read, once per host", () => {
@@ -374,5 +400,124 @@ describe("diffSnapshots", () => {
 		expect(diffSnapshots(before, after)).toEqual([
 			{ kind: "https_changed", host: "example.com", before: "HTTP 200", after: "unreachable" },
 		]);
+	});
+});
+
+describe("fewer false findings", () => {
+	it("says a parent's CAA record may apply when the monitored name may be a subdomain (MON-B3)", () => {
+		const caa = (domain: string) =>
+			deriveFindings({ ...snapshot({}, { CAA: [] }), domain }, [], SETTINGS, NOW)[0]!;
+		expect(caa("example.com").title).toBe(
+			"No CAA record: any certificate authority may issue for this domain",
+		);
+		const sub = caa("shop.example.com");
+		expect(sub).toMatchObject({ id: "no-caa:shop.example.com", severity: "low" });
+		expect(sub.title).toContain("a CAA record on a parent domain, which is not checked, may still");
+	});
+
+	it("does not call anti-forgery cookies sign-in cookies (MON-B4)", () => {
+		const probe = (cookies: { name: string; secure: boolean; httpOnly: boolean }[]) =>
+			ids(snapshot({ "example.com": host({ http: page(ALL_HEADERS, { cookies }) }) }));
+		expect(
+			probe([
+				{ name: "csrftoken", secure: true, httpOnly: false },
+				{ name: "XSRF-TOKEN", secure: true, httpOnly: false },
+			]),
+		).toEqual([]);
+		expect(probe([{ name: "auth_token", secure: true, httpOnly: false }])).toEqual([
+			"script-readable-cookies:example.com",
+		]);
+		// Still a cookie without Secure, whatever it is for.
+		expect(probe([{ name: "csrftoken", secure: false, httpOnly: false }])).toEqual([
+			"insecure-cookies:example.com",
+		]);
+	});
+
+	it("flags an SPF record that never says all, unless it hands over with redirect= (MON-B5)", () => {
+		const spf = (txt: string) =>
+			deriveFindings(snapshot({}, { CAA, TXT: [txt] }), [], SETTINGS, NOW);
+		expect(spf("v=spf1 mx")).toMatchObject([{ id: "weak-spf:example.com", severity: "low" }]);
+		expect(spf("v=spf1 redirect=_spf.example.net")).toEqual([]);
+	});
+
+	it("keeps cookie findings through a response that set no cookie, and clears them on one that did (MON-B6)", () => {
+		const withCookies = (cookies?: { name: string; secure: boolean; httpOnly: boolean }[]) =>
+			snapshot({
+				"example.com": host({ http: page(ALL_HEADERS, cookies ? { cookies } : {}) }),
+			});
+		const first = deriveFindings(
+			withCookies([{ name: "theme", secure: false, httpOnly: false }]),
+			[],
+			SETTINGS,
+			NOW,
+		);
+		expect(first.map((finding) => finding.id)).toEqual(["insecure-cookies:example.com"]);
+
+		const none = deriveFindings(withCookies(), first, SETTINGS, NOW);
+		expect(diffFindings(first, none)).toEqual({ added: [], resolved: [] });
+
+		const fixed = deriveFindings(
+			withCookies([{ name: "theme", secure: true, httpOnly: false }]),
+			none,
+			SETTINGS,
+			NOW,
+		);
+		expect(diffFindings(none, fixed).resolved.map((finding) => finding.id)).toEqual([
+			"insecure-cookies:example.com",
+		]);
+	});
+});
+
+describe("findings that get worse under the same id", () => {
+	it("reports a rise in severity as new, and a fall as nothing (B34)", () => {
+		const finding = (severity: "low" | "medium") => ({
+			id: "weak-hsts:example.com",
+			severity,
+			host: "example.com",
+			basis: "http" as const,
+			title: severity,
+		});
+		expect(diffFindings([finding("low")], [finding("medium")])).toEqual({
+			added: [finding("medium")],
+			resolved: [],
+		});
+		expect(diffFindings([finding("medium")], [finding("low")])).toEqual({
+			added: [],
+			resolved: [],
+		});
+	});
+});
+
+describe("certificates the log did not show this time", () => {
+	const expired = host({
+		cert: { notBefore: "2026-08-01T00:00:00Z", notAfter: "2026-11-01T00:00:00Z" },
+	});
+
+	it("derives nothing from a carried certificate, and keeps the findings it had (B52, R2B-6)", () => {
+		expect(ids({ ...snapshot({ "example.com": expired }), ctOk: false })).toEqual([]);
+		expect(ids({ ...snapshot({ "example.com": expired }), ctApexOk: false })).toEqual([]);
+		// Only the bare domain's own query failed: other hosts' certificates were read.
+		expect(ids({ ...snapshot({ "www.example.com": expired }), ctApexOk: false })).toEqual([
+			"cert-expired:www.example.com",
+		]);
+
+		const before = deriveFindings(
+			snapshot({
+				"example.com": host({
+					cert: { notBefore: "2026-09-01T00:00:00Z", notAfter: "2026-11-25T00:00:00Z" },
+				}),
+			}),
+			[],
+			SETTINGS,
+			NOW,
+		);
+		expect(before.map((finding) => finding.id)).toEqual(["cert-expiring:example.com"]);
+		const down = deriveFindings(
+			{ ...snapshot({ "example.com": expired }), ctOk: false },
+			before,
+			SETTINGS,
+			NOW,
+		);
+		expect(down).toEqual(before);
 	});
 });

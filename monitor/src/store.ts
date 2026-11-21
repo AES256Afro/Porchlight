@@ -17,6 +17,8 @@ export interface DomainRow {
 	error_streak: number;
 	/** Set while a scan of the domain runs; see `claimScan`. */
 	scan_claimed_at: string | null;
+	/** Why the last scan failed, scrubbed and cut short; null after any scan that did not fail. */
+	last_error: string | null;
 }
 
 export type { ScanStatus };
@@ -140,7 +142,7 @@ export async function markUnverified(
 ): Promise<boolean> {
 	const result = await db
 		.prepare(
-			`UPDATE domains SET last_scan_at = ?1, last_scan_status = 'unverified', error_streak = 0
+			`UPDATE domains SET last_scan_at = ?1, last_scan_status = 'unverified', error_streak = 0, last_error = NULL
 			 WHERE id = ?2 AND name = ?3 AND challenge_token = ?4
 			   AND (verified_at IS NULL OR verified_at <= ?1)`,
 		)
@@ -168,16 +170,23 @@ export async function postponeUnverified(
 }
 
 /**
- * Records a failed scan and returns how many have now failed in a row: 0 when
- * the domain was removed meanwhile, and nothing was recorded.
+ * Records a failed scan and why (`error`, already scrubbed), and returns how many
+ * have now failed in a row: 0 when the domain was removed meanwhile, and nothing
+ * was recorded.
  */
-export async function markFailed(db: D1Database, domain: DomainKey, now: string): Promise<number> {
+export async function markFailed(
+	db: D1Database,
+	domain: DomainKey,
+	now: string,
+	error: string,
+): Promise<number> {
 	const row = await db
 		.prepare(
-			`UPDATE domains SET last_scan_at = ?, last_scan_status = 'error', error_streak = error_streak + 1
+			`UPDATE domains SET last_scan_at = ?, last_scan_status = 'error', error_streak = error_streak + 1,
+			   last_error = ?
 			 WHERE ${SAME_DOMAIN} RETURNING error_streak`,
 		)
-		.bind(now, ...keyOf(domain))
+		.bind(now, error, ...keyOf(domain))
 		.first<{ error_streak: number }>();
 	return row?.error_streak ?? 0;
 }
@@ -187,20 +196,26 @@ export async function markFailed(db: D1Database, domain: DomainKey, now: string)
  * another scan holds an unexpired claim or the domain is no longer registered
  * as `domain` describes it. The update is a single statement, so of two scans
  * that start together exactly one gets the row.
+ *
+ * With `lastScanAt` (the scheduled run, which read the row to find it due), the
+ * claim also needs the last scan to be the one that was read: a scan that
+ * finished in between means the domain is no longer due, so it is not scanned again.
  */
 export function claimScan(
 	db: D1Database,
 	domain: DomainKey,
 	now: string,
 	staleBefore: string,
+	lastScanAt?: string | null,
 ): Promise<DomainRow | null> {
+	const due = lastScanAt === undefined ? "" : " AND last_scan_at IS ?";
 	return db
 		.prepare(
 			`UPDATE domains SET scan_claimed_at = ?
-			 WHERE ${SAME_DOMAIN} AND (scan_claimed_at IS NULL OR scan_claimed_at < ?)
+			 WHERE ${SAME_DOMAIN} AND (scan_claimed_at IS NULL OR scan_claimed_at < ?)${due}
 			 RETURNING *`,
 		)
-		.bind(now, ...keyOf(domain), staleBefore)
+		.bind(now, ...keyOf(domain), staleBefore, ...(lastScanAt === undefined ? [] : [lastScanAt]))
 		.first<DomainRow>();
 }
 
@@ -296,7 +311,8 @@ export async function saveScan(
 			),
 		db
 			.prepare(
-				`UPDATE domains SET last_scan_at = ?, last_scan_status = 'ok', error_streak = 0, verified_at = ?
+				`UPDATE domains SET last_scan_at = ?, last_scan_status = 'ok', error_streak = 0, verified_at = ?,
+				   last_error = NULL
 				 WHERE ${SAME_DOMAIN} AND scan_claimed_at = ?`,
 			)
 			.bind(takenAt, takenAt, ...claim),
@@ -309,4 +325,75 @@ export async function saveScan(
 			.bind(domain.id, ...claim, domain.id, keep),
 	]);
 	return (updated?.meta.changes ?? 0) > 0;
+}
+
+/** When something was seen to go wrong, and what. */
+export interface Problem {
+	at: string;
+	error: string;
+}
+
+export interface MonitorStatusRow {
+	alertSentAt: string | null;
+	alertError: Problem | null;
+	scheduleError: Problem | null;
+}
+
+/** The monitor's own record of alert delivery and the scheduled run (migration 0004). Throws if it cannot be read. */
+export async function readMonitorStatus(db: D1Database): Promise<MonitorStatusRow> {
+	const row = await db
+		.prepare("SELECT * FROM monitor_status WHERE id = 1")
+		.first<Record<string, string | null>>();
+	const problem = (error: string | null | undefined, at: string | null | undefined) =>
+		error && at ? { at, error } : null;
+	return {
+		alertSentAt: row?.alert_sent_at ?? null,
+		alertError: problem(row?.alert_error, row?.alert_error_at),
+		scheduleError: problem(row?.schedule_error, row?.schedule_error_at),
+	};
+}
+
+/** Records one alert's delivery: when it reached the webhook, or why it did not (`error`, already scrubbed). */
+export async function recordAlertDelivery(
+	db: D1Database,
+	at: string,
+	error: string | null,
+): Promise<void> {
+	const statement = error
+		? db
+				.prepare("UPDATE monitor_status SET alert_error = ?, alert_error_at = ? WHERE id = 1")
+				.bind(error, at)
+		: db.prepare("UPDATE monitor_status SET alert_sent_at = ? WHERE id = 1").bind(at);
+	await statement.run();
+}
+
+/**
+ * Records that the scheduled run failed, and returns whether it was working
+ * before, so the owner is alerted once per run of failures rather than every tick.
+ */
+export async function recordScheduleError(
+	db: D1Database,
+	at: string,
+	error: string,
+): Promise<boolean> {
+	const row = await db
+		.prepare(
+			`UPDATE monitor_status SET schedule_error = ?1,
+			   schedule_error_at = CASE WHEN schedule_error IS NULL THEN ?2 ELSE schedule_error_at END
+			 WHERE id = 1 RETURNING schedule_error_at = ?2 AS fresh`,
+		)
+		.bind(error, at)
+		.first<{ fresh: number }>();
+	if (!row) throw new Error("The monitor's status row is missing");
+	return row.fresh === 1;
+}
+
+/** The scheduled run worked: any failure it recorded is over. Writes only when one was recorded. */
+export async function clearScheduleError(db: D1Database): Promise<void> {
+	await db
+		.prepare(
+			`UPDATE monitor_status SET schedule_error = NULL, schedule_error_at = NULL
+			 WHERE id = 1 AND schedule_error IS NOT NULL`,
+		)
+		.run();
 }

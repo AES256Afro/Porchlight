@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { lstat, readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { assistantConfig, isHosted } from "./assist/ollama.ts";
 import { tokenShapeProblem } from "./cloudflare/client.ts";
@@ -80,11 +80,36 @@ async function dataFolderCheck(dir: string): Promise<Check> {
 		if (!info.isDirectory()) return { name, status: "problem", detail: `${dir} is not a folder.`, fix: `Move it aside: mv ${dir} ${dir}.old` };
 		// Scan reports name the files where secrets were found, so the folder is the owner's alone.
 		if ((info.mode & 0o077) !== 0) return { name, status: "warning", detail: `${dir} can be read by other users of this computer.`, fix: `chmod 700 ${dir}` };
-		return { name, status: "ok", detail: `${dir}, readable only by you.` };
+		// How much room it takes: fetched repositories and kept scans grow it, and nothing else says so (R6O-2).
+		const size = await folderSize(dir);
+		return { name, status: "ok", detail: `${dir}, readable only by you${size === null ? "" : `, ${sizeWords(size)}`}.` };
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") return { name, status: "note", detail: `${dir} does not exist yet. It is made the first time the interface saves something.` };
 		return { name, status: "problem", detail: `${dir} cannot be read: ${err instanceof Error ? err.message : String(err)}` };
 	}
+}
+
+/** The bytes of the files in a folder and below it, links not followed; null past 200,000 entries. */
+async function folderSize(dir: string): Promise<number | null> {
+	let total = 0;
+	let entries = 0;
+	const folders = [dir];
+	while (folders.length > 0) {
+		const folder = folders.pop()!;
+		for (const entry of await readdir(folder, { withFileTypes: true }).catch(() => [])) {
+			if (++entries > 200_000) return null;
+			const path = join(folder, entry.name);
+			if (entry.isDirectory()) folders.push(path);
+			else if (entry.isFile()) total += (await lstat(path).catch(() => null))?.size ?? 0;
+		}
+	}
+	return total;
+}
+
+function sizeWords(bytes: number): string {
+	if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB in all`;
+	if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB in all`;
+	return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB in all (fetched repositories and kept scans: remove ones you no longer need)`;
 }
 
 async function reportCheck(dir: string): Promise<Check> {

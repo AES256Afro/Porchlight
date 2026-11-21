@@ -5,6 +5,7 @@
  * Nothing else is in it: no IP address, no other domain, no third-party service the site uses. Every
  * action names its target by host name and is checked here before it runs.
  */
+import { domainToASCII } from "node:url";
 
 /** A lowercase host name: labels of letters, digits, hyphens and underscores (as in `_dmarc`). */
 const HOST_NAME = /^(?=.{1,253}$)(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$/;
@@ -16,8 +17,15 @@ export class ScopeError extends Error {}
 /** A domain the owner typed, lowercased without a trailing dot, or null when it is not one. */
 export function parseDomain(value: unknown): string | null {
 	if (typeof value !== "string") return null;
-	const domain = value.trim().toLowerCase().replace(/\.$/, "");
-	return DOMAIN_NAME.test(domain) ? domain : null;
+	// A name written in its own script (münchen.de) is taken in the ASCII form DNS uses
+	// (xn--mnchen-3ya.de), and checked as that (B58). One that has no such form is refused.
+	const domain = asciiDomain(value.trim().toLowerCase().replace(/\.$/, ""));
+	return domain !== "" && DOMAIN_NAME.test(domain) ? domain : null;
+}
+
+/** A domain name in the ASCII form DNS uses: unchanged when it is ASCII already, empty when it has none. */
+export function asciiDomain(name: string): string {
+	return /^[\x00-\x7f]*$/.test(name) ? name : domainToASCII(name);
 }
 
 /**

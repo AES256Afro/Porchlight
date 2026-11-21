@@ -5,7 +5,7 @@
  *   (`cli/src/assist/settings.ts`) it is sent once to Porchlight's own server, kept here, and never
  *   sent back to the page, a log, a report or a model. It travels only to `CLOUDFLARE_API`.
  * - `cloudflare-audit.json`: the latest audit. It names records and masked members, never the token.
- * - `cloudflare-changes.json`: every change applied after the owner approved it, with the exact request.
+ * - `cloudflare-changes.json`: every change the owner approved, with the exact request: sent, or not sent and why.
  */
 import { readFile, rm } from "node:fs/promises";
 import { writePrivate } from "../investigate/ownership.ts";
@@ -63,8 +63,10 @@ export interface AppliedChange {
 	/** Exactly what was sent, without the Authorization header. */
 	request: { method: string; url: string; body: unknown };
 	ok: boolean;
-	/** What Cloudflare answered, in words. */
+	/** What Cloudflare answered, in words; or, when it was not sent, why not. */
 	result: string;
+	/** Approved, but not sent: the value had changed since the audit, or could not be read first (S28). */
+	notSent?: boolean;
 }
 
 /** Changes kept in the log; older ones are dropped. */

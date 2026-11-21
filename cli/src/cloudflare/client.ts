@@ -13,10 +13,26 @@ const ID = /^[0-9a-f]{32}$/;
 const TOKEN_SHAPE = /^[A-Za-z0-9_-]{30,200}$/;
 const TIMEOUT_MS = 15_000;
 /** Pages read from one list at most, so a huge account cannot keep an audit running for ever. */
-const MAX_PAGES = 40;
+export const MAX_PAGES = 40;
+/**
+ * Cloudflare's rate limit (about 1,200 requests in 5 minutes) answers HTTP 429 with Retry-After. A read
+ * is asked again at most this many times, waiting what Cloudflare asks but never longer than
+ * `MAX_RETRY_WAIT_MS` a time, so a large account is read whole and an audit still ends.
+ */
+const MAX_RETRIES = 3;
+const MAX_RETRY_WAIT_MS = 30_000;
+const DEFAULT_RETRY_WAIT_MS = 5_000;
+
+export type Sleep = (ms: number) => Promise<void>;
+const realSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export type CfAnswer<T> =
-	| { ok: true; result: T }
+	| {
+			ok: true;
+			result: T;
+			/** A list longer than MAX_PAGES: what was read is only its start, and must not be judged as the whole (invariant 5). */
+			truncated?: boolean;
+	  }
 	| {
 			ok: false;
 			status: number;
@@ -63,15 +79,18 @@ export class CfClient {
 	readonly #token: string;
 	readonly #fetch: typeof fetch;
 	readonly #timeoutMs: number;
+	readonly #sleep: Sleep;
 	/** Every request made, as method and path: for tests and for the audit's own record. Never the token. */
 	readonly requests: string[] = [];
 
-	constructor(token: string, fetchFn: typeof fetch = fetch, timeoutMs = TIMEOUT_MS) {
+	/** `sleep` waits out a rate limit; tests pass one that only records the wait. */
+	constructor(token: string, fetchFn: typeof fetch = fetch, timeoutMs = TIMEOUT_MS, sleep: Sleep = realSleep) {
 		const problem = tokenShapeProblem(token);
 		if (problem) throw new Error(problem);
 		this.#token = token;
 		this.#fetch = fetchFn;
 		this.#timeoutMs = timeoutMs;
+		this.#sleep = sleep;
 	}
 
 	/** The full address of a path, always under the fixed API address. */
@@ -92,17 +111,22 @@ export class CfClient {
 		return this.#call<T>(method, path, {}, body);
 	}
 
-	/** Every page of a list, up to MAX_PAGES. A failed page fails the whole list: half a list is not a list. */
+	/**
+	 * Every page of a list, up to MAX_PAGES. A failed page fails the whole list: half a list is not a
+	 * list. A list with more pages than that comes back marked `truncated`, never as if it were whole.
+	 * An answer without a page count goes on while pages come back full.
+	 */
 	async list<T>(path: string, query: Record<string, string> = {}, perPage = 50): Promise<CfAnswer<T[]>> {
 		const all: T[] = [];
 		for (let page = 1; page <= MAX_PAGES; page++) {
 			const answer = await this.#call<T[]>("GET", path, { ...query, page: String(page), per_page: String(perPage) }, undefined, true);
 			if (!answer.ok) return answer;
-			const { items, totalPages } = answer.result as unknown as { items: T[]; totalPages: number };
+			const { items, totalPages } = answer.result as unknown as { items: T[]; totalPages: number | null };
 			all.push(...items);
-			if (page >= totalPages || items.length === 0) break;
+			const more = totalPages === null ? items.length >= perPage : page < totalPages;
+			if (!more || items.length === 0) return { ok: true, result: all };
 		}
-		return { ok: true, result: all };
+		return { ok: true, result: all, truncated: true };
 	}
 
 	/**
@@ -123,7 +147,22 @@ export class CfClient {
 		return { ok: false, kind: "user", message: user.denied ? "Cloudflare did not accept this token. Check that it was copied whole and has not expired or been deleted." : user.message };
 	}
 
+	/**
+	 * One request. A read refused by the rate limit is asked again after the wait Cloudflare names,
+	 * within the bounds above; a change never is, so it is sent once.
+	 */
 	async #call<T>(method: string, path: string, query: Record<string, string>, body: unknown, paged = false): Promise<CfAnswer<T>> {
+		for (let attempt = 0; ; attempt++) {
+			const { retryAfterMs, ...answer } = await this.#once<T>(method, path, query, body, paged);
+			if (answer.ok || answer.status !== 429 || method !== "GET" || attempt >= MAX_RETRIES) {
+				if (!answer.ok && answer.status === 429) return { ...answer, message: `${answer.message}. Cloudflare's rate limit was reached; audit again in a few minutes` };
+				return answer as CfAnswer<T>;
+			}
+			await this.#sleep(retryAfterMs ?? DEFAULT_RETRY_WAIT_MS * 2 ** attempt);
+		}
+	}
+
+	async #once<T>(method: string, path: string, query: Record<string, string>, body: unknown, paged: boolean): Promise<CfAnswer<T> & { retryAfterMs?: number }> {
 		const url = CfClient.url(path, query);
 		this.requests.push(`${method} ${url.pathname.slice(API_PATH.length - 1)}${url.search}`);
 		let response: Response;
@@ -157,12 +196,14 @@ export class CfClient {
 				denied: response.status === 401 || response.status === 403,
 				missing: response.status === 404,
 				message: this.#scrub(`Cloudflare answered HTTP ${response.status}${said ? `: ${said.slice(0, 300)}` : ""}`),
+				...(response.status === 429 ? { retryAfterMs: retryAfter(response.headers.get("retry-after")) } : {}),
 			};
 		}
 		if (paged) {
-			const items = Array.isArray(data.result) ? data.result : [];
-			const total = typeof data.result_info?.total_pages === "number" ? data.result_info.total_pages : 1;
-			return { ok: true, result: { items, totalPages: total } as unknown as T };
+			// A list that is not a list was not understood: it is never read as an empty one (invariant 5).
+			if (!Array.isArray(data.result)) return { ok: false, status: response.status, denied: false, missing: false, message: "Cloudflare's answer was not a list" };
+			const total = typeof data.result_info?.total_pages === "number" ? data.result_info.total_pages : null;
+			return { ok: true, result: { items: data.result, totalPages: total } as unknown as T };
 		}
 		return { ok: true, result: data.result as T };
 	}
@@ -170,4 +211,12 @@ export class CfClient {
 	#scrub(text: string): string {
 		return text.split(this.#token).join("[token]");
 	}
+}
+
+/** Retry-After as Cloudflare sends it (seconds, or an HTTP date), bounded; undefined when absent or unreadable. */
+function retryAfter(header: string | null): number | undefined {
+	if (!header) return undefined;
+	const ms = /^\d+$/.test(header.trim()) ? Number(header.trim()) * 1000 : Date.parse(header) - Date.now();
+	if (!Number.isFinite(ms)) return undefined;
+	return Math.min(Math.max(ms, 0), MAX_RETRY_WAIT_MS);
 }

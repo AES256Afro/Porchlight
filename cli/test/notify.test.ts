@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { formatFor, noticeRequest, notifyTarget, type Notice } from "../src/notify/format.ts";
+import { formatFor, noticeRequest, notifySetting, notifyTarget, type Notice } from "../src/notify/format.ts";
 import { failedScanNotice, scanNotice } from "../src/notify/scan.ts";
 import type { ScanReport } from "../src/repos/types.ts";
 
@@ -141,4 +141,51 @@ test("line and paragraph separators and direction marks never reach a notice, an
 		assert.doesNotMatch(out, acting, JSON.stringify(out));
 	}
 	assert.doesNotMatch(jsonText({ name: hostile }), acting, "escaped in JSON, so the data is unchanged");
+});
+
+test("a notice fits each service's limit after escaping, in the unit the service counts (B56)", () => {
+	// A hostile repository's file names: runs of backticks, which the Discord and Slack escaping lengthen.
+	const fences = Array.from({ length: 12 }, (_, i) => `  [high] shop: AWS key (${"`".repeat(120)}${i}.env:1)`);
+	const discord = JSON.parse(noticeRequest("discord", { title: "Porchlight: 12 findings", lines: fences, urgent: true }).body).content as string;
+	assert.ok(discord.length <= 2000, `${discord.length} characters`);
+	assert.equal(discord.match(/```/g)?.length, 2, "the block still closes");
+	assert.match(discord, /\.\.\. and \d+ more lines\n```$/);
+
+	// 60 file names in Chinese: three bytes a character, which ntfy counts.
+	const cjk = Array.from({ length: 60 }, (_, i) => `  [low] 店铺: 私钥 (源代码/配置文件/数据库连接设置${i}.env:1)`);
+	const ntfy = noticeRequest("ntfy", { title: "Porchlight: 60 findings", lines: cjk, urgent: false }).body;
+	assert.ok(new TextEncoder().encode(ntfy).length <= 4096, `${new TextEncoder().encode(ntfy).length} bytes`);
+	assert.match(ntfy, /\.\.\. and \d+ more lines$/);
+
+	// Slack's escaping turns one < into four characters.
+	const angles = Array.from({ length: 40 }, () => `  [low] ${"<".repeat(200)}`);
+	const slack = JSON.parse(noticeRequest("slack", { title: "t", lines: angles, urgent: false }).body).text as string;
+	assert.ok(slack.length <= 3500, `${slack.length} characters`);
+
+	// What fits is sent whole.
+	const few = noticeRequest("ntfy", { title: "t", lines: ["  [low] 店铺: 私钥"], urgent: false }).body;
+	assert.equal(few, "  [low] 店铺: 私钥");
+});
+
+test("accepts a plain http notice address on the owner's own network, by what it is rather than how it looks (B72)", () => {
+	for (const own of ["http://nas:8080/hook", "http://[fd00::5]/", "http://[fe80::1]/t", "http://ntfy.lan/topic", "http://printer.home.arpa/t", "http://172.20.0.3/t", "http://127.0.0.1:2586/t"]) {
+		assert.ok(notifyTarget(own), own);
+	}
+	// Names that only start like a private address are names, found in public DNS; and public or not-private IPv6.
+	for (const across of ["http://10.example.com/t", "http://192.168.example.com/t", "http://127.example.com/t", "http://172.32.0.1/t", "http://[2001:db8::1]/t", "http://[fc::1]/t", "http://ntfy.example.lan.example.com/t"]) {
+		assert.equal(notifyTarget(across), null, across);
+	}
+});
+
+test("a notice address that cannot be used is a problem to show, never an exit, and never repeats the address (B72)", () => {
+	assert.equal(notifySetting(undefined, undefined), undefined);
+	assert.equal(notifySetting("  ", "slack"), undefined, "BoxPilot passes an empty setting as an empty variable");
+	const refused = notifySetting("http://hooks.example.com/t0ps3cret", undefined);
+	assert.ok(refused && "problem" in refused);
+	assert.doesNotMatch(refused.problem, /t0ps3cret|hooks\.example/);
+	const badFormat = notifySetting("https://hooks.example.com/t0ps3cret", "pager");
+	assert.ok(badFormat && "problem" in badFormat && badFormat.problem.includes("PORCHLIGHT_NOTIFY_FORMAT"));
+	const used = notifySetting("http://nas:8080/hook", "ntfy");
+	assert.ok(used && "url" in used);
+	assert.deepEqual([used.url.host, used.format], ["nas:8080", "ntfy"]);
 });

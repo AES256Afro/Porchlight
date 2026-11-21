@@ -496,3 +496,72 @@ test("the Cloudflare analysis is kept as a discussion, and the audit's export an
 	assert.match(stale.json.followUp.reason, /A newer Cloudflare audit has replaced/);
 	assert.equal((await send(server, "POST", "/api/discussions/ask", { id, question: "And now?" })).status, 409);
 });
+
+test("a change is sent only while it still repairs what the audit found: read again just before sending (S28)", async (t) => {
+	const { server, world, writes, state } = await audited(t);
+
+	// One at a time: HSTS shown while off, then turned on with preload in Cloudflare's dashboard. The
+	// fixed template (6 months, no subdomains, no preload) would lower it, so it is not sent.
+	const hsts = (await send(server, "POST", "/api/cloudflare/changes/preview", { zone: FREE_ZONE, change: "hsts" })).json.pending;
+	world.settings[FREE_ZONE]!.security_header = { strict_transport_security: { enabled: true, max_age: 63_072_000, include_subdomains: true, preload: true } };
+	const answered = await send(server, "POST", "/api/cloudflare/changes/approve", { id: hsts.id, approve: true });
+	assert.equal(answered.status, 200);
+	assert.deepEqual([answered.json.ok, answered.json.notSent], [false, true]);
+	assert.match(answered.json.result, /^Not sent: .*changed after the audit/);
+	assert.equal(writes().length, 0);
+	const recorded = JSON.parse(await readFile(join(state, "cloudflare-changes.json"), "utf8")).changes;
+	assert.deepEqual(recorded.map((change: { change: string; ok: boolean; notSent?: boolean }) => [change.change, change.ok, change.notSent]), [["hsts", false, true]]);
+
+	// Fix these: the minimum TLS version raised to 1.3 since is not lowered to 1.2; the rest still go.
+	const batch = (await send(server, "POST", "/api/cloudflare/changes/batch/preview", { zone: FREE_ZONE })).json.batch;
+	const ids = batch.changes.filter((change: { care?: string }) => !change.care).map((change: { id: string }) => change.id);
+	assert.ok(batch.changes.some((change: { change: string }) => change.change === "min-tls-1.2"));
+	world.settings[FREE_ZONE]!.min_tls_version = "1.3";
+	await send(server, "POST", "/api/cloudflare/changes/batch/approve", { id: batch.id, approve: true, include: ids });
+	const done = await until(() => send(server, "GET", "/api/cloudflare"), (reply) => reply.json.batch.state === "finished");
+	assert.equal(done.json.batch.skipped, 1);
+	assert.equal(done.json.batch.applied, ids.length - 1);
+	assert.ok(!writes().some((sent) => sent.path.endsWith("/settings/min_tls_version")), "TLS 1.3 is never lowered to 1.2");
+	assert.equal(writes().length, ids.length - 1);
+	const lines: string[] = (await send(server, "GET", "/api/activity?after=0")).json.lines.map((line: { text: string }) => line.text);
+	assert.ok(lines.some((line) => /^Not sent: Set the minimum TLS version to 1\.2 for free\.example\. /.test(line)));
+});
+
+test("a newer audit ends every request still waiting, one at a time or together (S28)", async (t) => {
+	const { server, writes } = await audited(t);
+	const single = (await send(server, "POST", "/api/cloudflare/changes/preview", { zone: FREE_ZONE, change: "always-use-https" })).json.pending;
+	const batch = (await send(server, "POST", "/api/cloudflare/changes/batch/preview", {})).json.batch;
+	const before = (await send(server, "GET", "/api/cloudflare")).json.report.checkedAt;
+	await new Promise((resolve) => setTimeout(resolve, 5));
+	await send(server, "POST", "/api/cloudflare/audit", { lookups: false });
+	await until(() => send(server, "GET", "/api/cloudflare"), (reply) => reply.json.status.state === "done" && reply.json.report.checkedAt !== before);
+	assert.equal((await send(server, "POST", "/api/cloudflare/changes/approve", { id: single.id, approve: true })).status, 409);
+	assert.equal((await send(server, "POST", "/api/cloudflare/changes/batch/approve", { id: batch.id, approve: true })).status, 409);
+	assert.equal(writes().length, 0);
+});
+
+test("a single change cannot be approved while a set of changes is being sent (S28, CF-S2)", async (t) => {
+	const world = fakeCloudflare();
+	// Changes wait at the door until the test lets them through, so the set is still running.
+	let release = () => {};
+	const held = new Promise<void>((resolve) => (release = resolve));
+	const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
+		if ((init?.method ?? "GET") !== "GET") await held;
+		return world.fetchFn(input, init);
+	}) as typeof fetch;
+	const { server } = await start(t, { fetchFn });
+	await send(server, "POST", "/api/cloudflare/token", { token: fakeCloudflareToken() });
+	await send(server, "POST", "/api/cloudflare/audit", { lookups: false });
+	await until(() => send(server, "GET", "/api/cloudflare"), (reply) => reply.json.status.state === "done");
+	const single = (await send(server, "POST", "/api/cloudflare/changes/preview", { zone: FREE_ZONE, change: "always-use-https" })).json.pending;
+	const batch = (await send(server, "POST", "/api/cloudflare/changes/batch/preview", {})).json.batch;
+	await send(server, "POST", "/api/cloudflare/changes/batch/approve", { id: batch.id, approve: true });
+	assert.equal((await send(server, "GET", "/api/cloudflare")).json.batch.state, "running");
+	const refused = await send(server, "POST", "/api/cloudflare/changes/approve", { id: single.id, approve: true });
+	assert.equal(refused.status, 409);
+	assert.match(refused.json.error, /being sent now/);
+	release();
+	await until(() => send(server, "GET", "/api/cloudflare"), (reply) => reply.json.batch.state === "finished");
+	const sent = world.sent.filter((request) => request.method !== "GET" && request.path.endsWith("/settings/always_use_https"));
+	assert.equal(sent.length, 1, "the same template went out once");
+});

@@ -6,7 +6,13 @@
 #  3. The real scanners, run as the image's user against a read-only repository owned by someone
 #     else, find a secret in history and never print it.
 #  4. A hostile repository can neither run a program from its .git/config nor switch gitleaks'
-#     rules off with its own .gitleaks.toml.
+#     rules off with its own .gitleaks.toml. One of its programs is named by a submodule's own
+#     config (diff.external, reached through diff.submodule=diff), which a plain `git log -p` in
+#     the image does run: the step checks that first, so the check itself can fail (B59).
+#  5. One repository mounted directly at /repos, not in a folder below it, is scanned like any
+#     other: /repos itself is a safe directory (BLD-B1).
+# The image's platform is the Docker host's unless DOCKER_DEFAULT_PLATFORM says otherwise; CI runs
+# this once for each platform it publishes (BLD-B2).
 set -eu
 
 image="${1:?usage: container-smoke.sh <image>}"
@@ -90,24 +96,85 @@ git add -A
 git commit -q -m one
 # Set after committing, so the smoke test's own git never runs it.
 git config diff.hostile.textconv "sh -c 'touch /tmp/hostile-ran; cat \"\$0\"'"
-git config diff.external "sh -c 'touch /tmp/hostile-ran'"
 printf 'changed\n' >config.txt
 git commit -q -am two
 cd - >/dev/null
+
+# A submodule whose own config names an external diff program. `git log -p` never runs the outer
+# repository's diff.external without --ext-diff, but with diff.submodule=diff it shows the
+# submodule's changes through a git started in the submodule, which reads the submodule's config
+# and runs its diff.external (cli/test/hostile-history.test.ts, S9 (a)).
+mkdir -p "$work/outside/sub" "$work/hostile/withsub"
+cd "$work/outside/sub"
+git init -q
+git config user.email smoke@example.invalid
+git config user.name smoke
+printf 'one\n' >lib.txt
+git add -A
+git commit -q -m one
+cd "$work/hostile/withsub"
+git init -q
+git config user.email smoke@example.invalid
+git config user.name smoke
+printf 'aws_access_key_id = %s\n' "$secret" >app.env
+git -c protocol.file.allow=always submodule add -q "$work/outside/sub" sub
+git add -A
+git commit -q -m one
+cd "$work/outside/sub"
+printf 'two\n' >lib.txt
+git commit -q -am two
+cd "$work/hostile/withsub/sub"
+git -c protocol.file.allow=always pull -q
+cd "$work/hostile/withsub"
+git commit -q -am "move the submodule"
+# Set last, so none of the smoke test's own git commands runs it.
+git config diff.submodule diff
+git -C .git/modules/sub config diff.external "sh -c 'touch /tmp/hostile-ran'"
+cd - >/dev/null
 chmod -R a+rX "$work/hostile"
+
+# The control: git in the image, honouring the repository's config as git does by default, runs the
+# submodule's program. If it does not, the scan below proves nothing, so the smoke test stops here.
+docker run --rm -v "$work/hostile:/repos:ro" "$image" sh -c \
+	'cd /repos/withsub && git log -p >/dev/null 2>&1; if [ -e /tmp/hostile-ran ]; then echo RAN; fi' \
+	>"$work/control.txt" 2>&1 || true
+grep -qx RAN "$work/control.txt" ||
+	fail "control: a plain git log -p in the image did not run the submodule's diff.external, so the check below could not fail: $(cat "$work/control.txt")"
 
 docker run --rm -v "$work/hostile:/repos:ro" "$image" sh -c \
 	'node cli/bin/porchlight.js repos scan /repos --json >/tmp/report.json 2>/dev/null; if [ -e /tmp/hostile-ran ]; then echo RAN; else cat /tmp/report.json; fi' \
 	>"$work/hostile.json"
-grep -qx RAN "$work/hostile.json" && fail "a program from the repository's .git/config ran during the scan"
+grep -qx RAN "$work/hostile.json" && fail "a program from a repository's or a submodule's git config ran during the scan"
 node -e '
 const report = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
-const repo = report.repos[0];
+const byName = (name) => report.repos.find((repo) => repo.path.split("/").at(-1) === name);
 const problems = [];
-if (repo.errors.some((error) => error.tool === "gitleaks")) problems.push(`gitleaks failed: ${JSON.stringify(repo.errors)}`);
-if (!repo.findings.some((finding) => finding.ruleId === "aws-access-token")) problems.push("the repository'"'"'s .gitleaks.toml switched the built-in rules off");
-if (!(repo.settingFiles ?? []).includes(".gitleaks.toml")) problems.push("the report does not name the repository'"'"'s .gitleaks.toml");
+for (const name of ["repo", "withsub"]) {
+	const repo = byName(name);
+	if (!repo) { problems.push(`${name} was not scanned`); continue; }
+	if (repo.errors.some((error) => error.tool === "gitleaks")) problems.push(`gitleaks failed on ${name}: ${JSON.stringify(repo.errors)}`);
+	if (!repo.findings.some((finding) => finding.ruleId === "aws-access-token")) problems.push(`gitleaks did not report the key in ${name}`);
+}
+const repo = byName("repo");
+if (repo && !(repo.settingFiles ?? []).includes(".gitleaks.toml")) problems.push("the report does not name the repository'"'"'s .gitleaks.toml");
 if (problems.length) { console.error(problems.join("\n")); process.exit(1); }
 ' "$work/hostile.json" || fail "unexpected hostile-repository report: $(head -c 2000 "$work/hostile.json")"
+
+echo "5. one repository mounted directly at /repos"
+# The step-3 repository, mounted as /repos itself, at the default depth and at depth 0 (BoxPilot offers both).
+for depth in 3 0; do
+	code=0
+	docker run --rm -v "$work/repos/service:/repos:ro" "$image" \
+		node cli/bin/porchlight.js repos scan /repos --depth "$depth" --json >"$work/single.json" 2>"$work/single.err" || code=$?
+	[ "$code" = 0 ] || [ "$code" = 2 ] || fail "depth $depth: scan exited $code: $(cat "$work/single.err")"
+	node -e '
+const report = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+const problems = [];
+if (report.repos.length !== 1) problems.push(`found ${report.repos.length} repositories, expected the one at /repos`);
+for (const repo of report.repos) for (const error of repo.errors) problems.push(`${error.tool} failed on ${repo.path}: ${error.message}`);
+if (!report.repos.flatMap((repo) => repo.findings).some((finding) => finding.ruleId === "aws-access-token")) problems.push("gitleaks did not report the key in history");
+if (problems.length) { console.error(problems.join("\n")); process.exit(1); }
+' "$work/single.json" || fail "depth $depth: unexpected report for a repository at /repos: $(head -c 2000 "$work/single.json")"
+done
 
 echo "container-smoke: all checks passed"

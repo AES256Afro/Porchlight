@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vite-plus/test";
 
 const REBUILD = "0003_domain_ids_never_reused.sql";
+const ERRORS = "0004_errors_and_alert_delivery.sql";
 
 describe("migrations", () => {
 	it("rebuilds domains so ids are never reused, keeping every row, snapshot, index and cascade", async () => {
@@ -39,7 +40,11 @@ describe("migrations", () => {
 		// The removed domain's snapshot went with it, so foreign keys are enforced here as on D1.
 		expect(snapshotsBefore.map((row) => row.domain_id)).toEqual([1, 1, 3]);
 
-		await applyD1Migrations(db, migrations);
+		// Up to this migration: later ones add columns, which the next test checks.
+		await applyD1Migrations(
+			db,
+			migrations.filter((migration) => migration.name <= REBUILD),
+		);
 
 		expect(await all("SELECT * FROM domains ORDER BY id")).toEqual(domainsBefore);
 		expect(await all("SELECT * FROM snapshots ORDER BY id")).toEqual(snapshotsBefore);
@@ -74,5 +79,48 @@ describe("migrations", () => {
 			.bind("dd".repeat(24), at(5))
 			.first<{ id: number }>();
 		expect(added!.id).toBe(4);
+	});
+
+	it("adds a scan's last error and the monitor's status row, keeping every domain as it was", async () => {
+		const db = env.MIGRATION_TEST_DB;
+		const migrations = env.TEST_MIGRATIONS;
+		expect(migrations.map((migration) => migration.name)).toContain(ERRORS);
+		await applyD1Migrations(
+			db,
+			migrations.filter((migration) => migration.name < ERRORS),
+		);
+		await db
+			.prepare(
+				`INSERT INTO domains (name, challenge_token, verified_at, last_scan_at, last_scan_status,
+				   created_at, error_streak) VALUES ('echo.test', ?, ?, ?, 'error', ?, 2)`,
+			)
+			.bind(
+				"ee".repeat(24),
+				"2026-11-01T12:00:00.000Z",
+				"2026-11-02T12:00:00.000Z",
+				"2026-11-01T12:00:00.000Z",
+			)
+			.run();
+		const before = await db.prepare("SELECT * FROM domains WHERE name = 'echo.test'").first();
+
+		await applyD1Migrations(db, migrations);
+
+		// The failure happened before its reason was kept: not known, so null rather than made up.
+		expect(await db.prepare("SELECT * FROM domains WHERE name = 'echo.test'").first()).toEqual({
+			...before,
+			last_error: null,
+		});
+		expect((await db.prepare("SELECT * FROM monitor_status").all()).results).toEqual([
+			{
+				id: 1,
+				alert_sent_at: null,
+				alert_error: null,
+				alert_error_at: null,
+				schedule_error: null,
+				schedule_error_at: null,
+			},
+		]);
+		// There is only ever one status row.
+		await expect(db.prepare("INSERT INTO monitor_status (id) VALUES (2)").run()).rejects.toThrow();
 	});
 });

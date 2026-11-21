@@ -100,7 +100,7 @@ export async function cloudflareSection() {
 					h("a", { href: guide.templateUrl, target: "_blank", rel: "noopener noreferrer", title: "Opens dash.cloudflare.com in your browser" }, "Create token on Cloudflare"),
 					". It opens Cloudflare's token page with most of the read permissions below ticked. Cloudflare leaves out any it does not recognise without saying so, so check the list.",
 				),
-				h("li", null, "Give it Read, never Edit, for each of these, for all zones and accounts (or only the ones to audit):"),
+				h("li", null, "Give it Read for each of these, for all zones and accounts (or only the ones to audit). The audit needs nothing more:"),
 			),
 			h(
 				"ul",
@@ -110,7 +110,7 @@ export async function cloudflareSection() {
 			h(
 				"p",
 				{ class: "hint" },
-				"Optional, only if you want Porchlight to make changes for you. Each change is shown to you as the exact request first, and sent only when you approve it on this computer:",
+				"Optional, and Edit rather than Read: only if you want Porchlight to make changes for you. Each change is shown to you as the exact request first, one at a time or together under Fix these, and sent only when you approve it on this computer. Just before sending, Porchlight reads the current value and sends nothing that is no longer what the audit found:",
 			),
 			h(
 				"ul",

@@ -203,6 +203,19 @@ function sameName(a: string, b: string): boolean {
 	return a.toLowerCase().replace(/\.$/, "") === b.toLowerCase().replace(/\.$/, "");
 }
 
+/**
+ * A CNAME (partial) setup: another provider serves the zone's DNS, and Cloudflare holds only the
+ * records it proxies. Rules about what the world reads from DNS cannot be judged from those, so
+ * they are said as not applying here, never failed, and offer no change (CF-B5).
+ */
+function isPartial(zone: ZoneData): boolean {
+	return zone.type === "partial";
+}
+
+function servedElsewhere(id: string, area: CfArea, title: string, severity: Severity, why: string, what: string): CfCheck {
+	return check(id, area, title, "unavailable", severity, `This zone uses a CNAME (partial) setup, so its DNS is served by another provider: check ${what} there.`, why);
+}
+
 function txtValue(content: string): string {
 	// Cloudflare returns TXT content quoted, sometimes as several quoted strings.
 	const parts = [...content.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((match) => match[1] ?? "");
@@ -322,6 +335,9 @@ function universalSslCheck(zone: ZoneData): CfCheck {
 	const others = zone.certificatePacks.ok ? zone.certificatePacks.value.filter((pack) => pack.type !== "universal" && pack.status === "active").length : 0;
 	const custom = zone.customCertificates.ok ? zone.customCertificates.value.filter((cert) => cert.status === "active").length : 0;
 	if (others + custom > 0) return check("universal-ssl", "tls", "Universal SSL", "passed", "high", `Off, with ${others + custom} certificate${others + custom === 1 ? "" : "s"} of your own or advanced ones in its place.`, why);
+	// A list that could not be read may hold the certificate in its place: that is not "none found" (R2B-7).
+	if (!zone.certificatePacks.ok) return couldNot("universal-ssl", "tls", "Universal SSL", "high", why, zone.certificatePacks, PERMISSIONS.ssl);
+	if (!zone.customCertificates.ok) return couldNot("universal-ssl", "tls", "Universal SSL", "high", why, zone.customCertificates, PERMISSIONS.ssl);
 	return check("universal-ssl", "tls", "Universal SSL", "failed", "high", "Off, and no other active certificate was found.", why, {
 		fix: ["Re-enable Universal SSL in Cloudflare → SSL/TLS → Edge Certificates, or upload a certificate of your own."],
 		api: 'PATCH /zones/{zone_id}/ssl/universal/settings with {"enabled":true}',
@@ -362,7 +378,11 @@ function certificateCheck(zone: ZoneData, now: Date): CfCheck {
 		else if (left < 14) problems.push({ severity: "high", line: `Uploaded certificate for ${hosts}: expires in ${left} days` });
 		else if (left < 30) problems.push({ severity: "medium", line: `Uploaded certificate for ${hosts}: expires in ${left} days` });
 	}
+	// Uploaded certificates never renew themselves; a list that could not be read is not an empty one (R2B-7).
+	const customs = zone.customCertificates;
+	if (!customs.ok && problems.length > 0) problems.push({ severity: "low", line: "Uploaded certificates could not be read, so they were not checked." });
 	if (problems.length === 0) {
+		if (!customs.ok) return couldNot("certificates", "tls", "Edge certificates", "high", why, { denied: customs.denied, message: `${customs.message} (uploaded certificates)` }, PERMISSIONS.ssl);
 		const detail = soonest === null ? "No certificate with an expiry date was listed." : `The soonest expires in ${soonest} days.`;
 		return check("certificates", "tls", "Edge certificates", "passed", "high", detail, why);
 	}
@@ -454,6 +474,7 @@ function dnssecCheck(zone: ZoneData): CfCheck {
 
 function caaCheck(zone: ZoneData, records: DnsRecord[]): CfCheck {
 	const why = "CAA records name the certificate authorities that may issue certificates for your domain. Without them any authority may, so a mistake or a fooled check at any one of them can produce a valid certificate for your site.";
+	if (isPartial(zone)) return servedElsewhere("caa", "dns", "CAA records", "low", why, "its CAA records");
 	const caa = records.filter((record) => record.type === "CAA" && sameName(record.name, apex(zone)));
 	if (caa.length > 0) {
 		return check("caa", "dns", "CAA records", "passed", "low", `${caa.length} CAA record${caa.length === 1 ? "" : "s"} at ${zone.name}.`, why, { items: caa.map((record) => record.content.slice(0, 120)) });
@@ -543,26 +564,48 @@ function takeoverProne(target: string): boolean {
 	return TAKEOVER_SUFFIXES.some((suffix) => target === suffix || target.endsWith(`.${suffix}`) || target.includes(`.${suffix}.`) || target.includes(`${suffix}.`));
 }
 
+/**
+ * Whether a wildcard answers for a name, as DNS decides it: the wildcard at the closest existing
+ * ancestor, and none above it. A name that exists, or has names below it, stops the search.
+ */
+function coveredByWildcard(target: string, owner: string, names: Set<string>): boolean {
+	const labels = target.split(".");
+	for (let i = 1; i < labels.length; i++) {
+		const ancestor = labels.slice(i).join(".");
+		if (ancestor !== owner && !ancestor.endsWith(`.${owner}`)) return false;
+		if (names.has(`*.${ancestor}`)) return true;
+		if (names.has(ancestor) || [...names].some((name) => name.endsWith(`.${ancestor}`) && !name.startsWith("*."))) return false;
+	}
+	return false;
+}
+
 function danglingChecks(zone: ZoneData, records: DnsRecord[], context: AccountContext): CfCheck[] {
 	const cnames = records.filter((record) => record.type === "CNAME" && !record.name.toLowerCase().includes("_domainkey"));
 	const inside: string[] = [];
+	/** CNAMEs into a zone of the account whose records were not read (refused, or past the audit's limit). */
+	const unread: string[] = [];
 	const outside: DnsRecord[] = [];
 	for (const record of cnames) {
 		const target = cnameTarget(record);
 		const owner = zoneOf(target, context.zoneNames);
 		if (owner) {
 			const names = context.zoneRecords.get(owner);
-			if (names && !names.has(target) && !names.has(`*.${target.split(".").slice(1).join(".")}`)) inside.push(`${record.name} → ${target}`);
+			if (!names) unread.push(`${record.name} → ${target} (the records of ${owner} were not read)`);
+			else if (!names.has(target) && !coveredByWildcard(target, owner, names)) inside.push(`${record.name} → ${target}`);
 		} else outside.push(record);
 	}
 	const insideWhy = "A CNAME that points at a name with no record of its own fails for every visitor, and if the name is created later by someone else's mistake it serves whatever they put there.";
+	const unreadNote = unread.length > 0 ? ` ${unread.length} more point${unread.length === 1 ? "s" : ""} into a zone whose records were not read, so ${unread.length === 1 ? "it was" : "they were"} not checked.` : "";
+	// A target in a zone that was not read was not seen: never a pass (CF-B1, invariant 5).
 	const internalCheck =
-		inside.length === 0
-			? check("dangling-internal", "dns", "Records pointing at names that do not exist in your zones", "passed", "medium", "Every CNAME into your own zones points at a name that has a record.", insideWhy)
-			: check("dangling-internal", "dns", "Records pointing at names that do not exist in your zones", "failed", "medium", `${inside.length} CNAME record${inside.length === 1 ? " points" : "s point"} at a name in your zones that has no record.`, insideWhy, {
+		inside.length > 0
+			? check("dangling-internal", "dns", "Records pointing at names that do not exist in your zones", "failed", "medium", `${inside.length} CNAME record${inside.length === 1 ? " points" : "s point"} at a name in your zones that has no record.${unreadNote}`, insideWhy, {
 					fix: ["Delete these records in Cloudflare → DNS → Records, or create the names they point at."],
-					items: inside,
-				});
+					items: [...inside, ...unread],
+				})
+			: unread.length > 0
+				? check("dangling-internal", "dns", "Records pointing at names that do not exist in your zones", "unknown", "medium", `${unread.length} CNAME record${unread.length === 1 ? " points" : "s point"} into a zone of yours whose records were not read, so ${unread.length === 1 ? "it was" : "they were"} not checked.`, insideWhy, { items: unread })
+				: check("dangling-internal", "dns", "Records pointing at names that do not exist in your zones", "passed", "medium", "Every CNAME into your own zones points at a name that has a record.", insideWhy);
 
 	const outsideWhy = "A CNAME left pointing at a hosting service after the site there was deleted can be claimed by anyone who creates a site with that name: they then serve content, and can obtain certificates, under your domain (subdomain takeover).";
 	const lines = outside.map((record) => `${record.name} → ${cnameTarget(record)}${takeoverProne(cnameTarget(record)) ? " (a service where names can be claimed)" : ""}`);
@@ -572,9 +615,11 @@ function danglingChecks(zone: ZoneData, records: DnsRecord[], context: AccountCo
 		externalCheck = check("dangling-external", "dns", "Records pointing at services that may be gone", "passed", "high", "No CNAME points outside your zones.", outsideWhy);
 	} else if (zone.lookups.state === "done") {
 		const missing = zone.lookups.missing;
+		// Every name not looked up is said; with none looked up at all, nothing was seen (CF-B2).
+		const unseen = zone.lookups.failed.length > 0 || zone.lookups.checked === 0;
 		externalCheck =
 			missing.length === 0
-				? check("dangling-external", "dns", "Records pointing at services that may be gone", zone.lookups.failed.length > 0 ? "unknown" : "passed", "high", zone.lookups.failed.length > 0 ? `${zone.lookups.failed.length} of ${zone.lookups.checked} lookups failed, so those could not be checked.` : `All ${zone.lookups.checked} names outside your zones still exist.`, outsideWhy, { items: zone.lookups.failed })
+				? check("dangling-external", "dns", "Records pointing at services that may be gone", unseen ? "unknown" : "passed", "high", unseen ? (zone.lookups.failed.length > 0 ? `${zone.lookups.failed.length} of the names outside your zones could not be looked up, so those were not checked.` : "No name outside your zones was looked up, so none was checked.") : `All ${zone.lookups.checked} names outside your zones still exist.`, outsideWhy, { items: zone.lookups.failed })
 				: check("dangling-external", "dns", "Records pointing at services that may be gone", "failed", "high", `${missing.length} CNAME record${missing.length === 1 ? " points" : "s point"} at a name that no longer exists.`, outsideWhy, {
 						fix: ["Delete these records in Cloudflare → DNS → Records now, before someone claims the name they point at. Re-create a record only once the service is set up again."],
 						items: missing,
@@ -600,6 +645,13 @@ export function emailChecks(zone: ZoneData): CfCheck[] {
 	const whySpf = "SPF lists the servers allowed to send mail for your domain. Without it, or with a lax one, anyone can send mail that claims to come from you.";
 	const whyDmarc = "DMARC tells receiving mail servers what to do with mail that fails SPF and DKIM: deliver it, quarantine it or reject it. Without a policy, spoofed mail from your domain is delivered.";
 	const whyDkim = "DKIM signs the mail you send, so receivers can tell it really came from you. DMARC relies on it.";
+	if (isPartial(zone)) {
+		return [
+			servedElsewhere("spf", "email", "SPF", "medium", whySpf, "its SPF record"),
+			servedElsewhere("dmarc", "email", "DMARC", "medium", whyDmarc, "its DMARC record"),
+			servedElsewhere("dkim", "email", "DKIM", "medium", whyDkim, "its DKIM keys"),
+		];
+	}
 	if (!zone.records.ok) {
 		return [
 			couldNot("spf", "email", "SPF", "medium", whySpf, zone.records, PERMISSIONS.dns),
@@ -636,7 +688,17 @@ export function emailChecks(zone: ZoneData): CfCheck[] {
 
 	const dmarc = txt(`_dmarc.${apex(zone)}`).filter((value) => /^v=DMARC1/i.test(value));
 	const dmarcApi = 'POST /zones/{zone_id}/dns_records with {"type":"TXT","name":"_dmarc","content":"\\"v=DMARC1; p=reject\\""}';
-	if (dmarc.length === 0) {
+	// Delegated to a reporting service by CNAME: the policy is published at its target, which this audit
+	// does not read. Not seen is not missing (CF-B6), and no record is offered beside the CNAME.
+	const delegated = records.find((record) => record.type === "CNAME" && sameName(record.name, `_dmarc.${apex(zone)}`));
+	if (dmarc.length === 0 && delegated) {
+		out.push(
+			check("dmarc", "email", "DMARC", "unknown", "medium", `_dmarc is a CNAME to ${cnameTarget(delegated).slice(0, 120)}: the policy is published there, and Porchlight does not look it up.`, whyDmarc, {
+				fix: ["Check the policy at the service the CNAME names: it should reach `p=quarantine` or `p=reject`."],
+				items: [`${delegated.name} → ${cnameTarget(delegated)}`],
+			}),
+		);
+	} else if (dmarc.length === 0) {
 		out.push(
 			check("dmarc", "email", "DMARC", "failed", "medium", "No DMARC record at _dmarc.", whyDmarc, {
 				fix: [
@@ -778,6 +840,7 @@ function botCheck(zone: ZoneData): CfCheck {
 
 export function ownershipCheck(zone: ZoneData): CfCheck {
 	const why = "Porchlight looks a domain up on the network (where its records point, its HTTPS) only once the domain's _porchlight-challenge TXT record proves it is yours. The record changes nothing else and can be deleted at any time.";
+	if (isPartial(zone)) return servedElsewhere("ownership-record", "ownership", "Porchlight ownership record", "low", why, "Porchlight's _porchlight-challenge record");
 	if (!zone.records.ok) return couldNot("ownership-record", "ownership", "Porchlight ownership record", "low", why, zone.records, PERMISSIONS.dns);
 	const names = [`_porchlight-challenge.${apex(zone)}`, `_securityx-challenge.${apex(zone)}`];
 	const values = zone.records.value.filter((record) => record.type === "TXT" && names.some((name) => sameName(record.name, name))).map((record) => txtValue(record.content));

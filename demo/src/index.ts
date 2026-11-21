@@ -83,6 +83,9 @@ export default {
 			return request.method === "GET" ? answer(url) : await change(request, url);
 		} catch (err) {
 			if (err instanceof ExportError) return json({ error: err.message }, 400);
+			// A malformed percent-escape in the address is the asker's mistake: 400 with the demo's
+			// own headers, never a 500 from Cloudflare's error page without them.
+			if (err instanceof URIError) return json({ error: "The address is malformed." }, 400);
 			throw err;
 		}
 	},

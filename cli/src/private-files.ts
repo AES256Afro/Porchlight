@@ -13,9 +13,11 @@
 import { randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { gunzip, gzip } from "node:zlib";
+import { promisify } from "node:util";
 
 /** Written readable by the owner alone, through a temporary file so a crash leaves the old copy. */
-export async function writePrivate(path: string, text: string): Promise<void> {
+export async function writePrivate(path: string, text: string | Uint8Array): Promise<void> {
 	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
 	const temporary = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
 	try {
@@ -36,6 +38,35 @@ export async function writePrivateJson(path: string, value: unknown): Promise<vo
 export type PrivateRead = { state: "missing" } | { state: "read"; value: unknown } | { state: "unreadable"; reason: string };
 
 /** Reads a kept JSON file: missing (nothing was saved yet), its value, or why it could not be read. */
+/**
+ * JSON kept gzipped, a scan in the history say: compressed, a kept scan takes an eighteenth of the
+ * room (OP-9). Written and read like `writePrivateJson` and `readPrivateJson`.
+ */
+export async function writePrivateGzipJson(path: string, value: unknown): Promise<void> {
+	await writePrivate(path, await promisify(gzip)(JSON.stringify(value)));
+}
+
+export async function readPrivateGzipJson(path: string): Promise<PrivateRead> {
+	let bytes: Buffer;
+	try {
+		bytes = await readFile(path);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return { state: "missing" };
+		return { state: "unreadable", reason: (err as NodeJS.ErrnoException).code ?? (err instanceof Error ? err.message : String(err)) };
+	}
+	let text: string;
+	try {
+		text = (await promisify(gunzip)(bytes)).toString("utf8");
+	} catch {
+		return { state: "unreadable", reason: "it is not a whole gzip file" };
+	}
+	try {
+		return { state: "read", value: JSON.parse(text) };
+	} catch {
+		return { state: "unreadable", reason: "it is not valid JSON" };
+	}
+}
+
 export async function readPrivateJson(path: string): Promise<PrivateRead> {
 	let text: string;
 	try {

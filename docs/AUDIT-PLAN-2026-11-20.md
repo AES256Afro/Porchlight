@@ -725,6 +725,16 @@ S22, S23, S26, S27, S37, S38, S39, B36, B37, B38, B39, B57, R6F-8, R6F-9, and th
 
 ### M13: The monitor and the audit never pass what they did not see, and releases can be verified. Size: M–L
 
+**Status, 2026-11-21: built; the CI, Docker and DMG parts not run.** Tests in `monitor/test/` (21 new), `cli/test/notify.test.ts`, `cloudflare.test.ts`, `cloudflare-server.test.ts`, the new `cloudflare-ui.test.ts`, `ui-logic.test.ts` and `investigate.test.ts` (B58).
+
+- **The monitor:** a failed lookup never turns a gone name into a new host (B33); a finding that worsens under its id is alerted, as new, with the same requests (B34; the id is kept, since the roadmap picks its repair by it); nothing is worked out from certificates carried while crt.sh, or only its bare-domain query, cannot be read (B52, R2B-6); `GET /domains` says where alerts go and the last delivery or scheduled-run error, scrubbed (B48, MON-C2); a failed scan keeps its reason (D-F3); the alert title counts in words (D-D2); MON-B2 to MON-B7, MON-B9 and MON-C1. Migration `0004_errors_and_alert_delivery.sql` must be applied before deploying.
+- **Notices:** cut after escaping, in each service's own unit (B56); a plain-http address on the owner's network is accepted, `http://10.example.com` is not, and one that cannot be used is a warning that leaves the server running (B72).
+- **The Cloudflare audit:** lists past 40 pages, an unreadable custom-certificate list, CNAMEs into an unread zone and names never looked up are Could not check; 429 is waited out within a bound (B35, R2B-7); an unreadable account list is said (B69); a change is read again just before it is sent and sent only if still faulted, a new audit ends waiting requests, and no single approval runs during a batch (S28); partial zones, DMARC by CNAME, wildcards and malformed answers (CF-B5 to CF-B7); the page's poll retries (F-F1); "Fix these" says when it is cut at 300 (F-F5); Settings and docs/CLOUDFLARE-AUDIT.md match what is offered, and Bot Fight Mode is said to be checked, not changed, in the README and invariant 21 (F-F6, R6R-1); "Tick all" leaves changes with a warning alone (F-U4).
+- **Releases (R6F-2):** CI builds the DMG on a `v*` tag, attests it and the image, writes SHA256SUMS and drafts the release; `scripts/check-dmg.sh` searches a DMG for the build machine's paths and names; README "Verify a download", SECURITY.md and RELEASING.md. **The owner's steps:** switch on private vulnerability reporting, sign tags, keep BoxPilot readable by CI.
+- **Build:** the smoke test's `diff.external` check can now fail (B59); the BoxPilot schema check is required in CI and the manifest's credentials must be secret, and checkouts keep no credentials (S44); `/repos` itself is safe in the image (BLD-B1); both image platforms are smoke-tested (BLD-B2); the demo answers 400 to a bad escape (BLD-B3); the page's monitor setup installs `monitor/` (B48).
+- **B58:** a domain written in its own script is taken, and sent to the monitor, in its ASCII form.
+- **Not done:** MON-B8 (snapshot growth), D-F4; showing the monitor's alert status and a domain's last error on the page.
+
 B33, B34, B35, B48, B52, B56, B58, B59, B69, B72, S28, S44, R2B-6, R2B-7, R6F-2, the monitor and Cloudflare lows, and BLD-B1–B3. (OP-10 and B51 moved to M9.)
 
 - **Releases:**
@@ -780,6 +790,8 @@ QL-1, QL-3, QL-5, QL-8, US-1, US-2, US-4, US-5, US-8, US-9, US-10, B-Q1, B-Q2, B
 - **One verb and one noun per thing.**
 
 ### M16: Speed. Size: M
+
+**Status, 2026-11-21: in part.** Built: OP-2 (keywords for four private-data rules), OP-3 (committed photos read with one batched `cat-file`), OP-9 (kept scans gzipped; older plain ones still read), R6O-2 (`doctor` says the data folder's size), R6O-4 (Activity backs off when idle and stops while hidden). Not done: OP-1, OP-4 with R6O-3, OP-5 to OP-8, OP-11 to OP-13, R6O-1.
 
 OP-1 to OP-9, OP-11, OP-12, OP-13, and R6O-1 to R6O-4.
 

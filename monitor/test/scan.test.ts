@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
+import { handleRequest } from "../src/api.ts";
 import { runDueScan, runScan } from "../src/scan.ts";
 import { getDomain } from "../src/store.ts";
 import { fakeDeps, type FakeNet } from "./fake-net.ts";
@@ -690,5 +691,316 @@ describe("schedule", () => {
 		const ctQueries = deps.requests.filter((url) => url.startsWith("https://crt.sh/"));
 		expect(ctQueries).toHaveLength(2);
 		for (const url of ctQueries) expect(new URL(url).searchParams.get("deduplicate")).toBe("Y");
+	});
+});
+
+describe("a failed read changes nothing (invariant 5)", () => {
+	it("keeps a name found gone as gone when its lookup fails, rather than calling it a new host (B33)", async () => {
+		const deps = fakeDeps(healthyNet());
+		const old = `old.${DOMAIN}`;
+		// On a certificate, but with no DNS records: gone from the first scan.
+		deps.net.ct = [...(deps.net.ct as []), { names: [old], ...VALID_CERT }];
+		await registerVerified(deps, DOMAIN);
+		expect((await scan(deps)).body.report.hostCount).toBe(2);
+		deps.alerts.length = 0;
+
+		deps.net.dnsServfail = [old];
+		deps.clock = new Date("2026-11-18T12:00:00Z");
+		const during = (await scan(deps)).body.report;
+		expect(during.changes).toEqual([]);
+		expect(during.hostCount).toBe(2);
+
+		deps.net.dnsServfail = [];
+		deps.clock = new Date("2026-11-19T12:00:00Z");
+		const after = (await scan(deps)).body.report;
+		expect(after.changes).toEqual([]);
+		expect(deps.alerts).toEqual([]);
+	});
+
+	it("derives no certificate finding from certificates carried while the log is down (B52)", async () => {
+		const deps = fakeDeps(healthyNet());
+		await registerVerified(deps, DOMAIN);
+		await scan(deps);
+		deps.alerts.length = 0;
+
+		// crt.sh stays down past the carried certificates' expiry: nothing about them was seen.
+		deps.net.ct = "down";
+		deps.clock = new Date("2027-01-05T12:00:00Z");
+		const report = (await scan(deps)).body.report;
+
+		expect(report.newFindings).toEqual([]);
+		expect(report.findings).toEqual([]);
+		expect(report.notes).toEqual([
+			expect.stringContaining("certificate findings were carried over from the last scan"),
+		]);
+		expect(deps.alerts).toEqual([]);
+	});
+
+	it("keeps certificate findings while the log is down, rather than resolving them (B52)", async () => {
+		const deps = fakeDeps(healthyNet(), "2026-12-20T12:00:00.000Z");
+		await registerVerified(deps, DOMAIN);
+		const ids = (report: { findings: { id: string }[] }) =>
+			report.findings.map((finding) => finding.id).sort();
+		expect(ids((await scan(deps)).body.report)).toEqual([
+			`cert-expiring:${DOMAIN}`,
+			`cert-expiring:www.${DOMAIN}`,
+		]);
+
+		deps.net.ct = "down";
+		deps.clock = new Date("2026-12-31T12:00:00Z");
+		const during = (await scan(deps)).body.report;
+		expect(during.newFindings).toEqual([]);
+		expect(during.resolvedFindings).toEqual([]);
+		expect(ids(during)).toEqual([`cert-expiring:${DOMAIN}`, `cert-expiring:www.${DOMAIN}`]);
+	});
+
+	it("raises no false 'expiring' when only the bare-domain query fails (R2B-6)", async () => {
+		const net = healthyNet();
+		const mail = `mail.${DOMAIN}`; // named on the old certificate, gone from DNS
+		net.ct = [
+			// The bare domain's own certificate, which only the bare-domain query returns.
+			{ names: [DOMAIN], notBefore: "2026-11-01T00:00:00Z", notAfter: "2027-01-30T00:00:00Z" },
+			// An older one that also names a subdomain, close to expiry.
+			{
+				names: [DOMAIN, mail],
+				notBefore: "2026-08-27T00:00:00Z",
+				notAfter: "2026-11-25T00:00:00Z",
+			},
+			{ names: [`www.${DOMAIN}`], ...VALID_CERT },
+		];
+		const deps = fakeDeps(net);
+		await registerVerified(deps, DOMAIN);
+		const first = (await scan(deps)).body.report;
+		expect(first.findings).toEqual([]);
+		const firstRequests = deps.requests.filter((url) => !url.includes("hooks."));
+
+		deps.net.ctBareDown = true;
+		deps.requests.length = 0;
+		deps.clock = new Date("2026-11-18T12:00:00Z");
+		const second = (await scan(deps)).body.report;
+
+		expect(second.newFindings).toEqual([]);
+		expect(second.findings).toEqual([]);
+		expect(second.notes).toEqual([
+			`The certificate log could not be asked about ${DOMAIN} itself, so its certificate findings were carried over from the last scan.`,
+		]);
+		// The same requests as before: the fix asks nothing more.
+		expect(deps.requests).toEqual(firstRequests);
+	});
+
+	it("says in the notes which apex lookups failed, and when DNS signing could not be told (MON-C1)", async () => {
+		const deps = fakeDeps({ ...healthyNet(), dnssec: true });
+		await registerVerified(deps, DOMAIN);
+		expect((await scan(deps)).body.report.notes).toEqual([]);
+
+		deps.net.dnsServfail = [DOMAIN];
+		deps.clock = new Date("2026-11-18T12:00:00Z");
+		const report = (await scan(deps)).body.report;
+
+		expect(report.notes).toEqual([
+			`DNS lookups of AAAA, NS, MX, TXT, CAA for ${DOMAIN} failed, so changes to them were not checked and their findings were carried over.`,
+			`Whether ${DOMAIN}'s DNS answers are signed could not be told this time; the last answer was kept.`,
+			"DNS lookups failed for 1 hosts; their findings were carried over.",
+		]);
+	});
+});
+
+describe("findings that get worse", () => {
+	it("alerts when HSTS goes from short to switched off, with the same requests (B34)", async () => {
+		const deps = fakeDeps(healthyNet());
+		const hsts = (value: string) => {
+			deps.net.https![DOMAIN] = {
+				headers: { ...HARDENED_HEADERS, "strict-transport-security": value },
+			};
+		};
+		hsts("max-age=3600");
+		await registerVerified(deps, DOMAIN);
+		const first = (await scan(deps)).body.report;
+		expect(first.findings).toMatchObject([{ id: `weak-hsts:${DOMAIN}`, severity: "low" }]);
+		const firstRequests = deps.requests.filter((url) => !url.includes("hooks."));
+		deps.requests.length = 0;
+		deps.alerts.length = 0;
+
+		hsts("max-age=0");
+		deps.clock = new Date("2026-11-18T12:00:00Z");
+		const second = (await scan(deps)).body.report;
+
+		expect(second.newFindings).toMatchObject([{ id: `weak-hsts:${DOMAIN}`, severity: "medium" }]);
+		expect(second.resolvedFindings).toEqual([]);
+		expect(deps.alerts).toHaveLength(1);
+		expect(deps.alerts[0]!.text).toMatch(/^Porchlight: example\.test: 1 new medium finding\n/);
+		expect(deps.alerts[0]!.text).toContain("max-age=0");
+		expect(deps.requests.filter((url) => !url.includes("hooks."))).toEqual(firstRequests);
+
+		// Better again is not news.
+		hsts("max-age=3600");
+		deps.clock = new Date("2026-11-19T12:00:00Z");
+		const third = (await scan(deps)).body.report;
+		expect(third.newFindings).toEqual([]);
+		expect(third.findings).toMatchObject([{ id: `weak-hsts:${DOMAIN}`, severity: "low" }]);
+	});
+
+	it("alerts when SPF goes from ?all to +all (B34)", async () => {
+		const deps = fakeDeps(healthyNet());
+		await registerVerified(deps, DOMAIN);
+		const record = deps.net.txt!;
+		deps.net.txt = { ...record, [DOMAIN]: ["v=spf1 mx ?all"] };
+		await scan(deps);
+		deps.alerts.length = 0;
+
+		deps.net.txt = { ...record, [DOMAIN]: ["v=spf1 mx +all"] };
+		deps.clock = new Date("2026-11-18T12:00:00Z");
+		const report = (await scan(deps)).body.report;
+
+		expect(report.newFindings).toMatchObject([{ id: `weak-spf:${DOMAIN}`, severity: "medium" }]);
+		expect(deps.alerts[0]!.text).toContain("[medium] example.test: The SPF record ends in +all");
+	});
+});
+
+describe("what reaches the owner", () => {
+	it("says where alerts go and what last went wrong, never the webhook's secret or the token (B48, MON-C2)", async () => {
+		const deps = fakeDeps(healthyNet());
+		await registerVerified(deps, DOMAIN);
+		const status = async (overrides: Partial<Parameters<typeof appEnv>[0]> = {}) => {
+			const { body } = await call(deps, "GET", "/domains", { env: overrides });
+			const text = JSON.stringify(body);
+			expect(text).not.toContain(env.ADMIN_TOKEN);
+			expect(text).not.toContain("/alert");
+			expect(text).not.toContain("t0ps3cret");
+			return body.status;
+		};
+
+		expect(await status({ ALERT_WEBHOOK_URL: undefined })).toEqual({
+			alerts: { to: "log", delivery: { lastDeliveredAt: null, lastError: null } },
+			schedule: { lastError: null },
+		});
+		expect(
+			(await status({ ALERT_WEBHOOK_URL: "http://hooks.example.test/alert" })).alerts,
+		).toMatchObject({
+			to: "log",
+			problem: "ALERT_WEBHOOK_URL is not an https URL",
+		});
+
+		await scan(deps);
+		const delivered = (await status()).alerts;
+		expect(delivered).toMatchObject({ to: "webhook", host: "hooks.example.test", format: "json" });
+		expect(delivered.delivery.lastDeliveredAt).toBe(deps.clock.toISOString());
+		expect(delivered.delivery.lastError).toBeNull();
+
+		// A webhook nobody answers at: the scan still works, and the failure is kept.
+		const broken = {
+			ALERT_WEBHOOK_URL: "https://unreachable.example.test/hook/t0ps3cret?key=t0ps3cret",
+		};
+		deps.net.hosts![`new.${DOMAIN}`] = { a: ["203.0.113.50"] };
+		deps.net.ct = [...(deps.net.ct as []), { names: [`new.${DOMAIN}`], ...VALID_CERT }];
+		deps.clock = new Date("2026-11-18T12:00:00Z");
+		expect((await call(deps, "POST", `/domains/${DOMAIN}/scan`, { env: broken })).status).toBe(200);
+		const failed = (await status(broken)).alerts;
+		expect(failed).toMatchObject({ to: "webhook", host: "unreachable.example.test" });
+		expect(failed.delivery.lastError).toEqual({
+			at: "2026-11-18T12:00:00.000Z",
+			error: "The webhook could not be reached: connection refused",
+		});
+	});
+
+	it("alerts once when the scheduled run itself fails, and says so until it works (MON-C2)", async () => {
+		const deps = fakeDeps(healthyNet(), "2026-11-18T12:00:00.000Z");
+		await registerVerified(deps, DOMAIN);
+		// The database lacks a migration the schedule's query needs.
+		const failing = (failStatus = false): Partial<Parameters<typeof appEnv>[0]> => ({
+			DB: new Proxy(env.DB, {
+				get(target, key) {
+					if (key !== "prepare") return Reflect.get(target, key).bind(target);
+					return (sql: string) => {
+						if (
+							sql.includes("verified_at IS NOT NULL") ||
+							(failStatus && sql.includes("monitor_status"))
+						)
+							throw new Error("D1_ERROR: no such column: scan_claimed_at: SQLITE_ERROR");
+						return target.prepare(sql);
+					};
+				},
+			}),
+		});
+
+		expect((await runDueScan(appEnv(failing()), deps))?.status).toBe("error");
+		deps.clock = new Date("2026-11-18T12:10:00Z");
+		expect((await runDueScan(appEnv(failing()), deps))?.status).toBe("error");
+		expect(deps.alerts).toHaveLength(1);
+		expect(deps.alerts[0]!.text).toContain("scheduled scans have stopped working");
+		expect(deps.alerts[0]!.text).toContain("no such column");
+		expect((await call(deps, "GET", "/domains")).body.status.schedule.lastError).toEqual({
+			at: "2026-11-18T12:00:00.000Z",
+			error: "D1_ERROR: no such column: scan_claimed_at: SQLITE_ERROR",
+		});
+
+		deps.clock = new Date("2026-11-18T12:20:00Z");
+		expect((await runDueScan(appEnv(), deps))?.status).toBe("ok");
+		expect((await call(deps, "GET", "/domains")).body.status.schedule.lastError).toBeNull();
+
+		// With nowhere to remember that it alerted, it alerts once a day rather than every tick.
+		deps.alerts.length = 0;
+		for (const at of [
+			"2026-11-18T12:30:00Z",
+			"2026-11-18T23:50:00Z",
+			"2026-11-19T00:00:00Z",
+			"2026-11-19T00:10:00Z",
+		]) {
+			deps.clock = new Date(at);
+			await runDueScan(appEnv(failing(true)), deps);
+		}
+		expect(deps.alerts).toHaveLength(1);
+	});
+
+	it("keeps why the last scan failed, scrubbed, and clears it once a scan works (D-F3)", async () => {
+		const deps = fakeDeps(healthyNet());
+		await registerVerified(deps, DOMAIN);
+		deps.net.dnsDown = [`_porchlight-challenge.${DOMAIN}`];
+		expect((await scan(deps)).status).toBe(502);
+
+		const failed = (await call(deps, "GET", "/domains")).body.domains[0];
+		expect(failed).toMatchObject({ lastScanStatus: "error", errorStreak: 1 });
+		expect(failed.lastError).toBe(`DNS lookup TXT _porchlight-challenge.${DOMAIN}: HTTP 502`);
+
+		deps.net.dnsDown = [];
+		deps.clock = new Date("2026-11-17T13:00:00Z");
+		expect((await scan(deps)).status).toBe(200);
+		expect((await call(deps, "GET", `/domains/${DOMAIN}`)).body.domain.lastError).toBeNull();
+	});
+
+	it("keeps a manual scan running to its alert after the caller stops waiting (MON-B9)", async () => {
+		const deps = fakeDeps(healthyNet());
+		await registerVerified(deps, DOMAIN);
+		const kept: Promise<unknown>[] = [];
+		const request = new Request(`https://monitor.test/domains/${DOMAIN}/scan`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${env.ADMIN_TOKEN}` },
+		});
+
+		const response = await handleRequest(request, appEnv(), deps, {
+			waitUntil: (promise) => kept.push(promise),
+		});
+
+		expect(response.status).toBe(200);
+		expect(kept).toHaveLength(1);
+		await expect(kept[0]).resolves.toMatchObject({ status: "ok" });
+		expect(deps.alerts).toHaveLength(1);
+	});
+
+	it("does not scan a domain from the schedule once a scan has finished since it was found due (MON-B7)", async () => {
+		const deps = fakeDeps(healthyNet());
+		await registerVerified(deps, DOMAIN);
+		// The schedule reads the row, then a manual scan finishes before it claims it.
+		const readByTheSchedule = (await getDomain(env.DB, DOMAIN))!;
+		await scan(deps);
+		deps.requests.length = 0;
+		deps.clock = new Date("2026-11-17T12:05:00Z");
+
+		const outcome = await runScan(appEnv(), readByTheSchedule, deps, { onlyIfDue: true });
+
+		expect(outcome.status).toBe("busy");
+		expect(deps.requests).toEqual([]);
+		// A manual scan, which the owner asked for, still runs.
+		expect((await runScan(appEnv(), readByTheSchedule, deps)).status).toBe("ok");
 	});
 });

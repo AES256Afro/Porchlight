@@ -12,15 +12,26 @@ export interface CtCert extends CertWindow {
 	names: string[];
 }
 
+/** What the certificate log gave for a domain, and whether the bare-domain query was read too. */
+export interface CtResult {
+	certs: CtCert[];
+	/**
+	 * False when the bare-domain query failed: a certificate naming only the bare domain may then be
+	 * missing, so the bare domain's certificate was not observed this time.
+	 */
+	apexOk: boolean;
+}
+
 /**
  * Unexpired certificates logged to Certificate Transparency for the domain and
  * its subdomains, via crt.sh. Passive: this reads a public log and sends
  * nothing to the domain itself.
  *
  * Throws if the subdomain query fails. The apex-only query is best effort: it
- * only adds certificates issued for the bare domain with no other names.
+ * only adds certificates issued for the bare domain with no other names, and
+ * when it fails `apexOk` says so.
  */
-export async function fetchCtCerts(domain: string, fetchFn: FetchFn): Promise<CtCert[]> {
+export async function fetchCtCerts(domain: string, fetchFn: FetchFn): Promise<CtResult> {
 	const [subdomains, apex] = await Promise.allSettled([
 		queryCrtSh(`%.${domain}`, fetchFn),
 		queryCrtSh(domain, fetchFn),
@@ -28,7 +39,7 @@ export async function fetchCtCerts(domain: string, fetchFn: FetchFn): Promise<Ct
 	if (subdomains.status === "rejected") throw subdomains.reason;
 	const rows =
 		apex.status === "fulfilled" ? [...subdomains.value, ...apex.value] : subdomains.value;
-	return parseCtRows(rows, domain);
+	return { certs: parseCtRows(rows, domain), apexOk: apex.status === "fulfilled" };
 }
 
 /**

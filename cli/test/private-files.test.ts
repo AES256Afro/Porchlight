@@ -120,3 +120,22 @@ test("a note follows its secret when the finding names another commit of it, and
 	assert.equal(notes[findingKey("shop", before)], undefined);
 	assert.ok(notes[findingKey("shop", { ...twin, detail: "commit 0000 on 2026-10-01" })], "a note that could belong to either of two findings stays where it was");
 });
+
+test("kept scans are gzipped, and one kept as plain JSON before is still read (OP-9)", async () => {
+	const dir = await tempDir();
+	const history = new History(dir);
+	const big = report("2026-11-20T09:00:00.000Z", Array.from({ length: 500 }, (_, n) => secret(`commit ${String(n).padStart(8, "0")}`)));
+	const entry = await history.add(big);
+	assert.match(entry.file, /\.json\.gz$/);
+	const size = (await stat(join(dir, "history", entry.file))).size;
+	assert.ok(size * 5 < JSON.stringify(big).length, `${size} bytes kept for ${JSON.stringify(big).length} of JSON`);
+	assert.equal(((await stat(join(dir, "history", entry.file))).mode & 0o777).toString(8), "600");
+	assert.deepEqual(await history.read(entry.file), big);
+
+	// A scan kept as plain JSON by an earlier version: listed in the index, read as it is.
+	const old = report("2026-11-19T09:00:00.000Z", []);
+	await writeFile(join(dir, "history", "scan-20261119T090000000.json"), JSON.stringify(old));
+	const index = JSON.parse(await readFile(join(dir, "history", "index.json"), "utf8")) as { file: string }[];
+	await writeFile(join(dir, "history", "index.json"), JSON.stringify([{ file: "scan-20261119T090000000.json", scannedAt: old.scannedAt, root: "/projects", repositories: 1, findings: 0, counts: {} }, ...index]));
+	assert.deepEqual(await history.read("scan-20261119T090000000.json"), old);
+});

@@ -20,6 +20,8 @@ export interface RunOptions {
 	cwd?: string;
 	/** Read the output byte for byte, one character a byte, for content that is not text: `Buffer.from(stdout, "latin1")` gives the bytes back. */
 	latin1?: boolean;
+	/** Written to the program's standard input, which is then closed: object ids for `git cat-file --batch`, say. */
+	input?: string;
 }
 
 /** Runs a program and resolves with its exit code and output, whatever the code. */
@@ -129,13 +131,16 @@ export const run: Runner = (command, args, options) =>
 		const env = childEnv(options?.env);
 		if (options?.signal?.aborted) return reject(new CancelledError());
 		const cwd = options?.cwd ?? runFolder();
-		execFile(command, args, { timeout: options?.timeoutMs ?? TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES, env, signal: options?.signal, cwd, encoding: options?.latin1 ? "latin1" : "utf8" }, (error, stdout, stderr) => {
+		const child = execFile(command, args, { timeout: options?.timeoutMs ?? TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES, env, signal: options?.signal, cwd, encoding: options?.latin1 ? "latin1" : "utf8" }, (error, stdout, stderr) => {
 			if (!error) return resolve({ code: 0, stdout, stderr });
 			if (error.name === "AbortError" || options?.signal?.aborted) return reject(new CancelledError());
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return reject(new ToolMissingError(command));
 			if (typeof error.code === "number") return resolve({ code: error.code, stdout, stderr });
 			reject(new Error(error.killed ? `${command} timed out` : error.message));
 		});
+		// A program that stops reading early closes its end; that is its business, not an error here.
+		child.stdin?.on("error", () => {});
+		child.stdin?.end(options?.input ?? "");
 	});
 
 /**

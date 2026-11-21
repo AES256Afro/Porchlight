@@ -53,7 +53,7 @@ export async function renderCloudflare(view) {
 	/**
 	 * "Fix these": the changes shown and waiting for one answer, with the ones left unticked.
 	 *
-	 * @type {{ id: string, expiresAt: string, scope: string, changes: PendingChange[], left: Set<string> } | null}
+	 * @type {{ id: string, expiresAt: string, scope: string, changes: PendingChange[], offered: number, left: Set<string> } | null}
 	 */
 	let batch = null;
 	let batchBusy = false;
@@ -141,7 +141,7 @@ export async function renderCloudflare(view) {
 			const answer = await api("POST", "/cloudflare/changes/batch/preview", zone ? { zone: zone.id } : {});
 			// A change that could affect the site starts unticked: it is the owner's to choose, never Porchlight's.
 			const careful = /** @type {PendingChange[]} */ (answer.batch.changes).filter((change) => change.care).map((change) => change.id);
-			batch = { ...answer.batch, scope: zone ? zone.name : "every domain", left: new Set(careful) };
+			batch = { ...answer.batch, offered: typeof answer.batch.offered === "number" ? answer.batch.offered : answer.batch.changes.length, scope: zone ? zone.name : "every domain", left: new Set(careful) };
 		} catch (err) {
 			toast(err instanceof Error ? err.message : String(err), "error");
 		} finally {
@@ -217,6 +217,12 @@ export async function renderCloudflare(view) {
 						null,
 						`Porchlight will send exactly these ${plural(waiting.changes.length, "request", "requests")} to Cloudflare, one after another, each once, if you approve. Untick any you do not want. Nothing else is sent, and each is recorded below whether Cloudflare accepts it or not.`,
 					),
+					// One approval covers at most MAX_BATCH (apply.ts); the rest are said, not dropped in silence (F-F5).
+					waiting.offered > waiting.changes.length
+						? banner("warning", `These are ${waiting.changes.length} of the ${waiting.offered} changes the audit offers`, [
+								"One approval covers that many at most. Once these are sent, audit again, then use Fix these for the rest.",
+							])
+						: null,
 					h("p", { class: "hint" }, `The token needs ${permissions.map((permission) => `"${permission}"`).join(" and ")}. If it lacks one, the first request that needs it is refused and the rest that need it are not sent.`),
 					waiting.changes.some((change) => change.care)
 						? banner("warning", `${plural(waiting.changes.filter((change) => change.care).length, "change needs", "changes need")} a look first, and start unticked`, [
@@ -233,11 +239,11 @@ export async function renderCloudflare(view) {
 										type: "button",
 										class: "button quiet",
 										onclick: () => {
-											waiting.left.clear();
+											waiting.left = tickAllPlain(waiting.changes, waiting.left);
 											drawBatch();
 										},
 									},
-									"Tick all",
+									"Tick all without a warning",
 								),
 								h(
 									"button",
@@ -623,7 +629,7 @@ export async function renderCloudflare(view) {
 				else {
 					changes.set(key, { state: "done", ok: reply.ok === true, result: String(reply.result ?? "") });
 					updateCloudflare({ changes: reply.changes, lacking: reply.lacking });
-					toast(reply.ok ? "Change applied. Audit again to see it." : "Cloudflare refused the change", reply.ok ? "info" : "error");
+					toast(reply.ok ? "Change applied. Audit again to see it." : reply.notSent ? "Not sent: the setting is not what the audit found" : "Cloudflare refused the change", reply.ok ? "info" : "error");
 				}
 			} catch (err) {
 				changes.set(key, { state: "failed", error: err instanceof Error ? err.message : String(err) });
@@ -732,7 +738,7 @@ export async function renderCloudflare(view) {
 			"div",
 			{ class: "card full" },
 			h("h2", null, "Changes Porchlight made"),
-			h("p", { class: "sub" }, "Each one after you approved the exact request, newest first."),
+			h("p", { class: "sub" }, "Each one after you approved the exact request, newest first. Just before sending, Porchlight reads the current value; a change no longer needed is not sent."),
 			h(
 				"ul",
 				{ class: "plain-list" },
@@ -740,7 +746,7 @@ export async function renderCloudflare(view) {
 					h(
 						"li",
 						null,
-						h("span", { class: `severity ${entry.ok ? "status-good" : "status-warning"}` }, icon(entry.ok ? "good" : "warning"), entry.ok ? "Applied" : "Refused"),
+						h("span", { class: `severity ${entry.ok ? "status-good" : "status-warning"}` }, icon(entry.ok ? "good" : "warning"), entry.ok ? "Applied" : /** @type {{ notSent?: boolean }} */ (entry).notSent ? "Not sent" : "Refused"),
 						" ",
 						h("strong", null, entry.title),
 						h("span", { class: "hint block" }, `${formatWhen(entry.at)} · ${entry.request.method} ${entry.request.url} · ${entry.result}`),
@@ -749,6 +755,19 @@ export async function renderCloudflare(view) {
 			),
 		);
 	}
+}
+
+/**
+ * "Tick all" in Fix these: ticks every change without a warning and leaves each one with a warning as
+ * the owner set it. Those are the owner's to choose one by one, never Porchlight's (invariant 21, F-U4).
+ *
+ * @param {readonly { id: string, care?: string }[]} changes
+ * @param {ReadonlySet<string>} left the ids left unticked
+ * @returns {Set<string>} the ids left unticked afterwards
+ */
+export function tickAllPlain(changes, left) {
+	const careful = new Set(changes.filter((change) => change.care).map((change) => change.id));
+	return new Set([...left].filter((id) => careful.has(id)));
 }
 
 /**

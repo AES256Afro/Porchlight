@@ -12,6 +12,10 @@ export async function resetDb(): Promise<void> {
 	await env.DB.batch([
 		env.DB.prepare("DELETE FROM snapshots"),
 		env.DB.prepare("DELETE FROM domains"),
+		env.DB.prepare(
+			`UPDATE monitor_status SET alert_sent_at = NULL, alert_error = NULL, alert_error_at = NULL,
+			   schedule_error = NULL, schedule_error_at = NULL`,
+		),
 	]);
 }
 

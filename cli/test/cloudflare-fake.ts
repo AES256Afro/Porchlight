@@ -33,6 +33,28 @@ export interface FakeOptions {
 	/** The account's name, as Cloudflare gives it: "<email>'s Account" for a personal one. */
 	accountName?: string;
 	now?: Date;
+	/** Adds this many A records to free.example, so its record list runs to many pages. */
+	manyRecords?: number;
+	/** Lists answer without `result_info.total_pages`, as some of Cloudflare's lists do. */
+	noTotalPages?: boolean;
+	/** Answer HTTP 429 to the first `times` requests for this API path (after /client/v4), with this Retry-After. */
+	rateLimit?: { path: string; times: number; retryAfter?: string };
+	/** Answer HTTP 500 to the list of uploaded certificates. */
+	failCustomCertificates?: boolean;
+	/** pro.example is a CNAME (partial) setup: its DNS is served by another provider. */
+	partialPro?: boolean;
+	/** Answer HTTP 403 to /accounts. */
+	denyAccounts?: boolean;
+	/** Answer HTTP 403 to free.example's DNS records, and give pro.example a CNAME into free.example. */
+	crossZoneUnread?: boolean;
+	/** free.example's CNAMEs outside the account point at these names instead. */
+	outsideTargets?: string[];
+	/** pro.example's DMARC record is a CNAME to a reporting service. */
+	dmarcByCname?: boolean;
+	/** free.example has a wildcard and a CNAME to a name only the wildcard answers for. */
+	wildcard?: boolean;
+	/** One answer in an unexpected shape: Universal SSL's settings as null, or a DNS record without a name. */
+	malformed?: "universal" | "record";
 }
 
 export interface Sent {
@@ -45,7 +67,16 @@ export interface Sent {
 }
 
 function envelope(result: unknown, status = 200): Response {
-	return Response.json({ success: status < 400, errors: status < 400 ? [] : [{ code: status, message: status === 403 ? "Unauthorized to access requested resource" : "Not found" }], messages: [], result, result_info: { page: 1, total_pages: 1 } }, { status });
+	return Response.json({ success: status < 400, errors: status < 400 ? [] : [{ code: status, message: status === 403 ? "Unauthorized to access requested resource" : status === 429 ? "Rate limited" : "Not found" }], messages: [], result, result_info: { page: 1, total_pages: 1 } }, { status });
+}
+
+/** One page of a list, as Cloudflare pages it: `page` and `per_page` in the query, `total_pages` in the answer. */
+function paged(items: unknown[], url: URL, totalPages = true): Response {
+	const perPage = Number(url.searchParams.get("per_page") ?? "20");
+	const page = Number(url.searchParams.get("page") ?? "1");
+	const total = Math.max(1, Math.ceil(items.length / perPage));
+	const info = totalPages ? { page, per_page: perPage, total_pages: total, total_count: items.length } : { page, per_page: perPage };
+	return Response.json({ success: true, errors: [], messages: [], result: items.slice((page - 1) * perPage, page * perPage), result_info: info });
 }
 
 export function fakeCloudflare(options: FakeOptions = {}) {
@@ -91,15 +122,26 @@ export function fakeCloudflare(options: FakeOptions = {}) {
 			{ type: "TXT", name: "_porchlight-challenge.free.example", content: `"porchlight-verify=${OWNERSHIP_TOKEN}"` },
 		],
 		[PRO_ZONE]: [
+			...(options.crossZoneUnread ? [{ type: "CNAME", name: "shop.pro.example", content: "shop.free.example", proxied: true }] : []),
 			{ type: "A", name: "pro.example", content: "198.51.100.7", proxied: true },
 			{ type: "CNAME", name: "status.pro.example", content: "pro.statuspage.example", proxied: false },
 			{ type: "CAA", name: "pro.example", content: '0 issue "letsencrypt.org"' },
 			{ type: "MX", name: "pro.example", content: "mx.mail.example", proxied: false },
 			{ type: "TXT", name: "pro.example", content: '"v=spf1 include:_spf.mail.example -all"' },
-			{ type: "TXT", name: "_dmarc.pro.example", content: '"v=DMARC1; p=reject"' },
+			options.dmarcByCname ? { type: "CNAME", name: "_dmarc.pro.example", content: "pro-example.dmarc.reports.example", proxied: false } : { type: "TXT", name: "_dmarc.pro.example", content: '"v=DMARC1; p=reject"' },
 			{ type: "TXT", name: "s1._domainkey.pro.example", content: '"v=DKIM1; k=rsa; p=MIIB"' },
 		],
 	};
+	const free = records[FREE_ZONE]!;
+	if (options.outsideTargets) {
+		records[FREE_ZONE] = free.filter((record) => !["old.free.example", "docs.free.example"].includes((record as { name: string }).name));
+		for (const [i, target] of options.outsideTargets.entries()) records[FREE_ZONE].push({ type: "CNAME", name: `t${i}.free.example`, content: target, proxied: false });
+	}
+	if (options.wildcard) records[FREE_ZONE]!.push({ type: "A", name: "*.free.example", content: "203.0.113.10", proxied: true }, { type: "CNAME", name: "app.free.example", content: "a.b.free.example", proxied: true });
+	for (let i = 0; i < (options.manyRecords ?? 0); i++) records[FREE_ZONE]!.push({ type: "A", name: `host${i}.free.example`, content: "203.0.113.10", proxied: true });
+	if (options.malformed === "record") records[FREE_ZONE]!.push({ type: "A", content: "203.0.113.11", proxied: true });
+	let rateLimited = 0;
+	const list = (items: unknown[], url: URL) => paged(items, url, !options.noTotalPages);
 	const tokens = [
 		{
 			id: "44444444444444444444444444444444",
@@ -142,6 +184,12 @@ export function fakeCloudflare(options: FakeOptions = {}) {
 		}
 		if (url.host !== "api.cloudflare.com" || !url.pathname.startsWith("/client/v4/")) return new Response("refused", { status: 599 });
 		const path = url.pathname.slice("/client/v4".length);
+		if (options.rateLimit && path === options.rateLimit.path && rateLimited < options.rateLimit.times) {
+			rateLimited++;
+			const response = envelope(null, 429);
+			if (options.rateLimit.retryAfter !== undefined) response.headers.set("retry-after", options.rateLimit.retryAfter);
+			return response;
+		}
 
 		if (method !== "GET") {
 			const change = /^\/zones\/([0-9a-f]{32})\/(dns_records|settings\/[a-z_0-9]+|bot_management|dnssec)$/.exec(path);
@@ -150,16 +198,19 @@ export function fakeCloudflare(options: FakeOptions = {}) {
 		}
 		if (path === "/user/tokens/verify") return options.accountToken ? envelope(null, 401) : envelope({ id: SELF_TOKEN_ID, status: "active" });
 		if (path === `/accounts/${ACCOUNT_ID}/tokens/verify`) return envelope({ id: SELF_TOKEN_ID, status: "active", expires_on: iso(90) });
-		if (path === "/accounts") return envelope([{ id: ACCOUNT_ID, name: options.accountName ?? "Owner's account" }]);
+		if (path === "/accounts") return options.denyAccounts ? envelope(null, 403) : list([{ id: ACCOUNT_ID, name: options.accountName ?? "Owner's account" }], url);
 		if (path === "/zones") {
-			return envelope([
-				{ id: FREE_ZONE, name: "free.example", status: "active", paused: false, type: "full", plan: { legacy_id: "free", name: "Free Website" }, account: { id: ACCOUNT_ID, name: "Owner's account" } },
-				{ id: PRO_ZONE, name: "pro.example", status: "active", paused: false, type: "full", plan: { legacy_id: "pro", name: "Pro Website" }, account: { id: ACCOUNT_ID, name: "Owner's account" } },
-			]);
+			return list(
+				[
+					{ id: FREE_ZONE, name: "free.example", status: "active", paused: false, type: "full", plan: { legacy_id: "free", name: "Free Website" }, account: { id: ACCOUNT_ID, name: "Owner's account" } },
+					{ id: PRO_ZONE, name: "pro.example", status: "active", paused: false, type: options.partialPro ? "partial" : "full", plan: { legacy_id: "pro", name: "Pro Website" }, account: { id: ACCOUNT_ID, name: "Owner's account" } },
+				],
+				url,
+			);
 		}
-		if (path === `/accounts/${ACCOUNT_ID}/members`) return envelope(members);
-		if (path === `/accounts/${ACCOUNT_ID}/tokens`) return envelope(tokens);
-		if (path === "/user/tokens") return envelope(userTokens);
+		if (path === `/accounts/${ACCOUNT_ID}/members`) return list(members, url);
+		if (path === `/accounts/${ACCOUNT_ID}/tokens`) return list(tokens, url);
+		if (path === "/user/tokens") return list(userTokens, url);
 
 		const zone = /^\/zones\/([0-9a-f]{32})(\/.*)$/.exec(path);
 		if (!zone) return envelope(null, 404);
@@ -171,10 +222,10 @@ export function fakeCloudflare(options: FakeOptions = {}) {
 			return value === undefined ? envelope(null, 404) : envelope({ id: setting[1], value });
 		}
 		if (rest === "/dnssec") return envelope({ status: id === PRO_ZONE ? "active" : "disabled" });
-		if (rest === "/ssl/universal/settings") return envelope({ enabled: true });
+		if (rest === "/ssl/universal/settings") return envelope(options.malformed === "universal" ? null : { enabled: true });
 		if (rest === "/ssl/certificate_packs") return envelope(id === PRO_ZONE ? pack(["pro.example", "*.pro.example"], 70) : pack(["free.example", "*.free.example"], 10));
-		if (rest === "/custom_certificates") return envelope([]);
-		if (rest === "/dns_records") return envelope(records[id] ?? []);
+		if (rest === "/custom_certificates") return options.failCustomCertificates ? envelope(null, 500) : list([], url);
+		if (rest === "/dns_records") return options.crossZoneUnread && id === FREE_ZONE ? envelope(null, 403) : list(records[id] ?? [], url);
 		if (rest === "/rulesets/phases/http_request_firewall_managed/entrypoint") {
 			return id === PRO_ZONE ? envelope({ rules: [{ action: "execute", enabled: true, action_parameters: { id: MANAGED_RULESETS.owasp } }] }) : envelope(null, 404);
 		}
@@ -183,5 +234,6 @@ export function fakeCloudflare(options: FakeOptions = {}) {
 		return envelope(null, 404);
 	}) as typeof fetch;
 
-	return { fetchFn, sent, now };
+	// `settings` is live: a test changes a value as the owner would in Cloudflare's dashboard.
+	return { fetchFn, sent, now, settings };
 }

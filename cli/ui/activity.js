@@ -7,7 +7,20 @@ import { h, icon, replace } from "./dom.js";
 
 /** @typedef {import("../src/ui/server.ts").ActivityLine} ActivityLine */
 
+/** Asked again after a second while lines are arriving, then less often while nothing happens, up to 15 seconds (R6O-4). */
 const POLL_MS = 1000;
+const IDLE_POLL_MS = 15_000;
+
+/**
+ * How long to wait before asking again: a second after new lines, doubling while none come, and not
+ * at all while the tab is hidden (it asks again when shown).
+ *
+ * @param {number} previous the wait before
+ * @param {boolean} arrived whether the last answer brought lines
+ */
+export function nextPoll(previous, arrived) {
+	return arrived ? POLL_MS : Math.min(IDLE_POLL_MS, previous * 2);
+}
 const ICONS = /** @type {const} */ ({ info: "minus", good: "good", warning: "warning" });
 
 /** The time of day, to the second: a log is read by the clock. @param {string} iso */
@@ -32,6 +45,7 @@ export function activityList(options = {}) {
 	let stopped = false;
 	/** @type {ReturnType<typeof setTimeout> | undefined} */
 	let timer;
+	let wait = POLL_MS;
 
 	const draw = () => {
 		// Stay at the bottom while the reader is there; leave them alone once they scroll up.
@@ -46,19 +60,30 @@ export function activityList(options = {}) {
 	};
 
 	const poll = async () => {
+		let arrived = false;
 		try {
 			const answer = await api("GET", `/activity?after=${last}`);
 			if (stopped) return;
 			if (Array.isArray(answer.lines) && answer.lines.length > 0) {
 				lines = [...lines, ...answer.lines].slice(-limit);
 				last = lines.at(-1)?.n ?? last;
+				arrived = true;
 				draw();
 			}
 		} catch {
 			// A missed poll is made up by the next one.
 		}
-		if (!stopped) timer = setTimeout(poll, POLL_MS);
+		wait = nextPoll(wait, arrived);
+		if (!stopped && !document.hidden) timer = setTimeout(poll, wait);
 	};
+	// A hidden tab is not asked for; shown again, it asks at once.
+	const shown = () => {
+		if (stopped || document.hidden) return;
+		clearTimeout(timer);
+		wait = POLL_MS;
+		void poll();
+	};
+	document.addEventListener("visibilitychange", shown);
 	draw();
 	void poll();
 	return {
@@ -66,6 +91,7 @@ export function activityList(options = {}) {
 		stop: () => {
 			stopped = true;
 			clearTimeout(timer);
+			document.removeEventListener("visibilitychange", shown);
 		},
 	};
 }

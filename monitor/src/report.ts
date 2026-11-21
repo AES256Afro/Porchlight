@@ -13,13 +13,10 @@ export function formatReport(report: ScanReport): string {
 	const lines: string[] = [];
 	if (report.baseline) {
 		lines.push(
-			`Porchlight: first scan of ${report.domain}: ${report.hostCount} hosts, ${report.findings.length} findings`,
+			`Porchlight: first scan of ${report.domain}: ${counted(report.hostCount, "host")}, ${counted(report.findings.length, "finding")}`,
 		);
 	} else {
-		lines.push(
-			`Porchlight: ${report.domain}: ${report.changes.length} changes, ` +
-				`${report.newFindings.length} new findings, ${report.resolvedFindings.length} resolved`,
-		);
+		lines.push(`Porchlight: ${report.domain}: ${summary(report)}`);
 	}
 	if (report.changes.length > 0) {
 		lines.push("", "Changes");
@@ -38,6 +35,32 @@ export function formatReport(report: ScanReport): string {
 		for (const note of report.notes) lines.push(`  ${note}`);
 	}
 	return lines.join("\n");
+}
+
+const SEVERITIES = ["high", "medium", "low"] as const;
+
+/**
+ * What the alert is about, as a phone shows it: only what happened, counted in words that agree
+ * with the number, with the worst new finding's severity first, such as "1 new high finding, 2 changes".
+ */
+function summary(report: ScanReport): string {
+	const parts: string[] = [];
+	const added = report.newFindings;
+	if (added.length > 0) {
+		const worst = SEVERITIES.find((severity) => added.some((f) => f.severity === severity));
+		parts.push(
+			added.length === 1
+				? `1 new ${worst} finding`
+				: `${added.length} new findings, the worst ${worst}`,
+		);
+	}
+	if (report.changes.length > 0) parts.push(counted(report.changes.length, "change"));
+	if (report.resolvedFindings.length > 0) parts.push(`${report.resolvedFindings.length} resolved`);
+	return parts.length > 0 ? parts.join(", ") : "nothing new";
+}
+
+function counted(n: number, noun: string): string {
+	return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }
 
 function describeChange(change: Change): string {

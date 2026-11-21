@@ -3,13 +3,13 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { cloudflarePrompt } from "../src/assist/prompts.ts";
-import { planChange } from "../src/cloudflare/apply.ts";
-import { allChecks, auditCloudflare, TOKEN_TEMPLATE_URL } from "../src/cloudflare/audit.ts";
+import { MAX_BATCH, planBatch, planChange } from "../src/cloudflare/apply.ts";
+import { allChecks, auditCloudflare, TOKEN_TEMPLATE_URL, WRITE_PERMISSIONS } from "../src/cloudflare/audit.ts";
 import { CfClient, tokenShapeProblem } from "../src/cloudflare/client.ts";
 import { exportCloudflare, renderCloudflareText } from "../src/cloudflare/export.ts";
 import { isInternal, maskEmail, tokenBreadth } from "../src/cloudflare/rules.ts";
 import { readSavedToken, saveToken } from "../src/cloudflare/store.ts";
-import type { CfReport } from "../src/cloudflare/types.ts";
+import { CF_CHANGES, type CfReport } from "../src/cloudflare/types.ts";
 import { cloudflareAudit } from "../src/main.ts";
 import { ACCOUNT_ID, fakeCloudflare, fakeCloudflareToken, FREE_ZONE, HOSTILE, OWNERSHIP_TOKEN, PRO_ZONE, SELF_TOKEN_ID } from "./cloudflare-fake.ts";
 import { tempDir } from "./helpers.ts";
@@ -279,4 +279,139 @@ test("a one-zone CSV says it is partial, says what was not covered, and is not n
 	assert.match(file.filename, /^porchlight-cloudflare-zone-\d{4}-\d{2}-\d{2}\.csv$/);
 	assert.match(file.body, /^Partial,.*This export covers one zone, free\.example/m);
 	for (const note of report.notCovered) assert.ok(file.body.includes(note.replace(/"/g, '""')), note);
+});
+
+async function auditWith(options: Parameters<typeof fakeCloudflare>[0], extra: { lookups?: boolean; waits?: number[] } = {}) {
+	const world = fakeCloudflare(options);
+	const waits = extra.waits ?? [];
+	const report = await auditCloudflare({
+		token: fakeCloudflareToken(),
+		fetchFn: world.fetchFn,
+		lookups: extra.lookups ?? true,
+		ownershipTokens: { "free.example": OWNERSHIP_TOKEN },
+		now: () => world.now,
+		// No real waiting in a test: the wait asked for is only recorded.
+		sleep: async (ms) => {
+			waits.push(ms);
+		},
+	});
+	return { report, world, waits };
+}
+
+test("a list longer than Porchlight reads is never judged as whole, and one without a page count is read to its end (B35)", async () => {
+	const { report, world } = await auditWith({ manyRecords: 55 * 100 });
+	const pages = world.sent.filter((request) => request.path === `/client/v4/zones/${FREE_ZONE}/dns_records`).length;
+	assert.equal(pages, 40, "it stops at the limit");
+	for (const id of ["caa", "origin-exposure", "dangling-internal", "spf", "dmarc", "ownership-record"]) {
+		const item = find(report, "free.example", id);
+		assert.equal(item.status, "unknown", id);
+		assert.match(item.detail, /longer than the 40 pages/, id);
+	}
+	assert.equal(find(report, "pro.example", "caa").status, "passed", "a zone whose list was read whole is judged as usual");
+
+	// Without total_pages, full pages mean there may be more: it reads on until a page is short.
+	const open = await auditWith({ noTotalPages: true, manyRecords: 150 });
+	assert.equal(open.world.sent.filter((request) => request.path === `/client/v4/zones/${FREE_ZONE}/dns_records`).length, 2);
+	assert.equal(find(open.report, "free.example", "spf").status, "passed");
+});
+
+test("Cloudflare's rate limit is waited out, within a bounded wait and number of tries (B35)", async () => {
+	const path = `/zones/${FREE_ZONE}/settings/ssl`;
+	const once = await auditWith({ rateLimit: { path, times: 1, retryAfter: "2" } });
+	assert.deepEqual(once.waits, [2000]);
+	assert.equal(find(once.report, "free.example", "ssl-mode").status, "failed", "read on the second try, and judged");
+
+	// A long Retry-After is cut to the bound; without one the wait doubles. Then it gives up: Could not check.
+	const always = await auditWith({ rateLimit: { path, times: 100, retryAfter: "600" } });
+	assert.deepEqual(always.waits, [30_000, 30_000, 30_000]);
+	assert.equal(always.world.sent.filter((request) => request.path === `/client/v4${path}`).length, 4);
+	const ssl = find(always.report, "free.example", "ssl-mode");
+	assert.equal(ssl.status, "unknown");
+	assert.match(ssl.detail, /rate limit was reached; audit again in a few minutes/);
+	const bare = await auditWith({ rateLimit: { path, times: 100 } });
+	assert.deepEqual(bare.waits, [5000, 10_000, 20_000]);
+});
+
+test("an uploaded-certificate list that could not be read is Could not check, never none (B35, R2B-7)", async () => {
+	const { report } = await auditWith({ failCustomCertificates: true });
+	const pro = find(report, "pro.example", "certificates");
+	assert.equal(pro.status, "unknown");
+	assert.match(pro.detail, /uploaded certificates/);
+	// A problem it did see is still said, with what it could not.
+	const free = find(report, "free.example", "certificates");
+	assert.equal(free.status, "failed");
+	assert.ok(free.items?.includes("Uploaded certificates could not be read, so they were not checked."));
+});
+
+test("CNAMEs into a zone that was not read, and names never looked up, are Could not check (B35, CF-B1, CF-B2)", async () => {
+	const cross = await auditWith({ crossZoneUnread: true });
+	const inside = find(cross.report, "pro.example", "dangling-internal");
+	assert.equal(inside.status, "unknown");
+	assert.deepEqual(inside.items, ["shop.pro.example → shop.free.example (the records of free.example were not read)"]);
+
+	const skipped = await auditWith({ outsideTargets: ["_acme-challenge.provider.example"] });
+	const outside = find(skipped.report, "free.example", "dangling-external");
+	assert.equal(outside.status, "unknown");
+	assert.doesNotMatch(outside.detail, /All 0 names/);
+	assert.match(outside.items?.[0] ?? "", /_acme-challenge\.provider\.example: not a name Porchlight looks up/);
+});
+
+test("when the account list cannot be read, the audit says what that leaves out (B69)", async () => {
+	const { report } = await auditWith({ denyAccounts: true });
+	assert.ok(report.notCovered.some((line) => /^Accounts that own none of the audited zones, with their members and API tokens: this token may not list accounts/.test(line)));
+	// The account that owns the zones is still audited.
+	assert.deepEqual(report.accounts.map((account) => account.id), [ACCOUNT_ID]);
+});
+
+test("a partial (CNAME) zone's DNS rules are not judged from records Cloudflare does not serve, and offer no change (CF-B5)", async () => {
+	const { report } = await auditWith({ partialPro: true });
+	for (const id of ["caa", "spf", "dmarc", "dkim", "ownership-record", "dnssec"]) {
+		const item = find(report, "pro.example", id);
+		assert.equal(item.status, "unavailable", id);
+		assert.equal(item.change, undefined, id);
+	}
+	assert.equal(find(report, "free.example", "ownership-record").status, "passed", "a full zone is judged as before");
+});
+
+test("DMARC delegated by CNAME is not read as missing, and a wildcard answers for deeper names (CF-B6)", async () => {
+	const { report } = await auditWith({ dmarcByCname: true });
+	const dmarc = find(report, "pro.example", "dmarc");
+	assert.equal(dmarc.status, "unknown");
+	assert.equal(dmarc.change, undefined, "no record is offered beside the CNAME");
+	assert.match(dmarc.detail, /CNAME to pro-example\.dmarc\.reports\.example/);
+
+	const wild = await auditWith({ wildcard: true });
+	assert.equal(find(wild.report, "free.example", "dangling-internal").status, "passed", "*.free.example answers for a.b.free.example and missing.free.example");
+});
+
+test("an answer in an unexpected shape makes its checks Could not check, and the audit goes on (CF-B7)", async () => {
+	const universal = await auditWith({ malformed: "universal" });
+	assert.equal(find(universal.report, "free.example", "universal-ssl").status, "unknown");
+	assert.equal(find(universal.report, "pro.example", "ssl-mode").status, "passed");
+
+	const record = await auditWith({ malformed: "record" });
+	const caa = find(record.report, "free.example", "caa");
+	assert.equal(caa.status, "unknown");
+	assert.match(caa.detail, /not in the form Porchlight expects/);
+	assert.equal(find(record.report, "pro.example", "caa").status, "passed");
+});
+
+test("Fix these covers at most 300 changes and says how many the audit offers (F-F5)", () => {
+	const zones = Array.from({ length: 400 }, (_, i) => ({ id: i.toString(16).padStart(32, "0"), name: `z${i}.example`, checks: [{ status: "failed", change: "tls-1.3" as const }] }));
+	const { changes, offered } = planBatch(zones, () => OWNERSHIP_TOKEN, "2026-11-19T12:00:00.000Z");
+	assert.equal(changes.length, MAX_BATCH);
+	assert.equal(offered, 400);
+	assert.ok(changes.every((change) => change.auditAt === "2026-11-19T12:00:00.000Z"), "each change is tied to the audit it was planned from");
+});
+
+test("Settings and the documentation name only the changes Porchlight offers (F-F6)", async () => {
+	// Bot Fight Mode is kept as a template but no rule offers it, so its permission is not asked for.
+	const offered = CF_CHANGES.filter((change) => change !== "bot-fight-mode");
+	const needed = new Set(offered.map((change) => planChange({ id: FREE_ZONE, name: "free.example" }, change, change === "ownership-record" ? OWNERSHIP_TOKEN : undefined).permission));
+	assert.deepEqual(new Set(WRITE_PERMISSIONS.map((permission) => permission.name)), needed);
+	const doc = await readFile(join(import.meta.dirname, "..", "..", "docs", "CLOUDFLARE-AUDIT.md"), "utf8");
+	assert.match(doc, /Fix these/);
+	assert.doesNotMatch(doc, /not applied by Porchlight/);
+	assert.doesNotMatch(doc, /approve one at a time/);
+	for (const words of ["DNSSEC", "Full (strict)", "DMARC record that only reports", "current value"]) assert.ok(doc.includes(words), words);
 });

@@ -24,6 +24,11 @@ export interface Snapshot {
 	takenAt: string;
 	/** False when the certificate log could not be read; the host list was then carried over. */
 	ctOk: boolean;
+	/**
+	 * False when the log was read but its query for the bare domain failed, so the bare domain's
+	 * certificate was not observed. Absent: it was, or an older snapshot.
+	 */
+	ctApexOk?: false;
 	apex: ApexRecords;
 	/** Whether the domain's DNS answers are signed. Absent: not observed, or an older snapshot. */
 	dnssec?: boolean;
@@ -48,11 +53,12 @@ export async function collectSnapshot(
 	// from a scan of this same domain: a carried name is probed without a
 	// certificate log entry of its own, so it must be one the ownership check covers.
 	const prev = carriedFrom(previous, domain);
-	const [certs, { records: apex, dnssec }] = await Promise.all([
+	const [ct, { records: apex, dnssec }] = await Promise.all([
 		fetchCtCerts(domain, deps.fetch).catch(() => null),
 		lookupApex(domain, deps.fetch),
 	]);
 
+	const certs = ct?.certs ?? null;
 	const checkedAt = deps.now().toISOString();
 	const logged = certs ? hostsFromCerts(certs) : null;
 	// A gone name is forgotten once the log stops listing it (its certificates
@@ -70,8 +76,14 @@ export async function collectSnapshot(
 	]);
 	const lastChecked = (host: string) => prev?.hosts[host]?.checkedAt ?? goneSince.get(host) ?? "";
 	const ordered = orderHosts(known, domain, lastChecked);
-	const certFor = (host: string) =>
-		latestCertFor(host, certs ?? []) ?? prev?.hosts[host]?.cert ?? null;
+	const certFor = (host: string) => {
+		const carried = prev?.hosts[host]?.cert ?? null;
+		const seen = latestCertFor(host, certs ?? []);
+		// Without the bare-domain query, a certificate naming only the bare domain is missing, and an
+		// older one that also names other hosts would stand in for it: the later of the two is kept.
+		if (host === domain && ct && !ct.apexOk) return later(seen, carried);
+		return seen ?? carried;
+	};
 
 	const hosts: Record<string, HostState> = {};
 	const gone: Record<string, string> = {};
@@ -80,7 +92,12 @@ export async function collectSnapshot(
 		await Promise.all(
 			toProbe.slice(i, i + PROBE_CONCURRENCY).map(async (host) => {
 				const state = await probeHost(host, host === domain, certFor(host), deps);
-				if (state) hosts[host] = { ...state, checkedAt };
+				const since = goneSince.get(host);
+				if (state?.dns === null && since !== undefined && !prev?.hosts[host]) {
+					// Found gone before, and its lookup failed this time: nothing was observed, so it
+					// stays gone as it was rather than coming back as a new host (invariant 5).
+					gone[host] = since;
+				} else if (state) hosts[host] = { ...state, checkedAt };
 				else gone[host] = checkedAt;
 			}),
 		);
@@ -101,11 +118,18 @@ export async function collectSnapshot(
 		domain,
 		takenAt: deps.now().toISOString(),
 		ctOk: certs !== null,
+		...(ct && !ct.apexOk ? { ctApexOk: false as const } : {}),
 		apex,
 		...(dnssec !== undefined ? { dnssec } : {}),
 		hosts,
 		...(Object.keys(gone).length > 0 ? { gone } : {}),
 	};
+}
+
+/** Whichever certificate runs later; either may be missing. */
+function later(a: CertWindow | null, b: CertWindow | null): CertWindow | null {
+	if (!a || !b) return a ?? b;
+	return a.notAfter >= b.notAfter ? a : b;
 }
 
 /** The previous snapshot cut to what may be carried into a scan of `domain`, or null if it was of another domain. */

@@ -4,6 +4,8 @@ import { cnameChain } from "../src/collect/dns.ts";
 import { parseCookie, parseHsts } from "../src/collect/http.ts";
 import { recordsOf, unquoteTxt } from "../src/doh.ts";
 import { isWithin, normalizeDomain } from "../src/domain.ts";
+import { formatReport } from "../src/report.ts";
+import type { ScanReport } from "../src/types.ts";
 
 describe("normalizeDomain", () => {
 	it("canonicalises case, whitespace and the trailing dot", () => {
@@ -162,5 +164,44 @@ describe("response headers read for their settings", () => {
 		expect(parseCookie("note=Secure")).toEqual({ name: "note", secure: false, httpOnly: false });
 		expect(parseCookie("=novalue")).toBeNull();
 		expect(parseCookie("bad name=1")).toBeNull();
+	});
+});
+
+describe("alert titles", () => {
+	const report = (overrides: Partial<ScanReport>): ScanReport => ({
+		domain: "example.com",
+		takenAt: "2026-11-17T12:00:00.000Z",
+		baseline: false,
+		changes: [],
+		newFindings: [],
+		resolvedFindings: [],
+		findings: [],
+		hostCount: 1,
+		notes: [],
+		...overrides,
+	});
+	const finding = (severity: "high" | "medium" | "low") => ({
+		id: `x-${severity}:example.com`,
+		severity,
+		host: "example.com",
+		basis: "dns" as const,
+		title: "t",
+	});
+	const title = (overrides: Partial<ScanReport>) => formatReport(report(overrides)).split("\n")[0];
+
+	it("counts in words that agree with the number, leaves out zeros and leads with the worst (D-D2)", () => {
+		expect(title({ newFindings: [finding("high")] })).toBe(
+			"Porchlight: example.com: 1 new high finding",
+		);
+		expect(
+			title({
+				newFindings: [finding("low"), finding("medium")],
+				changes: [{ kind: "host_added", host: "a.example.com" }],
+				resolvedFindings: [finding("low")],
+			}),
+		).toBe("Porchlight: example.com: 2 new findings, the worst medium, 1 change, 1 resolved");
+		expect(title({ baseline: true, hostCount: 1, findings: [finding("low")] })).toBe(
+			"Porchlight: first scan of example.com: 1 host, 1 finding",
+		);
 	});
 });

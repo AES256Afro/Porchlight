@@ -110,8 +110,8 @@ export function fetchByDefault(repo) {
 export function monitorSetupSteps(service) {
 	return [
 		{
-			text: "Open Terminal in the Porchlight project folder and sign in to Cloudflare. A browser window opens for you to allow it. The free plan is enough, and this is done once. If this computer has no copy of the project, get one first with the top command.",
-			commands: ["git clone https://github.com/AES256Afro/Porchlight.git && cd Porchlight && npm install", "cd monitor", "npx cf auth login"],
+			text: "Open Terminal in the Porchlight project folder, install the monitor's tools in its `monitor` folder, and sign in to Cloudflare. A browser window opens for you to allow it. The free plan is enough, and this is done once. If this computer has no copy of the project, get one first with the top command.",
+			commands: ["git clone https://github.com/AES256Afro/Porchlight.git && cd Porchlight", "cd monitor", "npm install", "npx cf auth login"],
 		},
 		{
 			text: "Make the monitor's database. The command prints a database ID: copy it.",
@@ -122,7 +122,7 @@ export function monitorSetupSteps(service) {
 			commands: ["npx cf d1 migrations apply <DATABASE_ID>"],
 		},
 		{
-			text: "Make the monitor's admin token and deploy. The first command writes a new random token into `.secrets.production`. The second prints the monitor's address when it finishes, which looks like `https://porchlight-monitor.your-name.workers.dev`.",
+			text: "Make the monitor's admin token and deploy. The first command writes a new random token into `.secrets.production`. The second prints the monitor's address when it finishes, which looks like `https://porchlight-monitor.your-name.workers.dev`. To be sent alerts, add a line `ALERT_WEBHOOK_URL=` with a Slack or Discord webhook or an ntfy topic to `.secrets.production` before deploying; without it, alerts go only to the Worker's log, where nobody sees them.",
 			commands: ["printf 'ADMIN_TOKEN=%s\\n' \"$(openssl rand -hex 32)\" > .secrets.production", "npx cf deploy --secrets-file .secrets.production"],
 		},
 		{

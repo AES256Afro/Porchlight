@@ -64,7 +64,7 @@ import { buildRepoRoadmap, listRepoFindings, suggestionsFor } from "../roadmap/r
 import { DEFAULT_GOAL, DEFAULT_MAX_TURNS, DEFAULT_MIN_GAP_MS, investigate, MAX_GOAL, MAX_TURNS_LIMIT, newRun, type ApprovalAnswer, type Run } from "../investigate/engine.ts";
 import { exportInvestigation, INVESTIGATION_FORMATS, type InvestigationFormat } from "../investigate/export.ts";
 import { challengeName, challengeValue, changeDomains, checkOwnership, newToken, readDomains, tokenFromChallenge } from "../investigate/ownership.ts";
-import { abortableSleep, parseDomain, RateLimiter } from "../investigate/scope.ts";
+import { abortableSleep, asciiDomain, parseDomain, RateLimiter } from "../investigate/scope.ts";
 import { isRunId, RunStore, settled } from "../investigate/store.ts";
 import { liveNet, TOOLS as INVESTIGATION_TOOLS, type Net } from "../investigate/tools.ts";
 import {
@@ -1698,6 +1698,9 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			})
 				.then(async (report) => {
 					await saveAudit(cloudflareAuditPath, report);
+					// A request shown before this audit was planned from what it replaced: it is asked for again (S28).
+					pendingChanges.clear();
+					pendingBatch = null;
 					cloudflareVerified = { status: report.token.status, kind: report.token.kind, ...(report.token.expiresOn ? { expiresOn: report.token.expiresOn } : {}), checkedAt: report.checkedAt };
 					cloudflareStatus = { state: "done", finishedAt: new Date().toISOString() };
 					const problems = [...report.zones.flatMap((zone) => zone.checks), ...report.accounts.flatMap((account) => account.checks), ...report.userChecks].filter((item) => item.status === "failed").length;
@@ -1743,7 +1746,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			if (!zone.checks.some((item) => item.change === change && item.status === "failed")) throw new HttpError(409, "The latest audit does not suggest that change for this zone");
 			let ownershipToken: string | undefined;
 			if (change === "ownership-record") ownershipToken = (await readDomains(investigateDomainsPath)).domains[zone.name]?.token ?? newToken();
-			const planned = planChange(zone, change, ownershipToken);
+			const planned = planChange(zone, change, ownershipToken, report.checkedAt);
 			for (const [id, waiting] of pendingChanges) if (Date.now() - waiting.createdAt > APPROVAL_WINDOW_MS) pendingChanges.delete(id);
 			if (pendingChanges.size >= MAX_PENDING_CHANGES) throw new HttpError(409, "Answer the changes already waiting first");
 			pendingChanges.set(planned.id, planned);
@@ -1756,13 +1759,16 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				throw new HttpError(409, "That change is no longer waiting. Ask for it again to see the request.");
 			}
 			if (typeof fields.approve !== "boolean") throw new HttpError(400, "Say whether to apply it");
+			// One at a time: the same template could otherwise go out twice, once from each (CF-S2).
+			if (fields.approve && batchStatus.state === "running") throw new HttpError(409, "Changes are being sent now. Wait for them to finish, or stop them");
 			pendingChanges.delete(planned.id);
 			if (!fields.approve) return sendJson(res, 200, { applied: false });
 			const token = await cloudflareToken();
 			if (!token) throw new HttpError(409, "Connect Cloudflare first: paste an API token in Settings → Cloudflare");
+			if (!(await fromLatestAudit(planned))) throw new HttpError(409, "A newer audit replaced the one this request was planned from. Ask for it again.");
 			if (await ownershipTokenChanged(planned)) throw new HttpError(409, "The token for this domain changed since the request was shown. Ask for it again.");
 			const { outcome, changes } = await applyPlanned(planned, token.token);
-			return sendJson(res, 200, { applied: true, ok: outcome.ok, result: outcome.result, changes: changes.slice(-50).reverse(), lacking: [...lacking] });
+			return sendJson(res, 200, { applied: true, ok: outcome.ok, ...(outcome.notSent ? { notSent: true } : {}), result: outcome.result, changes: changes.slice(-50).reverse(), lacking: [...lacking] });
 		}
 
 		// "Fix these": every change the latest audit offers, for one zone or all, shown as the exact
@@ -1782,10 +1788,11 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				if (zones.length === 0) throw new HttpError(404, "That zone is not in the latest audit. Run the audit again.");
 			}
 			const domains = (await readDomains(investigateDomainsPath)).domains;
-			const planned = planBatch(zones, (name) => domains[name]?.token ?? newToken());
+			const { changes: planned, offered } = planBatch(zones, (name) => domains[name]?.token ?? newToken(), report.checkedAt);
 			if (planned.length === 0) throw new HttpError(409, "The latest audit found nothing here that Porchlight can change");
 			pendingBatch = { id: randomBytes(12).toString("hex"), createdAt: Date.now(), changes: planned };
-			return sendJson(res, 200, { batch: { id: pendingBatch.id, expiresAt: new Date(pendingBatch.createdAt + APPROVAL_WINDOW_MS).toISOString(), changes: planned.map(describeChange) } });
+			// `offered`: every change the audit offers here, so the page can say when one approval covers only some (F-F5).
+			return sendJson(res, 200, { batch: { id: pendingBatch.id, expiresAt: new Date(pendingBatch.createdAt + APPROVAL_WINDOW_MS).toISOString(), changes: planned.map(describeChange), offered } });
 		}
 		if (route === "POST /api/cloudflare/changes/batch/approve") {
 			const batch = pendingBatch;
@@ -1810,6 +1817,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			if (!fields.approve) return sendJson(res, 200, { started: false });
 			const token = await cloudflareToken();
 			if (!token) throw new HttpError(409, "Connect Cloudflare first: paste an API token in Settings → Cloudflare");
+			if (!(await fromLatestAudit(batch.changes[0]))) throw new HttpError(409, "A newer audit replaced the one these requests were planned from. Ask for them again.");
 			const startedAt = new Date().toISOString();
 			const stop = new AbortController();
 			batchStop = stop;
@@ -1837,6 +1845,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 						try {
 							const { outcome } = await applyPlanned(planned, token.token, logTo);
 							if (outcome.ok) applied += 1;
+							else if (outcome.notSent) skipped += 1;
 							else failed += 1;
 							if (outcome.denied) lacking.add(planned.permission);
 						} catch (err) {
@@ -1854,6 +1863,12 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			return sendJson(res, 202, { started: true, batch: batchStatus });
 		}
 		throw new HttpError(404, "Not found");
+	}
+
+	/** Whether a change was planned from the audit that is still the latest: a newer one may have found the problem gone (S28). */
+	async function fromLatestAudit(planned: PlannedChange | undefined): Promise<boolean> {
+		const latest = await readAudit(cloudflareAuditPath);
+		return planned !== undefined && latest !== null && planned.auditAt === latest.checkedAt;
 	}
 
 	/** For the ownership record: whether this computer's token for the domain changed after the request was shown. */
@@ -1876,8 +1891,9 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			});
 		}
 		// The change's title is Porchlight's, from its own list; the request and the token stay out of the log.
-		log(`Cloudflare change ${outcome.ok ? "applied" : "failed"}: ${planned.title}, on ${planned.zone}`, project);
-		if (!outcome.ok) note(`Cloudflare refused: ${planned.title}. ${outcome.result}`, "warning");
+		log(`Cloudflare change ${outcome.ok ? "applied" : outcome.notSent ? "not sent" : "failed"}: ${planned.title}, on ${planned.zone}`, project);
+		if (outcome.notSent) note(`${outcome.result.replace(/^Not sent: /, `Not sent: ${planned.title}. `)}`, "warning");
+		else if (!outcome.ok) note(`Cloudflare refused: ${planned.title}. ${outcome.result}`, "warning");
 		if (outcome.denied) lacking.add(planned.permission);
 		else if (outcome.ok) lacking.delete(planned.permission);
 		const changes = await recordChange(cloudflareChangesPath, {
@@ -1889,6 +1905,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			request: { method: planned.method, url: planned.url, body: planned.body },
 			ok: outcome.ok,
 			result: outcome.result,
+			...(outcome.notSent ? { notSent: true } : {}),
 		});
 		return { outcome, changes };
 	}
@@ -2683,7 +2700,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			if (method !== "GET" && method !== "POST") throw new HttpError(405, "Method not allowed");
 			target = "/domains";
 		} else {
-			const domain = safeDecode(name).toLowerCase();
+			// A name in its own script is sent in the ASCII form DNS uses (B58).
+			const domain = asciiDomain(safeDecode(name).toLowerCase());
 			if (!DOMAIN_PATTERN.test(domain) || extra.length > 0) throw new HttpError(400, "Invalid domain name");
 			if (action === undefined) {
 				if (method !== "GET" && method !== "DELETE") throw new HttpError(405, "Method not allowed");
@@ -2695,7 +2713,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			target = `/domains/${encodeURIComponent(domain)}${action ? `/${action}` : ""}`;
 		}
 		try {
-			const sendBody = method === "POST" && name === undefined ? body : undefined;
+			const fields = method === "POST" && name === undefined ? bodyObject(body) : undefined;
+			const sendBody = fields && typeof fields.domain === "string" ? { ...fields, domain: asciiDomain(fields.domain.trim().toLowerCase()) } : fields;
 			const response = await callMonitor(monitor, method, target, sendBody, options.fetchFn);
 			return [response.status, response.body];
 		} catch (err) {
@@ -2915,7 +2934,7 @@ function textField(fields: Record<string, unknown>, name: string, max: number): 
 }
 
 function domainField(fields: Record<string, unknown>): string {
-	const domain = typeof fields.domain === "string" ? fields.domain.trim().toLowerCase() : "";
+	const domain = typeof fields.domain === "string" ? asciiDomain(fields.domain.trim().toLowerCase()) : "";
 	if (!DOMAIN_PATTERN.test(domain)) throw new HttpError(400, "Invalid domain name");
 	return domain;
 }

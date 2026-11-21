@@ -5,7 +5,7 @@ import { parseArgs } from "node:util";
 import { assistantConfig, isHosted } from "./assist/ollama.ts";
 import { callMonitor, monitorConfig } from "./monitor/client.ts";
 import { describeDomain, describeHistory } from "./monitor/describe.ts";
-import { formatFor, NOTIFY_FORMATS, notifyTarget, type NotifyFormat } from "./notify/format.ts";
+import { notifySetting } from "./notify/format.ts";
 import { exitCode, parseScanReport, renderMarkdown, renderSummary } from "./repos/report.ts";
 import { History } from "./repos/history.ts";
 import { buildSbom } from "./repos/sbom.ts";
@@ -391,7 +391,10 @@ async function ui(args: string[]): Promise<number> {
 	const reportPath = resolve(values.report ?? join(dataDir, "repo-scan.json"));
 	const scanDepth = wholeNumberSetting("PORCHLIGHT_SCAN_DEPTH", 0, 6);
 	const scanEveryHours = wholeNumberSetting("PORCHLIGHT_SCAN_EVERY_HOURS", 1, 720);
-	const notify = notifySetting();
+	// A notice address that cannot be used turns notices off and says why, as other optional settings
+	// do: stopping here would take the page and every scan down with it (B72).
+	const notifyRead = notifySetting(process.env.PORCHLIGHT_NOTIFY_URL, process.env.PORCHLIGHT_NOTIFY_FORMAT);
+	const notify = notifyRead && "url" in notifyRead ? notifyRead : undefined;
 	const osvOffline = /^(1|true|yes)$/i.test(process.env.PORCHLIGHT_OSV_OFFLINE?.trim() ?? "");
 	// The address is the switch: BoxPilot fills the model setting with a default, so a model alone turns nothing on.
 	// Off, as opposed to a setting to correct: no provider chosen and no address given.
@@ -439,23 +442,9 @@ async function ui(args: string[]): Promise<number> {
 	if (scanEveryHours !== undefined) say(`Scans: ${resolve(values.root)} again every ${scanEveryHours === 1 ? "hour" : `${scanEveryHours} hours`}, ${scanDepth ?? 3} folder levels down`);
 	// The address can carry a token (a Slack or Discord webhook is one), so only its host is printed.
 	if (notify) say(`Notices: the outcome of each scheduled scan goes to ${notify.url.host} (${notify.format})${scanEveryHours === undefined ? ", but no schedule is set (PORCHLIGHT_SCAN_EVERY_HOURS)" : ""}`);
+	else if (notifyRead && "problem" in notifyRead) say(`Notices: off (${notifyRead.problem})`);
 	say("Press Ctrl+C to stop.");
 	return 0;
-}
-
-/**
- * Where scheduled scans report (PORCHLIGHT_NOTIFY_URL) and in which format (PORCHLIGHT_NOTIFY_FORMAT,
- * or the one the address shows). Undefined when not set; a setting that cannot be used stops
- * Porchlight with what to correct, without printing the address, which may hold a token.
- */
-function notifySetting(): { url: URL; format: NotifyFormat } | undefined {
-	const raw = process.env.PORCHLIGHT_NOTIFY_URL?.trim();
-	if (!raw) return undefined;
-	const url = notifyTarget(raw);
-	if (!url) throw new Error("PORCHLIGHT_NOTIFY_URL must be an https address, or plain http on this machine or a private network, with no user name or password");
-	const format = formatFor(url, process.env.PORCHLIGHT_NOTIFY_FORMAT);
-	if (!format) throw new Error(`PORCHLIGHT_NOTIFY_FORMAT must be one of: ${NOTIFY_FORMATS.join(", ")}, or empty`);
-	return { url, format };
 }
 
 /**

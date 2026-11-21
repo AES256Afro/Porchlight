@@ -1,5 +1,6 @@
 // Checks boxpilot/porchlight.yaml: first against what this repository ships, then with BoxPilot's
-// own validateManifest when a BoxPilot checkout is at BOXPILOT_DIR (default ../BoxPilot).
+// own validateManifest when a BoxPilot checkout is at BOXPILOT_DIR (default ../BoxPilot). Without one
+// the schema check is skipped, unless BOXPILOT_REQUIRED=1 (as in CI), when that fails.
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -30,13 +31,20 @@ if (!dockerfile.includes(`http://127.0.0.1:${web?.container}/healthz`)) local.pu
 if (volume("repos")?.container !== flag("--root")) local.push(`volume repos is mounted at ${volume("repos")?.container}, the image scans ${flag("--root")}`);
 if (volume("repos")?.readOnly !== true) local.push("volume repos must be read-only");
 if (!flag("--report")?.startsWith(`${volume("data")?.container}/`)) local.push(`the report ${flag("--report")} is not inside volume data (${volume("data")?.container})`);
-if (key?.type !== "password" || key?.generate !== true) local.push("SECURITYX_UI_KEY must be a generated password");
+if (key?.type !== "password" || key?.secret !== true || key?.generate !== true) local.push("SECURITYX_UI_KEY must be a generated secret password");
+// The monitor's admin token and a hosted model's key are the owner's: secret, never generated, empty by default.
+for (const name of ["SECURITYX_ADMIN_TOKEN", "SECURITYX_LLM_API_KEY"]) {
+	const entry = raw.env?.find((candidate) => candidate.name === name);
+	if (!entry) local.push(`${name} is missing: the app reads it under this name`);
+	else if (entry.type !== "password" || entry.secret !== true || entry.generate === true || entry.default !== "") local.push(`${name} must be a secret password the owner supplies, empty by default`);
+}
 const githubToken = raw.env?.find((entry) => entry.name === "SECURITYX_GITHUB_TOKEN");
 if (githubToken && (githubToken.type !== "password" || githubToken.secret !== true || githubToken.generate === true)) local.push("SECURITYX_GITHUB_TOKEN must be a secret password the owner supplies");
 // The app reads the Cloudflare token under this name (cli/src/main.ts), and the pages tell the owner where to paste it.
 const cloudflareToken = raw.env?.find((entry) => entry.name === "PORCHLIGHT_CLOUDFLARE_TOKEN");
 if (!cloudflareToken) local.push("PORCHLIGHT_CLOUDFLARE_TOKEN is missing: the Cloudflare page tells a service to set it in Apps → Porchlight → Settings");
-else if (cloudflareToken.type !== "password" || cloudflareToken.secret !== true || cloudflareToken.generate === true || cloudflareToken.default !== "") local.push("PORCHLIGHT_CLOUDFLARE_TOKEN must be a secret password the owner supplies, empty by default");if (raw.defaultExposure !== "tailnet") local.push("defaultExposure must stay tailnet: a report names where secrets were found");
+else if (cloudflareToken.type !== "password" || cloudflareToken.secret !== true || cloudflareToken.generate === true || cloudflareToken.default !== "") local.push("PORCHLIGHT_CLOUDFLARE_TOKEN must be a secret password the owner supplies, empty by default");
+if (raw.defaultExposure !== "tailnet") local.push("defaultExposure must stay tailnet: a report names where secrets were found");
 // The app reads these two under these names and refuses to start on a value out of range (cli/src/main.ts).
 const depth = raw.env?.find((entry) => entry.name === "PORCHLIGHT_SCAN_DEPTH");
 if (!depth || !(depth.options ?? []).every((option) => /^[0-6]$/.test(option)) || !/^[0-6]$/.test(String(depth.default))) local.push("PORCHLIGHT_SCAN_DEPTH must offer whole numbers from 0 to 6, with one of them as its default");
@@ -56,6 +64,11 @@ if (local.length) {
 }
 
 if (!existsSync(schemaFile)) {
+	// CI sets BOXPILOT_REQUIRED=1: there a missing schema fails, so invariant 9's check never goes green without running.
+	if (process.env.BOXPILOT_REQUIRED === "1") {
+		console.error(`BoxPilot manifest: local checks pass, but BoxPilot's schema is required (BOXPILOT_REQUIRED=1) and there is no BoxPilot checkout at ${boxpilot}.`);
+		process.exit(1);
+	}
 	console.log(`BoxPilot manifest: local checks pass. Skipped the schema check: no BoxPilot checkout at ${boxpilot} (set BOXPILOT_DIR).`);
 	process.exit(0);
 }

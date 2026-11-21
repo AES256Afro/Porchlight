@@ -54,3 +54,35 @@ export const USER_AGENT = "porchlight-monitor (attack-surface monitor for verifi
 export function errorMessage(err: unknown): string {
 	return (err instanceof Error ? err.message : String(err)).slice(0, 200);
 }
+
+/**
+ * `text` with the admin token and the webhook's address taken out, for an error that is kept and
+ * shown through the API. The webhook's path and query are its secret (a Slack or Discord token, an
+ * ntfy topic), so they go even where the error names them without the rest of the address.
+ */
+export function scrubbed(env: AppEnv, text: string): string {
+	const secrets: string[] = [];
+	if (env.ADMIN_TOKEN) secrets.push(env.ADMIN_TOKEN);
+	const webhook = env.ALERT_WEBHOOK_URL?.trim();
+	if (webhook) {
+		secrets.push(webhook);
+		try {
+			const url = new URL(webhook);
+			secrets.push(url.href);
+			if (url.pathname.length > 1) secrets.push(url.pathname);
+			if (url.search) secrets.push(url.search.slice(1));
+		} catch {
+			// Not an address; the value itself is taken out above.
+		}
+	}
+	let out = text;
+	for (const secret of secrets.sort((a, b) => b.length - a.length)) {
+		if (secret) out = out.split(secret).join("(hidden)");
+	}
+	return out;
+}
+
+/** An error's message, scrubbed as `scrubbed` says before it is cut short, so no part of a secret is left at the cut. */
+export function scrubbedError(env: AppEnv, err: unknown): string {
+	return scrubbed(env, err instanceof Error ? err.message : String(err)).slice(0, 200);
+}

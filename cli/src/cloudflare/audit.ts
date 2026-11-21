@@ -6,7 +6,7 @@
  * looked up over DNS, to find records left pointing at services that are gone.
  */
 import { checkOwnership, resolveDoh } from "../investigate/ownership.ts";
-import { accountPath, CfClient, isCloudflareId, zonePath, type CfAnswer } from "./client.ts";
+import { accountPath, CfClient, isCloudflareId, MAX_PAGES, zonePath, type CfAnswer, type Sleep } from "./client.ts";
 import {
 	dnsChecks,
 	emailChecks,
@@ -55,7 +55,6 @@ export const READ_PERMISSIONS: { name: string; scope: "Zone" | "Account" | "User
 /** Permissions that let Porchlight make a change, each only after you approve the exact request. Optional. */
 export const WRITE_PERMISSIONS: { name: string; scope: "Zone"; purpose: string }[] = [
 	{ name: "DNS Write", scope: "Zone", purpose: "add Porchlight's _porchlight-challenge ownership record, a DMARC record that only reports, and turn on DNSSEC" },
-	{ name: "Bot Management Write", scope: "Zone", purpose: "turn on Bot Fight Mode" },
 	{ name: "Zone Settings Write", scope: "Zone", purpose: "turn on Always Use HTTPS, TLS 1.3, Automatic HTTPS Rewrites, Browser Integrity Check and HSTS, set the minimum TLS version to 1.2, and set the encryption mode to Full (strict)" },
 ];
 
@@ -78,6 +77,8 @@ export interface AuditOptions {
 	onProgress?: (progress: CfProgress) => void;
 	now?: () => Date;
 	maxZones?: number;
+	/** Waits out Cloudflare's rate limit. Tests pass one that only records the wait. */
+	sleep?: Sleep;
 }
 
 export class CloudflareAuditError extends Error {}
@@ -94,6 +95,26 @@ interface RawZone {
 
 const NAME = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
 
+/**
+ * The shape each answer must have before a rule reads it. An answer of another shape was not
+ * understood, and its checks say Could not check (invariant 5) instead of stopping the whole audit.
+ */
+type Shape = (value: unknown) => boolean;
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const optionalArray = (value: unknown, item: Shape = () => true) => value === undefined || value === null || (Array.isArray(value) && value.every(item));
+const listOf = (item: Shape): Shape => (value) => Array.isArray(value) && value.every(item);
+const optionalString = (value: unknown) => value === undefined || value === null || typeof value === "string";
+/** Record types whose content a rule reads; another type may come without it. */
+const READ_CONTENT = new Set(["A", "AAAA", "CNAME", "TXT", "MX", "CAA"]);
+const SHAPES = {
+	object: isObject,
+	packs: listOf((pack) => isObject(pack) && optionalString(pack.type) && optionalString(pack.status) && optionalArray(pack.hosts, (host) => typeof host === "string") && optionalArray(pack.certificates, isObject)),
+	customs: listOf((cert) => isObject(cert) && optionalString(cert.status) && optionalString(cert.expires_on) && optionalArray(cert.hosts, (host) => typeof host === "string")),
+	records: listOf((record) => isObject(record) && typeof record.type === "string" && typeof record.name === "string" && (typeof record.content === "string" || !READ_CONTENT.has(record.type))),
+	members: listOf((member) => isObject(member) && (member.user === undefined || isObject(member.user)) && optionalArray(member.roles, isObject) && optionalArray(member.policies, (policy) => isObject(policy) && optionalArray(policy.permission_groups, isObject))),
+	tokens: listOf((token) => isObject(token) && optionalString(token.name) && optionalArray(token.policies, (policy) => isObject(policy) && optionalArray(policy.permission_groups, isObject))),
+} satisfies Record<string, Shape>;
+
 function planOf(zone: RawZone): CfPlan {
 	const id = typeof zone.plan?.legacy_id === "string" ? zone.plan.legacy_id.toLowerCase() : "";
 	if ((CF_PLANS as readonly string[]).includes(id)) return id as CfPlan;
@@ -104,15 +125,20 @@ function planOf(zone: RawZone): CfPlan {
 export async function auditCloudflare(options: AuditOptions): Promise<CfReport> {
 	const fetchFn = options.fetchFn ?? fetch;
 	const now = options.now ?? (() => new Date());
-	const client = new CfClient(options.token, fetchFn);
+	const client = new CfClient(options.token, fetchFn, undefined, options.sleep);
 	const evidence = new Map<string, boolean>();
 	const note = (permission: string, answer: CfAnswer<unknown>) => {
 		if (answer.ok || answer.missing) evidence.set(permission, true);
 		else if (answer.denied && !evidence.get(permission)) evidence.set(permission, false);
 	};
-	const read = <T>(permission: string, answer: CfAnswer<T>, missingAs?: T): Read<T> => {
+	const read = <T>(permission: string, answer: CfAnswer<T>, shape: Shape, missingAs?: T): Read<T> => {
 		note(permission, answer);
-		if (answer.ok) return { ok: true, value: answer.result };
+		if (answer.ok) {
+			// Half a list is not the list: a check that passed on it would pass on what it never saw.
+			if (answer.truncated) return { ok: false, denied: false, message: `the list is longer than the ${MAX_PAGES} pages Porchlight reads, so it was not read whole` };
+			if (!shape(answer.result)) return { ok: false, denied: false, message: "its answer was not in the form Porchlight expects" };
+			return { ok: true, value: answer.result };
+		}
 		if (answer.missing && missingAs !== undefined) return { ok: true, value: missingAs };
 		return { ok: false, denied: answer.denied, message: answer.message };
 	};
@@ -131,6 +157,7 @@ export async function auditCloudflare(options: AuditOptions): Promise<CfReport> 
 	const zoneList = await client.list<RawZone>("/zones", {}, 50);
 	note(PERMISSIONS.zone, zoneList);
 	if (!zoneList.ok) notCovered.unshift(zoneList.denied ? `Every domain: this token may not list zones. Give it "${PERMISSIONS.zone}".` : `Every domain: Cloudflare did not list the zones (${zoneList.message}).`);
+	if (zoneList.ok && zoneList.truncated) notCovered.unshift(`Zones beyond the first ${zoneList.result.length}: Cloudflare's list of zones is longer than the ${MAX_PAGES} pages Porchlight reads.`);
 	const rawZones = (zoneList.ok ? zoneList.result : []).filter((zone) => isCloudflareId(zone.id) && typeof zone.name === "string" && NAME.test(zone.name.toLowerCase()));
 	const limit = options.maxZones ?? MAX_ZONES;
 	const audited = rawZones.slice(0, limit);
@@ -161,10 +188,10 @@ export async function auditCloudflare(options: AuditOptions): Promise<CfReport> 
 				note(PERMISSIONS.settings, answer);
 				continue;
 			}
-			const value = read(PERMISSIONS.settings, answer);
+			const value = read(PERMISSIONS.settings, answer, isObject);
 			settings[setting] = value.ok ? { ok: true, value: (value.value as { value?: unknown } | null)?.value } : value;
 		}
-		const wafRead = read(PERMISSIONS.waf, waf, { rules: [] });
+		const wafRead = read(PERMISSIONS.waf, waf, SHAPES.object, { rules: [] });
 		datas.push({
 			raw,
 			data: {
@@ -173,14 +200,14 @@ export async function auditCloudflare(options: AuditOptions): Promise<CfReport> 
 				plan: planOf(raw),
 				type: typeof raw.type === "string" ? raw.type : "full",
 				settings,
-				dnssec: read(PERMISSIONS.dns, dnssec),
-				universalSsl: read(PERMISSIONS.ssl, universal),
-				certificatePacks: read(PERMISSIONS.ssl, packs),
-				customCertificates: read(PERMISSIONS.ssl, customs, []),
-				records: read(PERMISSIONS.dns, records),
+				dnssec: read(PERMISSIONS.dns, dnssec, SHAPES.object),
+				universalSsl: read(PERMISSIONS.ssl, universal, SHAPES.object),
+				certificatePacks: read(PERMISSIONS.ssl, packs, SHAPES.packs),
+				customCertificates: read(PERMISSIONS.ssl, customs, SHAPES.customs, []),
+				records: withContent(read(PERMISSIONS.dns, records, SHAPES.records)),
 				waf: wafRead.ok ? { ok: true, value: Array.isArray(wafRead.value.rules) ? wafRead.value.rules : [] } : wafRead,
-				bots: read(PERMISSIONS.bots, bots),
-				zoneAop: read(PERMISSIONS.ssl, zoneAop),
+				bots: read(PERMISSIONS.bots, bots, SHAPES.object),
+				zoneAop: read(PERMISSIONS.ssl, zoneAop, SHAPES.object),
 				ownershipToken: options.ownershipTokens[name] ?? null,
 				lookups: { state: options.lookups ? "not-proven" : "off" },
 			},
@@ -205,11 +232,18 @@ export async function auditCloudflare(options: AuditOptions): Promise<CfReport> 
 		status: typeof raw.status === "string" ? raw.status : "unknown",
 		paused: raw.paused === true,
 		accountId: isCloudflareId(raw.account?.id) ? raw.account.id : "",
-		checks: sortChecks([...tlsChecks(data, context), ...dnsChecks(data, context), ...emailChecks(data), ...firewallChecks(data), ownershipCheck(data)]),
+		checks: sortChecks(guarded("zone", () => [...tlsChecks(data, context), ...dnsChecks(data, context), ...emailChecks(data), ...firewallChecks(data), ownershipCheck(data)])),
 	}));
 
 	options.onProgress?.({ done: audited.length, total, current: "account members and API tokens" });
 	const accountList = await client.list<{ id?: unknown; name?: unknown }>("/accounts", {}, 50);
+	note(PERMISSIONS.members, accountList);
+	// Without the list, only accounts that own an audited zone are known; the rest, and their members and
+	// tokens, would vanish without a word (B69).
+	if (!accountList.ok || accountList.truncated) {
+		const why = !accountList.ok ? (accountList.denied ? `this token may not list accounts. Give it "${PERMISSIONS.members}".` : `Cloudflare did not list the accounts (${accountList.message}).`) : `Cloudflare's list of accounts is longer than the ${MAX_PAGES} pages Porchlight reads.`;
+		notCovered.unshift(`Accounts that own none of the audited zones, with their members and API tokens: ${why}`);
+	}
 	const accountsSeen = new Map<string, string>();
 	// Cloudflare names a personal account "<email>'s Account": the email is masked as a member's is (S35).
 	const accountName = (name: unknown) => (typeof name === "string" ? name.slice(0, 100).replace(/[^\s@'"<>(),;:]+@[^\s@'"<>(),;:]+\.[a-z]{2,}/gi, (email) => maskEmail(email)) : "Account");
@@ -218,18 +252,18 @@ export async function auditCloudflare(options: AuditOptions): Promise<CfReport> 
 
 	const accounts: CfAccountReport[] = [];
 	for (const [id, name] of accountsSeen) {
-		const members = read(PERMISSIONS.members, await client.list<Member>(accountPath(id, "/members"), {}, 50));
-		const tokens = read(PERMISSIONS.accountTokens, await client.list<ApiToken>(accountPath(id, "/tokens"), {}, 50));
+		const members = read(PERMISSIONS.members, await client.list<Member>(accountPath(id, "/members"), {}, 50), SHAPES.members);
+		const tokens = read(PERMISSIONS.accountTokens, await client.list<ApiToken>(accountPath(id, "/tokens"), {}, 50), SHAPES.tokens);
 		accounts.push({
 			id,
 			name,
-			checks: sortChecks([...memberChecks(members), tokenChecks("account-tokens", "Account API tokens", tokens, PERMISSIONS.accountTokens, PATHS.accountTokens, context.now, verified.id)]),
+			checks: sortChecks(guarded("account", () => [...memberChecks(members), tokenChecks("account-tokens", "Account API tokens", tokens, PERMISSIONS.accountTokens, PATHS.accountTokens, context.now, verified.id)])),
 		});
 	}
 	const userChecks: CfCheck[] = [];
 	if (verified.kind === "user") {
-		const tokens = read(PERMISSIONS.userTokens, await client.list<ApiToken>("/user/tokens", {}, 50));
-		userChecks.push(tokenChecks("user-tokens", "Your API tokens", tokens, PERMISSIONS.userTokens, PATHS.userTokens, context.now, verified.id));
+		const tokens = read(PERMISSIONS.userTokens, await client.list<ApiToken>("/user/tokens", {}, 50), SHAPES.tokens);
+		userChecks.push(...guarded("account", () => [tokenChecks("user-tokens", "Your API tokens", tokens, PERMISSIONS.userTokens, PATHS.userTokens, context.now, verified.id)]));
 	}
 	options.onProgress?.({ done: total, total, current: "" });
 
@@ -270,11 +304,18 @@ async function lookUpTargets(zone: ZoneData, context: AccountContext, fetchFn: t
 	for (const record of zone.records.value) {
 		if (record.type !== "CNAME" || record.name.toLowerCase().includes("_domainkey")) continue;
 		const target = record.content.toLowerCase().replace(/\.$/, "");
-		if (!NAME.test(target) || [...context.zoneNames].some((name) => target === name || target.endsWith(`.${name}`))) continue;
+		if ([...context.zoneNames].some((name) => target === name || target.endsWith(`.${name}`))) continue;
 		targets.set(target, [...(targets.get(target) ?? []), record.name]);
 	}
 	const missing: string[] = [];
 	const failed: string[] = [];
+	// A name that is not one Porchlight may look up (an underscore label, say) was not checked: it is
+	// said, so the rule cannot pass on names it never saw (CF-B2).
+	for (const [target, names] of targets) {
+		if (NAME.test(target)) continue;
+		targets.delete(target);
+		failed.push(`${names.join(", ")} → ${target.slice(0, 120)}: not a name Porchlight looks up`);
+	}
 	let checked = 0;
 	for (const [target, names] of [...targets].slice(0, MAX_LOOKUPS)) {
 		checked++;
@@ -287,6 +328,33 @@ async function lookUpTargets(zone: ZoneData, context: AccountContext, fetchFn: t
 	}
 	if (targets.size > MAX_LOOKUPS) failed.push(`${targets.size - MAX_LOOKUPS} more names were not looked up (the limit is ${MAX_LOOKUPS} a zone)`);
 	return { state: "done", checked, missing, failed };
+}
+
+/** DNS records with content: a type no rule reads may come without it, and is then read as empty. */
+function withContent(read: Read<DnsRecord[]>): Read<DnsRecord[]> {
+	return read.ok ? { ok: true, value: read.value.map((record) => (typeof record.content === "string" ? record : { ...record, content: "" })) } : read;
+}
+
+/**
+ * A last guard: should a rule still meet an answer it cannot read, the zone or account says so as
+ * one check that could not run, instead of the whole audit stopping (CF-B7). Never a pass.
+ */
+function guarded(kind: "zone" | "account", checks: () => CfCheck[]): CfCheck[] {
+	try {
+		return checks();
+	} catch {
+		return [
+			{
+				id: `${kind}-unread`,
+				area: kind === "zone" ? "tls" : "account",
+				title: kind === "zone" ? "This domain's settings" : "This account's members and tokens",
+				status: "unknown",
+				severity: "high",
+				detail: "Cloudflare answered in a form Porchlight did not understand, so these checks could not run. Audit again; if it stays, the answer has changed shape.",
+				why: "A check that could not read its answer is never counted as passed.",
+			},
+		];
+	}
 }
 
 const STATUS_ORDER = { failed: 0, unknown: 1, unavailable: 2, passed: 3 };

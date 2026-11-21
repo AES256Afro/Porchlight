@@ -19,7 +19,7 @@ describe("authentication", () => {
 			(await call(deps, "POST", "/domains", { token: "wrong", body: { domain: "example.test" } }))
 				.status,
 		).toBe(401);
-		expect((await call(deps, "GET", "/domains")).body).toEqual({ domains: [] });
+		expect((await call(deps, "GET", "/domains")).body).toMatchObject({ domains: [] });
 	});
 
 	it("refuses to run with no token, or a weak one, configured", async () => {

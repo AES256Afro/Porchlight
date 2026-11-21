@@ -210,19 +210,59 @@ async function privateData(repo: string, copy: HistoryCopy | null, run: Runner, 
 		if (Buffer.isBuffer(content) && hasGpsPosition(content)) photos.set(path, photoFinding(place(path)));
 	}
 	// Photos history added that are gone now, or changed since: their committed versions, read with
-	// `cat-file blob`, which converts nothing. One past the size limit is not read.
-	const checked = new Map<string, boolean>();
-	for (const [path, at] of added) {
-		if (!photo(path) || photos.has(path) || at.blob === "" || tracked.get(path) === at.blob) continue;
-		let found = checked.get(at.blob);
-		if (found === undefined) {
-			const blob = copy ? await run("git", [...GIT_SAFE_ARGS, "-C", copy.dir, "cat-file", "blob", at.blob], { env: gitReadEnv(), latin1: true }).catch(() => null) : null;
-			found = blob !== null && blob.code === 0 && blob.stdout.length <= MAX_FILE_BYTES && hasGpsPosition(Buffer.from(blob.stdout, "latin1"));
-			checked.set(at.blob, found);
-		}
-		if (found) photos.set(path, photoFinding(place(path, at)));
-	}
+	// `cat-file --batch`, which converts nothing, all in as few runs as fit (OP-3: 400 photos took
+	// 3 s one run each). One past the size limit is not read.
+	const older = [...added].filter(([path, at]) => photo(path) && !photos.has(path) && at.blob !== "" && tracked.get(path) !== at.blob);
+	const blobs = copy ? await readBlobs(copy.dir, [...new Set(older.map(([, at]) => at.blob))], run) : new Map<string, Buffer>();
+	const withPosition = new Map([...blobs].map(([id, content]) => [id, hasGpsPosition(content)]));
+	for (const [path, at] of older) if (withPosition.get(at.blob)) photos.set(path, photoFinding(place(path, at)));
 	return [...privateFindings(matches), ...namedFindings(named), ...photos.values()];
+}
+
+/** The most content one `cat-file --batch` run is asked for, well inside what a run's output may hold. */
+const BATCH_BYTES = 64 * 1024 * 1024;
+
+/**
+ * The content of these blobs, by id: sizes first with `cat-file --batch-check`, then the content with
+ * `cat-file --batch`, in runs of at most BATCH_BYTES. A blob past MAX_FILE_BYTES, or one git could not
+ * give, is left out. Neither converts anything or runs a program a repository names.
+ */
+export async function readBlobs(dir: string, ids: string[], run: Runner): Promise<Map<string, Buffer>> {
+	const contents = new Map<string, Buffer>();
+	if (ids.length === 0) return contents;
+	const git = (args: string[], input: string) => run("git", [...GIT_SAFE_ARGS, "-C", dir, "cat-file", ...args], { env: gitReadEnv(), input, latin1: true }).catch(() => null);
+	const sizes = await git(["--batch-check"], `${ids.join("\n")}\n`);
+	if (!sizes || sizes.code !== 0) return contents;
+	const batches: string[][] = [[]];
+	let used = 0;
+	for (const line of sizes.stdout.split("\n")) {
+		const found = /^([0-9a-f]{40,64}) blob (\d+)$/.exec(line);
+		if (!found || Number(found[2]) > MAX_FILE_BYTES) continue;
+		if (used + Number(found[2]) > BATCH_BYTES && batches.at(-1)!.length > 0) {
+			batches.push([]);
+			used = 0;
+		}
+		batches.at(-1)!.push(found[1]!);
+		used += Number(found[2]);
+	}
+	for (const batch of batches) {
+		if (batch.length === 0) continue;
+		const answer = await git(["--batch"], `${batch.join("\n")}\n`);
+		if (!answer || answer.code !== 0) continue;
+		// Each: "<id> blob <size>\n", the content, "\n". Read byte for byte, so a size in bytes is a length here.
+		const out = answer.stdout;
+		let at = 0;
+		while (at < out.length) {
+			const end = out.indexOf("\n", at);
+			if (end < 0) break;
+			const header = /^([0-9a-f]{40,64}) blob (\d+)$/.exec(out.slice(at, end));
+			if (!header) break;
+			const size = Number(header[2]);
+			contents.set(header[1]!, Buffer.from(out.slice(end + 1, end + 1 + size), "latin1"));
+			at = end + 1 + size + 1;
+		}
+	}
+	return contents;
 }
 
 /** A file a commit added: the oldest such commit, and the id of the content it added (empty for a link or a submodule). */

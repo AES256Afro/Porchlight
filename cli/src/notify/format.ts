@@ -27,8 +27,18 @@ export interface NotifyRequest {
 	body: string;
 }
 
-/** The longest message each service takes; a longer notice is cut, saying so. */
-const LIMITS: Record<NotifyFormat, number> = { json: 100_000, slack: 3_500, discord: 1_900, ntfy: 3_800 };
+/**
+ * The longest message each service takes, in the unit it counts: Discord's 2,000 characters of
+ * content, ntfy's 4,096 bytes of body (a CJK file name is three bytes a character), and our own
+ * caps for Slack's text and the JSON `text`. A longer notice is cut, saying so. Measured on the
+ * message as sent, after escaping, which can lengthen it several times over.
+ */
+const LIMITS: Record<NotifyFormat, { max: number; measure: (text: string) => number }> = {
+	json: { max: 100_000, measure: (text) => text.length },
+	slack: { max: 3_500, measure: (text) => text.length },
+	discord: { max: 2_000, measure: (text) => text.length },
+	ntfy: { max: 4_096, measure: (text) => new TextEncoder().encode(text).length },
+};
 
 /**
  * The format for a webhook address: the one asked for, or else the one its host shows (Slack's and
@@ -45,8 +55,8 @@ export function formatFor(url: URL, asked?: string): NotifyFormat | null {
 }
 
 /**
- * Where a notice may be sent: https anywhere, and plain http only to this machine or a private
- * network address (an ntfy server on the same box), never across the internet unencrypted. Null when
+ * Where a notice may be sent: https anywhere, and plain http only to this machine or the owner's own
+ * network (an ntfy server on the same box, a NAS), never across the internet unencrypted. Null when
  * the address may not be used.
  */
 export function notifyTarget(value: string | undefined): URL | null {
@@ -60,39 +70,118 @@ export function notifyTarget(value: string | undefined): URL | null {
 	if (url.username || url.password) return null;
 	if (url.protocol === "https:") return url;
 	if (url.protocol !== "http:") return null;
-	const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-	const privateV4 = /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.)/.test(host);
-	const local = host === "localhost" || host === "::1" || host === "host.docker.internal" || host.endsWith(".local") || host.endsWith(".internal") || host.endsWith(".ts.net");
-	return privateV4 || local ? url : null;
+	return onOwnNetwork(url.hostname.toLowerCase()) ? url : null;
 }
 
-/** The headers and body to POST for `notice` in `format`. */
+/**
+ * Whether `host` (a URL's hostname, so an IPv4 address is already in dotted decimal and an IPv6
+ * one in brackets) is this machine or a private network. An address counts only when it is one:
+ * `10.example.com` is a name like any other, and goes across the internet.
+ */
+function onOwnNetwork(host: string): boolean {
+	const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+	if (v4) {
+		const [a, b] = [Number(v4[1]), Number(v4[2])];
+		return a === 127 || a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || (a === 100 && b >= 64 && b <= 127);
+	}
+	if (host.startsWith("[")) {
+		const v6 = host.slice(1, -1);
+		if (v6 === "::1") return true;
+		// The first group as a number: "fd00::5" is fd00, but "fc::1" is 00fc, which is not private.
+		const first = v6.startsWith("::") ? 0 : Number.parseInt(v6.split(":")[0]!, 16);
+		// Unique local addresses (fc00::/7) and link-local ones (fe80::/10).
+		return (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80;
+	}
+	// A name of one label (http://nas:8080/) is found on the local network or the search domains set
+	// there, never in public DNS; so are the names reserved or kept for home and private networks.
+	if (!host.includes(".")) return true;
+	return host === "host.docker.internal" || [".local", ".internal", ".ts.net", ".lan", ".home.arpa"].some((suffix) => host.endsWith(suffix));
+}
+
+/** A notice address and format that can be used, or why they cannot, in words fit to show the owner. */
+export type NotifySetting = { url: URL; format: NotifyFormat } | { problem: string };
+
+/**
+ * The notice address (PORCHLIGHT_NOTIFY_URL) and format (PORCHLIGHT_NOTIFY_FORMAT, or the one the
+ * address shows) as read at start-up. Undefined when no address is given. The problem never repeats
+ * the address, which may hold a token.
+ */
+export function notifySetting(address: string | undefined, format: string | undefined): NotifySetting | undefined {
+	if (!address?.trim()) return undefined;
+	const url = notifyTarget(address);
+	if (!url) return { problem: "PORCHLIGHT_NOTIFY_URL must be an https address, or plain http on this machine or the local network, with no user name or password" };
+	const chosen = formatFor(url, format);
+	if (!chosen) return { problem: `PORCHLIGHT_NOTIFY_FORMAT must be one of: ${NOTIFY_FORMATS.join(", ")}, or empty` };
+	return { url, format: chosen };
+}
+
+/**
+ * The headers and body to POST for `notice` in `format`, within the service's limit: as many lines
+ * as fit once escaped, then a line saying how many were left out.
+ */
 export function noticeRequest(format: NotifyFormat, notice: Notice): NotifyRequest {
-	const title = oneLine(notice.title);
-	const body = cut(notice.lines.map(oneLine), LIMITS[format] - title.length - 40);
+	const title = oneLine(notice.title).slice(0, 300);
+	const lines = notice.lines.map(oneLine).map((line) => (line.length > 500 ? `${line.slice(0, 497)}...` : line));
+	const { max, measure } = LIMITS[format];
+	const build = (kept: number) => {
+		const rendered = render(format, title, withRest(lines, kept), notice);
+		return { rendered, fits: measure(rendered.measured) <= max };
+	};
+	// The most lines that fit. Each line kept makes the message longer, so the search can halve.
+	let low = 0;
+	let high = lines.length;
+	while (low < high) {
+		const mid = Math.ceil((low + high) / 2);
+		if (build(mid).fits) low = mid;
+		else high = mid - 1;
+	}
+	// The count of lines left out has its own length, so step back until the message truly fits.
+	let best = build(low);
+	while (!best.fits && low > 0) best = build(--low);
+	return best.rendered.request;
+}
+
+/** The first `kept` lines, and a line saying how many more there were. */
+function withRest(lines: string[], kept: number): string {
+	const left = lines.length - kept;
+	const shown = lines.slice(0, kept);
+	if (left > 0) shown.push(`... and ${left} more ${left === 1 ? "line" : "lines"}`);
+	return shown.join("\n");
+}
+
+/** The request for one body, and the text the service's limit applies to. */
+function render(format: NotifyFormat, title: string, body: string, notice: Notice): { request: NotifyRequest; measured: string } {
 	switch (format) {
-		case "slack":
+		case "slack": {
 			// Slack reads &, < and > as markup (<!channel>, <url|text>), even inside a code block.
-			return json({ text: `*${slackText(title)}*${body ? `\n\`\`\`\n${slackText(fenceSafe(body))}\n\`\`\`` : ""}` });
-		case "discord":
-			return json({
-				content: `**${discordText(title)}**${body ? `\n\`\`\`\n${fenceSafe(body)}\n\`\`\`` : ""}`,
-				// A DNS value saying "@everyone" must not ping anyone.
-				allowed_mentions: { parse: [] },
-			});
-		case "ntfy":
+			const text = `*${slackText(title)}*${body ? `\n\`\`\`\n${slackText(fenceSafe(body))}\n\`\`\`` : ""}`;
+			return { request: json({ text }), measured: text };
+		}
+		case "discord": {
+			const content = `**${discordText(title)}**${body ? `\n\`\`\`\n${fenceSafe(body)}\n\`\`\`` : ""}`;
+			// A DNS value saying "@everyone" must not ping anyone.
+			return { request: json({ content, allowed_mentions: { parse: [] } }), measured: content };
+		}
+		case "ntfy": {
 			// Plain text unless ntfy is told otherwise; the headers hold fixed words and the title, cut to ASCII.
+			const text = body || title;
 			return {
-				headers: {
-					"content-type": "text/plain; charset=utf-8",
-					title: title.replace(/[^\x20-\x7e]/g, "?").slice(0, 200),
-					priority: notice.urgent ? "high" : "default",
-					tags: notice.urgent ? "rotating_light" : "mag",
+				request: {
+					headers: {
+						"content-type": "text/plain; charset=utf-8",
+						title: title.replace(/[^\x20-\x7e]/g, "?").slice(0, 200),
+						priority: notice.urgent ? "high" : "default",
+						tags: notice.urgent ? "rotating_light" : "mag",
+					},
+					body: text,
 				},
-				body: body || title,
+				measured: text,
 			};
-		default:
-			return json({ text: chatSafe([title, ...(body ? ["", body] : [])].join("\n")), ...(notice.payload ?? {}) });
+		}
+		default: {
+			const text = chatSafe([title, ...(body ? ["", body] : [])].join("\n"));
+			return { request: json({ text, ...(notice.payload ?? {}) }), measured: text };
+		}
 	}
 }
 
@@ -104,22 +193,6 @@ function json(value: unknown): NotifyRequest {
 function oneLine(text: string): string {
 	// Line and paragraph separators too: some clients break a line at them (S38).
 	return text.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, " ");
-}
-
-/** The lines, cut at a line's end once they pass `limit` characters, saying how many were left out. */
-function cut(lines: string[], limit: number): string {
-	const kept: string[] = [];
-	let size = 0;
-	for (const [index, line] of lines.entries()) {
-		const short = line.length > 500 ? `${line.slice(0, 497)}...` : line;
-		if (size + short.length + 1 > limit) {
-			kept.push(`... and ${lines.length - index} more ${lines.length - index === 1 ? "line" : "lines"}`);
-			break;
-		}
-		kept.push(short);
-		size += short.length + 1;
-	}
-	return kept.join("\n");
 }
 
 /**

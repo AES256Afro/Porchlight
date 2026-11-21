@@ -192,6 +192,10 @@ if [ "$mode" = --dmg ]; then
 	ditto --noextattr --noqtn "$app" "$stage/Porchlight.app"
 	ln -s /Applications "$stage/Applications"
 	cp "$here/dmg-readme.txt" "$stage/Read me first.txt"
+	# Nothing of this machine goes in: its home folder, user and host names, and a program's library
+	# search folders (scripts/check-dmg.sh). Names of the owner's own to look for too can be given in
+	# PORCHLIGHT_DMG_FORBID, one per line. RELEASING.md runs it again on the finished DMG.
+	sh "$repo/scripts/check-dmg.sh" "$stage" || { rm -rf "$stage"; exit 1; }
 	hdiutil create -quiet -volname "Porchlight $version" -srcfolder "$stage" -fs HFS+ -format ULFO -ov "$dmg"
 	rm -rf "$stage"
 	echo "Built $dmg"

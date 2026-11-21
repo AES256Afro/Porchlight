@@ -11,7 +11,7 @@
  */
 import { mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { oneAtATime, readPrivateJson, UnreadableFileError, updatePrivateJson, writePrivateJson } from "../private-files.ts";
+import { oneAtATime, readPrivateGzipJson, readPrivateJson, UnreadableFileError, updatePrivateJson, writePrivateGzipJson, writePrivateJson } from "../private-files.ts";
 import { looksFor } from "../../ui/scan-choices.js";
 import { findingKey, isDay, isStatus, MAX_NOTE, type FindingNote } from "../../ui/tracking.js";
 import { countBySeverity, rank, repoName } from "./report.ts";
@@ -19,6 +19,8 @@ import type { Finding, ScanReport, Severity } from "./types.ts";
 
 /** How many past scans are kept. */
 export const HISTORY_KEEP = 50;
+/** A kept scan's file name: gzipped JSON, or plain JSON from before OP-9. */
+const KEPT_NAME = /^scan-[\w-]+\.json(?:\.gz)?$/;
 /** How many fixed findings the comparison lists by name; the rest are counted. */
 const MAX_FIXED_LISTED = 300;
 
@@ -169,8 +171,9 @@ export class History {
 
 	private async readKept(file: string): Promise<{ state: "missing" } | { state: "read"; value: unknown } | { state: "unreadable"; reason: string }> {
 		const entries = await this.list();
-		if (!entries.some((entry) => entry.file === file) || !/^scan-[\w.-]+\.json$/.test(file)) return { state: "missing" };
-		const read = await readPrivateJson(join(this.dir, file));
+		if (!entries.some((entry) => entry.file === file) || !KEPT_NAME.test(file)) return { state: "missing" };
+		// Kept gzipped since OP-9; a scan kept before is plain JSON, and read as it is.
+		const read = file.endsWith(".gz") ? await readPrivateGzipJson(join(this.dir, file)) : await readPrivateJson(join(this.dir, file));
 		if (read.state === "read" && !Array.isArray((read.value as ScanReport | null)?.repos)) return { state: "unreadable", reason: "it is not a scan report" };
 		return read;
 	}
@@ -187,8 +190,8 @@ export class History {
 			const existing = entries.find((entry) => entry.scannedAt === report.scannedAt);
 			if (existing) return existing;
 			await mkdir(this.dir, { recursive: true, mode: 0o700 });
-			const file = `scan-${report.scannedAt.replace(/[^\dT]/g, "")}.json`;
-			await writePrivateJson(join(this.dir, file), report);
+			const file = `scan-${report.scannedAt.replace(/[^\dT]/g, "")}.json.gz`;
+			await writePrivateGzipJson(join(this.dir, file), report);
 			const findings = report.repos.flatMap((repo) => repo.findings);
 			const entry: HistoryEntry = {
 				file,
@@ -247,7 +250,7 @@ export class History {
 	private async prune(kept: HistoryEntry[]): Promise<void> {
 		const names = new Set(kept.map((entry) => entry.file));
 		for (const name of await readdir(this.dir).catch(() => [] as string[])) {
-			if (/^scan-[\w.-]+\.json$/.test(name) && !names.has(name)) await rm(join(this.dir, name), { force: true });
+			if (KEPT_NAME.test(name) && !names.has(name)) await rm(join(this.dir, name), { force: true });
 		}
 	}
 }
