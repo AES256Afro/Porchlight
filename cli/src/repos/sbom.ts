@@ -1,7 +1,7 @@
 import { basename, resolve } from "node:path";
 import { discoverRepos } from "./discover.ts";
 import { run as defaultRun, ToolMissingError, type Runner } from "./exec.ts";
-import { outsideWords, readsOutside } from "./includes.ts";
+import { excludeArgs, excludedWords, outsidePlan, outsideWords, readsOutside } from "./includes.ts";
 import { OSV_LIMITS } from "./osv.ts";
 import { nameUnder } from "./report.ts";
 import { classifyLicences, LICENCE_WORDS, licenceCounts, licenceSummary, REVIEW_CLASSES, type LicenceClass } from "./licences.ts";
@@ -90,12 +90,15 @@ export async function buildSbom(options: SbomOptions): Promise<Sbom> {
 	for (const [index, { path, name }] of repos.entries()) {
 		options.onProgress?.(index, repos.length, name);
 		// A manifest that would read a file outside the repository keeps osv-scanner away from it (S56).
+		// At the top it keeps osv-scanner from the whole repository; in a subfolder, from that folder alone.
 		const outside = await readsOutside(path);
-		if (outside.found.length > 0) {
+		const plan = outsidePlan(outside.found);
+		if (plan.skip) {
 			missed.push({ name: "porchlight:not-covered", value: `${name}: ${outsideWords(outside.found)}` });
 			continue;
 		}
-		const { code, stdout, stderr } = await run("osv-scanner", ["scan", "source", "--recursive", ...INVENTORY_ONLY, "--format", "cyclonedx-1-5", path]);
+		if (plan.folders.length > 0) missed.push({ name: "porchlight:not-covered", value: `${name}: ${excludedWords(outside.found, plan.folders)}` });
+		const { code, stdout, stderr } = await run("osv-scanner", ["scan", "source", "--recursive", ...INVENTORY_ONLY, ...excludeArgs(path, plan.folders), "--format", "cyclonedx-1-5", path]);
 		if (/flag provided but not defined/.test(stderr)) {
 			throw new Error(`This osv-scanner (${version ?? "unknown version"}) cannot list packages without a vulnerability database. Porchlight is tested with 2.7.`);
 		}

@@ -80,6 +80,11 @@ export interface ChatOptions {
 	 * which the prompt already does; what comes back is checked the same way either way.
 	 */
 	json?: boolean;
+	/**
+	 * A local model's own context length, from `modelContextLength` in context.ts (R6F-8): Ollama is
+	 * asked for that much when it is less than the usual, never more. Null or absent: the usual.
+	 */
+	contextLength?: number | null;
 }
 
 /** A failure talking to the model, in words for the page. `status` is the HTTP status to answer with. */
@@ -195,7 +200,7 @@ export async function chat(config: AssistantConfig, messages: ChatMessage[], opt
 		response = await fetchFn(new URL("api/chat", config.url), {
 			method: "POST",
 			headers: { "content-type": "application/json" },
-			body: JSON.stringify({ model: config.model, messages, stream: false, think: false, ...(options.json ? { format: "json" } : {}), options: options.maxTokens ? { ...MODEL_OPTIONS, num_predict: options.maxTokens } : MODEL_OPTIONS }),
+			body: JSON.stringify({ model: config.model, messages, stream: false, think: false, ...(options.json ? { format: "json" } : {}), options: ollamaOptions(options) }),
 			redirect: "error",
 			signal,
 		});
@@ -227,6 +232,14 @@ export async function chat(config: AssistantConfig, messages: ChatMessage[], opt
 	const answer = withoutThinking(content);
 	if (answer === "") throw new AssistantError(502, "The model gave an empty answer. Try again");
 	return body?.done_reason === "length" ? `${answer}${CUT_OFF}` : answer;
+}
+
+/** What Ollama is asked to use: the usual options, a longer answer when asked, and a smaller context for a model that reads less. */
+function ollamaOptions(options: ChatOptions): typeof MODEL_OPTIONS | Record<string, number> {
+	const length = options.contextLength;
+	const numCtx = typeof length === "number" && length > 0 && length < MODEL_OPTIONS.num_ctx ? length : MODEL_OPTIONS.num_ctx;
+	if (!options.maxTokens && numCtx === MODEL_OPTIONS.num_ctx) return MODEL_OPTIONS;
+	return { ...MODEL_OPTIONS, num_ctx: numCtx, num_predict: options.maxTokens || MODEL_OPTIONS.num_predict };
 }
 
 /**

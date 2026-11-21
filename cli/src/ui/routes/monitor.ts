@@ -1,14 +1,14 @@
 // The monitor that watches the owner's domains: connecting it (/api/monitor), and every call made to it.
 // The admin token is added here and never sent to the page (invariant 7).
-import type { ServerResponse } from "node:http";
 import { join } from "node:path";
 import { asciiDomain } from "../../investigate/scope.ts";
 import { callMonitor, type MonitorConfig } from "../../monitor/client.ts";
 import { forgetMonitor, monitorProblem, MonitorSettingsError, parseMonitorSettings, readSavedMonitor, saveMonitor } from "../../monitor/settings.ts";
 import type { MonitorReport } from "../../roadmap/domains.ts";
 import type { ServerContext } from "../context.ts";
-import { onComputerPage, type Gate } from "../gate.ts";
+import { onComputerPage, type Call, type Gate } from "../gate.ts";
 import { bodyObject, DOMAIN_PATTERN, HttpError, safeDecode, sendJson } from "../http.ts";
+import { notFoundUnder, type Route } from "../router.ts";
 
 export async function createMonitor(ctx: ServerContext) {
 	const { options, dataDir, log } = ctx;
@@ -31,34 +31,37 @@ export async function createMonitor(ctx: ServerContext) {
 		return { configured: true, host: monitor.url.host, ...(savedMonitor ? { source: "settings", savedAt: savedMonitor.savedAt } : {}) };
 	}
 
-	async function monitorRoute(res: ServerResponse, route: string, body: unknown, gate: Gate): Promise<void> {
-		// A service is given its monitor where it is managed; another device only looks.
+	/** A service is given its monitor where it is managed; another device only looks. */
+	function changedHere(gate: Gate): void {
 		if (!onComputerPage(gate)) throw new HttpError(403, "The monitor is connected from the page on the computer that runs Porchlight");
-		if (route === "POST /api/monitor") {
-			const fields = bodyObject(body);
-			let config: MonitorConfig;
-			try {
-				config = parseMonitorSettings(fields.address, fields.token);
-			} catch (err) {
-				if (err instanceof MonitorSettingsError) throw new HttpError(400, err.message);
-				throw err;
-			}
-			// Asked before it is saved, so a mistake never replaces a working connection.
-			const problem = await monitorProblem(config, options.fetchFn ?? fetch);
-			if (problem) throw new HttpError(400, problem);
-			savedMonitor = await saveMonitor(monitorSettingsPath, config);
-			monitor = config;
-			log(`Monitor connected: ${config.url.host}`);
-			return sendJson(res, 200, { monitor: monitorState() });
+	}
+
+	async function connect({ res, body, gate }: Call): Promise<void> {
+		changedHere(gate);
+		const fields = bodyObject(body);
+		let config: MonitorConfig;
+		try {
+			config = parseMonitorSettings(fields.address, fields.token);
+		} catch (err) {
+			if (err instanceof MonitorSettingsError) throw new HttpError(400, err.message);
+			throw err;
 		}
-		if (route === "POST /api/monitor/remove") {
-			await forgetMonitor(monitorSettingsPath);
-			savedMonitor = null;
-			monitor = options.monitor;
-			log("Monitor connection removed from Settings");
-			return sendJson(res, 200, { monitor: monitorState() });
-		}
-		throw new HttpError(404, "Not found");
+		// Asked before it is saved, so a mistake never replaces a working connection.
+		const problem = await monitorProblem(config, options.fetchFn ?? fetch);
+		if (problem) throw new HttpError(400, problem);
+		savedMonitor = await saveMonitor(monitorSettingsPath, config);
+		monitor = config;
+		log(`Monitor connected: ${config.url.host}`);
+		return sendJson(res, 200, { monitor: monitorState() });
+	}
+
+	async function disconnect({ res, gate }: Call): Promise<void> {
+		changedHere(gate);
+		await forgetMonitor(monitorSettingsPath);
+		savedMonitor = null;
+		monitor = options.monitor;
+		log("Monitor connection removed from Settings");
+		return sendJson(res, 200, { monitor: monitorState() });
 	}
 
 	/** The latest scan report of a domain, read from the monitor. The admin token is added here and never leaves this process. */
@@ -110,5 +113,11 @@ export async function createMonitor(ctx: ServerContext) {
 		}
 	}
 
-	return { monitorState, monitorRoute, latestDomainReport, proxyToMonitor, monitor: () => monitor };
+	const routes: Route[] = [
+		["POST /api/monitor", connect, "here"],
+		["POST /api/monitor/remove", disconnect, "here"],
+		notFoundUnder("/api/monitor", "here", ({ gate }) => changedHere(gate)),
+	];
+
+	return { monitorState, routes, latestDomainReport, proxyToMonitor, monitor: () => monitor };
 }

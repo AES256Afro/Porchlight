@@ -1,7 +1,6 @@
 // The audit of the owner's Cloudflare account (invariant 21): /api/cloudflare and beneath it. The token
 // is kept in the data folder and never sent to the page; a change is sent only once the owner approves it.
 import { randomBytes } from "node:crypto";
-import type { ServerResponse } from "node:http";
 import { join } from "node:path";
 import { APPROVAL_WINDOW_MS, describeChange, isChangeId, planBatch, planChange, sendChange, type PlannedChange } from "../../cloudflare/apply.ts";
 import { auditCloudflare, READ_PERMISSIONS, TOKEN_TEMPLATE_URL, WRITE_PERMISSIONS } from "../../cloudflare/audit.ts";
@@ -13,8 +12,9 @@ import { changeDomains, newToken, readDomains } from "../../investigate/ownershi
 import { auditChecks, changedSinceAudit, compareChecks, KeptRuns } from "../../kept-checks.ts";
 import { FILE_TITLES, type Project } from "../../projects/projects.ts";
 import type { ServerContext } from "../context.ts";
-import { onComputerPage, type Gate } from "../gate.ts";
+import { onComputerPage, type Call, type Gate } from "../gate.ts";
 import { bodyObject, HttpError, sendDownload, sendJson } from "../http.ts";
+import { notFoundUnder, type Route } from "../router.ts";
 import type { BatchStatus, CloudflareStatus } from "../types.ts";
 
 /** Changes shown to the owner at once, waiting for their answer. */
@@ -65,243 +65,267 @@ export function createCloudflare(ctx: ServerContext, investigateDomainsPath: str
 		return { read: READ_PERMISSIONS, write: WRITE_PERMISSIONS, templateUrl: TOKEN_TEMPLATE_URL };
 	}
 
-	async function cloudflareRoute(res: ServerResponse, route: string, url: URL, body: unknown, gate: Gate): Promise<void> {
-		// Saving a token and changing the account are for this computer's page only; reading is for any page with the key.
+	/** Saving a token and changing the account are for this computer's page only; reading is for any page with the key. */
+	function changedHere(gate: Gate): void {
+		if (!onComputerPage(gate)) throw new HttpError(403, "The Cloudflare token and changes to your account are managed from the page on the computer that runs Porchlight");
+	}
+
+	async function overview({ res, gate }: Call): Promise<void> {
 		const here = onComputerPage(gate);
-		if (route === "GET /api/cloudflare") {
-			const changes = await readChanges(cloudflareChangesPath);
-			const report = await readAudit(cloudflareAuditPath);
-			const previous = report ? await auditRuns.before(report.checkedAt) : null;
-			return sendJson(res, 200, {
-				token: await cloudflareTokenState(),
-				status: cloudflareStatus,
-				report,
-				// Against the audit before it (F-Q3), and the checks changed since it (F-Q2).
-				change: report && previous ? compareChecks({ at: previous.checkedAt, checks: auditChecks(previous) }, { checks: auditChecks(report) }) : null,
-				changedSince: report ? [...changedSinceAudit(report.checkedAt, changes)] : [],
-				changes: changes.slice(-50).reverse(),
-				batch: batchStatus,
-				lacking: [...lacking],
-				canChange: here,
-				service: !loopbackOnly,
-				guide: cloudflareGuide(),
-				assistant: assistantSummary(),
-			});
+		const changes = await readChanges(cloudflareChangesPath);
+		const report = await readAudit(cloudflareAuditPath);
+		const previous = report ? await auditRuns.before(report.checkedAt) : null;
+		return sendJson(res, 200, {
+			token: await cloudflareTokenState(),
+			status: cloudflareStatus,
+			report,
+			// Against the audit before it (F-Q3), and the checks changed since it (F-Q2).
+			change: report && previous ? compareChecks({ at: previous.checkedAt, checks: auditChecks(previous) }, { checks: auditChecks(report) }) : null,
+			changedSince: report ? [...changedSinceAudit(report.checkedAt, changes)] : [],
+			changes: changes.slice(-50).reverse(),
+			batch: batchStatus,
+			lacking: [...lacking],
+			canChange: here,
+			service: !loopbackOnly,
+			guide: cloudflareGuide(),
+			assistant: assistantSummary(),
+		});
+	}
+
+	async function tokenRoute({ res, gate }: Call): Promise<void> {
+		return sendJson(res, 200, { token: await cloudflareTokenState(), canChange: onComputerPage(gate), guide: cloudflareGuide() });
+	}
+
+	async function exportRoute({ req, res, url }: Call): Promise<void> {
+		const report = await readAudit(cloudflareAuditPath);
+		if (!report) throw new HttpError(404, "There is no Cloudflare audit yet. Run one first.");
+		const format = url.searchParams.get("format") ?? "md";
+		if (!(CF_FORMATS as readonly string[]).includes(format)) throw new HttpError(400, `Choose a format: ${CF_FORMATS.join(", ")}`);
+		const zone = url.searchParams.get("zone");
+		if (zone !== null && !report.zones.some((candidate) => candidate.id === zone)) throw new HttpError(404, "That zone is not in the latest audit");
+		const file = exportCloudflare(report, format as CfFormat, zone);
+		// POST writes it into the project in use; GET hands it to the browser to save.
+		if (req.method === "POST") return saveExport(res, file, "cloudflare");
+		log(`Exported ${FILE_TITLES.cloudflare} (${format}) as a download`);
+		return sendDownload(res, file);
+	}
+
+	async function startAudit({ res, body }: Call): Promise<void> {
+		if (cloudflareStatus.state === "running") throw new HttpError(409, "A Cloudflare audit is already running");
+		const lookups = bodyObject(body).lookups;
+		if (lookups !== undefined && typeof lookups !== "boolean") throw new HttpError(400, "lookups must be true or false");
+		// Running before the first await, so a second request is refused (B24); as it was if the audit cannot start.
+		const earlierAudit = cloudflareStatus;
+		cloudflareStatus = { state: "running", startedAt: new Date().toISOString(), done: 0, total: 0, current: "" };
+		let token: Awaited<ReturnType<typeof cloudflareToken>>;
+		let ownership: Awaited<ReturnType<typeof readDomains>>;
+		try {
+			token = await cloudflareToken();
+			if (!token) throw new HttpError(409, "Connect Cloudflare first: paste an API token in Settings → Cloudflare");
+			ownership = await readDomains(investigateDomainsPath);
+		} catch (err) {
+			cloudflareStatus = earlierAudit;
+			throw err;
 		}
-		if (route === "GET /api/cloudflare/token") return sendJson(res, 200, { token: await cloudflareTokenState(), canChange: here, guide: cloudflareGuide() });
-		if (route === "GET /api/cloudflare/export" || route === "POST /api/cloudflare/export") {
-			const report = await readAudit(cloudflareAuditPath);
-			if (!report) throw new HttpError(404, "There is no Cloudflare audit yet. Run one first.");
-			const format = url.searchParams.get("format") ?? "md";
-			if (!(CF_FORMATS as readonly string[]).includes(format)) throw new HttpError(400, `Choose a format: ${CF_FORMATS.join(", ")}`);
-			const zone = url.searchParams.get("zone");
-			if (zone !== null && !report.zones.some((candidate) => candidate.id === zone)) throw new HttpError(404, "That zone is not in the latest audit");
-			const file = exportCloudflare(report, format as CfFormat, zone);
-			// POST writes it into the project in use; GET hands it to the browser to save.
-			if (route === "POST /api/cloudflare/export") return saveExport(res, file, "cloudflare");
-			log(`Exported ${FILE_TITLES.cloudflare} (${format}) as a download`);
-			return sendDownload(res, file);
-		}
-		if (route === "POST /api/cloudflare/audit") {
-			if (cloudflareStatus.state === "running") throw new HttpError(409, "A Cloudflare audit is already running");
-			const lookups = bodyObject(body).lookups;
-			if (lookups !== undefined && typeof lookups !== "boolean") throw new HttpError(400, "lookups must be true or false");
-			// Running before the first await, so a second request is refused (B24); as it was if the audit cannot start.
-			const earlierAudit = cloudflareStatus;
-			cloudflareStatus = { state: "running", startedAt: new Date().toISOString(), done: 0, total: 0, current: "" };
-			let token: Awaited<ReturnType<typeof cloudflareToken>>;
-			let ownership: Awaited<ReturnType<typeof readDomains>>;
-			try {
-				token = await cloudflareToken();
-				if (!token) throw new HttpError(409, "Connect Cloudflare first: paste an API token in Settings → Cloudflare");
-				ownership = await readDomains(investigateDomainsPath);
-			} catch (err) {
-				cloudflareStatus = earlierAudit;
-				throw err;
-			}
-			const project = await projects.current();
-			log("Cloudflare audit started", project);
-			// Not awaited: the page polls for progress, as it does for a scan.
-			void auditCloudflare({
-				token: token.token,
-				fetchFn: options.fetchFn,
-				lookups: lookups !== false,
-				ownershipTokens: Object.fromEntries(Object.entries(ownership.domains).map(([name, entry]) => [name, entry.token])),
-				onProgress: ({ done, total, current }) => {
-					if (cloudflareStatus.state === "running") cloudflareStatus = { ...cloudflareStatus, done, total, current };
-				},
+		const project = await projects.current();
+		log("Cloudflare audit started", project);
+		// Not awaited: the page polls for progress, as it does for a scan.
+		void auditCloudflare({
+			token: token.token,
+			fetchFn: options.fetchFn,
+			lookups: lookups !== false,
+			ownershipTokens: Object.fromEntries(Object.entries(ownership.domains).map(([name, entry]) => [name, entry.token])),
+			onProgress: ({ done, total, current }) => {
+				if (cloudflareStatus.state === "running") cloudflareStatus = { ...cloudflareStatus, done, total, current };
+			},
+		})
+			.then(async (report) => {
+				await saveAudit(cloudflareAuditPath, report);
+				await auditRuns.add(report, report.checkedAt).catch((err) => note(`Could not keep this audit for comparison: ${err instanceof Error ? err.message : String(err)}`, "warning"));
+				// A request shown before this audit was planned from what it replaced: it is asked for again (S28).
+				pendingChanges.clear();
+				pendingBatch = null;
+				cloudflareVerified = { status: report.token.status, kind: report.token.kind, ...(report.token.expiresOn ? { expiresOn: report.token.expiresOn } : {}), checkedAt: report.checkedAt };
+				cloudflareStatus = { state: "done", finishedAt: new Date().toISOString() };
+				const problems = [...report.zones.flatMap((zone) => zone.checks), ...report.accounts.flatMap((account) => account.checks), ...report.userChecks].filter((item) => item.status === "failed").length;
+				log(`Cloudflare audit finished: ${report.zones.length} ${report.zones.length === 1 ? "zone" : "zones"}, ${problems} ${problems === 1 ? "finding" : "findings"}`, project);
 			})
-				.then(async (report) => {
-					await saveAudit(cloudflareAuditPath, report);
-					await auditRuns.add(report, report.checkedAt).catch((err) => note(`Could not keep this audit for comparison: ${err instanceof Error ? err.message : String(err)}`, "warning"));
-					// A request shown before this audit was planned from what it replaced: it is asked for again (S28).
-					pendingChanges.clear();
-					pendingBatch = null;
-					cloudflareVerified = { status: report.token.status, kind: report.token.kind, ...(report.token.expiresOn ? { expiresOn: report.token.expiresOn } : {}), checkedAt: report.checkedAt };
-					cloudflareStatus = { state: "done", finishedAt: new Date().toISOString() };
-					const problems = [...report.zones.flatMap((zone) => zone.checks), ...report.accounts.flatMap((account) => account.checks), ...report.userChecks].filter((item) => item.status === "failed").length;
-					log(`Cloudflare audit finished: ${report.zones.length} ${report.zones.length === 1 ? "zone" : "zones"}, ${problems} ${problems === 1 ? "finding" : "findings"}`, project);
-				})
-				.catch((err) => {
-					cloudflareStatus = { state: "failed", finishedAt: new Date().toISOString(), error: err instanceof Error ? err.message : String(err) };
-					log("Cloudflare audit failed", project);
-				});
-			return sendJson(res, 202, { status: cloudflareStatus });
-		}
-		if (!here) throw new HttpError(403, "The Cloudflare token and changes to your account are managed from the page on the computer that runs Porchlight");
+			.catch((err) => {
+				cloudflareStatus = { state: "failed", finishedAt: new Date().toISOString(), error: err instanceof Error ? err.message : String(err) };
+				log("Cloudflare audit failed", project);
+			});
+		return sendJson(res, 202, { status: cloudflareStatus });
+	}
+
+	async function saveTokenRoute({ res, body, gate }: Call): Promise<void> {
+		changedHere(gate);
 		const fields = bodyObject(body);
+		const token = typeof fields.token === "string" ? fields.token.trim() : "";
+		const problem = tokenShapeProblem(token);
+		if (problem) throw new HttpError(400, problem);
+		// Checked with Cloudflare before it is saved, so a mistake never replaces a working token.
+		const verified = await new CfClient(token, options.fetchFn ?? fetch).verify();
+		if (!verified.ok) throw new HttpError(400, verified.message ?? `Cloudflare says this token is ${verified.status ?? "not active"}`);
+		await saveToken(cloudflareTokenPath, token);
+		lacking.clear();
+		cloudflareVerified = { status: verified.status ?? "active", kind: verified.kind, ...(verified.expiresOn ? { expiresOn: verified.expiresOn } : {}), checkedAt: new Date().toISOString() };
+		return sendJson(res, 200, { token: await cloudflareTokenState() });
+	}
 
-		if (route === "POST /api/cloudflare/token") {
-			const token = typeof fields.token === "string" ? fields.token.trim() : "";
-			const problem = tokenShapeProblem(token);
-			if (problem) throw new HttpError(400, problem);
-			// Checked with Cloudflare before it is saved, so a mistake never replaces a working token.
-			const verified = await new CfClient(token, options.fetchFn ?? fetch).verify();
-			if (!verified.ok) throw new HttpError(400, verified.message ?? `Cloudflare says this token is ${verified.status ?? "not active"}`);
-			await saveToken(cloudflareTokenPath, token);
-			lacking.clear();
-			cloudflareVerified = { status: verified.status ?? "active", kind: verified.kind, ...(verified.expiresOn ? { expiresOn: verified.expiresOn } : {}), checkedAt: new Date().toISOString() };
-			return sendJson(res, 200, { token: await cloudflareTokenState() });
-		}
-		if (route === "POST /api/cloudflare/token/remove") {
-			await forgetToken(cloudflareTokenPath);
-			cloudflareVerified = null;
-			pendingChanges.clear();
-			pendingBatch = null;
-			batchStop?.abort();
-			lacking.clear();
-			return sendJson(res, 200, { token: await cloudflareTokenState() });
-		}
-		if (route === "POST /api/cloudflare/changes/preview") {
-			const report = await readAudit(cloudflareAuditPath);
-			const zone = report?.zones.find((candidate) => candidate.id === fields.zone);
-			if (!report || !zone) throw new HttpError(404, "That zone is not in the latest audit. Run the audit again.");
-			const change = fields.change;
-			if (!isChangeId(change)) throw new HttpError(400, "Choose one of the changes the audit offers");
-			// Only a change the audit offered for a problem it found in this zone.
-			if (!zone.checks.some((item) => item.change === change && item.status === "failed")) throw new HttpError(409, "The latest audit does not suggest that change for this zone");
-			let ownershipToken: string | undefined;
-			if (change === "ownership-record") ownershipToken = (await readDomains(investigateDomainsPath)).domains[zone.name]?.token ?? newToken();
-			const planned = planChange(zone, change, ownershipToken, report.checkedAt);
-			for (const [id, waiting] of pendingChanges) if (Date.now() - waiting.createdAt > APPROVAL_WINDOW_MS) pendingChanges.delete(id);
-			if (pendingChanges.size >= MAX_PENDING_CHANGES) throw new HttpError(409, "Answer the changes already waiting first");
-			pendingChanges.set(planned.id, planned);
-			return sendJson(res, 200, { pending: describeChange(planned) });
-		}
-		if (route === "POST /api/cloudflare/changes/approve") {
-			const planned = typeof fields.id === "string" ? pendingChanges.get(fields.id) : undefined;
-			if (!planned || Date.now() - planned.createdAt > APPROVAL_WINDOW_MS) {
-				if (planned) pendingChanges.delete(planned.id);
-				throw new HttpError(409, "That change is no longer waiting. Ask for it again to see the request.");
-			}
-			if (typeof fields.approve !== "boolean") throw new HttpError(400, "Say whether to apply it");
-			// One at a time: the same template could otherwise go out twice, once from each (CF-S2).
-			if (fields.approve && batchStatus.state === "running") throw new HttpError(409, "Changes are being sent now. Wait for them to finish, or stop them");
-			pendingChanges.delete(planned.id);
-			if (!fields.approve) return sendJson(res, 200, { applied: false });
-			const token = await cloudflareToken();
-			if (!token) throw new HttpError(409, "Connect Cloudflare first: paste an API token in Settings → Cloudflare");
-			if (!(await fromLatestAudit(planned))) throw new HttpError(409, "A newer audit replaced the one this request was planned from. Ask for it again.");
-			if (await ownershipTokenChanged(planned)) throw new HttpError(409, "The token for this domain changed since the request was shown. Ask for it again.");
-			const { outcome, changes } = await applyPlanned(planned, token.token);
-			return sendJson(res, 200, { applied: true, ok: outcome.ok, ...(outcome.notSent ? { notSent: true } : {}), result: outcome.result, changes: changes.slice(-50).reverse(), lacking: [...lacking] });
-		}
+	async function removeTokenRoute({ res, body, gate }: Call): Promise<void> {
+		changedHere(gate);
+		bodyObject(body);
+		await forgetToken(cloudflareTokenPath);
+		cloudflareVerified = null;
+		pendingChanges.clear();
+		pendingBatch = null;
+		batchStop?.abort();
+		lacking.clear();
+		return sendJson(res, 200, { token: await cloudflareTokenState() });
+	}
 
-		// "Fix these": every change the latest audit offers, for one zone or all, shown as the exact
-		// requests and sent after one approval. The same fixed templates, each sent once and recorded.
-		if (route === "POST /api/cloudflare/changes/batch/stop") {
-			// What was already sent stays sent; the rest are not.
-			batchStop?.abort();
-			return sendJson(res, 200, { stopped: batchStop !== null });
+	async function previewChange({ res, body, gate }: Call): Promise<void> {
+		changedHere(gate);
+		const fields = bodyObject(body);
+		const report = await readAudit(cloudflareAuditPath);
+		const zone = report?.zones.find((candidate) => candidate.id === fields.zone);
+		if (!report || !zone) throw new HttpError(404, "That zone is not in the latest audit. Run the audit again.");
+		const change = fields.change;
+		if (!isChangeId(change)) throw new HttpError(400, "Choose one of the changes the audit offers");
+		// Only a change the audit offered for a problem it found in this zone.
+		if (!zone.checks.some((item) => item.change === change && item.status === "failed")) throw new HttpError(409, "The latest audit does not suggest that change for this zone");
+		let ownershipToken: string | undefined;
+		if (change === "ownership-record") ownershipToken = (await readDomains(investigateDomainsPath)).domains[zone.name]?.token ?? newToken();
+		const planned = planChange(zone, change, ownershipToken, report.checkedAt);
+		for (const [id, waiting] of pendingChanges) if (Date.now() - waiting.createdAt > APPROVAL_WINDOW_MS) pendingChanges.delete(id);
+		if (pendingChanges.size >= MAX_PENDING_CHANGES) throw new HttpError(409, "Answer the changes already waiting first");
+		pendingChanges.set(planned.id, planned);
+		return sendJson(res, 200, { pending: describeChange(planned) });
+	}
+
+	async function approveChange({ res, body, gate }: Call): Promise<void> {
+		changedHere(gate);
+		const fields = bodyObject(body);
+		const planned = typeof fields.id === "string" ? pendingChanges.get(fields.id) : undefined;
+		if (!planned || Date.now() - planned.createdAt > APPROVAL_WINDOW_MS) {
+			if (planned) pendingChanges.delete(planned.id);
+			throw new HttpError(409, "That change is no longer waiting. Ask for it again to see the request.");
 		}
-		if (route === "POST /api/cloudflare/changes/batch/preview") {
-			if (batchStatus.state === "running") throw new HttpError(409, "Changes are being sent now. Wait for them to finish, or stop them");
-			const report = await readAudit(cloudflareAuditPath);
-			if (!report) throw new HttpError(404, "There is no Cloudflare audit yet. Run one first.");
-			let zones = report.zones;
-			if (fields.zone !== undefined) {
-				zones = report.zones.filter((candidate) => candidate.id === fields.zone);
-				if (zones.length === 0) throw new HttpError(404, "That zone is not in the latest audit. Run the audit again.");
-			}
-			const domains = (await readDomains(investigateDomainsPath)).domains;
-			// A check changed since the audit is left out until the next audit says how it stands (F-Q2).
-			const changed = changedSinceAudit(report.checkedAt, await readChanges(cloudflareChangesPath));
-			zones = zones.map((zone) => ({ ...zone, checks: zone.checks.filter((check) => !check.change || !changed.has(`${zone.id}\n${check.change}`)) }));
-			const { changes: planned, offered } = planBatch(zones, (name) => domains[name]?.token ?? newToken(), report.checkedAt);
-			if (planned.length === 0) throw new HttpError(409, "The latest audit found nothing here that Porchlight can change");
-			pendingBatch = { id: randomBytes(12).toString("hex"), createdAt: Date.now(), changes: planned };
-			// `offered`: every change the audit offers here, so the page can say when one approval covers only some (F-F5).
-			return sendJson(res, 200, { batch: { id: pendingBatch.id, expiresAt: new Date(pendingBatch.createdAt + APPROVAL_WINDOW_MS).toISOString(), changes: planned.map(describeChange), offered } });
+		if (typeof fields.approve !== "boolean") throw new HttpError(400, "Say whether to apply it");
+		// One at a time: the same template could otherwise go out twice, once from each (CF-S2).
+		if (fields.approve && batchStatus.state === "running") throw new HttpError(409, "Changes are being sent now. Wait for them to finish, or stop them");
+		pendingChanges.delete(planned.id);
+		if (!fields.approve) return sendJson(res, 200, { applied: false });
+		const token = await cloudflareToken();
+		if (!token) throw new HttpError(409, "Connect Cloudflare first: paste an API token in Settings → Cloudflare");
+		if (!(await fromLatestAudit(planned))) throw new HttpError(409, "A newer audit replaced the one this request was planned from. Ask for it again.");
+		if (await ownershipTokenChanged(planned)) throw new HttpError(409, "The token for this domain changed since the request was shown. Ask for it again.");
+		const { outcome, changes } = await applyPlanned(planned, token.token);
+		return sendJson(res, 200, { applied: true, ok: outcome.ok, ...(outcome.notSent ? { notSent: true } : {}), result: outcome.result, changes: changes.slice(-50).reverse(), lacking: [...lacking] });
+	}
+
+	// "Fix these": every change the latest audit offers, for one zone or all, shown as the exact
+	// requests and sent after one approval. The same fixed templates, each sent once and recorded.
+
+	function stopBatch({ res, body, gate }: Call): void {
+		changedHere(gate);
+		bodyObject(body);
+		// What was already sent stays sent; the rest are not.
+		batchStop?.abort();
+		return sendJson(res, 200, { stopped: batchStop !== null });
+	}
+
+	async function previewBatch({ res, body, gate }: Call): Promise<void> {
+		changedHere(gate);
+		const fields = bodyObject(body);
+		if (batchStatus.state === "running") throw new HttpError(409, "Changes are being sent now. Wait for them to finish, or stop them");
+		const report = await readAudit(cloudflareAuditPath);
+		if (!report) throw new HttpError(404, "There is no Cloudflare audit yet. Run one first.");
+		let zones = report.zones;
+		if (fields.zone !== undefined) {
+			zones = report.zones.filter((candidate) => candidate.id === fields.zone);
+			if (zones.length === 0) throw new HttpError(404, "That zone is not in the latest audit. Run the audit again.");
 		}
-		if (route === "POST /api/cloudflare/changes/batch/approve") {
-			const batch = pendingBatch;
-			if (!batch || batch.id !== fields.id || Date.now() - batch.createdAt > APPROVAL_WINDOW_MS) {
-				if (batch && batch.id === fields.id) pendingBatch = null;
-				throw new HttpError(409, "Those changes are no longer waiting. Ask for them again to see the requests.");
+		const domains = (await readDomains(investigateDomainsPath)).domains;
+		// A check changed since the audit is left out until the next audit says how it stands (F-Q2).
+		const changed = changedSinceAudit(report.checkedAt, await readChanges(cloudflareChangesPath));
+		zones = zones.map((zone) => ({ ...zone, checks: zone.checks.filter((check) => !check.change || !changed.has(`${zone.id}\n${check.change}`)) }));
+		const { changes: planned, offered } = planBatch(zones, (name) => domains[name]?.token ?? newToken(), report.checkedAt);
+		if (planned.length === 0) throw new HttpError(409, "The latest audit found nothing here that Porchlight can change");
+		pendingBatch = { id: randomBytes(12).toString("hex"), createdAt: Date.now(), changes: planned };
+		// `offered`: every change the audit offers here, so the page can say when one approval covers only some (F-F5).
+		return sendJson(res, 200, { batch: { id: pendingBatch.id, expiresAt: new Date(pendingBatch.createdAt + APPROVAL_WINDOW_MS).toISOString(), changes: planned.map(describeChange), offered } });
+	}
+
+	async function approveBatch({ res, body, gate }: Call): Promise<void> {
+		changedHere(gate);
+		const fields = bodyObject(body);
+		const batch = pendingBatch;
+		if (!batch || batch.id !== fields.id || Date.now() - batch.createdAt > APPROVAL_WINDOW_MS) {
+			if (batch && batch.id === fields.id) pendingBatch = null;
+			throw new HttpError(409, "Those changes are no longer waiting. Ask for them again to see the requests.");
+		}
+		if (typeof fields.approve !== "boolean") throw new HttpError(400, "Say whether to send them");
+		// Some may be left out; none can be added. Each name must be one of the requests that was shown.
+		// A change that carries a warning is sent only when it is named: a bare yes never covers it.
+		let chosen = batch.changes.filter((change) => !change.care);
+		if (fields.include !== undefined) {
+			const include = fields.include;
+			if (!Array.isArray(include) || !include.every((id) => typeof id === "string" && batch.changes.some((change) => change.id === id))) {
+				throw new HttpError(400, "Choose among the changes that were shown");
 			}
-			if (typeof fields.approve !== "boolean") throw new HttpError(400, "Say whether to send them");
-			// Some may be left out; none can be added. Each name must be one of the requests that was shown.
-			// A change that carries a warning is sent only when it is named: a bare yes never covers it.
-			let chosen = batch.changes.filter((change) => !change.care);
-			if (fields.include !== undefined) {
-				const include = fields.include;
-				if (!Array.isArray(include) || !include.every((id) => typeof id === "string" && batch.changes.some((change) => change.id === id))) {
-					throw new HttpError(400, "Choose among the changes that were shown");
-				}
-				chosen = batch.changes.filter((change) => include.includes(change.id));
-			}
-			if (fields.approve && chosen.length === 0) throw new HttpError(400, "Choose at least one change to send");
-			if (batchStatus.state === "running") throw new HttpError(409, "Changes are being sent now");
-			pendingBatch = null;
-			if (!fields.approve) return sendJson(res, 200, { started: false });
-			const token = await cloudflareToken();
-			if (!token) throw new HttpError(409, "Connect Cloudflare first: paste an API token in Settings → Cloudflare");
-			if (!(await fromLatestAudit(batch.changes[0]))) throw new HttpError(409, "A newer audit replaced the one these requests were planned from. Ask for them again.");
-			const startedAt = new Date().toISOString();
-			const stop = new AbortController();
-			batchStop = stop;
-			batchStatus = { state: "running", startedAt, total: chosen.length, done: 0, applied: 0, failed: 0, skipped: 0, current: "" };
-			const logTo = await projects.current();
-			log(`Cloudflare changes approved together: ${chosen.length}, on ${new Set(chosen.map((change) => change.zone)).size} ${new Set(chosen.map((change) => change.zone)).size === 1 ? "domain" : "domains"}`, logTo);
-			// Not awaited: the page follows it in the Activity view.
-			void (async () => {
-				let applied = 0;
-				let failed = 0;
-				let skipped = 0;
-				// A permission the token turned out to lack: the rest that need it are not sent, only said.
-				const lacking = new Set<string>();
-				for (const planned of chosen) {
-					if (stop.signal.aborted) break;
-					if (batchStatus.state === "running") batchStatus = { ...batchStatus, current: planned.title };
-					if (lacking.has(planned.permission)) {
-						skipped += 1;
-						note(`Not sent: ${planned.title}. The token lacks "${planned.permission}"`, "warning");
-					} else if (await ownershipTokenChanged(planned)) {
-						skipped += 1;
-						note(`Not sent: ${planned.title}. The token for this domain changed since the request was shown`, "warning");
-					} else {
-						note(`Sending: ${planned.title}`);
-						try {
-							const { outcome } = await applyPlanned(planned, token.token, logTo);
-							if (outcome.ok) applied += 1;
-							else if (outcome.notSent) skipped += 1;
-							else failed += 1;
-							if (outcome.denied) lacking.add(planned.permission);
-						} catch (err) {
-							failed += 1;
-							note(`Could not send: ${planned.title}. ${err instanceof Error ? err.message : String(err)}`.split(token.token).join("[token]"), "warning");
-						}
+			chosen = batch.changes.filter((change) => include.includes(change.id));
+		}
+		if (fields.approve && chosen.length === 0) throw new HttpError(400, "Choose at least one change to send");
+		if (batchStatus.state === "running") throw new HttpError(409, "Changes are being sent now");
+		pendingBatch = null;
+		if (!fields.approve) return sendJson(res, 200, { started: false });
+		const token = await cloudflareToken();
+		if (!token) throw new HttpError(409, "Connect Cloudflare first: paste an API token in Settings → Cloudflare");
+		if (!(await fromLatestAudit(batch.changes[0]))) throw new HttpError(409, "A newer audit replaced the one these requests were planned from. Ask for them again.");
+		const startedAt = new Date().toISOString();
+		const stop = new AbortController();
+		batchStop = stop;
+		batchStatus = { state: "running", startedAt, total: chosen.length, done: 0, applied: 0, failed: 0, skipped: 0, current: "" };
+		const logTo = await projects.current();
+		log(`Cloudflare changes approved together: ${chosen.length}, on ${new Set(chosen.map((change) => change.zone)).size} ${new Set(chosen.map((change) => change.zone)).size === 1 ? "domain" : "domains"}`, logTo);
+		// Not awaited: the page follows it in the Activity view.
+		void (async () => {
+			let applied = 0;
+			let failed = 0;
+			let skipped = 0;
+			// A permission the token turned out to lack: the rest that need it are not sent, only said.
+			const lacking = new Set<string>();
+			for (const planned of chosen) {
+				if (stop.signal.aborted) break;
+				if (batchStatus.state === "running") batchStatus = { ...batchStatus, current: planned.title };
+				if (lacking.has(planned.permission)) {
+					skipped += 1;
+					note(`Not sent: ${planned.title}. The token lacks "${planned.permission}"`, "warning");
+				} else if (await ownershipTokenChanged(planned)) {
+					skipped += 1;
+					note(`Not sent: ${planned.title}. The token for this domain changed since the request was shown`, "warning");
+				} else {
+					note(`Sending: ${planned.title}`);
+					try {
+						const { outcome } = await applyPlanned(planned, token.token, logTo);
+						if (outcome.ok) applied += 1;
+						else if (outcome.notSent) skipped += 1;
+						else failed += 1;
+						if (outcome.denied) lacking.add(planned.permission);
+					} catch (err) {
+						failed += 1;
+						note(`Could not send: ${planned.title}. ${err instanceof Error ? err.message : String(err)}`.split(token.token).join("[token]"), "warning");
 					}
-					if (batchStatus.state === "running") batchStatus = { ...batchStatus, done: applied + failed + skipped, applied, failed, skipped };
 				}
-				const stopped = stop.signal.aborted;
-				batchStatus = { state: "finished", startedAt, finishedAt: new Date().toISOString(), total: chosen.length, applied, failed, skipped, stopped };
-				if (batchStop === stop) batchStop = null;
-				log(`Cloudflare changes ${stopped ? "stopped" : "finished"}: ${applied} applied, ${failed} refused, ${skipped + (stopped ? chosen.length - applied - failed - skipped : 0)} not sent`, logTo);
-			})();
-			return sendJson(res, 202, { started: true, batch: batchStatus });
-		}
-		throw new HttpError(404, "Not found");
+				if (batchStatus.state === "running") batchStatus = { ...batchStatus, done: applied + failed + skipped, applied, failed, skipped };
+			}
+			const stopped = stop.signal.aborted;
+			batchStatus = { state: "finished", startedAt, finishedAt: new Date().toISOString(), total: chosen.length, applied, failed, skipped, stopped };
+			if (batchStop === stop) batchStop = null;
+			log(`Cloudflare changes ${stopped ? "stopped" : "finished"}: ${applied} applied, ${failed} refused, ${skipped + (stopped ? chosen.length - applied - failed - skipped : 0)} not sent`, logTo);
+		})();
+		return sendJson(res, 202, { started: true, batch: batchStatus });
 	}
 
 	/** Whether a change was planned from the audit that is still the latest: a newer one may have found the problem gone (S28). */
@@ -349,5 +373,25 @@ export function createCloudflare(ctx: ServerContext, investigateDomainsPath: str
 		return { outcome, changes };
 	}
 
-	return { cloudflareRoute, cloudflareTokenState, cloudflareStatus: () => cloudflareStatus, auditPath: cloudflareAuditPath };
+	const routes: Route[] = [
+		["GET /api/cloudflare", overview],
+		["GET /api/cloudflare/token", tokenRoute],
+		["GET /api/cloudflare/export", exportRoute],
+		["POST /api/cloudflare/export", exportRoute],
+		["POST /api/cloudflare/audit", startAudit],
+		["POST /api/cloudflare/token", saveTokenRoute],
+		["POST /api/cloudflare/token/remove", removeTokenRoute],
+		["POST /api/cloudflare/changes/preview", previewChange],
+		["POST /api/cloudflare/changes/approve", approveChange],
+		["POST /api/cloudflare/changes/batch/stop", stopBatch],
+		["POST /api/cloudflare/changes/batch/preview", previewBatch],
+		["POST /api/cloudflare/changes/batch/approve", approveBatch],
+		// Anything else beneath: refused to another page as before, then not found.
+		notFoundUnder("/api/cloudflare", "any", ({ body, gate }) => {
+			changedHere(gate);
+			bodyObject(body);
+		}),
+	];
+
+	return { routes, cloudflareTokenState, cloudflareStatus: () => cloudflareStatus, auditPath: cloudflareAuditPath };
 }

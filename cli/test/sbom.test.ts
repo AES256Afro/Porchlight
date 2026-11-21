@@ -3,7 +3,9 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { reposSbom } from "../src/main.ts";
 import { buildSbom, packagesOf } from "../src/repos/sbom.ts";
-import { fakeRunner, makeTree, tempDir } from "./helpers.ts";
+import { run as realRun } from "../src/repos/exec.ts";
+import { excludeArgs, outsidePlan, readsOutside } from "../src/repos/includes.ts";
+import { fakeRunner, installed, makeTree, tempDir } from "./helpers.ts";
 
 const inventory = (components: unknown[]) => JSON.stringify({ bomFormat: "CycloneDX", specVersion: "1.5", components });
 
@@ -111,4 +113,58 @@ test("a repository whose manifests would read a file outside it is not given to 
 		["pom", "req"],
 	);
 	assert.ok(!JSON.stringify(sbom).includes("s3cr3tvalue"));
+});
+
+test("a manifest in a subfolder that would read outside leaves out that folder alone; one at the top still skips the repository (M11)", async () => {
+	const root = await tempDir();
+	await makeTree(root, {
+		"outside/.env": "secret-token==s3cr3tvalue\n",
+		"repos/mixed/.git/": "",
+		"repos/mixed/requirements.txt": "flask==3.0.0\n",
+		"repos/mixed/tools/requirements.txt": "-r ../../../outside/.env\n",
+		"repos/mixed/tools/deep/package-lock.json": "{}",
+		// The first file reaches the second, which reaches outside: both folders are named, not only the first.
+		"repos/mixed/web/a/requirements.txt": "-r ../b/requirements.txt\n",
+		"repos/mixed/web/b/requirements.txt": "-r ../../../../outside/.env\n",
+		"repos/mixed/other/tools/requirements.txt": "rich==13.0.0\n",
+	});
+	const repo = join(root, "repos/mixed");
+	const outside = await readsOutside(repo);
+	assert.deepEqual(outside.found.map((entry) => entry.file), ["tools/requirements.txt", "web/a/requirements.txt", "web/b/requirements.txt"]);
+	assert.deepEqual(outsidePlan(outside.found), { skip: false, folders: ["tools", "web/a", "web/b"] });
+	assert.deepEqual(outsidePlan([{ file: "a/requirements.txt", reason: "x" }, { file: "a/b/requirements.txt", reason: "x" }]), { skip: false, folders: ["a"] }, "a folder inside one left out goes with it");
+	assert.deepEqual(outsidePlan([{ file: "a/requirements.txt", reason: "x" }, { file: "requirements.txt", reason: "x" }]), { skip: true, folders: [] });
+
+	const { scanDependencies } = await import("../src/repos/osv.ts");
+	const run = fakeRunner({
+		"osv-scanner": (args) => (args[0] === "--version" ? { stdout: "2.7.1\n" } : { code: 128 }),
+		git: (args) => (args.includes("ls-files") ? { stdout: ["requirements.txt", "tools/requirements.txt", "tools/deep/package-lock.json"].join("\0") } : { code: 0 }),
+	});
+	const result = await scanDependencies(repo, run);
+	const scan = run.calls.find((call) => call[0] === "osv-scanner")!;
+	assert.equal(scan.at(-1), repo, "the repository itself is scanned");
+	assert.deepEqual(scan.filter((arg) => arg.startsWith("--x-exclude")), excludeArgs(repo, ["tools", "web/a", "web/b"]));
+	assert.equal(result.notCovered.length, 3, result.notCovered.map((note) => note.message).join("\n"));
+	assert.match(result.notCovered[1]!.message, /^a lockfile git tracks was not read \(requirements\.txt\)/, "only the lockfile outside the folders left out");
+	assert.match(result.notCovered[0]!.message, /^dependencies in the folders tools, web\/a, web\/b were not checked, because tools\/requirements\.txt would have osv-scanner read a file outside the repository .*as would 2 more.*The rest of the repository was checked$/);
+	assert.doesNotMatch(JSON.stringify(result.notCovered), /deep\/package-lock|s3cr3tvalue/, "a lockfile in a folder left out is not said to be hidden by .gitignore");
+
+	const sbomRun = fakeRunner({ "osv-scanner": (args) => (args[0] === "--version" ? { stdout: "2.7.1\n" } : { code: 128 }), git: () => ({ code: 0 }) });
+	const sbom = await buildSbom({ root: join(root, "repos"), depth: 1, run: sbomRun, now: () => new Date("2026-11-20T00:00:00Z") });
+	assert.match(sbom.metadata.properties?.[0]?.value ?? "", /^mixed: dependencies in the folders tools, web\/a, web\/b were not checked/);
+	assert.ok(sbomRun.calls.some((call) => call[1] === "scan" && call.at(-1) === repo && call.some((arg) => arg.startsWith("--x-exclude="))), "the SBOM still lists the rest");
+	assert.ok(!JSON.stringify(sbom).includes("s3cr3tvalue"));
+});
+
+test("osv-scanner itself leaves out exactly the folder named, and a folder of the same name elsewhere is still read", async (t) => {
+	if (!(await installed("osv-scanner"))) return t.skip("osv-scanner is not installed");
+	const root = await tempDir();
+	await makeTree(root, {
+		"a/b (1)/requirements.txt": "requests==2.0.0\n",
+		"z/a/b (1)/requirements.txt": "rich==13.0.0\n",
+		"c/requirements.txt": "flask==3.0.0\n",
+	});
+	const { stderr } = await realRun("osv-scanner", ["scan", "source", "--recursive", "--offline", "--all-packages", "--x-disable-plugins=vulnmatch/osvlocal", "--no-resolve", ...excludeArgs(root, ["a/b (1)"]), "--format", "json", root]);
+	const read = [...stderr.matchAll(/^Scanned (.+) file and found/gm)].map((match) => match[1]!.slice(root.length + 1)).sort();
+	assert.deepEqual(read, ["c/requirements.txt", "z/a/b (1)/requirements.txt"]);
 });

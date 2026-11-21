@@ -24,6 +24,8 @@ export const MAX_GOAL = 500;
 export const OUTPUT_IN_PROMPT = 1_500;
 /** Recent steps the model sees each turn. */
 export const HISTORY_IN_PROMPT = 12;
+/** Replies in a row that are not the JSON asked for before a run stops: a model that cannot follow the format would only use up its turns (B49). */
+export const MAX_UNUSABLE_IN_ROW = 3;
 export const FINDING_SEVERITIES = ["info", "low", "medium", "high", "critical"] as const;
 export type FindingSeverity = (typeof FINDING_SEVERITIES)[number];
 export const DEFAULT_GOAL = "Map what this website exposes to the internet and report misconfigurations, with evidence.";
@@ -205,6 +207,7 @@ export async function investigate(run: Run, deps: EngineDeps, signal: AbortSigna
 		const proven = await ownershipProblem(deps, signal);
 		if (proven) return await finish("stopped", proven);
 
+		let unusableInRow = 0;
 		while (run.turns < run.maxTurns) {
 			if (signal.aborted) return await stopped();
 			run.turns += 1;
@@ -223,8 +226,13 @@ export async function investigate(run: Run, deps: EngineDeps, signal: AbortSigna
 			const plan = parsePlan(reply);
 			if (!plan) {
 				run.steps.push({ id: newId("step"), turn, at: now(), outcome: "invalid", reason: "The reply was not one JSON object. Reply with JSON only." });
+				unusableInRow += 1;
+				if (unusableInRow >= MAX_UNUSABLE_IN_ROW) {
+					return await finish("failed", `The model's last ${MAX_UNUSABLE_IN_ROW} replies in a row were not the JSON asked for, so the run was stopped rather than use up its turns. Try a model that follows instructions more closely.`);
+				}
 				continue;
 			}
+			unusableInRow = 0;
 			const thought = typeof plan.thought === "string" ? plan.thought.slice(0, 1_000) : undefined;
 			recordFindings(run, plan.findings, turn);
 
@@ -417,6 +425,10 @@ export function buildPrompt(run: Run, scope: Scope, hidden: string[] = []): stri
 		`Goal: ${run.goal}`,
 		`In scope (anything else is refused): ${scope.describe().join(", ")}`,
 		`Turn ${run.turns} of ${run.maxTurns}.`,
+		// Said plainly, so the model reports what it found instead of starting something it will never see the result of (E-F5).
+		...(run.turns >= run.maxTurns
+			? ["This is your last turn. Set done to true and give your findings and summary now: an action chosen now would run, but you would never see its result."]
+			: []),
 		"",
 		"Tools:",
 		...TOOLS.map((tool) => `- ${tool.name}: ${tool.description}${tool.needsApproval ? " Needs the owner's approval." : ""} args=${JSON.stringify(tool.args)}`),

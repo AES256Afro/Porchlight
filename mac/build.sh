@@ -125,7 +125,8 @@ EOF
 	printf '%s\n' "$read_settings" >> "$resources/launch.sh"
 	cat >> "$resources/launch.sh" <<'EOF'
 export NODE_NO_WARNINGS=1
-exec "$here/bin/node" "$here/porchlight/cli/bin/porchlight.js" ui --root "$root"
+# A young generation of 1 MB keeps the server under 200 MB at 20,000 findings (R6O-1).
+exec "$here/bin/node" --max-semi-space-size=1 "$here/porchlight/cli/bin/porchlight.js" ui --root "$root"
 EOF
 else
 	# The launcher for this machine. Values are fixed now, quoted for sh.
@@ -146,7 +147,8 @@ if [ -n "${PORCHLIGHT_MONITOR_URL:-}" ] && [ -z "${PORCHLIGHT_ADMIN_TOKEN:-}" ] 
 	export PORCHLIGHT_ADMIN_TOKEN
 fi
 export NODE_NO_WARNINGS=1
-exec "$node" "$repo/cli/bin/porchlight.js" ui --root "$root"
+# A young generation of 1 MB keeps the server under 200 MB at 20,000 findings (R6O-1).
+exec "$node" --max-semi-space-size=1 "$repo/cli/bin/porchlight.js" ui --root "$root"
 EOF
 fi
 

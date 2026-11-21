@@ -41,7 +41,7 @@ test("Discord: mentions are switched off and the data sits in a code block it ca
 	const sent = JSON.parse(noticeRequest("discord", notice).body);
 	assert.deepEqual(sent.allowed_mentions, { parse: [] });
 	assert.equal(sent.content.match(/```/g)?.length, 2);
-	assert.match(sent.content, /^\*\*Porchlight: example\.com: 1 new finding\*\*\n```\n/);
+	assert.match(sent.content, /^\*\*Porchlight: example\.com: 1 new finding\*\*\n\*\*New findings\*\*\n```\n  \[high\] evil\.example/, "the title, then the section's heading, then its lines in a block");
 	assert.ok(sent.content.length <= 2000);
 });
 
@@ -189,4 +189,32 @@ test("a notice address that cannot be used is a problem to show, never an exit, 
 	const used = notifySetting("http://nas:8080/hook", "ntfy");
 	assert.ok(used && "url" in used);
 	assert.deepEqual([used.url.host, used.format], ["nas:8080", "ntfy"]);
+});
+
+test("Slack and Discord show a title and a section for each paragraph, and data shaped like a heading still forms no link or mention (R6V-4)", () => {
+	const scan: Notice = {
+		title: "Porchlight: 2 new, 1 fixed",
+		lines: ["Folder: work", "", "New:", `  [high] shop: ${HOSTILE}`, "  [low] api: key (a.env:1)", "", "Fixed:", "  [high] shop: old key (b.env:2)", "", "Open Porchlight to see each one and how to fix it."],
+		urgent: true,
+	};
+	const slack = JSON.parse(noticeRequest("slack", scan).body).text as string;
+	assert.equal(slack.match(/```/g)?.length, 8, "four sections, each in a block of its own");
+	assert.match(slack, /^\*Porchlight: 2 new, 1 fixed\*\n```\nFolder: work\n```\n\*New\*\n```\n  \[high\]/);
+	assert.match(slack, /\n\*Fixed\*\n```\n  \[high\] shop: old key/);
+	assert.ok(!slack.includes("<!channel>") && !slack.includes("<https://phish.example|click>"));
+	const discord = JSON.parse(noticeRequest("discord", scan).body);
+	assert.deepEqual(discord.allowed_mentions, { parse: [] });
+	assert.equal(discord.content.match(/```/g)?.length, 8);
+	assert.match(discord.content, /\n\*\*Fixed\*\*\n```\n/);
+	assert.ok(!discord.content.includes("\u001b"));
+
+	// A paragraph whose first line is data is not a heading, whatever it says: it stays in its block.
+	for (const first of ["@everyone:", "<!channel>:", "https://phish.example:", "See evil.example:", "[click](https://x.example):", "**bold**:"]) {
+		const shown = noticeRequest("discord", { title: "t", lines: [first, "  under it"], urgent: false });
+		const content = JSON.parse(shown.body).content as string;
+		assert.equal(content, `**t**\n\`\`\`\n${first}\n  under it\n\`\`\``, first);
+		const text = JSON.parse(noticeRequest("slack", { title: "t", lines: [first, "  under it"], urgent: false }).body).text as string;
+		assert.match(text, /^\*t\*\n```\n/, first);
+		assert.equal(text.match(/```/g)?.length, 2, first);
+	}
 });

@@ -1,13 +1,14 @@
 // The check of the computer that runs Porchlight (invariant 19): /api/host and /api/host/check.
-import type { ServerResponse } from "node:http";
 import { join } from "node:path";
 import { checkHost } from "../../host/check.ts";
 import type { HostReport } from "../../host/types.ts";
 import { compareChecks, KeptRuns } from "../../kept-checks.ts";
 import { run as runCommand } from "../../repos/exec.ts";
 import type { ServerContext } from "../context.ts";
+import type { Call } from "../gate.ts";
 import { bodyObject, HttpError, sendJson } from "../http.ts";
 import { readHostReport, saveHostReport } from "../kept-files.ts";
+import { paths, type Route } from "../router.ts";
 import type { HostStatus } from "../types.ts";
 
 export function createHostCheck(ctx: ServerContext) {
@@ -18,20 +19,23 @@ export function createHostCheck(ctx: ServerContext) {
 	const hostRuns = new KeptRuns<HostReport>(join(dataDir, "host-checks"));
 	const runHostCheck = options.hostCheck ?? ((hostOptions) => checkHost({ run: runCommand, ...hostOptions }));
 	let hostStatus: HostStatus = { state: "idle" };
+	const notFound = () => {
+		throw new HttpError(404, "Not found");
+	};
 
 	/**
 	 * The check of this computer. It only reads (invariant 19). As a service it does not run: in a
 	 * container it would describe the container, not the computer the owner cares about.
 	 */
-	async function hostRoute(res: ServerResponse, route: string, body: unknown): Promise<void> {
-		if (route === "GET /api/host") {
-			const report = loopbackOnly ? await readHostReport(hostPath) : null;
-			const previous = report ? await hostRuns.before(report.checkedAt) : null;
-			const place = (checks: HostReport["checks"]) => checks.map((check) => ({ ...check, place: "" }));
-			const change = report && previous ? compareChecks({ at: previous.checkedAt, checks: place(previous.checks) }, { checks: place(report.checks) }) : null;
-			return sendJson(res, 200, { status: hostStatus, report, service: !loopbackOnly, change, kept: loopbackOnly ? await hostRuns.count() : 0 });
-		}
-		if (route !== "POST /api/host/check") throw new HttpError(404, "Not found");
+	async function hostReport({ res }: Call): Promise<void> {
+		const report = loopbackOnly ? await readHostReport(hostPath) : null;
+		const previous = report ? await hostRuns.before(report.checkedAt) : null;
+		const place = (checks: HostReport["checks"]) => checks.map((check) => ({ ...check, place: "" }));
+		const change = report && previous ? compareChecks({ at: previous.checkedAt, checks: place(previous.checks) }, { checks: place(report.checks) }) : null;
+		return sendJson(res, 200, { status: hostStatus, report, service: !loopbackOnly, change, kept: loopbackOnly ? await hostRuns.count() : 0 });
+	}
+
+	async function startCheck({ res, body }: Call): Promise<void> {
 		if (!loopbackOnly) throw new HttpError(409, "Porchlight runs in a container here, so it cannot see the computer it runs on.");
 		if (hostStatus.state === "running") throw new HttpError(409, "This computer is already being checked");
 		const fields = bodyObject(body);
@@ -58,5 +62,6 @@ export function createHostCheck(ctx: ServerContext) {
 		return sendJson(res, 202, { status: hostStatus });
 	}
 
-	return { hostRoute, hostStatus: () => hostStatus };
+	const routes: Route[] = [["GET /api/host", hostReport], ["POST /api/host/check", startCheck], [paths("/api/host", "/api/host/check"), notFound]];
+	return { routes, hostStatus: () => hostStatus };
 }

@@ -4,7 +4,8 @@
 //
 // A notice carries hosts, DNS values, file paths and titles, which someone else may control. So in
 // every format the text is shown as text: Slack's and Discord's markup is disarmed by putting the
-// lines in a code block that nothing in them can close, mentions are switched off, and ntfy gets
+// lines in code blocks that nothing in them can close (one a section, under a heading of Porchlight's
+// own words, see `sections`), mentions are switched off, and ntfy gets
 // plain text with only fixed words in its headers.
 
 export type NotifyFormat = "json" | "slack" | "discord" | "ntfy";
@@ -154,11 +155,11 @@ function render(format: NotifyFormat, title: string, body: string, notice: Notic
 	switch (format) {
 		case "slack": {
 			// Slack reads &, < and > as markup (<!channel>, <url|text>), even inside a code block.
-			const text = `*${slackText(title)}*${body ? `\n\`\`\`\n${slackText(fenceSafe(body))}\n\`\`\`` : ""}`;
+			const text = [`*${slackText(title)}*`, ...sections(body).map(({ heading, text }) => `${heading ? `*${slackText(heading)}*\n` : ""}\`\`\`\n${slackText(fenceSafe(text))}\n\`\`\``)].join("\n");
 			return { request: json({ text }), measured: text };
 		}
 		case "discord": {
-			const content = `**${discordText(title)}**${body ? `\n\`\`\`\n${fenceSafe(body)}\n\`\`\`` : ""}`;
+			const content = [`**${discordText(title)}**`, ...sections(body).map(({ heading, text }) => `${heading ? `**${discordText(heading)}**\n` : ""}\`\`\`\n${fenceSafe(text)}\n\`\`\``)].join("\n");
 			// A DNS value saying "@everyone" must not ping anyone.
 			return { request: json({ content, allowed_mentions: { parse: [] } }), measured: content };
 		}
@@ -204,6 +205,37 @@ function oneLine(text: string): string {
 function chatSafe(text: string): string {
 	return text.replace(/@/g, "@\u200b").replace(/</g, "<\u200b").replace(/\]\(/g, "]\u200b(");
 }
+
+/**
+ * A notice's body as Slack and Discord show it (R6V-4): each paragraph a section of its own, in its own
+ * code block. A paragraph whose first line is a heading in Porchlight's own words ("New findings",
+ * "Fixed:") with indented lines under it shows that heading in bold above its block. A heading is
+ * recognised by its shape, never trusted for its source: letters, digits, spaces and commas, with no
+ * dot, slash, `@`, `<` or other character a link or a mention needs, so data that looks like one still
+ * cannot form either; it is escaped as the title is all the same. Everything else stays in a block.
+ */
+export function sections(body: string): { heading?: string; text: string }[] {
+	if (!body) return [];
+	const parts: { heading?: string; text: string }[] = body
+		.split(/\n{2,}/)
+		.filter((part) => part.trim() !== "")
+		.map((part) => {
+			const [first = "", ...rest] = part.split("\n");
+			if (rest.length > 0 && HEADING.test(first) && rest.every((line) => line.startsWith("  ") || /^\.\.\. and \d+ more lines?$/.test(line))) return { heading: first.replace(/:$/, ""), text: rest.join("\n") };
+			return { text: part };
+		});
+	// Paragraphs with no heading of their own, one after another, share one block.
+	const merged: { heading?: string; text: string }[] = [];
+	for (const part of parts) {
+		const last = merged.at(-1);
+		if (last && part.heading === undefined && last.heading === undefined) last.text = `${last.text}\n\n${part.text}`;
+		else merged.push({ ...part });
+	}
+	return merged;
+}
+
+/** A heading's shape: Porchlight's fixed words, short, with nothing a link or a mention could be made of. */
+const HEADING = /^[A-Z][A-Za-z0-9 ,'-]{0,79}:?$/;
 
 /** Three backticks would end the code block early; the text keeps its meaning with them broken up. */
 function fenceSafe(text: string): string {

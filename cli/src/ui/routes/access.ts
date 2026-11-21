@@ -5,9 +5,10 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import { oneAtATime } from "../../private-files.ts";
 import type { ServerContext } from "../context.ts";
-import { onComputerPage, tailnetAddress, type Gate } from "../gate.ts";
+import { onComputerPage, tailnetAddress, type Call, type Gate } from "../gate.ts";
 import { bodyObject, HttpError, sendJson } from "../http.ts";
 import { newAccessKey, readAccess, saveAccess, type AccessFile } from "../kept-files.ts";
+import { notFoundUnder, type Route } from "../router.ts";
 import type { AccessStatus } from "../types.ts";
 
 const DEFAULT_ACCESS_PORT = 4747;
@@ -99,37 +100,47 @@ export async function createAccess(ctx: ServerContext, respond: (gate: Gate) => 
 		};
 	}
 
-	async function accessRoute(res: ServerResponse, route: string, body: unknown, gate: Gate): Promise<void> {
-		if (route === "GET /api/access") return sendJson(res, 200, accessState(gate));
+	/** Only this computer's page changes who gets in. */
+	function changedHere(gate: Gate): void {
 		if (!onComputerPage(gate)) throw new HttpError(403, "Access can only be changed on the computer that runs Porchlight");
-		if (route === "POST /api/access") {
-			const enabled = bodyObject(body).enabled;
-			if (typeof enabled !== "boolean") throw new HttpError(400, "Say whether access is on");
-			// One change at a time, saved before it takes effect: the file always says what a restart
-			// should open, and a change that could not be saved changes nothing (S25).
-			await oneAtATime(accessPath, async () => {
-				const next = { enabled, key: access.key || newAccessKey() };
-				await saveAccess(accessPath, next);
-				access = next;
-				await applyAccess();
-			});
-			return sendJson(res, 200, accessState(gate));
-		}
-		if (route === "POST /api/access/key") {
-			// A new key turns away every device that had the old one, including open pages.
-			await oneAtATime(accessPath, async () => {
-				const next = { ...access, key: newAccessKey() };
-				await saveAccess(accessPath, next);
-				access = next;
-				await applyAccess();
-			});
-			return sendJson(res, 200, accessState(gate));
-		}
-		throw new HttpError(404, "Not found");
 	}
 
+	async function setAccess({ res, body, gate }: Call): Promise<void> {
+		changedHere(gate);
+		const enabled = bodyObject(body).enabled;
+		if (typeof enabled !== "boolean") throw new HttpError(400, "Say whether access is on");
+		// One change at a time, saved before it takes effect: the file always says what a restart
+		// should open, and a change that could not be saved changes nothing (S25).
+		await oneAtATime(accessPath, async () => {
+			const next = { enabled, key: access.key || newAccessKey() };
+			await saveAccess(accessPath, next);
+			access = next;
+			await applyAccess();
+		});
+		return sendJson(res, 200, accessState(gate));
+	}
+
+	async function newKey({ res, gate }: Call): Promise<void> {
+		changedHere(gate);
+		// A new key turns away every device that had the old one, including open pages.
+		await oneAtATime(accessPath, async () => {
+			const next = { ...access, key: newAccessKey() };
+			await saveAccess(accessPath, next);
+			access = next;
+			await applyAccess();
+		});
+		return sendJson(res, 200, accessState(gate));
+	}
+
+	const routes: Route[] = [
+		["GET /api/access", ({ res, gate }) => sendJson(res, 200, accessState(gate)), "here"],
+		["POST /api/access", setAccess, "here"],
+		["POST /api/access/key", newKey, "here"],
+		notFoundUnder("/api/access", "here", ({ gate }) => changedHere(gate)),
+	];
+
 	return {
-		accessRoute,
+		routes,
 		applyAccess,
 		stopAccess,
 		accessStatus: () => accessStatus,

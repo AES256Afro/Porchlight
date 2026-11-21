@@ -399,14 +399,16 @@ interface Section {
 	place?: string;
 }
 
-/** The most a tag's file is read; a larger one is said under "Not covered". */
+/** The most a tag's file is read, or all of a tagged folder's files together; past it is said under "Not covered". */
 const MAX_TAGGED_BYTES = 5 * 1024 * 1024;
+/** The most files read from one folder a tag points at. */
+const MAX_TAGGED_FILES = 2_000;
 
 /**
  * What `git log -p` never shows, which is pushed all the same (S57): commit messages, annotated tags'
- * messages, and what a tag holds when it points at a file rather than a commit. They are written to a
- * private folder, read by gitleaks with --redact, and each match is put back where it came from by its
- * line. A tag pointing at a folder is said under "Not covered". Secrets only, by gitleaks' own rules: a
+ * messages, and what a tag holds when it points at a file or a folder rather than a commit. They are
+ * written to a private folder, read by gitleaks with --redact, and each match is put back where it came
+ * from by its line. Secrets only, by gitleaks' own rules: a
  * message's sign-off names its author, which is not a leak. Tags are read only with every commit.
  */
 async function unseenRows(copy: string, repo: string, run: Runner, reach: "all" | number): Promise<{ rows: unknown[]; notCovered: NotCovered[] }> {
@@ -424,6 +426,38 @@ async function unseenRows(copy: string, repo: string, run: Runner, reach: "all" 
 		const answer = await run("git", [...GIT_SAFE_ARGS, "-C", copy, ...args], { env: gitReadEnv(), ...(latin1 ? { latin1 } : {}) });
 		if (answer.code !== 0) throw new Error(firstLine(answer.stderr) || `git exited with code ${answer.code}`);
 		return answer.stdout;
+	};
+
+	/**
+	 * What a folder a ref points at holds: its files, every level down, listed with `ls-tree` and read in
+	 * batches, as files are anywhere else. Links and submodules are not followed. A file too large to read,
+	 * or past the most read for one folder, is said under "Not covered", as is a folder that cannot be listed.
+	 */
+	const readTaggedFolder = async (refname: string, treeId: string) => {
+		const listed = await run("git", [...GIT_SAFE_ARGS, "-C", copy, "ls-tree", "-r", "-z", "--full-tree", treeId], { env: gitReadEnv() });
+		if (listed.code !== 0) {
+			notCovered.push({ tool: "gitleaks", message: `${refname} points at a folder rather than a commit, which could not be listed, so it was not read` });
+			return;
+		}
+		const entries: { path: string; id: string }[] = [];
+		for (const entry of listed.stdout.split("\0")) {
+			const match = /^(\d{6}) blob ([0-9a-f]{40,64})\t(.+)$/s.exec(entry);
+			if (match && (match[1] === "100644" || match[1] === "100755" || match[1] === "100664")) entries.push({ path: match[3]!, id: match[2]! });
+		}
+		const kept = entries.slice(0, MAX_TAGGED_FILES);
+		const contents = await readBlobs(copy, [...new Set(kept.map((entry) => entry.id))], run);
+		let unread = entries.length - kept.length;
+		let bytes = 0;
+		for (const { path, id } of kept) {
+			const content = contents.get(id);
+			if (!content || bytes + content.length > MAX_TAGGED_BYTES) {
+				unread++;
+				continue;
+			}
+			bytes += content.length;
+			add(`tagged-${sections.length}.txt`, content.toString("utf8"), { name: `${path} in the folder ${refname} points at`, place: `${refname}, a folder rather than a commit` });
+		}
+		if (unread > 0) notCovered.push({ tool: "gitleaks", message: `${refname} points at a folder rather than a commit, and ${unread === 1 ? "1 file" : `${unread} files`} in it ${unread === 1 ? "was" : "were"} not read: past ${MAX_TAGGED_FILES.toLocaleString("en")} files or 5 MB in all, or too large to read` });
 	};
 
 	const limit = typeof reach === "number" ? [`--max-count=${reach}`] : [];
@@ -444,7 +478,10 @@ async function unseenRows(copy: string, repo: string, run: Runner, reach: "all" 
 				if (tag.includes("\n\n") && message.trim() !== "") add("tags.txt", message, { name: `message of tag ${name}`, place: `tag ${name}` });
 			}
 			const [target, targetId] = type === "tag" ? [peeledType, peeledId] : [type, id];
-			if (target === "tree") notCovered.push({ tool: "gitleaks", message: `${refname} points at a folder rather than a commit, which was not read` });
+			if (target === "tree") {
+				await readTaggedFolder(refname, targetId);
+				continue;
+			}
 			if (target !== "blob") continue;
 			const size = Number((await git(["cat-file", "-s", targetId])).trim());
 			if (!(size <= MAX_TAGGED_BYTES)) {

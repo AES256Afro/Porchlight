@@ -305,3 +305,17 @@ export function depthOf(value, fallback) {
 	const depth = text === "" ? Number.NaN : Number(text);
 	return Number.isInteger(depth) && depth >= 0 && depth <= MAX_DEPTH ? depth : fallback;
 }
+
+/** The depth a scan looked through before there was a record of it. */
+export const OLDER_REPORT_DEPTH = 3;
+
+/**
+ * The folder levels a report's scan looked through, so "Check again" looks as deep again (B42). A report
+ * from before the depth was kept says nothing, and is taken as the default of the time, 3.
+ *
+ * @param {{ depth?: unknown } | null | undefined} report
+ */
+export function reportDepth(report) {
+	const depth = report?.depth;
+	return typeof depth === "number" && Number.isInteger(depth) && depth >= 0 && depth <= MAX_DEPTH ? depth : OLDER_REPORT_DEPTH;
+}

@@ -22,9 +22,6 @@ export interface Call {
  */
 export type Changes = "here" | "owner" | "any";
 
-/** Which requests an entry of the route table answers, what answers them, and who may change things through it (default "any"). */
-export type Route = [claims: (call: Call) => boolean, answer: (call: Call) => void | Promise<void>, changes?: Changes];
-
 /** Whether this gate may change things through a route that allows `changes`. */
 export function mayChange(changes: Changes, gate: { loopbackOnly: boolean; tailnet: boolean }): boolean {
 	return changes === "any" || (changes === "owner" ? onOwnPage(gate) : onComputerPage(gate));

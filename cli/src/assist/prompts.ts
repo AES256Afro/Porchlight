@@ -131,7 +131,7 @@ const MURAL_TASK = [
  * A mural of a scan: Porchlight's own counts, the roadmap's actions and the findings the model judged
  * real. Only what the pages show: titles, places and counts, never a reason, evidence or a secret.
  */
-export function muralPrompt(facts: unknown, roadmap: Roadmap, judged: { repo: string; title: string; severity: string; verdict: string }[]): Prompt {
+export function muralPrompt(facts: unknown, roadmap: Roadmap, judged: { repo: string; title: string; severity: string; verdict: string }[], cap: number = DATA_CAP): Prompt {
 	const actions = roadmap.phases.flatMap((phase) =>
 		phase.groups.flatMap((group) =>
 			group.actions.map((action) => ({ phase: phase.title, place: clip(group.name), priority: action.priority, title: clip(action.title), findingsCleared: action.counts })),
@@ -145,6 +145,7 @@ export function muralPrompt(facts: unknown, roadmap: Roadmap, judged: { repo: st
 			["actions", actions, "actions"],
 		],
 		"the most pressing first",
+		cap,
 	);
 	return build(MURAL_TASK, data, cut);
 }
@@ -185,8 +186,8 @@ export function findingPrompt(report: ScanReport, repo: RepoResult, finding: Fin
 }
 
 /** "Fix this first, and why", from the whole roadmap of the stored report. */
-export function roadmapPrompt(report: ScanReport): Prompt {
-	const { data, cut } = roadmapData(report, noFilter(), DATA_CAP);
+export function roadmapPrompt(report: ScanReport, cap: number = DATA_CAP): Prompt {
+	const { data, cut } = roadmapData(report, noFilter(), cap);
 	return build(TASKS.roadmap, data, cut);
 }
 
@@ -218,7 +219,7 @@ function roadmapData(report: ScanReport, filter: FindingFilter, cap: number): { 
 }
 
 /** A readable summary of a domain's latest scan from the monitor. */
-export function domainPrompt(report: MonitorReport & Record<string, unknown>): Prompt {
+export function domainPrompt(report: MonitorReport & Record<string, unknown>, cap: number = DATA_CAP): Prompt {
 	const findings = list(report.findings).filter(isMonitorFinding);
 	const fixes = domainSuggestions({ domain: String(report.domain), takenAt: String(report.takenAt), findings, notes: [] });
 	const finding = (entry: MonitorFinding, withFix: boolean) => {
@@ -242,6 +243,7 @@ export function domainPrompt(report: MonitorReport & Record<string, unknown>): P
 			["resolvedFindings", list(report.resolvedFindings).filter(isMonitorFinding).map((entry) => finding(entry, false)), "resolved findings"],
 		],
 		"in that order, the most severe open findings first",
+		cap,
 	);
 	return build(TASKS.domain, data, cut);
 }
@@ -252,7 +254,7 @@ export function domainPrompt(report: MonitorReport & Record<string, unknown>): P
  * are left out, and so is any value of an ownership record. Zone checks keep a few of their items
  * (record names and values the page lists); account checks keep only their counts.
  */
-export function cloudflarePrompt(report: CfReport): Prompt {
+export function cloudflarePrompt(report: CfReport, cap: number = DATA_CAP): Prompt {
 	const zoneCheck = (item: CfCheck) => ({
 		title: clip(item.title),
 		status: item.status,
@@ -280,13 +282,13 @@ export function cloudflarePrompt(report: CfReport): Prompt {
 		notCovered: report.notCovered.map(clip),
 		account: [...report.accounts.flatMap((account) => account.checks), ...report.userChecks].map(accountCheck),
 	};
-	const { data, cut } = pack(base, [["zones", zones, "zones"]], "the zones with the most problems first");
+	const { data, cut } = pack(base, [["zones", zones, "zones"]], "the zones with the most problems first", cap);
 	return build(TASKS.cloudflare, data, cut);
 }
 
 /** Answers a question from the stored report only. The question is the owner's; it is not part of the data. */
-export function askPrompt(report: ScanReport, question: string): Prompt {
-	const { data, cut } = findingsData(report, noFilter(), DATA_CAP);
+export function askPrompt(report: ScanReport, question: string, cap: number = DATA_CAP): Prompt {
+	const { data, cut } = findingsData(report, noFilter(), cap);
 	return build(TASKS.ask, data, cut, `The owner's question:\n${question.trim()}`);
 }
 

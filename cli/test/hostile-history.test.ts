@@ -350,7 +350,7 @@ test("a key committed in a repository nested in another is that repository's, co
 	);
 });
 
-test("keys in commit messages, tag messages and a file a tag points at are found, and a tag pointing at a folder is named (S57)", async (t) => {
+test("keys in commit messages, tag messages and a file or a folder a tag points at are found (S57)", async (t) => {
 	if (!(await installed("gitleaks"))) return t.skip("gitleaks is not installed");
 	const root = await tempDir();
 	const repo = join(root, "messages");
@@ -364,15 +364,27 @@ test("keys in commit messages, tag messages and a file a tag points at are found
 		child.stdin!.end(`aws_access_key_id = ${fakeAwsKeyId()}\n`);
 	});
 	await git(repo, "tag", "loose-file", blob);
-	const tree = await new Promise<string>((done, fail) => execFile("git", ["-C", repo, "rev-parse", "HEAD^{tree}"], (err, stdout) => (err ? fail(err) : done(stdout.trim()))));
+	// A folder no commit holds, with a key a level down: read through ls-tree, never checked out (M11).
+	const keyed = await new Promise<string>((done, fail) => {
+		const child = execFile("git", ["-C", repo, "hash-object", "-w", "--stdin"], (err, stdout) => (err ? fail(err) : done(stdout.trim())));
+		child.stdin!.end(`one\ntwo\naws_access_key_id = ${fakeAwsKeyId()}\n`);
+	});
+	const mktree = (input: string) =>
+		new Promise<string>((done, fail) => {
+			const child = execFile("git", ["-C", repo, "mktree"], (err, stdout) => (err ? fail(err) : done(stdout.trim())));
+			child.stdin!.end(input);
+		});
+	const inner = await mktree(`100644 blob ${keyed}\tdeploy.env\n`);
+	const tree = await mktree(`040000 tree ${inner}\tconfig\n`);
 	await git(repo, "tag", "a-folder", tree);
 
 	const report = await scanRepos({ root, depth: 1, now: NOW, settingFiles: async () => [], choices: { preset: "standard", secrets: true, dependencies: false, privateData: false, history: "all", localFiles: false, skip: [], analyse: false } });
 	const found = report.repos[0]!.findings.map((finding) => [finding.location, finding.detail.replace(/[0-9a-f]{8} on \d{4}-\d{2}-\d{2}/, "<commit>")]).sort();
 	assert.deepEqual(found, [
 		["commit message:3", "commit <commit>"],
+		["config/deploy.env in the folder refs/tags/a-folder points at:3", "refs/tags/a-folder, a folder rather than a commit"],
 		["file refs/tags/loose-file points at:1", "refs/tags/loose-file, a file rather than a commit"],
 		["message of tag v1:3", "tag v1"],
 	]);
-	assert.deepEqual(report.repos[0]!.notCovered, [{ tool: "gitleaks", message: "refs/tags/a-folder points at a folder rather than a commit, which was not read" }]);
+	assert.deepEqual(report.repos[0]!.notCovered ?? [], [], "what the folder holds was read, so nothing is left to say");
 });

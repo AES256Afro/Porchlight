@@ -163,6 +163,7 @@ export async function scanRepos(options: ScanOptions): Promise<ScanReport> {
 		tools,
 		repos,
 		choices,
+		depth: options.depth,
 		...(skipped.length > 0 ? { skipped: skipped.sort() } : {}),
 		...(notSearched.length > 0 ? { notSearched: notSearched.sort((a, b) => byText(a.name, b.name)) } : {}),
 	};
@@ -184,7 +185,7 @@ function usable(tools: ToolStatus[], choices: ScanChoices): Tool[] {
  */
 export async function rescanRepo(
 	path: string,
-	options: Pick<ScanOptions, "run" | "settingFiles" | "signal" | "osvDatabase" | "choices"> & {
+	options: Pick<ScanOptions, "run" | "settingFiles" | "signal" | "osvDatabase" | "choices" | "historyReuse"> & {
 		/** The report's other repositories, by path, so one nested in this one is not named as unscanned. */
 		scanned?: string[];
 	} = {},
@@ -196,7 +197,15 @@ export async function rescanRepo(
 	const tools = await Promise.all(TOOLS.map((tool) => detect(tool, run)));
 	const available = usable(tools, choices);
 	const scanned = new Set([resolve(path), ...(options.scanned ?? []).map((other) => resolve(other))]);
-	const repo = await scanRepo(resolve(path), available, run, options.settingFiles ?? scannerSettingFiles, { choices, scanned, notSearched: [], ...(options.osvDatabase ? { osvDatabase: options.osvDatabase } : {}) });
+	const repo = await scanRepo(resolve(path), available, run, options.settingFiles ?? scannerSettingFiles, {
+		choices,
+		scanned,
+		notSearched: [],
+		...(options.osvDatabase ? { osvDatabase: options.osvDatabase } : {}),
+		// An unchanged history is not read again (OP-1): the key holds every ref, the rules and the
+		// scanner, so a commit, a rewrite or a new rule since the last reading means it is read in full.
+		...(options.historyReuse ? { historyReuse: options.historyReuse } : {}),
+	});
 	if (signal?.aborted) throw new CancelledError();
 	return { repo, tools };
 }

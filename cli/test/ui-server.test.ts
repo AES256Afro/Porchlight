@@ -546,7 +546,8 @@ test("a scheduled scan tells the owner what is new and fixed, and a scan they st
 	for (let i = 0; i < 100 && sent.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 20));
 	const text = JSON.parse(sent[1]!.body).text as string;
 	assert.match(text, /1 new and 0 fixed since the last scan/);
-	assert.match(text, /New:\n {2}\[high\] group\/worst: A fresh problem \(package-lock\.json\)/);
+	// Slack shows each section under its heading, in a code block of its own (R6V-4).
+	assert.match(text, /\*New\*\n```\n {2}\[high\] group\/worst: A fresh problem \(package-lock\.json\)/);
 	assert.match(text, /1 finding of the last scan could not be checked again, so it is not counted as fixed/);
 	assert.match(text, /Not covered, so this scan is incomplete/);
 

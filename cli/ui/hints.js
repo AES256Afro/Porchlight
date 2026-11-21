@@ -559,20 +559,8 @@ export function readyToAdd(check, checkedFor, typed, warnedFor) {
 	return "add";
 }
 
-/**
- * A network failure said in the page's words (R6U-10): Node's bare "fetch failed" and a DNS answer's
- * status number mean nothing to the owner. The rest of the message is kept as it was.
- *
- * @param {string} message
- */
-export function plainError(message) {
-	return message
-		.replace(/\bno answer \(DNS status 2\)/g, "the domain's DNS answered with an error (SERVFAIL), often a DNSSEC problem")
-		.replace(/\bno answer \(DNS status 3\)/g, "the name does not exist in DNS")
-		.replace(/\bDNS status 2\b/g, "a DNS error (SERVFAIL), often a DNSSEC problem")
-		.replace(/:\s*fetch failed\.?$/i, ": no connection could be made (the address could not be found, or nothing answered)")
-		.replace(/^fetch failed\.?$/i, "No connection could be made: the address could not be found, or nothing answered.");
-}
+// A network failure in plain words (R6U-10) lives in plain-error.js, shared with the server.
+export { plainError } from "./plain-error.js";
 
 /**
  * How an investigation ended, in a word: a run that used up its turns is not "Finished" (B49, E-F5).

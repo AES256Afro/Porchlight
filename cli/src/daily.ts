@@ -16,6 +16,7 @@ import { History, mergeRescan, orphanNotes, readNotes, setNote, type LatestChang
 import { parseScanReport, repoName } from "./repos/report.ts";
 import { rescanRepo } from "./repos/scan.ts";
 import type { Runner } from "./repos/exec.ts";
+import type { HistoryReuse } from "./repos/history-reuse.ts";
 import type { ScanReport } from "./repos/types.ts";
 import { readPrivateJson, writePrivate } from "./private-files.ts";
 import { jsonText } from "./roadmap/escape.ts";
@@ -82,13 +83,13 @@ async function savedReport(reportPath: string): Promise<ScanReport> {
  * name the report gives it, never a path, and puts the result in its place as "Scan again" on the page
  * does. The report keeps its scan time, its history entry and a model's judgements.
  */
-export async function scanAgain(name: string, reportPath: string, out: Out, deps: { run?: Runner; osvDatabase?: string } = {}): Promise<number> {
+export async function scanAgain(name: string, reportPath: string, out: Out, deps: { run?: Runner; osvDatabase?: string; historyReuse?: HistoryReuse } = {}): Promise<number> {
 	const report = await savedReport(reportPath);
 	const before = report.repos.find((repo) => repoName(report, repo) === name);
 	if (!before) throw new Error(`${name} is not in the saved scan. Its repositories are: ${report.repos.map((repo) => repoName(report, repo)).slice(0, 20).join(", ")}`);
 	const choices = { ...(report.choices ?? standardChoices()), analyse: false };
 	out.warn(`Scanning ${name} again…`);
-	const now = await rescanRepo(before.path, { choices, scanned: report.repos.map((repo) => repo.path), ...(deps.run ? { run: deps.run } : {}), ...(deps.osvDatabase ? { osvDatabase: deps.osvDatabase } : {}) });
+	const now = await rescanRepo(before.path, { choices, scanned: report.repos.map((repo) => repo.path), ...(deps.run ? { run: deps.run } : {}), ...(deps.osvDatabase ? { osvDatabase: deps.osvDatabase } : {}), ...(deps.historyReuse ? { historyReuse: deps.historyReuse } : {}) });
 	const { merged, change } = mergeRescan(name, before, now, choices);
 	// Read again: another scan may have replaced the report meanwhile.
 	const current = await savedReport(reportPath);

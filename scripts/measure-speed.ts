@@ -1,5 +1,6 @@
 // Measures M16's done-when figures for the UI server on made-up reports (cli/test/big-report.ts):
 //   node scripts/measure-speed.ts
+//   node --max-semi-space-size=2 scripts/measure-speed.ts   (the flags the server is started with: R6O-1)
 // - the report's response on the wire at 5,000 findings (OP-5: under 300 KB),
 // - the server's RSS over 25 report requests at 20,000 findings (R6O-1: under 200 MB), from the server
 //   idle with the report (it has answered the page once and settled), with the report unchanged and with
@@ -54,7 +55,9 @@ interface Child {
 }
 
 async function serve(reportPath: string, dir: string): Promise<Child> {
-	const child = spawn(process.execPath, [import.meta.filename, "serve", reportPath, dir], { stdio: ["pipe", "pipe", "inherit"] });
+	// With this script's own Node flags, so `node --max-semi-space-size=2 scripts/measure-speed.ts` measures
+	// the server as it is started for real (R6O-1).
+	const child = spawn(process.execPath, [...process.execArgv, import.meta.filename, "serve", reportPath, dir], { stdio: ["pipe", "pipe", "inherit"] });
 	const waiting: ((line: string) => void)[] = [];
 	createInterface({ input: child.stdout! }).on("line", (line) => waiting.shift()?.(line));
 	const next = () => new Promise<string>((resolve) => waiting.push(resolve));

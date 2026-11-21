@@ -5,7 +5,7 @@ import { oneAtATime, readPrivateJson, writePrivateJson } from "../private-files.
 import { compareVersions, highestVersion } from "../roadmap/versions.ts";
 import { CancelledError, lastLine, type Runner } from "./exec.ts";
 import { gitReadEnv } from "./git-copy.ts";
-import { outsideWords, readsOutside } from "./includes.ts";
+import { excludeArgs, excludedWords, outsidePlan, outsideWords, readsOutside } from "./includes.ts";
 import type { Finding, NotCovered, Severity } from "./types.ts";
 
 /**
@@ -35,6 +35,8 @@ export interface OsvOptions {
 	database?: string;
 	/** The time, for deciding whether the databases are a day old; tests set it. */
 	now?: () => Date;
+	/** Folders of the repository, by their path inside it, that osv-scanner leaves out with all they hold. */
+	exclude?: string[];
 }
 
 /** Checks the dependencies named in a repository's lockfiles against the OSV database. */
@@ -63,7 +65,8 @@ export async function osvDatabaseRefreshedAt(database: string): Promise<Date | n
  */
 async function osvScan(repo: string, run: Runner, options: OsvOptions): Promise<{ findings: Finding[]; stderr: string }> {
 	const database = options.database;
-	if (!database) return osvRun(repo, run);
+	const exclude = excludeArgs(repo, options.exclude ?? []);
+	if (!database) return osvRun(repo, run, exclude);
 	const now = options.now ?? (() => new Date());
 	const stale = async () => {
 		const at = await osvDatabaseRefreshedAt(database);
@@ -71,7 +74,7 @@ async function osvScan(repo: string, run: Runner, options: OsvOptions): Promise<
 		// A note from the future (a clock put back) is not trusted either.
 		return !(age >= 0 && age < OSV_DATABASE_FRESH_MS);
 	};
-	const downloading = () => osvRun(repo, run, database, true);
+	const downloading = () => osvRun(repo, run, exclude, database, true);
 	if (await stale()) {
 		const refreshed = await oneAtATime(join(database, REFRESHED_FILE), async () => {
 			if (!(await stale())) return null;
@@ -82,7 +85,7 @@ async function osvScan(repo: string, run: Runner, options: OsvOptions): Promise<
 		if (refreshed) return refreshed;
 	}
 	try {
-		return await osvRun(repo, run, database, false);
+		return await osvRun(repo, run, exclude, database, false);
 	} catch (err) {
 		if (err instanceof CancelledError) throw err;
 		return oneAtATime(join(database, REFRESHED_FILE), downloading);
@@ -90,11 +93,11 @@ async function osvScan(repo: string, run: Runner, options: OsvOptions): Promise<
 }
 
 /** One osv-scanner run: online, or against the databases in `database`, downloading them first when `download`. */
-async function osvRun(repo: string, run: Runner, database?: string, download = false): Promise<{ findings: Finding[]; stderr: string }> {
+async function osvRun(repo: string, run: Runner, exclude: string[], database?: string, download = false): Promise<{ findings: Finding[]; stderr: string }> {
 	const offline = database ? ["--offline-vulnerabilities", ...(download ? ["--download-offline-databases"] : [])] : [];
 	const { code, stdout, stderr } = await run(
 		"osv-scanner",
-		["scan", "source", "--recursive", ...OSV_LIMITS, ...offline, "--format", "json", repo],
+		["scan", "source", "--recursive", ...OSV_LIMITS, ...offline, ...exclude, "--format", "json", repo],
 		database ? { env: { OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY: database } } : undefined,
 	);
 	if (code === NO_PACKAGES_FOUND) return { findings: [], stderr };
@@ -153,17 +156,21 @@ function namedPaths(stderr: string, prefix: RegExp, repo: string, top: string): 
  * - the packages a requirements.txt or pom.xml pulls in indirectly, which were not worked out.
  */
 export async function scanDependencies(repo: string, run: Runner, options: OsvOptions = {}): Promise<{ findings: Finding[]; notCovered: NotCovered[]; settingFiles: string[] }> {
-	// A manifest that would read a file outside the repository keeps osv-scanner away from it (S56).
+	// A manifest that would read a file outside the repository keeps osv-scanner away from it (S56): from
+	// the whole repository when it is at the top, from its own folder when it is in one, said either way.
 	const outside = await readsOutside(repo);
-	if (outside.found.length > 0) return { findings: [], notCovered: [{ tool: "osv-scanner", message: outsideWords(outside.found) }], settingFiles: [] };
-	const { findings, stderr } = await osvScan(repo, run, options);
+	const plan = outsidePlan(outside.found);
+	if (plan.skip) return { findings: [], notCovered: [{ tool: "osv-scanner", message: outsideWords(outside.found) }], settingFiles: [] };
+	const { findings, stderr } = await osvScan(repo, run, { ...options, exclude: plan.folders });
 	const top = await realpath(repo).catch(() => repo);
 	const settingFiles = [...new Set(namedPaths(stderr, /^Loaded filter from: (.+)$/, repo, top))].sort();
 	const read = new Set(namedPaths(stderr, /^Scanned (.+) file and found \d+ packages?$/, repo, top));
 	const listed = await run("git", [...GIT_SAFE_ARGS, "-C", repo, "ls-files", "-z", "--", ...LOCKFILES.map((name) => `:(glob)**/${name}`)], { env: gitReadEnv() }).catch(() => null);
 	// Third-party code committed with the project carries lockfiles of its own, which are not the project's.
-	const tracked = listed && listed.code === 0 ? listed.stdout.split("\0").filter((path) => path !== "" && !path.split("/").includes("node_modules")) : [];
+	const leftOut = (path: string) => plan.folders.some((folder) => path.startsWith(`${folder}/`));
+	const tracked = listed && listed.code === 0 ? listed.stdout.split("\0").filter((path) => path !== "" && !path.split("/").includes("node_modules") && !leftOut(path)) : [];
 	const notCovered: NotCovered[] = [];
+	if (plan.folders.length > 0) notCovered.push({ tool: "osv-scanner", message: excludedWords(outside.found, plan.folders) });
 	if (!outside.complete) notCovered.push({ tool: "osv-scanner", message: "it holds too many files to check every include its manifests name, so one may have been read from outside it" });
 	const missed = tracked.filter((path) => !read.has(path));
 	if (missed.length > 0) {

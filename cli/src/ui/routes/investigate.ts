@@ -1,7 +1,7 @@
 // "Investigate with a model" (invariant 20): /api/investigate and beneath it. One run at a time, on a
 // domain whose ownership record holds its token; a model proposes, plain code decides.
-import type { ServerResponse } from "node:http";
 import { join } from "node:path";
+import { sizedFor } from "../../assist/context.ts";
 import { chat, isHosted, type AssistantConfig } from "../../assist/ollama.ts";
 import { DEFAULT_GOAL, DEFAULT_MAX_TURNS, DEFAULT_MIN_GAP_MS, investigate, MAX_GOAL, MAX_TURNS_LIMIT, newRun, type ApprovalAnswer, type Run } from "../../investigate/engine.ts";
 import { exportInvestigation, INVESTIGATION_FORMATS, type InvestigationFormat } from "../../investigate/export.ts";
@@ -12,8 +12,9 @@ import { liveNet, TOOLS as INVESTIGATION_TOOLS, type Net } from "../../investiga
 import { callMonitor } from "../../monitor/client.ts";
 import { FILE_TITLES } from "../../projects/projects.ts";
 import { hostedName, type ServerContext } from "../context.ts";
-import { onComputerPage, type Gate } from "../gate.ts";
+import { onComputerPage, type Call, type Gate } from "../gate.ts";
 import { bodyObject, HttpError, sendDownload, sendJson } from "../http.ts";
+import { notFoundUnder, type Route } from "../router.ts";
 
 /** One investigation turn: a short JSON answer, though a model on a processor still takes a while. */
 const INVESTIGATE_TIMEOUT_MS = 300_000;
@@ -88,115 +89,136 @@ export function createInvestigate(ctx: ServerContext) {
 		return stored ? settled(stored) : null;
 	}
 
-	async function investigateRoute(res: ServerResponse, route: string, url: URL, body: unknown, gate: Gate): Promise<void> {
-		// Stopping is always allowed; anything that adds a target or sends a request is for this computer's page only.
+	/** Stopping is always allowed; anything that adds a target or sends a request is for this computer's page only. */
+	function changedHere(gate: Gate): void {
+		if (!onComputerPage(gate)) throw new HttpError(403, "Investigations are run from the page on the computer that runs Porchlight");
+	}
+
+	function stopRoute({ res }: Call): void {
+		investigation?.stop.abort();
+		return sendJson(res, 200, { stopped: investigation !== null });
+	}
+
+	async function overview({ res, gate }: Call): Promise<void> {
 		const here = onComputerPage(gate);
-		if (route === "POST /api/investigate/stop") {
-			investigation?.stop.abort();
-			return sendJson(res, 200, { stopped: investigation !== null });
-		}
-		if (route === "GET /api/investigate") {
-			const config = ctx.modelFor("investigate").config;
-			return sendJson(res, 200, {
-				canChange: here,
-				domains: await investigateDomains(),
-				runs: await runStore.list(),
-				active: investigation ? investigation.run : null,
-				assistant: assistantSummary("investigate"),
-				...(config ? { disclosure: investigationDisclosure(config) } : {}),
-				monitor: ctx.monitor() !== null,
-				tools: INVESTIGATION_TOOLS,
-				defaults: { goal: DEFAULT_GOAL, maxTurns: DEFAULT_MAX_TURNS, maxTurnsLimit: MAX_TURNS_LIMIT, minGapMs: options.investigateMinGapMs ?? DEFAULT_MIN_GAP_MS, maxGoal: MAX_GOAL },
+		const config = ctx.modelFor("investigate").config;
+		return sendJson(res, 200, {
+			canChange: here,
+			domains: await investigateDomains(),
+			runs: await runStore.list(),
+			active: investigation ? investigation.run : null,
+			assistant: assistantSummary("investigate"),
+			...(config ? { disclosure: investigationDisclosure(config) } : {}),
+			monitor: ctx.monitor() !== null,
+			tools: INVESTIGATION_TOOLS,
+			defaults: { goal: DEFAULT_GOAL, maxTurns: DEFAULT_MAX_TURNS, maxTurnsLimit: MAX_TURNS_LIMIT, minGapMs: options.investigateMinGapMs ?? DEFAULT_MIN_GAP_MS, maxGoal: MAX_GOAL },
+		});
+	}
+
+	async function runRoute({ res, url }: Call): Promise<void> {
+		const id = url.searchParams.get("id");
+		const run = isRunId(id) ? await currentRun(id) : null;
+		if (!run) throw new HttpError(404, "There is no such investigation");
+		return sendJson(res, 200, { run });
+	}
+
+	async function exportRoute({ req, res, url }: Call): Promise<void> {
+		const id = url.searchParams.get("id");
+		const run = isRunId(id) ? await currentRun(id) : null;
+		if (!run) throw new HttpError(404, "There is no such investigation");
+		const format = url.searchParams.get("format") ?? "md";
+		if (!(INVESTIGATION_FORMATS as readonly string[]).includes(format)) throw new HttpError(400, `Choose a format: ${INVESTIGATION_FORMATS.join(" or ")}`);
+		const file = exportInvestigation(run, format as InvestigationFormat);
+		if (req.method === "POST") return saveExport(res, file, "investigation");
+		log(`Exported ${FILE_TITLES.investigation} (${format}) as a download`);
+		return sendDownload(res, file);
+	}
+
+	async function addDomain({ res, body, gate }: Call): Promise<void> {
+		changedHere(gate);
+		const fields = bodyObject(body);
+		const name = parseDomain(fields.domain);
+		if (!name) throw new HttpError(400, "Type a domain such as example.com");
+		if (!(await readDomains(investigateDomainsPath)).domains[name]) {
+			// When the monitor already watches this domain, its record serves here too.
+			let token: string | null = null;
+			const monitor = ctx.monitor();
+			if (monitor) {
+				const answer = await callMonitor(monitor, "GET", `/domains/${encodeURIComponent(name)}`, undefined, options.fetchFn).catch(() => null);
+				if (answer?.status === 200) token = tokenFromChallenge(answer.body?.domain?.challenge?.value);
+			}
+			// One change at a time, so two domains added together are both kept (B21).
+			await changeDomains(investigateDomainsPath, (file) => {
+				if (file.domains[name]) return false;
+				file.domains[name] = { token: token ?? newToken(), addedAt: new Date().toISOString(), source: token ? "monitor" : "local" };
+				return true;
 			});
 		}
-		if (route === "GET /api/investigate/run") {
-			const id = url.searchParams.get("id");
-			const run = isRunId(id) ? await currentRun(id) : null;
-			if (!run) throw new HttpError(404, "There is no such investigation");
-			return sendJson(res, 200, { run });
-		}
-		if (route === "GET /api/investigate/export" || route === "POST /api/investigate/export") {
-			const id = url.searchParams.get("id");
-			const run = isRunId(id) ? await currentRun(id) : null;
-			if (!run) throw new HttpError(404, "There is no such investigation");
-			const format = url.searchParams.get("format") ?? "md";
-			if (!(INVESTIGATION_FORMATS as readonly string[]).includes(format)) throw new HttpError(400, `Choose a format: ${INVESTIGATION_FORMATS.join(" or ")}`);
-			const file = exportInvestigation(run, format as InvestigationFormat);
-			if (route === "POST /api/investigate/export") return saveExport(res, file, "investigation");
-			log(`Exported ${FILE_TITLES.investigation} (${format}) as a download`);
-			return sendDownload(res, file);
-		}
-		if (!here) throw new HttpError(403, "Investigations are run from the page on the computer that runs Porchlight");
-		const fields = bodyObject(body);
+		return sendJson(res, 200, { domains: await investigateDomains() });
+	}
 
-		if (route === "POST /api/investigate/domains") {
-			const name = parseDomain(fields.domain);
-			if (!name) throw new HttpError(400, "Type a domain such as example.com");
-			if (!(await readDomains(investigateDomainsPath)).domains[name]) {
-				// When the monitor already watches this domain, its record serves here too.
-				let token: string | null = null;
-				const monitor = ctx.monitor();
-				if (monitor) {
-					const answer = await callMonitor(monitor, "GET", `/domains/${encodeURIComponent(name)}`, undefined, options.fetchFn).catch(() => null);
-					if (answer?.status === 200) token = tokenFromChallenge(answer.body?.domain?.challenge?.value);
-				}
-				// One change at a time, so two domains added together are both kept (B21).
-				await changeDomains(investigateDomainsPath, (file) => {
-					if (file.domains[name]) return false;
-					file.domains[name] = { token: token ?? newToken(), addedAt: new Date().toISOString(), source: token ? "monitor" : "local" };
-					return true;
-				});
-			}
-			return sendJson(res, 200, { domains: await investigateDomains() });
+	async function removeDomain({ res, body, gate }: Call): Promise<void> {
+		changedHere(gate);
+		const fields = bodyObject(body);
+		const name = parseDomain(fields.domain);
+		if (!name) throw new HttpError(400, "Type a domain such as example.com");
+		if (investigation?.run.domain === name) throw new HttpError(409, "Stop the investigation of this domain first");
+		await changeDomains(investigateDomainsPath, (file) => delete file.domains[name]);
+		return sendJson(res, 200, { domains: await investigateDomains() });
+	}
+
+	async function verifyDomain({ res, body, gate }: Call): Promise<void> {
+		changedHere(gate);
+		const fields = bodyObject(body);
+		const { name, token } = await addedDomain(fields);
+		const verified = await proveOwnership(name, token);
+		if (verified) {
+			await changeDomains(investigateDomainsPath, (file) => {
+				const entry = file.domains[name];
+				if (entry) entry.verifiedAt = new Date().toISOString();
+				return entry !== undefined;
+			});
 		}
-		if (route === "POST /api/investigate/domains/remove") {
-			const name = parseDomain(fields.domain);
-			if (!name) throw new HttpError(400, "Type a domain such as example.com");
-			if (investigation?.run.domain === name) throw new HttpError(409, "Stop the investigation of this domain first");
-			await changeDomains(investigateDomainsPath, (file) => delete file.domains[name]);
-			return sendJson(res, 200, { domains: await investigateDomains() });
+		return sendJson(res, 200, { verified, domains: await investigateDomains() });
+	}
+
+	function approve({ res, body, gate }: Call): void {
+		changedHere(gate);
+		const fields = bodyObject(body);
+		const active = investigation;
+		if (!active || active.run.id !== fields.run || !active.approval || active.approval.stepId !== fields.step) {
+			throw new HttpError(409, "That action is no longer waiting for approval");
 		}
-		if (route === "POST /api/investigate/verify") {
-			const { name, token } = await addedDomain(fields);
-			const verified = await proveOwnership(name, token);
-			if (verified) {
-				await changeDomains(investigateDomainsPath, (file) => {
-					const entry = file.domains[name];
-					if (entry) entry.verifiedAt = new Date().toISOString();
-					return entry !== undefined;
-				});
-			}
-			return sendJson(res, 200, { verified, domains: await investigateDomains() });
-		}
-		if (route === "POST /api/investigate/approve") {
-			const active = investigation;
-			if (!active || active.run.id !== fields.run || !active.approval || active.approval.stepId !== fields.step) {
-				throw new HttpError(409, "That action is no longer waiting for approval");
-			}
-			if (typeof fields.approve !== "boolean") throw new HttpError(400, "Say whether to approve");
-			// "rest": this action and every later one of this run. It can only go with a yes.
-			if (fields.rest !== undefined && typeof fields.rest !== "boolean") throw new HttpError(400, "Say whether to approve the rest of the run");
-			const rest = fields.rest === true;
-			if (rest && !fields.approve) throw new HttpError(400, "The rest of a run can be approved, not denied. Use Stop to end it");
-			const { resolve: answer } = active.approval;
-			active.approval = null;
-			answer(rest ? "rest" : fields.approve);
-			if (rest) log(`Investigation of ${active.run.domain}: you approved the rest of its requests at turn ${active.run.turns}`);
-			return sendJson(res, 200, { approved: fields.approve, rest });
-		}
-		if (route === "POST /api/investigate/finding") {
-			if (!isRunId(fields.run)) throw new HttpError(400, "Name the investigation");
-			const status = fields.status;
-			if (status !== "open" && status !== "accepted" && status !== "dismissed") throw new HttpError(400, "Choose accepted, dismissed or open");
-			const run = await currentRun(fields.run);
-			const finding = run?.findings.find((item) => item.id === fields.finding);
-			if (!run || !finding) throw new HttpError(404, "That finding is not in this investigation");
-			finding.status = status;
-			if (investigation?.run !== run) await runStore.save(run);
-			else await saveActive(run);
-			return sendJson(res, 200, { finding });
-		}
-		if (route !== "POST /api/investigate/start") throw new HttpError(404, "Not found");
+		if (typeof fields.approve !== "boolean") throw new HttpError(400, "Say whether to approve");
+		// "rest": this action and every later one of this run. It can only go with a yes.
+		if (fields.rest !== undefined && typeof fields.rest !== "boolean") throw new HttpError(400, "Say whether to approve the rest of the run");
+		const rest = fields.rest === true;
+		if (rest && !fields.approve) throw new HttpError(400, "The rest of a run can be approved, not denied. Use Stop to end it");
+		const { resolve: answer } = active.approval;
+		active.approval = null;
+		answer(rest ? "rest" : fields.approve);
+		if (rest) log(`Investigation of ${active.run.domain}: you approved the rest of its requests at turn ${active.run.turns}`);
+		return sendJson(res, 200, { approved: fields.approve, rest });
+	}
+
+	async function findingRoute({ res, body, gate }: Call): Promise<void> {
+		changedHere(gate);
+		const fields = bodyObject(body);
+		if (!isRunId(fields.run)) throw new HttpError(400, "Name the investigation");
+		const status = fields.status;
+		if (status !== "open" && status !== "accepted" && status !== "dismissed") throw new HttpError(400, "Choose accepted, dismissed or open");
+		const run = await currentRun(fields.run);
+		const finding = run?.findings.find((item) => item.id === fields.finding);
+		if (!run || !finding) throw new HttpError(404, "That finding is not in this investigation");
+		finding.status = status;
+		if (investigation?.run !== run) await runStore.save(run);
+		else await saveActive(run);
+		return sendJson(res, 200, { finding });
+	}
+
+	async function start({ res, body, gate }: Call): Promise<void> {
+		changedHere(gate);
+		const fields = bodyObject(body);
 
 		const config = ctx.modelFor("investigate").config;
 		if (!config) throw new HttpError(503, ctx.modelFor("investigate").error ?? "No model is connected. Choose one in Settings → Model");
@@ -245,7 +267,9 @@ export function createInvestigate(ctx: ServerContext) {
 				while (local && ctx.modelBusy() && !signal.aborted) await abortableSleep(500, signal);
 				if (local) ctx.setModelBusy(true);
 				try {
-					return await chat(config, [{ role: "system", content: system }, { role: "user", content: user }], { fetchFn: options.fetchFn, signal, timeoutMs: INVESTIGATE_TIMEOUT_MS, maxTokens: INVESTIGATE_TOKENS, json: true });
+					// A local model that reads less than the usual is asked for a shorter answer (R6F-8).
+					const sized = sizedFor(config, { cap: 0, maxTokens: INVESTIGATE_TOKENS });
+					return await chat(config, [{ role: "system", content: system }, { role: "user", content: user }], { fetchFn: options.fetchFn, signal, timeoutMs: INVESTIGATE_TIMEOUT_MS, maxTokens: sized.maxTokens ?? INVESTIGATE_TOKENS, ...(sized.contextLength !== null ? { contextLength: sized.contextLength } : {}), json: true });
 				} finally {
 					if (local) ctx.setModelBusy(false);
 				}
@@ -309,5 +333,23 @@ export function createInvestigate(ctx: ServerContext) {
 		return runSaves;
 	}
 
-	return { investigateRoute, investigation: () => investigation, domainsPath: investigateDomainsPath };
+	const routes: Route[] = [
+		["POST /api/investigate/stop", stopRoute],
+		["GET /api/investigate", overview],
+		["GET /api/investigate/run", runRoute],
+		["GET /api/investigate/export", exportRoute],
+		["POST /api/investigate/export", exportRoute],
+		["POST /api/investigate/domains", addDomain],
+		["POST /api/investigate/domains/remove", removeDomain],
+		["POST /api/investigate/verify", verifyDomain],
+		["POST /api/investigate/approve", approve],
+		["POST /api/investigate/finding", findingRoute],
+		["POST /api/investigate/start", start],
+		notFoundUnder("/api/investigate", "any", ({ body, gate }) => {
+			changedHere(gate);
+			bodyObject(body);
+		}),
+	];
+
+	return { routes, investigation: () => investigation, domainsPath: investigateDomainsPath };
 }

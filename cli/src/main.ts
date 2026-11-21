@@ -231,7 +231,7 @@ export async function reposScan(args: string[], deps: { run?: Runner; dataDir?: 
 	if (values.again !== undefined) {
 		if (!values.save || positionals.length > 0) throw new Error("Use --again <name> with --save and no folder: it scans one repository of the saved scan again");
 		const dir = deps.dataDir ?? (await dataFolder(homedir()));
-		return scanAgain(values.again, join(dir, "repo-scan.json"), { say, warn }, { ...(deps.run ? { run: deps.run } : {}), ...(values["osv-db"] ? { osvDatabase: resolve(values["osv-db"]) } : {}) });
+		return scanAgain(values.again, join(dir, "repo-scan.json"), { say, warn }, { ...(deps.run ? { run: deps.run } : {}), ...(values["osv-db"] ? { osvDatabase: resolve(values["osv-db"]) } : {}), historyReuse: { dir: join(dir, "history-scans") } });
 	}
 	const depth = Number.parseInt(values.depth, 10);
 	if (!Number.isInteger(depth) || depth < 0) throw new Error("--depth must be a whole number");
@@ -247,12 +247,16 @@ export async function reposScan(args: string[], deps: { run?: Runner; dataDir?: 
 	const baseline = values.baseline === undefined ? undefined : await readBaseline(values.baseline);
 
 	const scanRoot = resolve(positionals[0] ?? ".");
+	// A scan saved for the interface keeps its readings in the same data folder as one the interface runs,
+	// so an unchanged history is not read again by either (OP-1). A scan that is not saved keeps nothing.
+	const saveDir = values.save ? (deps.dataDir ?? (await dataFolder(homedir()))) : undefined;
 	const report = await scanRepos({
 		...(deps.run ? { run: deps.run } : {}),
 		root: scanRoot,
 		choices,
 		...(values["osv-db"] ? { osvDatabase: resolve(values["osv-db"]) } : {}),
 		depth,
+		...(saveDir ? { historyReuse: { dir: join(saveDir, "history-scans") } } : {}),
 		// One line a repository as it finishes, on the error stream so the report itself can be piped.
 		onRepoDone: (done) => warn(progressLine(done, scanRoot)),
 	});
@@ -273,7 +277,7 @@ export async function reposScan(args: string[], deps: { run?: Runner; dataDir?: 
 	}
 	if (values.save) {
 		// Where the interface reads it, and in its history, so `porchlight ui` shows this scan.
-		const dir = deps.dataDir ?? (await dataFolder(homedir()));
+		const dir = saveDir ?? (deps.dataDir ?? (await dataFolder(homedir())));
 		await writePrivate(join(dir, "repo-scan.json"), jsonText(report));
 		const kept = new History(dir);
 		await kept.add(report);

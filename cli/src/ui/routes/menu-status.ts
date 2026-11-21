@@ -5,14 +5,14 @@
 import { readStatus } from "../../status.ts";
 import type { ServerContext } from "../context.ts";
 import type { Call } from "../gate.ts";
-import { HttpError, sendJson } from "../http.ts";
+import { sendJson } from "../http.ts";
+import { otherMethods, type Route } from "../router.ts";
 
-export function claimsMenuStatus(call: Call): boolean {
-	return call.url.pathname === "/api/menu-status";
+export function menuStatusRoutes(ctx: ServerContext, scanning: () => boolean): Route[] {
+	return [["GET /api/menu-status", (call) => menuStatusRoute(ctx, call, scanning)], otherMethods(["/api/menu-status"])];
 }
 
-export async function menuStatusRoute(ctx: ServerContext, call: Call, scanning: () => boolean): Promise<void> {
-	if (call.req.method !== "GET") throw new HttpError(405, "Method not allowed");
+async function menuStatusRoute(ctx: ServerContext, call: Call, scanning: () => boolean): Promise<void> {
 	const status = await readStatus(ctx.dataDir, ctx.options.reportPath);
 	const repos = status.repos.state === "read" ? { state: "read" as const, scannedAt: status.repos.scannedAt, findings: status.repos.findings, bySeverity: status.repos.bySeverity, complete: status.repos.complete } : { state: status.repos.state };
 	const host = status.host.state === "read" ? { state: "read" as const, checkedAt: status.host.checkedAt, failed: status.host.failed, couldNotCheck: status.host.couldNotCheck } : { state: status.host.state };

@@ -7,7 +7,7 @@
 		"test": "npm --prefix monitor test && npm --prefix cli test",
 		"check": "npm --prefix monitor run check && npm --prefix cli run typecheck && npm run check:boxpilot",
 		"check:boxpilot": "node scripts/check-boxpilot-manifest.mjs",
-		"porchlight": "node cli/bin/porchlight.js"
+		"porchlight": "node --max-semi-space-size=1 cli/bin/porchlight.js"
 	},
 	"devDependencies": {
 		"yaml": "2.9.1"

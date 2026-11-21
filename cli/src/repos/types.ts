@@ -134,6 +134,11 @@ export interface ScanReport {
 	repos: RepoResult[];
 	/** What the scan was asked to cover. Missing from older reports, which covered what `standard` does. */
 	choices?: ScanChoices;
+	/**
+	 * Folder levels the scan looked through for repositories, so "Check again" looks as deep again (B42).
+	 * Missing from older reports, which are taken as 3 (`reportDepth` in ui/scan-choices.js).
+	 */
+	depth?: number;
 	/** Repositories found and left out because the choices named them. */
 	skipped?: string[];
 	/**

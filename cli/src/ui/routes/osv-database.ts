@@ -6,15 +6,15 @@ import { join } from "node:path";
 import { osvDatabaseRefreshedAt } from "../../repos/osv.ts";
 import type { ServerContext } from "../context.ts";
 import type { Call } from "../gate.ts";
-import { HttpError, sendJson } from "../http.ts";
+import { sendJson } from "../http.ts";
+import { otherMethods, type Route } from "../router.ts";
 
-/** Whether a request asks for the databases' age. */
-export function claimsOsvDatabase(call: Call): boolean {
-	return call.url.pathname === "/api/repos/osv-database";
+/** The databases' age, and nothing else at that path. */
+export function osvDatabaseRoutes(ctx: ServerContext): Route[] {
+	return [["GET /api/repos/osv-database", (call) => osvDatabaseRoute(ctx, call)], otherMethods(["/api/repos/osv-database"])];
 }
 
-export async function osvDatabaseRoute(ctx: ServerContext, call: Call): Promise<void> {
-	if (call.req.method !== "GET") throw new HttpError(405, "Method not allowed");
+async function osvDatabaseRoute(ctx: ServerContext, call: Call): Promise<void> {
 	if (!ctx.options.osvOffline) return sendJson(call.res, 200, { offline: false, refreshedAt: null });
 	// The same folder the scans use (`osv-db` in the data folder).
 	const at = await osvDatabaseRefreshedAt(join(ctx.dataDir, "osv-db"));

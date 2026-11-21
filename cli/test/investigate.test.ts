@@ -460,6 +460,28 @@ test("the turn budget ends the run, invalid replies included", async () => {
 	assert.match(model.prompts[1]!, /not one JSON object/);
 });
 
+test("the model is told when it is on its last turn, and only then (E-F5)", async () => {
+	const { model } = await runWith([act("dns_lookup", { host: "example.com" }), act("dns_lookup", { host: "www.example.com" }), { done: true, summary: "ok" }], { maxTurns: 3 });
+	assert.equal(model.prompts.length, 3);
+	assert.doesNotMatch(model.prompts[0]!, /last turn/);
+	assert.doesNotMatch(model.prompts[1]!, /last turn/);
+	assert.match(model.prompts[2]!, /This is your last turn\. Set done to true/);
+});
+
+test("three replies in a row that are not JSON stop the run, saying so (B49)", async () => {
+	const { run, model } = await runWith(["not json", "still not", "nope", act("dns_lookup", { host: "example.com" })], { maxTurns: 10 });
+	assert.equal(run.status, "failed");
+	assert.match(run.ended ?? "", /last 3 replies in a row were not the JSON asked for/);
+	assert.equal(run.turns, 3);
+	assert.equal(model.prompts.length, 3);
+});
+
+test("a usable reply between unusable ones starts the count again (B49)", async () => {
+	const { run } = await runWith(["not json", "not json", act("dns_lookup", { host: "example.com" }), "not json", "not json", { done: true, summary: "ok" }], { maxTurns: 10 });
+	assert.equal(run.status, "done");
+	assert.equal(run.turns, 6);
+});
+
 test("a model that fails ends the run as failed, with the reason", async () => {
 	const { run } = await runWith([], {
 		deps: {

@@ -7,7 +7,7 @@ import { formatNumber, formatWhen, h, icon, isOff, plural, replace, setOff, seve
 import { overdueDomains, reviewQueue, scheduleLines } from "./hints.js";
 import { hostName } from "./host.js";
 import { buildHash } from "./list.js";
-import { describeChoices, standardChoices } from "./scan-choices.js";
+import { describeChoices, reportDepth, standardChoices } from "./scan-choices.js";
 import { findingRows, loadHost, noteFor, startCloudflareAudit, startHostCheck, startScan, store } from "./store.js";
 import { statusLabel } from "./tracking.js";
 
@@ -132,7 +132,7 @@ export function glanceCard(gone) {
 						if (report) {
 							try {
 								// The last scan's choices, without a model's analysis: nothing is sent to a model from here.
-								await startScan(report.root, store.settings?.scanDepth ?? 3, { ...(report.choices ?? standardChoices()), analyse: false });
+								await startScan(report.root, reportDepth(report), { ...(report.choices ?? standardChoices()), analyse: false });
 								started.push("your code");
 							} catch (err) {
 								problems.push(err instanceof Error ? err.message : String(err));

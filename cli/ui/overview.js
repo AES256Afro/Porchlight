@@ -9,7 +9,7 @@ import { severityBar } from "./charts.js";
 import { emptyScanHints, osvAgeWords, overviewRedraws, previewAdvice, scheduleWords, toolAdvice } from "./hints.js";
 import { connectionsCheck, glanceCard, reviewCard } from "./glance.js";
 import { buildHash } from "./list.js";
-import { choicesToParams, depthOf, describeChoices, PRESETS, startingChoices } from "./scan-choices.js";
+import { choicesToParams, depthOf, describeChoices, PRESETS, reportDepth, startingChoices } from "./scan-choices.js";
 import { scanOptions, sendsToHosted } from "./scan-options.js";
 import { cancelScan, findingRows, load, loadCloudflare, startScan, store, subscribe } from "./store.js";
 import { changeSummary } from "./tracking.js";
@@ -39,7 +39,8 @@ export async function renderOverview(view, context) {
 	void loadCloudflare().catch(() => {});
 	let left = false;
 	const service = store.settings?.service === true;
-	const defaultDepth = store.settings?.scanDepth ?? 3;
+	// After a scan, as deep as it looked (B42); before one, the depth set for this Porchlight.
+	const defaultDepth = store.report ? reportDepth(store.report) : (store.settings?.scanDepth ?? 3);
 	/** The answer to the latest "what is in this folder" question; an earlier one arriving late is dropped. */
 	let asked = 0;
 	/** @type {import("./hints.js").ScanPreview | null} */

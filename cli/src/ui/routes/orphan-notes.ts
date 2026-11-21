@@ -8,18 +8,18 @@ import { csvRow } from "../../roadmap/escape.ts";
 import { statusLabel } from "../../../ui/tracking.js";
 import type { ServerContext } from "../context.ts";
 import type { Call } from "../gate.ts";
-import { HttpError, sendDownload } from "../http.ts";
+import { sendDownload } from "../http.ts";
+import { otherMethods, type Route } from "../router.ts";
 import { readReport } from "../report-cache.ts";
 
 const COLUMNS = ["Repository", "Rule or advisory", "Location", "Detail", "Status", "Accepted until", "Note", "Updated"];
 
-/** Whether a request asks for the export. */
-export function claimsOrphanExport(call: Call): boolean {
-	return call.url.pathname === "/api/findings/orphans/export";
+/** The export, and nothing else at that path. */
+export function orphanExportRoutes(ctx: ServerContext): Route[] {
+	return [["GET /api/findings/orphans/export", (call) => orphanExportRoute(ctx, call)], otherMethods(["/api/findings/orphans/export"])];
 }
 
-export async function orphanExportRoute(ctx: ServerContext, call: Call): Promise<void> {
-	if (call.req.method !== "GET") throw new HttpError(405, "Method not allowed");
+async function orphanExportRoute(ctx: ServerContext, call: Call): Promise<void> {
 	// The same files the server keeps beside the report: its history and the owner's notes.
 	const reportDir = dirname(ctx.options.reportPath);
 	const notes = await readNotes(join(reportDir, "finding-notes.json"));
