@@ -1,6 +1,6 @@
 {
 	"name": "porchlight",
-	"version": "0.10.0",
+	"version": "0.11.0",
 	"private": true,
 	"description": "Porchlight command line: scan local repositories and drive the attack-surface monitor",
 	"type": "module",

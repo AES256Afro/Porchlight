@@ -97,6 +97,17 @@ try {
 		"/api/investigate",
 		"/api/discussions",
 		"/api/host",
+		// What the page has read since 0.10.0: due dates, first-seen dates, notes matching nothing, the
+		// roadmap, connections, attention, the egress log, the OSV database and the model per task.
+		"/api/attention",
+		"/api/connections",
+		"/api/egress",
+		"/api/findings/due-policy",
+		"/api/findings/orphans",
+		"/api/findings/seen",
+		"/api/model-tasks",
+		"/api/repos/osv-database",
+		"/api/repos/roadmap",
 		"/api/domains",
 		...DOMAINS.flatMap((domain) => [`/api/domains/${domain}`, `/api/domains/${domain}/history`]),
 		...["roadmap", "findings"].flatMap((content) =>

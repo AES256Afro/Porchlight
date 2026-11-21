@@ -99,7 +99,8 @@ export function phaseChart(phases) {
 	const total = phases.reduce((all, phase) => all + phase.findings, 0);
 	if (total === 0) return null;
 	const row = 18;
-	const label = 120;
+	// Wide enough for the longest title in any look: a monospaced one runs about 9 pixels a character.
+	const label = Math.max(120, ...phases.map((phase, index) => `${index + 1}. ${phase.title}`.length * 9 + 8));
 	const bar = 200;
 	const height = phases.length * row;
 	return h(

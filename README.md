@@ -236,7 +236,7 @@ The figures show made-up repositories checked by the real gitleaks and osv-scann
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/overview-dark.png">
-  <img alt="The Overview: counts by severity, the four repair phases, the most affected repositories, the model's analysis and what changed since the previous scan" src="docs/screenshots/overview.png">
+  <img alt="The Overview: counts by severity, the four repair phases, the most affected repositories and what changed since the previous scan" src="docs/screenshots/overview.png">
 </picture>
 
 *Figure 1. Overview: counts by severity, the four repair phases, the most affected repositories, the model's analysis, and the changes since the previous scan.*
@@ -249,11 +249,11 @@ The figures show made-up repositories checked by the real gitleaks and osv-scann
 | *Figure 4. Explain, answered in the panel on the right* | *Figure 5. Discussions* |
 | ![The Cloudflare audit: counts, the changes Porchlight can make after approval, and each kind of problem with its fix](docs/screenshots/cloudflare.png) | ![Domains: the monitor's latest report for one domain, with changes since the previous scan and findings](docs/screenshots/domains.png) |
 | *Figure 6. Cloudflare audit* | *Figure 7. Domains, from the monitor* |
-| ![Investigate: a proven domain with its ownership record, and the form that starts a run](docs/screenshots/investigate.png) | ![The computer check on macOS, where the page is called This Mac: updates, built-in protection, network listeners, credentials in files and packages, each with its repair](docs/screenshots/host.png) |
+| ![Investigate: a proven domain with its ownership record, and the form that starts a run](docs/screenshots/investigate.png) | ![The computer check on macOS, where the page is called This Mac: counts, the commands that repair what needs no decision, and the first area, updates, with its repair](docs/screenshots/host.png) |
 | *Figure 8. Investigate* | *Figure 9. The computer check* |
 | ![Findings by repository in the Severity dashboard look, with counts by severity in the sidebar](docs/screenshots/dashboard.png) | ![The Roadmap in the Terminal look: monospace, green on black](docs/screenshots/terminal.png) |
 | *Figure 10. By repository, in the Severity dashboard look* | *Figure 11. Roadmap, in the Terminal look* |
-| ![Settings → Model: a model on this computer, on another computer, or through an API](docs/screenshots/settings-model.png) | ![Settings → Appearance: twelve looks with previews](docs/screenshots/settings-appearance.png) |
+| ![Settings → Model: a model on this computer, on another computer, or through an API](docs/screenshots/settings-model.png) | ![Settings → Appearance: thirteen looks with previews](docs/screenshots/settings-appearance.png) |
 | *Figure 12. Settings → Model* | *Figure 13. Settings → Appearance* |
 
 ## 10. Commands
