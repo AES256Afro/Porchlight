@@ -1956,6 +1956,33 @@ legend {
 	background: none;
 }
 
+/* A repository the scan's choices leave out: struck through and said in words, not by colour. */
+.chips .skipped {
+	border-style: dashed;
+	background: none;
+	color: var(--muted);
+}
+
+/* The scan form's Options: presets, checks and switches, one under another. */
+.scan-options {
+	display: grid;
+	gap: 4px;
+	max-width: 640px;
+	padding: 4px 4px 8px;
+}
+
+.scan-options fieldset {
+	margin-top: 8px;
+}
+
+.scan-options .field {
+	margin-top: 8px;
+}
+
+.scan-options .choice input:disabled + span {
+	opacity: 0.6;
+}
+
 .steps {
 	display: grid;
 	/* Never wider than the card: a long command scrolls inside its own box. */

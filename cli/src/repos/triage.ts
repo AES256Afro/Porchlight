@@ -3,18 +3,20 @@ import type { Severity } from "./types.ts";
 /**
  * Ranks a secret finding by how likely it is to be a live credential.
  *
- * Two independent signals each lower the rank by one step from high:
- * the rule only matched a generic "looks like a key" pattern, and the file is
- * somewhere real credentials rarely live. Triage only re-ranks. It never
+ * Independent signals each lower the rank by one step from high, down to low:
+ * the rule only matched a generic "looks like a key" pattern, the file is
+ * somewhere real credentials rarely live, and the file has never been committed. Triage only re-ranks. It never
  * drops a finding, because a real key can sit in a test file too.
  */
-export function triageSecret(ruleId: string, file: string): { severity: Severity; note?: string } {
+export function triageSecret(ruleId: string, file: string, local = false): { severity: Severity; note?: string } {
 	const reasons: string[] = [];
 	if (GENERIC_RULES.has(ruleId)) reasons.push("generic pattern, not a known key format");
 	const place = pathContext(file);
 	if (place) reasons.push(place);
+	// A key in a file git does not track has not left this computer: kept there, it is not a leak.
+	if (local) reasons.push("on this computer only, never committed");
 
-	const severity = (["high", "medium", "low"] as const)[reasons.length]!;
+	const severity = (["high", "medium", "low"] as const)[Math.min(reasons.length, 2)]!;
 	return reasons.length > 0 ? { severity, note: `Ranked lower: ${reasons.join("; ")}` } : { severity };
 }
 

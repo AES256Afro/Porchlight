@@ -13,6 +13,8 @@ export interface RunOptions {
 	timeoutMs?: number;
 	/** Stops the command when aborted; the run then rejects with a CancelledError. */
 	signal?: AbortSignal;
+	/** The folder the command runs in (default: this process's own). */
+	cwd?: string;
 }
 
 /** Runs a program and resolves with its exit code and output, whatever the code. */
@@ -44,7 +46,7 @@ export const run: Runner = (command, args, options) =>
 	new Promise((resolve, reject) => {
 		const env = options?.env ? { ...process.env, ...options.env } : undefined;
 		if (options?.signal?.aborted) return reject(new CancelledError());
-		execFile(command, args, { timeout: options?.timeoutMs ?? TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES, env, signal: options?.signal }, (error, stdout, stderr) => {
+		execFile(command, args, { timeout: options?.timeoutMs ?? TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES, env, signal: options?.signal, cwd: options?.cwd }, (error, stdout, stderr) => {
 			if (!error) return resolve({ code: 0, stdout, stderr });
 			if (error.name === "AbortError" || options?.signal?.aborted) return reject(new CancelledError());
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") return reject(new ToolMissingError(command));

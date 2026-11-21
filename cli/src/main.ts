@@ -10,7 +10,8 @@ import { exitCode, parseScanReport, renderMarkdown, renderSummary } from "./repo
 import { History } from "./repos/history.ts";
 import { buildSbom } from "./repos/sbom.ts";
 import { scanRepos, type RepoDone } from "./repos/scan.ts";
-import { SEVERITIES, type Severity } from "./repos/types.ts";
+import { SEVERITIES, type ScanChoices, type Severity } from "./repos/types.ts";
+import { ChoiceError, isPreset, parseChoices, PRESETS } from "../ui/scan-choices.js";
 import type { MonitorReport } from "./roadmap/domains.ts";
 import { CONTENTS, exportDomain, exportRepos, parseFilter, type ExportFile } from "./roadmap/export.ts";
 import { FORMATS } from "./roadmap/render.ts";
@@ -142,6 +143,37 @@ export async function reposSbom(args: string[], deps: { run?: Runner; write?: (t
 	return missed > 0 ? 1 : 0;
 }
 
+/**
+ * The scan choices the flags ask for: a preset (standard when none is named), changed by any switch
+ * given. The model's deeper analysis is the interface's alone, so `--preset deep` scans as Standard
+ * does here and says so.
+ */
+export function choicesFromFlags(values: { preset?: string; checks?: string; history?: string; "local-files"?: boolean; skip?: string[] }): ScanChoices {
+	const input: Record<string, unknown> = { analyse: false };
+	if (values.preset !== undefined) {
+		if (!isPreset(values.preset)) throw new Error(`--preset must be one of: ${PRESETS.map((preset) => preset.key).join(", ")}`);
+		input.preset = values.preset;
+	}
+	if (values.checks !== undefined) {
+		const checks = values.checks.split(",").map((check) => check.trim()).filter((check) => check !== "");
+		const unknown = checks.filter((check) => check !== "secrets" && check !== "dependencies");
+		if (unknown.length > 0 || checks.length === 0) throw new Error("--checks takes secrets, dependencies or both, separated by a comma");
+		input.secrets = checks.includes("secrets");
+		input.dependencies = checks.includes("dependencies");
+	}
+	if (values.history !== undefined) input.history = values.history;
+	if (values["local-files"]) input.localFiles = true;
+	if (values.skip !== undefined) input.skip = values.skip.flatMap((names) => names.split(","));
+	try {
+		const choices = parseChoices(input);
+		// Without the interface there is no model to hand over to; the preset's name stays, as chosen.
+		return values.preset === "deep" && choices.preset === "standard" ? { ...choices, preset: "deep" } : choices;
+	} catch (err) {
+		if (err instanceof ChoiceError) throw new Error(err.message.replace(/^History/, "--history").replace(/^Skip/, "--skip"));
+		throw err;
+	}
+}
+
 /** `deps` lets tests pass a scripted runner and their own folder. */
 export async function reposScan(args: string[], deps: { run?: Runner; dataDir?: string } = {}): Promise<number> {
 	const { values, positionals } = parseArgs({
@@ -154,6 +186,11 @@ export async function reposScan(args: string[], deps: { run?: Runner; dataDir?: 
 			save: { type: "boolean", default: false },
 			"osv-db": { type: "string" },
 			"fail-on": { type: "string" },
+			preset: { type: "string" },
+			checks: { type: "string" },
+			history: { type: "string" },
+			"local-files": { type: "boolean", default: false },
+			skip: { type: "string", multiple: true },
 		},
 	});
 	const depth = Number.parseInt(values.depth, 10);
@@ -163,11 +200,13 @@ export async function reposScan(args: string[], deps: { run?: Runner; dataDir?: 
 		throw new Error(`--fail-on must be one of: ${SEVERITIES.join(", ")}`);
 	}
 	if (positionals.length > 1) throw new Error("Give at most one path");
+	const choices = choicesFromFlags(values);
 
 	const scanRoot = resolve(positionals[0] ?? ".");
 	const report = await scanRepos({
 		...(deps.run ? { run: deps.run } : {}),
 		root: scanRoot,
+		choices,
 		...(values["osv-db"] ? { osvDatabase: resolve(values["osv-db"]) } : {}),
 		depth,
 		// One line a repository as it finishes, on the error stream so the report itself can be piped.

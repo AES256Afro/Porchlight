@@ -1238,7 +1238,7 @@ test("a project folder gets saved exports, discussions and a log, under Porchlig
 		/ {2}Exported Findings \(csv\) as a download$/m,
 		/ {2}Asked qwen-test:9b at ollama\.test:11434: Explain a finding, answered in [\d.]+ s$/m,
 		/ {2}Follow-up question to qwen-test:9b at ollama\.test:11434: Explain a finding, answered in [\d.]+ s$/m,
-		/ {2}Scan started: .*, 3 levels down$/m,
+		/ {2}Scan started: .*, 3 levels down\. Standard: secrets in every commit on every branch, dependencies$/m,
 		/ {2}Scan finished: 3 repositories, 4 findings \(1 critical, 1 high, 1 medium, 1 low\)$/m,
 	]) {
 		assert.match(log, line);
@@ -2012,4 +2012,105 @@ test("a failed host check is reported as failed, and a service never checks the 
 	assert.match(refused.json.error, /container/);
 	assert.deepEqual((await send(service, "GET", "/api/host", { host: "127.0.0.2" })).json, { status: { state: "idle" }, report: null, service: true });
 	assert.equal(called, false);
+});
+
+test("a scan request carries its choices to the scanner, and choices it does not understand are refused", async (t) => {
+	const scanned: ScanOptions[] = [];
+	const server = await start(t, { scan: async (options) => (scanned.push(options), { ...sampleReport(options.root), choices: options.choices }) });
+
+	for (const [choices, message] of [
+		["quick", /Choices must be an object/],
+		[{ preset: "thorough" }, /Choose a preset/],
+		[{ secrets: false, dependencies: false }, /at least one check/],
+		[{ history: -1 }, /History must be/],
+		[{ skip: "a\u0000b" }, /Skip names/],
+	] as const) {
+		const reply = await send(server, "POST", "/api/repos/scan", { body: { root: server.dir, choices } });
+		assert.equal(reply.status, 400);
+		assert.match(reply.json.error, message);
+	}
+	assert.equal(scanned.length, 0);
+
+	assert.equal((await send(server, "POST", "/api/repos/scan", { body: { root: server.dir, choices: { preset: "quick", skip: ["mild"], localFiles: true } } })).status, 202);
+	await untilScan(server, "done");
+	assert.deepEqual(scanned[0]!.choices, { preset: "quick", secrets: true, dependencies: true, history: "none", localFiles: true, skip: ["mild"], analyse: false });
+	// The choices are kept with the report and named in the log; the report says what was not covered.
+	const { report, notes } = (await send(server, "GET", "/api/repos/report")).json;
+	assert.equal(report.choices.preset, "quick");
+	assert.ok(notes.some((note: string) => note.startsWith("Git history was not read for secrets")));
+	assert.ok((await send(server, "GET", "/api/activity")).json.lines.some((line: { text: string }) => /Scan started: .*\. Quick: secrets in the files as they are now/.test(line.text)));
+
+	// No choices is a Standard scan, as before there were any.
+	await send(server, "POST", "/api/repos/scan", { body: { root: server.dir } });
+	await untilScan(server, "done");
+	assert.equal(scanned[1]!.choices?.preset, "standard");
+});
+
+test("scanning one repository again uses the report's own choices, so it covers what the report says", async (t) => {
+	const asked: unknown[] = [];
+	const server = await start(t, {
+		rescan: async (path, options) => {
+			asked.push(options?.choices);
+			return { repo: { path, findings: [], errors: [] }, tools: sampleReport("/work").tools };
+		},
+	});
+	await makeTree(server.dir, { "state/": "" });
+	const quick = { preset: "quick", secrets: true, dependencies: false, history: "none", localFiles: false, skip: [], analyse: false };
+	await writeFile(join(server.dir, "state", "repo-scan.json"), JSON.stringify({ ...sampleReport("/work"), choices: { ...quick, preset: "custom", analyse: true } }));
+
+	await send(server, "POST", "/api/repos/rescan", { body: { repo: "group/worst" } });
+	await untilScan(server, "done");
+	// The model's analysis is never started by scanning one repository again.
+	assert.deepEqual(asked, [{ ...quick, preset: "custom" }]);
+	const stored = JSON.parse(await readFile(join(server.dir, "state", "repo-scan.json"), "utf8")) as ScanReport;
+	// Dependencies were off: osv-scanner did not look, so its finding is kept.
+	assert.deepEqual(stored.repos.find((repo) => repo.path === "/work/group/worst")!.findings.map((finding) => finding.tool), ["osv-scanner"]);
+});
+
+test("a Deep scan starts the model's analysis when it finishes, and a hosted model only after a yes", async (t) => {
+	const judged: string[] = [];
+	const fetchFn = (async (_url: string, init: RequestInit) => {
+		judged.push(String(init.body));
+		return Response.json({ message: { content: '{"verdict":"likely","reason":"It is imported.","steps":[]}' } });
+	}) as unknown as typeof fetch;
+	const scan = async (options: ScanOptions) => ({ ...sampleReport(options.root), choices: options.choices });
+	const activity = async (server: UiServer) => ((await send(server, "GET", "/api/activity")).json.lines as { text: string }[]).map((line) => line.text);
+
+	const local = await start(t, { assistant, fetchFn, scan });
+	await send(local, "POST", "/api/repos/scan", { body: { root: local.dir, choices: { preset: "deep" } } });
+	await untilScan(local, "done");
+	let status = (await send(local, "GET", "/api/analysis")).json.status;
+	for (let attempt = 0; attempt < 200 && status.state !== "done"; attempt++) {
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		status = (await send(local, "GET", "/api/analysis")).json.status;
+	}
+	// The critical and high findings, as the analysis card starts it.
+	assert.deepEqual([status.state, status.done], ["done", 2]);
+	assert.equal(judged.length, 2);
+
+	// A Standard scan leaves the model alone.
+	const standard = await start(t, { assistant, fetchFn, scan });
+	await send(standard, "POST", "/api/repos/scan", { body: { root: standard.dir } });
+	await untilScan(standard, "done");
+	assert.deepEqual((await send(standard, "GET", "/api/analysis")).json.status, { state: "idle" });
+
+	const none = await start(t, { scan });
+	await send(none, "POST", "/api/repos/scan", { body: { root: none.dir, choices: { preset: "deep" } } });
+	await untilScan(none, "done");
+	assert.ok((await activity(none)).includes("Deeper analysis did not start: no model is set up (Settings → Model)"));
+
+	const hostedModel = assistantConfig({ PORCHLIGHT_LLM_PROVIDER: "anthropic", PORCHLIGHT_LLM_API_KEY: ["sk", "ant", "test", "0123456789abcdef"].join("-") });
+	const hosted = await start(t, { assistant: hostedModel, fetchFn, scan });
+	const before = judged.length;
+	await send(hosted, "POST", "/api/repos/scan", { body: { root: hosted.dir, choices: { preset: "deep" } } });
+	await untilScan(hosted, "done");
+	assert.ok((await activity(hosted)).some((text) => /^Deeper analysis did not start: .* is hosted, and the scan did not say yes to sending to it$/.test(text)));
+	assert.equal(judged.length, before, "nothing was sent to the hosted model");
+	assert.deepEqual((await send(hosted, "GET", "/api/analysis")).json.status, { state: "idle" });
+
+	// The page showed what would be sent beside the Deep choice, and the owner went ahead.
+	await send(hosted, "POST", "/api/repos/scan", { body: { root: hosted.dir, choices: { preset: "deep" }, sendsToHosted: true } });
+	await untilScan(hosted, "done");
+	for (let attempt = 0; attempt < 200 && judged.length === before; attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
+	assert.ok(judged.length > before, "the analysis started with the hosted model");
 });

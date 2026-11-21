@@ -110,7 +110,13 @@ function plan(report: ScanReport): Planned<Finding>[] {
 			entries.push({ group: name, phase: PHASE_OF[action.priority], action, findings: group });
 		}
 
-		const secrets = findings.filter((finding) => finding.kind === "secret");
+		// A key in a file git does not track has never left this computer: it is kept out of git, not rotated.
+		const local = findings.filter((finding) => finding.kind === "secret" && finding.source === "local");
+		if (local.length > 0) {
+			const action = keepAction(local);
+			entries.push({ group: name, phase: PHASE_OF[action.priority], action, findings: local });
+		}
+		const secrets = findings.filter((finding) => finding.kind === "secret" && finding.source !== "local");
 		for (const secret of secrets.filter((finding) => finding.severity === "high")) {
 			// A credential that looks live outranks its own severity label: until it is rotated it is usable.
 			entries.push({ group: name, phase: "now", action: rotateAction(secret), findings: [secret] });
@@ -185,6 +191,27 @@ function rotateAction(secret: Finding): Action {
 		clears: [`${secret.ruleId} (${secret.detail})`],
 		counts: count([secret]),
 		match: secret.location,
+	};
+}
+
+/** Keys in files git does not track: nothing to rotate while they stay out of every commit. */
+function keepAction(secrets: Finding[]): Action {
+	const files = unique(secrets.map((secret) => secret.location.replace(/:\d+$/, "")));
+	const listed = files.slice(0, MAX_LISTED);
+	if (files.length > MAX_LISTED) listed.push(`and ${files.length - MAX_LISTED} more`);
+	return {
+		kind: "keep",
+		priority: worst(secrets),
+		title: `Keep ${files.length === 1 ? "1 file" : `${files.length} files`} with keys out of git`,
+		where: listed.join(", "),
+		how: [
+			"These files are on this computer only: git does not track them, so the keys in them have not been committed. They need no rotation while that stays true.",
+			"Check that .gitignore covers each one (`git check-ignore -v <file>` names the rule), so a later `git add` cannot pick it up.",
+			"If one was shared some other way (copied into a chat, a ticket or another machine), rotate that key with the service that issued it.",
+		],
+		clears: unique(secrets.map((secret) => secret.ruleId)),
+		counts: count(secrets),
+		...(files.length === 1 ? { match: files[0]! } : {}),
 	};
 }
 

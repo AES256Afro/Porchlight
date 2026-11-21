@@ -1,6 +1,7 @@
 import { basename, isAbsolute, relative } from "node:path";
 import { mdCode, mdText } from "../roadmap/escape.ts";
-import { SEVERITIES, severityRank, type Finding, type RepoResult, type ScanReport, type Severity } from "./types.ts";
+import { choiceGaps, describeChoices, standardChoices } from "../../ui/scan-choices.js";
+import { SEVERITIES, severityRank, type Finding, type RepoResult, type ScanReport, type Severity, type ToolName } from "./types.ts";
 
 export type Counts = Record<Severity, number>;
 
@@ -67,9 +68,12 @@ export function exitCode(report: ScanReport, failOn: Severity | undefined): 0 | 
 
 /** Statements about what the scan did not cover, so a clean result is not over-read. */
 export function coverageNotes(report: ScanReport): string[] {
-	const notes: string[] = [];
+	const choices = report.choices ?? standardChoices();
+	// A check switched off is said once, by choiceGaps, not again as a scanner that is missing.
+	const chosen = (tool: ToolName) => (tool === "gitleaks" ? choices.secrets : choices.dependencies);
+	const notes: string[] = [...choiceGaps(choices, report.skipped)];
 	for (const tool of report.tools) {
-		if (tool.status !== "missing") continue;
+		if (tool.status !== "missing" || !chosen(tool.tool)) continue;
 		const skipped = tool.tool === "gitleaks" ? "Secrets were not checked" : "Dependencies were not checked";
 		notes.push(`${skipped}: ${tool.tool} is not installed (${tool.installHint}).`);
 	}
@@ -77,9 +81,17 @@ export function coverageNotes(report: ScanReport): string[] {
 		for (const error of repo.errors) {
 			notes.push(`${error.tool} failed on ${repoName(report, repo)}: ${error.message}`);
 		}
+		if (repo.unreadFiles) {
+			notes.push(
+				`${repo.unreadFiles === 1 ? "1 tracked file" : `${repo.unreadFiles} tracked files`} in ${repoName(report, repo)} ${repo.unreadFiles === 1 ? "was" : "were"} not read for secrets: larger than ${UNREAD_LIMIT_WORDS}, or not a file that could be opened.`,
+			);
+		}
 	}
 	return notes;
 }
+
+/** How large a tracked file the scan of the current files reads, in words; gitleaks.ts holds the number. */
+const UNREAD_LIMIT_WORDS = "50 MB";
 
 /**
  * What each repository told a scanner to leave out. These do not make the scan
@@ -117,6 +129,8 @@ export function renderMarkdown(report: ScanReport): string {
 		`Scanned ${repoCount(report)} under ${mdCode(report.root)} on ${report.scannedAt.slice(0, 10)}: ` +
 			`${all.length === 1 ? "1 finding" : `${all.length} findings`} ` +
 			`(${SEVERITIES.map((severity) => `${totals[severity]} ${severity}`).join(", ")}).`,
+		"",
+		`Scan: ${mdText(describeChoices(report.choices))}.`,
 		"",
 	];
 
@@ -159,6 +173,7 @@ export function renderSummary(report: ScanReport): string {
 	const lines = [
 		`${repoCount(report)} scanned, ${affected} with findings: ` +
 			SEVERITIES.map((severity) => `${totals[severity]} ${severity}`).join(", "),
+		`Scan: ${describeChoices(report.choices)}`,
 	];
 	for (const note of coverageNotes(report)) lines.push(`Not covered: ${note}`);
 	for (const note of settingNotes(report)) lines.push(`Left out by repository settings: ${note}`);

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { compareScans } from "../src/repos/history.ts";
 import type { Finding, ScanReport } from "../src/repos/types.ts";
+import { presetChoices } from "../ui/scan-choices.js";
 import { acceptanceEnded, changeSummary, isDay, statusesFor } from "../ui/tracking.js";
 
 const secret: Finding = { tool: "gitleaks", kind: "secret", severity: "high", ruleId: "aws-access-token", title: "AWS key", location: "config.ts:3", detail: "commit abc" };
@@ -84,4 +85,28 @@ test("an accepted risk ends the day after the one it was accepted until", () => 
 	assert.deepEqual(["2027-06-30", "2027-02-30", "2027-6-30", "soon", 20270630].map(isDay), [true, false, false, false, false]);
 	assert.ok(statusesFor("secret").some(([status]) => status === "rotated"));
 	assert.ok(!statusesFor("vulnerability").some(([status]) => status === "rotated"));
+});
+
+test("a scan that did not read history, or a check switched off, never makes a finding look fixed or new", () => {
+	const inHistory: Finding = { ...secret, source: "history" };
+	const inFiles: Finding = { ...secret, detail: "current files", source: "files" };
+	const standard = { ...scan("2026-11-18T00:00:00.000Z", [{ path: "/p/api", findings: [inHistory, advisory], errors: [] }]), choices: presetChoices("standard") };
+	// Quick reads the files as they are now: the secret is still there, found under another detail.
+	const quick = { ...scan("2026-11-19T00:00:00.000Z", [{ path: "/p/api", findings: [inFiles], errors: [] }]), choices: { ...presetChoices("quick"), dependencies: false } };
+
+	const change = compareScans(standard, quick);
+	// The history finding was not looked for, nor the advisory (dependencies were off); the files finding was not looked for before.
+	assert.deepEqual([change.fixedCount, change.newCount, change.uncheckedCount], [0, 0, 2]);
+
+	// Back to Standard: the files finding was not looked for this time either, so it is not fixed.
+	const again = compareScans(quick, { ...standard, scannedAt: "2026-11-20T00:00:00.000Z" });
+	assert.deepEqual([again.fixedCount, again.newCount, again.uncheckedCount], [0, 0, 1]);
+
+	// Two Quick scans compare their files findings as any two scans do.
+	const fixed = compareScans(quick, { ...quick, scannedAt: "2026-11-20T00:00:00.000Z", repos: [{ path: "/p/api", findings: [], errors: [] }] });
+	assert.deepEqual([fixed.fixedCount, fixed.uncheckedCount], [1, 0]);
+
+	// A skipped repository was not looked at, so its findings are not fixed.
+	const skipped = compareScans(standard, { ...standard, scannedAt: "2026-11-20T00:00:00.000Z", repos: [], skipped: ["api"] });
+	assert.deepEqual([skipped.fixedCount, skipped.uncheckedCount], [0, 2]);
 });

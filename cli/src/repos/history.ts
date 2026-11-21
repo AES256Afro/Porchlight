@@ -11,6 +11,7 @@
  */
 import { chmod, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { looksFor } from "../../ui/scan-choices.js";
 import { findingKey, isDay, isStatus, MAX_NOTE, type FindingNote } from "../../ui/tracking.js";
 import { countBySeverity, rank, repoName } from "./report.ts";
 import type { Finding, ScanReport, Severity } from "./types.ts";
@@ -69,8 +70,9 @@ export function keyed(report: ScanReport): Map<string, { repo: string; finding: 
 }
 
 /**
- * Each repository and scanner a scan actually looked with: the scanner was installed and did not
- * fail on that repository. A finding outside these was not looked for, so its absence says nothing.
+ * Each repository and scanner a scan actually looked with: the scanner was installed, its check was
+ * chosen, and it did not fail on that repository. A finding outside these was not looked for, so its
+ * absence says nothing.
  */
 function checked(report: ScanReport): Set<string> {
 	const ran = report.tools.filter((tool) => tool.status === "ok").map((tool) => tool.tool);
@@ -83,18 +85,28 @@ function checked(report: ScanReport): Set<string> {
 }
 
 /**
+ * Whether `report` looked for this finding: in that repository, with that scanner, and where the
+ * finding was (a Quick scan reads no history, so a secret found in an old commit was not looked for).
+ */
+function lookedFor(report: ScanReport): (repo: string, finding: Finding) => boolean {
+	const pairs = checked(report);
+	return (repo, finding) => pairs.has(`${repo}\n${finding.tool}`) && looksFor(report.choices, finding);
+}
+
+/**
  * What is new in `current`, and what `previous` had that `current` looked for and did not find. A
  * finding counts as fixed only where the later scan checked again, and as new only where the earlier
- * one had checked: a scanner that was missing or failed never makes a finding look fixed or new.
+ * one had checked: a scanner that was missing or failed, a check switched off or history not read
+ * never makes a finding look fixed or new.
  */
 export function compareScans(previous: ScanReport, current: ScanReport): Comparison {
 	const before = keyed(previous);
 	const after = keyed(current);
-	const checkedBefore = checked(previous);
-	const checkedAfter = checked(current);
-	const newKeys = [...after.entries()].filter(([key, { repo, finding }]) => !before.has(key) && checkedBefore.has(`${repo}\n${finding.tool}`)).map(([key]) => key);
+	const checkedBefore = lookedFor(previous);
+	const checkedAfter = lookedFor(current);
+	const newKeys = [...after.entries()].filter(([key, { repo, finding }]) => !before.has(key) && checkedBefore(repo, finding)).map(([key]) => key);
 	const missing = [...before.entries()].filter(([key]) => !after.has(key)).map(([, value]) => value);
-	const gone = missing.filter(({ repo, finding }) => checkedAfter.has(`${repo}\n${finding.tool}`));
+	const gone = missing.filter(({ repo, finding }) => checkedAfter(repo, finding));
 	const order = new Map(rank(gone.map((entry) => entry.finding)).map((finding, index) => [finding, index]));
 	gone.sort((a, b) => order.get(a.finding)! - order.get(b.finding)!);
 	return {

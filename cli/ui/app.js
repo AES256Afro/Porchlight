@@ -199,7 +199,7 @@ function page(section, context) {
 	if (section === "activity") return renderActivity(view);
 	if (section === "settings") return renderSettings(view);
 	if (section === "host") return renderHost(view);
-	return renderOverview(view);
+	return renderOverview(view, context);
 }
 
 /** The foot of the sidebar: whether a scan is running, and what the last one covered. Visible on every page. */

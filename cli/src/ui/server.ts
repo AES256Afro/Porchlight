@@ -55,8 +55,9 @@ import { buildSbom } from "../repos/sbom.ts";
 import { jsonText } from "../roadmap/escape.ts";
 import { noticeRequest, type Notice, type NotifyFormat } from "../notify/format.ts";
 import { failedScanNotice, scanNotice } from "../notify/scan.ts";
+import { ChoiceError, describeChoices, parseChoices, standardChoices } from "../../ui/scan-choices.js";
 import { findingKey, isDay, isStatus, MAX_NOTE } from "../../ui/tracking.js";
-import { SEVERITIES, type RepoResult, type ScanReport, type Severity, type ToolName } from "../repos/types.ts";
+import { SEVERITIES, type RepoResult, type ScanChoices, type ScanReport, type Severity, type ToolName } from "../repos/types.ts";
 import { domainSuggestions, type MonitorReport } from "../roadmap/domains.ts";
 import { exportDomain, exportRepos, ExportError, parseFilter, type ExportFile } from "../roadmap/export.ts";
 import { buildRepoRoadmap, listRepoFindings, suggestionsFor } from "../roadmap/repos.ts";
@@ -278,7 +279,7 @@ export type AnalysisStatus =
 const UI_DIR = join(import.meta.dirname, "../../ui");
 /** The page's own modules. Nothing else in the folder is served. */
 /** Every script the page loads. A test checks it names each file in ui/, so none is left unserved. */
-export const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "finding-parts", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths", "investigate", "discussions", "discussion", "discussion-links", "panel", "projects", "cloudflare", "cloudflare-settings", "monitor-settings", "activity", "model-download"];
+export const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "finding-parts", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths", "investigate", "discussions", "discussion", "discussion-links", "panel", "projects", "cloudflare", "cloudflare-settings", "monitor-settings", "activity", "model-download", "scan-choices", "scan-options"];
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
 	"/": { file: "index.html", type: "text/html; charset=utf-8" },
 	"/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
@@ -1887,8 +1888,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			[
 				exact("POST /api/repos/scan"),
 				async ({ res, body }) => {
-					const { root, depth } = await scanRequest(body, defaultDepth);
-					return sendJson(res, 202, { scan: await beginScan(root, depth) });
+					const { root, depth, choices, sendsToHosted } = await scanRequest(body, defaultDepth);
+					return sendJson(res, 202, { scan: await beginScan(root, depth, { choices, sendsToHosted }) });
 				},
 			],
 			[exact("POST /api/repos/scan/cancel"), cancelScanRoute],
@@ -2058,9 +2059,6 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		}
 		if (route !== "POST /api/analysis") throw new HttpError(404, "Not found");
 
-		const assistant = model.config;
-		if (!assistant) throw new HttpError(503, model.error ?? "No model is connected. Choose one in Settings → Model");
-		if (analysing.state === "running") throw new HttpError(409, "The analysis is already running");
 		if (status.state === "running") throw new HttpError(409, "A scan is running. Analyse when it has finished.");
 		const fields = bodyObject(body);
 		const limit = fields.limit ?? DEFAULT_ANALYSE;
@@ -2069,6 +2067,27 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		if (!Array.isArray(severities) || severities.length === 0 || !severities.every((severity) => SEVERITIES.includes(severity as Severity))) {
 			throw new HttpError(400, "Severities must be some of: critical, high, medium, low");
 		}
+		return sendJson(res, 202, { status: await startAnalysis(limit, severities as Severity[]) });
+	}
+
+	/**
+	 * A Deep scan's last step: the model's deeper analysis of the critical and high findings, as the
+	 * analysis card would start it. A hosted model is used only when the scan request said yes to
+	 * sending to it, which the page asks for beside the Deep choice. Whatever stops it is said in
+	 * the log; the scan itself has finished either way.
+	 */
+	function analyseAfterScan(sendsToHosted: boolean, project: Awaited<ReturnType<typeof projects.current>>): void {
+		const assistant = model.config;
+		if (!assistant) return log("Deeper analysis did not start: no model is set up (Settings → Model)", project);
+		if (isHosted(assistant) && !sendsToHosted) return log(`Deeper analysis did not start: ${modelWords(assistant)} is hosted, and the scan did not say yes to sending to it`, project);
+		void startAnalysis(DEFAULT_ANALYSE, ["critical", "high"]).catch((err) => log(`Deeper analysis did not start: ${err instanceof Error ? err.message : String(err)}`, project));
+	}
+
+	/** Starts the model's judgement of the findings waiting at these severities, up to `limit`, and returns at once. */
+	async function startAnalysis(limit: number, severities: Severity[]): Promise<typeof analysing> {
+		const assistant = model.config;
+		if (!assistant) throw new HttpError(503, model.error ?? "No model is connected. Choose one in Settings → Model");
+		if (analysing.state === "running") throw new HttpError(409, "The analysis is already running");
 		const report = await storedReport();
 		const stored = await readAnalysis(analysisPath, report);
 		const queue = unitsOf(report)
@@ -2110,7 +2129,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			analysing = { state: stop.signal.aborted ? "stopped" : "done", finishedAt: new Date().toISOString(), done: done - failed, total: queue.length, failed, ...(lastError ? { lastError } : {}) };
 			log(`Deeper analysis ${stop.signal.aborted ? "stopped" : "finished"}: ${done - failed} judged, ${failed} failed`, project);
 		})();
-		return sendJson(res, 202, { status: analysing });
+		return analysing;
 	}
 
 	/**
@@ -2267,18 +2286,22 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	 * Starts a scan of `root` and returns at once: the scan outlives the request, and the page polls
 	 * for progress. Used by the page's button and by the schedule.
 	 */
-	async function beginScan(root: string, depth: number, scheduled = false): Promise<ScanStatus> {
+	async function beginScan(root: string, depth: number, how: { scheduled?: boolean; choices?: ScanChoices; sendsToHosted?: boolean } = {}): Promise<ScanStatus> {
 		scanMayStart();
+		const scheduled = how.scheduled === true;
+		// A scheduled scan is always a Standard one: nobody is there to have chosen less, or to say yes to a model.
+		const choices = scheduled ? standardChoices() : (how.choices ?? standardChoices());
 		const also = (await fetchedRepos(github.dir)).length > 0 ? [{ root: github.dir, depth: GITHUB_DEPTH }] : undefined;
 		const cancel = new AbortController();
 		scanCancel = cancel;
 		status = { state: "running", root, startedAt: new Date().toISOString(), done: 0, total: 0, current: null };
 		// The scan is logged in the project in use when it starts, even if the owner moves to another meanwhile.
 		const project = await projects.current();
-		log(`Scan started: ${root}, ${depth} ${depth === 1 ? "level" : "levels"} down`, project);
+		log(`Scan started: ${root}, ${depth} ${depth === 1 ? "level" : "levels"} down. ${describeChoices(choices)}`, project);
 		void scan({
 			root,
 			depth,
+			choices,
 			...(also ? { also } : {}),
 			...(osvDatabase ? { osvDatabase } : {}),
 			signal: cancel.signal,
@@ -2307,6 +2330,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				status = { state: "done", root, finishedAt: new Date().toISOString() };
 				log(`Scan finished: ${scanCounts(report)}`, project);
 				if (scheduled) await tell(scanNotice(report, await history.latestChange(report).catch(() => null)), project);
+				if (choices.analyse) analyseAfterScan(how.sendsToHosted === true, project);
 			})
 			.catch((err) => {
 				// A cancelled scan saved nothing: the last report stands, and the page goes back to it.
@@ -2356,11 +2380,14 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		status = { state: "running", root: report.root, startedAt: new Date().toISOString(), done: 0, total: 1, current: name };
 		const project = await projects.current();
 		log(`Scanning ${name} again`, project);
-		void rescan(before.path, { signal: cancel.signal, ...(osvDatabase ? { osvDatabase } : {}) })
+		// Scanned as the whole report was, so what it covers stays what the report says it covers.
+		const choices = { ...(report.choices ?? standardChoices()), analyse: false };
+		void rescan(before.path, { signal: cancel.signal, choices, ...(osvDatabase ? { osvDatabase } : {}) })
 			.then(async ({ repo, tools }) => {
 				if (cancel.signal.aborted) throw new CancelledError();
-				// Scanners that did not look this time: not installed any more, or failed on the repository.
-				const looked = (tool: ToolName) => tools.some((now) => now.tool === tool && now.status === "ok") && !repo.errors.some((error) => error.tool === tool);
+				// Scanners that did not look this time: not chosen, not installed any more, or failed on the repository.
+				const chosen = (tool: ToolName) => (tool === "gitleaks" ? choices.secrets : choices.dependencies);
+				const looked = (tool: ToolName) => chosen(tool) && tools.some((now) => now.tool === tool && now.status === "ok") && !repo.errors.some((error) => error.tool === tool);
 				const kept = before.findings.filter((finding) => !looked(finding.tool));
 				const merged: RepoResult = {
 					...repo,
@@ -2407,7 +2434,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		const latest = [last, failedAt].filter((at): at is string => typeof at === "string").sort().at(-1);
 		if (latest && Date.now() - Date.parse(latest) < hours * 3_600_000) return;
 		try {
-			await beginScan(options.defaultRoot, defaultDepth, true);
+			await beginScan(options.defaultRoot, defaultDepth, { scheduled: true });
 		} catch (err) {
 			if (!(err instanceof HttpError && err.status === 409)) console.error(`porchlight ui: the scheduled scan could not start: ${err instanceof Error ? err.message : String(err)}`);
 		}
@@ -2780,8 +2807,8 @@ async function previewScan(root: string, depthText: string | null, githubDir: st
 	return { root: absolute, exists: true, total: inFolder.length + fromGithub.length, repos: names, fetched: fromGithub.length, depth };
 }
 
-async function scanRequest(body: unknown, defaultDepth: number): Promise<{ root: string; depth: number }> {
-	const { root, depth = defaultDepth } = (body ?? {}) as { root?: unknown; depth?: unknown };
+async function scanRequest(body: unknown, defaultDepth: number): Promise<{ root: string; depth: number; choices: ScanChoices; sendsToHosted: boolean }> {
+	const { root, depth = defaultDepth, choices: asked, sendsToHosted } = (body ?? {}) as { root?: unknown; depth?: unknown; choices?: unknown; sendsToHosted?: unknown };
 	if (typeof root !== "string" || root.trim() === "") throw new HttpError(400, "Choose a folder to scan");
 	if (typeof depth !== "number" || !Number.isInteger(depth) || depth < 0 || depth > MAX_DEPTH) {
 		throw new HttpError(400, `Depth must be a whole number from 0 to ${MAX_DEPTH}`);
@@ -2790,7 +2817,15 @@ async function scanRequest(body: unknown, defaultDepth: number): Promise<{ root:
 	const absolute = resolve(expanded);
 	const info = await stat(absolute).catch(() => null);
 	if (!info?.isDirectory()) throw new HttpError(400, `Not a folder: ${absolute}`);
-	return { root: absolute, depth };
+	if (asked !== undefined && (typeof asked !== "object" || asked === null || Array.isArray(asked))) throw new HttpError(400, "Choices must be an object");
+	let choices: ScanChoices;
+	try {
+		choices = parseChoices((asked ?? {}) as Record<string, unknown>);
+	} catch (err) {
+		if (err instanceof ChoiceError) throw new HttpError(400, err.message);
+		throw err;
+	}
+	return { root: absolute, depth, choices, sendsToHosted: sendsToHosted === true };
 }
 
 /**

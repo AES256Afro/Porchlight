@@ -32,6 +32,7 @@ test("gitleaks: normalises a finding and drops personal and secret fields", () =
 			title: "Identified a pattern that may indicate AWS credentials",
 			location: "config.ini:1",
 			detail: "commit 7b8cd884 on 2026-11-17",
+			source: "history",
 		},
 	]);
 	const serialised = JSON.stringify(findings);

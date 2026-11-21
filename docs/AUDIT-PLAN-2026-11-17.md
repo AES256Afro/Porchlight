@@ -250,6 +250,15 @@ Pin the base image digest and the BoxPilot schema (S8). Fix the picomatch dev ad
 
 ### M8: Scan options: how deep a scan goes. Size: M
 
+**Status, 2026-11-20: built, not released.** Presets, switches and flags as below, apart from private data, which waits for M7: until then Deep differs from Standard only by the analysis it starts. Decisions taken, open to the owner:
+- Owner decision 8: Deep does not read files git does not track. That stays a separate switch, off in every preset, so no preset reads a real `.env` unasked.
+- "Current files" are the files git tracks as they are now in the working tree, listed from git's index alone (`ls-files --stage`) and copied to a private temporary folder for gitleaks; nothing is converted by git, so no filter a repository names can run. A file changed since it was committed is compared with its committed version (`cat-file blob`); a key only in the change is "on this computer only, an uncommitted change". Files over 50 MB are counted under "Not covered".
+- "The last N commits" are the N latest across all branches, read together with the current files, so a key still in a file is found however old its commit. A window that moves with every commit means a history finding is never counted as fixed or new by such a scan.
+- The local-files switch also covers changes to tracked files not yet committed (a key typed into a tracked file), not only untracked and ignored files.
+- Keys found on this computer only are ranked one step lower (a triage reason, recorded in the note), and the roadmap's repair for them is "keep the file out of git", not "rotate".
+- Deep's analysis: up to 25 critical and high findings, as the analysis card starts it. With a hosted model only when the scan request says the page showed what is sent (`sendsToHosted`). A scheduled scan is always Standard and never starts a model. The CLI accepts `--preset deep`, scans as Standard, and says so in its help.
+- Comparisons between scans count a finding as new or fixed only where both scans' choices reach it (`looksFor`), on top of the existing per-scanner rule. Scanning one repository again uses the report's own choices.
+
 *Added 2026-11-19 at the owner's request.* Today the only option is "folder levels to look through". M8 adds presets in the scan form's Options and matching CLI flags:
 
 | Preset | Secrets | Dependencies | Private data | History | Afterwards |

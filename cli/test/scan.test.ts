@@ -12,6 +12,7 @@ import { History } from "../src/repos/history.ts";
 import { repoConcurrency, rescanRepo, scanRepos } from "../src/repos/scan.ts";
 import { scannerSettingFiles } from "../src/repos/settings.ts";
 import type { ScanReport } from "../src/repos/types.ts";
+import { presetChoices } from "../ui/scan-choices.js";
 import { fakeAwsKeyId, fakeRunner, git, installed, makeTree, tempDir } from "./helpers.ts";
 
 const exec = promisify(execFile);
@@ -426,4 +427,78 @@ test("with an OSV database folder, packages are compared against it and not look
 	});
 	await scanRepos({ root, depth: 2, run: online });
 	assert.ok(online.calls.filter((call) => call[0] === "osv-scanner").every((call) => !call.includes("--offline-vulnerabilities")));
+});
+
+test("end to end: a Quick scan reads the files as they are now, says history was not read, and keeps every value out", async (t) => {
+	if (!(await installed("gitleaks"))) return t.skip("gitleaks is not installed");
+	const root = await tempDir();
+	const repo = join(root, "app");
+	// Four made-up keys: one deleted (in history only), one still in a file, one typed in since the
+	// last commit, and one in an ignored .env.
+	const [removed, kept, typed, local] = ["Q3EGTZNXPL7VWK4D", "W5HJ2LMBQRS6TUV7", "D4FG3HJKLM2NP6QR", "X7YZ2ABCDE3FG4HI"].map((tail) => ["AKIA", tail].join(""));
+	await makeTree(repo, { "old.ini": `aws_access_key_id = ${removed}\n`, "kept.ini": `aws_access_key_id = ${kept}\n`, "edit.ini": "hello\n", ".gitignore": ".env\n" });
+	await git(repo, "init", "-q");
+	await git(repo, "add", "-A");
+	await git(repo, "commit", "-q", "-m", "one");
+	await git(repo, "rm", "-q", "old.ini");
+	await git(repo, "commit", "-q", "-m", "two");
+	await writeFile(join(repo, "edit.ini"), `aws_access_key_id = ${typed}\n`);
+	await writeFile(join(repo, ".env"), `AWS_ACCESS_KEY_ID=${local}\n`);
+	const secrets = (report: ScanReport) => report.repos[0]!.findings.filter((finding) => finding.kind === "secret").map((finding) => `${finding.location} ${finding.severity} (${finding.detail})`).sort();
+
+	const quick = await scanRepos({ root, depth: 1, now: NOW, choices: presetChoices("quick") });
+	// The key typed since the last commit is not in the committed edit.ini: it has not left this computer.
+	assert.deepEqual(secrets(quick), ["edit.ini:1 medium (on this computer only, an uncommitted change)", "kept.ini:1 high (current files)"]);
+	assert.ok(coverageNotes(quick).some((note) => note.startsWith("Git history was not read for secrets")), "a Quick scan says history was not covered");
+	assert.equal(quick.choices?.preset, "quick");
+
+	const everything = await scanRepos({ root, depth: 1, now: NOW, choices: { ...presetChoices("standard"), localFiles: true } });
+	assert.deepEqual(secrets(everything).map((line) => line.replace(/commit [0-9a-f]{8} on [\d-]+/, "commit")), [
+		".env:1 medium (on this computer only, not in git)",
+		"edit.ini:1 medium (on this computer only, an uncommitted change)",
+		"kept.ini:1 high (commit)",
+		"old.ini:1 high (commit)",
+	]);
+	assert.deepEqual(coverageNotes(everything), []);
+
+	// The last commit only deleted a file: what it removed is not a secret it added.
+	const recent = await scanRepos({ root, depth: 1, now: NOW, choices: { ...presetChoices("standard"), history: 1 } });
+	assert.deepEqual(secrets(recent), ["edit.ini:1 medium (on this computer only, an uncommitted change)", "kept.ini:1 high (current files)"]);
+	assert.ok(coverageNotes(recent).some((note) => note.startsWith("Only the last commit and the files as they are now were read")));
+
+	// A file changed since it was committed, with a committed key still in it: that key is a committed one.
+	await writeFile(join(repo, "kept.ini"), `# edited\naws_access_key_id = ${kept}\n`);
+	assert.deepEqual(secrets(await scanRepos({ root, depth: 1, now: NOW, choices: presetChoices("quick") })), [
+		"edit.ini:1 medium (on this computer only, an uncommitted change)",
+		"kept.ini:2 high (current files, changed since the last commit)",
+	]);
+
+	const skipped = await scanRepos({ root, depth: 1, now: NOW, choices: { ...presetChoices("quick"), skip: ["app"] } });
+	assert.deepEqual([skipped.repos.length, skipped.skipped], [0, ["app"]]);
+
+	for (const report of [quick, everything, recent]) {
+		const text = JSON.stringify(report);
+		for (const key of [removed, kept, typed, local]) assert.ok(!text.includes(key!), "no key value is in the report");
+	}
+});
+
+test("a check switched off runs no scanner, and a Quick scan never runs git's own programs", async () => {
+	const root = await tempDir();
+	await makeTree(root, { "app/.git/": "" });
+	const run = fakeRunner({
+		gitleaks: (args) => ({ stdout: args[0] === "version" ? "8.30.1" : "[]" }),
+		"osv-scanner": (args) => ({ stdout: args[0] === "--version" ? "2.7.1" : "{}" }),
+		git: () => ({ stdout: "" }),
+	});
+	const report = await scanRepos({ root, depth: 1, run, settingFiles: async () => [], choices: { ...presetChoices("quick"), dependencies: false } });
+	const scans = run.calls.filter((call) => !["version", "--version"].includes(call[1]!));
+	// gitleaks reads the copied files; git is asked only for its index, with nothing a repository sets able to run.
+	assert.deepEqual(scans.map((call) => call[0]), ["git", "gitleaks"]);
+	const gitCall = scans[0]!;
+	assert.ok(gitCall.includes("core.fsmonitor=false") && gitCall.includes("core.hooksPath=/dev/null"));
+	assert.deepEqual(gitCall.slice(-3), ["ls-files", "--stage", "-z"]);
+	assert.deepEqual(scans[1]!.slice(0, 2), ["gitleaks", "dir"]);
+	assert.ok(scans[1]!.includes("--redact"));
+	assert.equal(report.repos[0]!.errors.length, 0);
+	assert.deepEqual(report.choices?.dependencies, false);
 });

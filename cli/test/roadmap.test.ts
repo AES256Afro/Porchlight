@@ -406,3 +406,23 @@ test("turns a monitor report into repairs grouped by host", () => {
 	assert.match(headers.how[0]!, /^`Content-Security-Policy: default-src 'self'`\. Start with `Content-Security-Policy-Report-Only`/);
 	assert.match(renderRoadmap(roadmap, "md").body, /- \[ \] \*\*Remove or repoint the DNS record for shop\.example\.com\*\*/);
 });
+
+test("a key that was never committed is kept out of git, not rotated", () => {
+	const local = (location: string, detail: string): Finding => ({
+		...secret("medium", location, "aws-access-token", "Ranked lower: on this computer only, never committed"),
+		detail,
+		source: "local",
+	});
+	const report: ScanReport = {
+		...sampleReport(),
+		repos: [{ path: "/work/app", errors: [], findings: [local(".env:1", "on this computer only, not in git"), local(".env:4", "on this computer only, not in git"), local("src/config.ts:2", "on this computer only, an uncommitted change")] }],
+	};
+	const actions = buildRepoRoadmap(report).phases.flatMap((phase) => phase.groups.flatMap((group) => group.actions));
+	assert.deepEqual(
+		actions.map((action) => [action.kind, action.title, action.where]),
+		[["keep", "Keep 2 files with keys out of git", ".env, src/config.ts"]],
+	);
+	assert.match(actions[0]!.how.join(" "), /need no rotation while that stays true/);
+	// Every finding is still listed, each with that repair.
+	assert.equal(listRepoFindings(report).rows.length, 3);
+});

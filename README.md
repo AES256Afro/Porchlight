@@ -456,11 +456,16 @@ porchlight repos scan ~/Projects --out reports/repos.md
 | Option | Effect |
 | --- | --- |
 | `--depth <n>` | Directory levels searched for repositories (default 3) |
+| `--preset <name>` | What to look at: `quick`, `standard` (default) or `deep`. See "How deep a scan goes" below |
+| `--checks <list>` | Only these checks: `secrets`, `dependencies`, or both separated by a comma |
+| `--history <reach>` | Git history read for secrets: `all` (default), `none` (the files as they are now), or a number of the latest commits (with the files as they are now) |
+| `--local-files` | Also read files git does not track (such as `.env`) and changes not yet committed. What is found there is marked "on this computer only" and ranked one step lower |
+| `--skip <name>` | Leave a repository out, by the name the report gives it. Repeat, or separate names with commas |
 | `--out <file>` | Write the Markdown report to a file and print a summary |
 | `--json` | Emit the report as JSON |
 | `--osv-db <folder>` | Keep OSV's databases in this folder and compare against them, so package names are not sent to api.osv.dev. The first scan downloads each ecosystem's database (npm's is about 200 MB); later scans bring them up to date |
 | `--save` | Also keep the scan where the interface reads it (`~/.porchlight`), and in its history, so `porchlight ui` shows it. It replaces the scan shown there |
-| `--fail-on <severity>` | Exit with code 2 if any finding is at or above `critical`, `high`, `medium` or `low`; exit with code 1 if a scanner was missing or failed, so an incomplete scan never passes |
+| `--fail-on <severity>` | Exit with code 2 if any finding is at or above `critical`, `high`, `medium` or `low`; exit with code 1 if a scanner was missing or failed, or the choices left something out (a check, history, a repository), so an incomplete scan never passes |
 
 While it runs it prints one line a repository to the error stream, such as `[ 3/17] shop  1.2s  4 findings`, so the report itself can still be piped. A repository's two scanners run together, and several repositories at once, by how many cores the machine has.
 
@@ -484,8 +489,28 @@ What to know:
 - A scanner that is not installed, or that failed on a repository, is listed under "Not covered" in the report. A report with that section is not a clean result. That includes gitleaks reporting nothing because git could not read a repository's history.
 - A scanned repository is treated as hostile input. gitleaks always uses its built-in rules, so a repository's own `.gitleaks.toml` cannot switch detection off, and git is told not to run the diff programs a repository's `.git/config` can name. Ignore files a repository carries (`.gitleaksignore`, `osv-scanner.toml`) are honoured, and the report names each one under "Left out by repository settings", since whatever they hide is not listed.
 - Dependency scanning needs network access: osv-scanner sends package names and versions to the OSV database (api.osv.dev). Offline, it is reported as not covered. With `--osv-db <folder>` it downloads each ecosystem's whole database there instead (npm's is about 200 MB; later scans only bring it up to date) and sends nothing about your packages.
-- Uncommitted and git-ignored files are not scanned.
+- Uncommitted and git-ignored files are not scanned unless `--local-files` (in the interface, Options → "Files git does not track") asks for them.
 - `reports/` is git-ignored: a report names the files and commits where secrets were found.
+
+### How deep a scan goes
+
+The scan form's **Options** on the Overview, and the flags above, choose what a scan looks at:
+
+| Preset | Secrets | Dependencies | History | Afterwards |
+| --- | --- | --- | --- | --- |
+| Quick | the files git tracks, as they are now | yes | none | |
+| Standard | every commit on every branch | yes | all | |
+| Deep | every commit on every branch | yes | all | the model's deeper analysis of up to 25 critical and high findings starts (interface only) |
+
+Under the presets are separate switches: which checks run, how much history is read (all, none, or the latest N commits together with the files as they are now), folder levels, repositories to skip, and files git does not track. Changing a switch away from a preset makes the scan "Custom". Reading files git does not track is off in every preset.
+
+- Every report names its choices (`Scan: Quick: secrets in the files as they are now, no history, dependencies`), and anything less than Standard is listed under "Not covered": a Quick scan says that history was not read, so it never reads as a clean result. The choices are kept with the report and shown on the Overview.
+- On the page, the choices are kept in the address (`#/overview?preset=quick&local=true`), so a reload or a shared link keeps them.
+- "New since the last scan" and "fixed" count only what both scans looked at. After a Quick scan, a secret an earlier scan found in an old commit is counted as "could not be checked again", never as fixed.
+- Reading the files as they are now: Porchlight lists the tracked files from git's index alone (`git ls-files --stage`, so no filter or other program a repository's settings name can run), copies them into a private temporary folder for gitleaks, and compares each with its committed version by git's own id. No symbolic link is followed out of the repository, and a file over 50 MB is counted under "Not covered" rather than read. A key found only in a change not yet committed is marked "on this computer only, an uncommitted change".
+- A key in a file git does not track has never left the computer. It is ranked one step lower, and the roadmap's repair is to keep the file out of git (check that `.gitignore` covers it), not to rotate the key.
+- Deep with a hosted model: the Options panel says, beside the Deep choice, that findings will be sent outside your machines. Pressing **Check** with that shown is the yes; a request without it never starts the analysis. A scheduled scan is always Standard and never starts the model.
+- Scanning one repository again uses the report's own choices, so it covers what the report says it covers.
 
 ### A software bill of materials
 

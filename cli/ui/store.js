@@ -257,10 +257,12 @@ export async function saveFindingNote(repo, finding, status, note, until = "") {
 /**
  * @param {string} root
  * @param {number} depth
+ * @param {import("../src/repos/types.ts").ScanChoices} choices
+ * @param {boolean} [sendsToHosted] the page said a hosted model would be sent findings afterwards, and the owner went ahead
  */
-export async function startScan(root, depth) {
+export async function startScan(root, depth, choices, sendsToHosted = false) {
 	try {
-		const { scan } = await api("POST", "/repos/scan", { root, depth });
+		const { scan } = await api("POST", "/repos/scan", { root, depth, choices, sendsToHosted });
 		setScan(scan);
 	} catch (err) {
 		// Someone else, or another tab, started one: follow that scan instead.

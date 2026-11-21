@@ -23,6 +23,17 @@ Scans every git repository under path (default: the current folder) with gitleak
 osv-scanner, and prints one ranked report. Progress goes to the error stream, one line a repository.
 
   --depth <n>            Folder levels to search for repositories (default: 3)
+  --preset <name>        What to look at (default: standard):
+                           quick: secrets in the files as they are now, and dependencies; no history
+                           standard: secrets in every commit on every branch, and dependencies
+                           deep: as standard here; in the interface the model's deeper analysis follows
+  --checks <list>        Only these checks: secrets, dependencies, or both separated by a comma
+  --history <reach>      How much git history to read for secrets: all, none (the files as they are
+                         now), or a number of the latest commits (with the files as they are now)
+  --local-files          Also read files git does not track, such as .env. What is found there is
+                         reported as on this computer only, one step lower
+  --skip <name>          Leave out a repository, by the name the report gives it. Repeat, or separate
+                         names with commas
   --out <file>           Write the report to a file instead of printing it
   --json                 Write the report as JSON, the form \`repos export\` and the interface read
   --osv-db <folder>      Keep OSV's vulnerability databases in this folder and compare against them,
@@ -30,7 +41,8 @@ osv-scanner, and prints one ranked report. Progress goes to the error stream, on
   --save                 Also keep the scan where the interface reads it (~/.porchlight), in its
                          history too, so \`porchlight ui\` shows it. Replaces the scan shown there
   --fail-on <severity>   Exit 2 if any finding is at or above: ${SEVERITIES.join(", ")}
-                         Exit 1 if a scanner was missing or failed`,
+                         Exit 1 if a scanner was missing or failed, or the choices left something
+                         out (a check, history, a repository), as they do for quick`,
 	},
 	{
 		command: "repos export",

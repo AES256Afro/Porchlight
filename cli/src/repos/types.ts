@@ -19,6 +19,35 @@ export interface Finding {
 	note?: string;
 	/** For a vulnerability: the lowest release that fixes it, when the advisory names one. */
 	fixedIn?: string;
+	/**
+	 * For a secret: where it was found. `history`: in a commit. `files`: in a file git tracks, as it is
+	 * now (a scan that did not read every commit). `local`: in a file git does not track, so it has
+	 * never been committed. Missing from older reports, which read history alone.
+	 */
+	source?: SecretSource;
+}
+
+export type SecretSource = "history" | "files" | "local";
+
+/** How far back a secrets scan reads: every commit, the last so many, or none (the files as they are). */
+export type HistoryReach = "all" | "none" | number;
+
+/**
+ * What a scan was asked to look at. Saved with the report, so the report, the page and every export
+ * can say what it did not cover. Missing from older reports, which are `standard`.
+ */
+export interface ScanChoices {
+	/** The preset these match, or `custom` when a switch was changed from one. */
+	preset: "quick" | "standard" | "deep" | "custom";
+	secrets: boolean;
+	dependencies: boolean;
+	history: HistoryReach;
+	/** Also read files git does not track (such as .env), reported as on this computer only. */
+	localFiles: boolean;
+	/** Repositories, by name, not to scan. */
+	skip: string[];
+	/** Start the model's deeper analysis once the scan has finished (the interface only). */
+	analyse: boolean;
 }
 
 export interface ToolStatus {
@@ -46,6 +75,11 @@ export interface RepoResult {
 	 * did not look that time, its earlier findings were kept.
 	 */
 	rescannedAt?: string;
+	/**
+	 * Tracked files a scan of the current files did not read: larger than it reads, or not a file it
+	 * could open. Missing when none were.
+	 */
+	unreadFiles?: number;
 }
 
 export interface ScanReport {
@@ -58,6 +92,10 @@ export interface ScanReport {
 	scannedAt: string;
 	tools: ToolStatus[];
 	repos: RepoResult[];
+	/** What the scan was asked to cover. Missing from older reports, which covered what `standard` does. */
+	choices?: ScanChoices;
+	/** Repositories found and left out because the choices named them. */
+	skipped?: string[];
 }
 
 /** Lower is more severe. */

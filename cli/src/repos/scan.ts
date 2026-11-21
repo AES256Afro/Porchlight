@@ -2,21 +2,37 @@ import { availableParallelism } from "node:os";
 import { resolve } from "node:path";
 import { discoverRepos } from "./discover.ts";
 import { CancelledError, run as defaultRun, ToolMissingError, type Runner } from "./exec.ts";
-import { runGitleaks } from "./gitleaks.ts";
+import { standardChoices } from "../../ui/scan-choices.js";
+import { scanSecrets } from "./gitleaks.ts";
 import { runOsvScanner } from "./osv.ts";
+import { nameUnder } from "./report.ts";
 import { scannerSettingFiles } from "./settings.ts";
-import type { Finding, RepoResult, ScanReport, ToolName, ToolStatus } from "./types.ts";
+import type { Finding, RepoResult, ScanChoices, ScanReport, ToolName, ToolStatus } from "./types.ts";
 
 interface Tool {
 	name: ToolName;
 	versionArgs: string[];
 	installHint: string;
-	scan: (repo: string, run: Runner, settings: ScannerSettings) => Promise<Finding[]>;
+	/** Whether the choices ask for this scanner's check. */
+	chosen: (choices: ScanChoices) => boolean;
+	scan: (repo: string, run: Runner, settings: ScannerSettings) => Promise<{ findings: Finding[]; unreadFiles?: number }>;
 }
 
 const TOOLS: Tool[] = [
-	{ name: "gitleaks", versionArgs: ["version"], installHint: "brew install gitleaks", scan: runGitleaks },
-	{ name: "osv-scanner", versionArgs: ["--version"], installHint: "brew install osv-scanner", scan: (repo, run, settings) => runOsvScanner(repo, run, { database: settings.osvDatabase }) },
+	{
+		name: "gitleaks",
+		versionArgs: ["version"],
+		installHint: "brew install gitleaks",
+		chosen: (choices) => choices.secrets,
+		scan: (repo, run, settings) => scanSecrets(repo, run, { history: settings.choices.history, localFiles: settings.choices.localFiles }),
+	},
+	{
+		name: "osv-scanner",
+		versionArgs: ["--version"],
+		installHint: "brew install osv-scanner",
+		chosen: (choices) => choices.dependencies,
+		scan: async (repo, run, settings) => ({ findings: await runOsvScanner(repo, run, { database: settings.osvDatabase }) }),
+	},
 ];
 
 /**
@@ -65,11 +81,14 @@ export interface ScanOptions {
 	concurrency?: number;
 	/** A folder for OSV's offline databases; see runOsvScanner. Absent: packages are looked up online. */
 	osvDatabase?: string;
+	/** What to look at (default: Standard, everything a scan looked at before there were choices). Saved with the report. */
+	choices?: ScanChoices;
 }
 
 /** What the scanners are told beyond the repository. */
 interface ScannerSettings {
 	osvDatabase?: string;
+	choices: ScanChoices;
 }
 
 export async function scanRepos(options: ScanOptions): Promise<ScanReport> {
@@ -79,12 +98,17 @@ export async function scanRepos(options: ScanOptions): Promise<ScanReport> {
 	const run: Runner = signal ? (command, args, runOptions) => baseRun(command, args, { ...runOptions, signal }) : baseRun;
 	const now = options.now ?? (() => new Date());
 	const root = resolve(options.root);
+	const choices = options.choices ?? standardChoices();
 	const tools = await Promise.all(TOOLS.map((tool) => detect(tool, run)));
-	const available = TOOLS.filter((tool) => tools.some((status) => status.tool === tool.name && status.status === "ok"));
+	const available = usable(tools, choices);
 	const others = (options.also ?? []).map((other) => ({ root: resolve(other.root), depth: other.depth }));
 	const found = await Promise.all([{ root, depth: options.depth }, ...others].map((place) => discoverRepos(place.root, place.depth)));
-	// A folder inside another is found twice; it is scanned once.
-	const paths = [...new Set(found.flat())];
+	const otherRoots = others.map((other) => other.root);
+	// A folder inside another is found twice; it is scanned once. One the choices name is left out, by its name.
+	const named = [...new Set(found.flat())].map((path) => ({ path, name: nameUnder(root, otherRoots.length > 0 ? otherRoots : undefined, path) }));
+	const skipped = named.filter(({ name }) => choices.skip.includes(name)).map(({ name }) => name);
+	const paths = named.filter(({ name }) => !choices.skip.includes(name)).map(({ path }) => path);
+	const settings: ScannerSettings = { choices, ...(options.osvDatabase ? { osvDatabase: options.osvDatabase } : {}) };
 
 	const repos: RepoResult[] = [];
 	const queue = [...paths];
@@ -93,7 +117,7 @@ export async function scanRepos(options: ScanOptions): Promise<ScanReport> {
 			if (signal?.aborted) throw new CancelledError();
 			options.onProgress?.({ done: repos.length, total: paths.length, path });
 			const started = now().getTime();
-			const result = await scanRepo(path, available, run, options.settingFiles ?? scannerSettingFiles, { osvDatabase: options.osvDatabase });
+			const result = await scanRepo(path, available, run, options.settingFiles ?? scannerSettingFiles, settings);
 			// A scanner stopped half way has not looked: its repository is not reported at all.
 			if (signal?.aborted) throw new CancelledError();
 			repos.push(result);
@@ -103,21 +127,26 @@ export async function scanRepos(options: ScanOptions): Promise<ScanReport> {
 	await Promise.all(Array.from({ length: Math.max(1, options.concurrency ?? repoConcurrency()) }, worker));
 	repos.sort((a, b) => a.path.localeCompare(b.path));
 
-	const otherRoots = others.map((other) => other.root);
-	return { root, ...(otherRoots.length > 0 ? { otherRoots } : {}), scannedAt: now().toISOString(), tools, repos };
+	return { root, ...(otherRoots.length > 0 ? { otherRoots } : {}), scannedAt: now().toISOString(), tools, repos, choices, ...(skipped.length > 0 ? { skipped: skipped.sort() } : {}) };
+}
+
+/** The scanners that are installed and that the choices ask for. */
+function usable(tools: ToolStatus[], choices: ScanChoices): Tool[] {
+	return TOOLS.filter((tool) => tool.chosen(choices) && tools.some((status) => status.tool === tool.name && status.status === "ok"));
 }
 
 /**
  * Scans one repository again with the scanners installed now, as a full scan would. For the
  * interface's "Scan this repository again"; the caller puts the result in place of the old one.
  */
-export async function rescanRepo(path: string, options: Pick<ScanOptions, "run" | "settingFiles" | "signal" | "osvDatabase"> = {}): Promise<{ repo: RepoResult; tools: ToolStatus[] }> {
+export async function rescanRepo(path: string, options: Pick<ScanOptions, "run" | "settingFiles" | "signal" | "osvDatabase" | "choices"> = {}): Promise<{ repo: RepoResult; tools: ToolStatus[] }> {
 	const { signal } = options;
 	const baseRun = options.run ?? defaultRun;
 	const run: Runner = signal ? (command, args, runOptions) => baseRun(command, args, { ...runOptions, signal }) : baseRun;
+	const choices = options.choices ?? standardChoices();
 	const tools = await Promise.all(TOOLS.map((tool) => detect(tool, run)));
-	const available = TOOLS.filter((tool) => tools.some((status) => status.tool === tool.name && status.status === "ok"));
-	const repo = await scanRepo(resolve(path), available, run, options.settingFiles ?? scannerSettingFiles, { osvDatabase: options.osvDatabase });
+	const available = usable(tools, choices);
+	const repo = await scanRepo(resolve(path), available, run, options.settingFiles ?? scannerSettingFiles, { choices, ...(options.osvDatabase ? { osvDatabase: options.osvDatabase } : {}) });
 	if (signal?.aborted) throw new CancelledError();
 	return { repo, tools };
 }
@@ -134,7 +163,7 @@ async function detect(tool: Tool, run: Runner): Promise<ToolStatus> {
 }
 
 /** One scanner failing on a repository is recorded against it; the others still run. */
-async function scanRepo(path: string, tools: Tool[], run: Runner, settingFiles: (repo: string) => Promise<string[]>, settings: ScannerSettings = {}): Promise<RepoResult> {
+async function scanRepo(path: string, tools: Tool[], run: Runner, settingFiles: (repo: string) => Promise<string[]>, settings: ScannerSettings): Promise<RepoResult> {
 	const result: RepoResult = { path, findings: [], errors: [] };
 	const files = await settingFiles(path);
 	if (files.length > 0) result.settingFiles = files;
@@ -143,15 +172,19 @@ async function scanRepo(path: string, tools: Tool[], run: Runner, settingFiles: 
 	const outcomes = await Promise.all(
 		tools.map(async (tool) => {
 			try {
-				return { findings: await tool.scan(path, run, settings) };
+				return await tool.scan(path, run, settings);
 			} catch (err) {
 				return { error: { tool: tool.name, message: err instanceof Error ? err.message : String(err) } };
 			}
 		}),
 	);
 	for (const outcome of outcomes) {
-		if (outcome.findings) result.findings.push(...outcome.findings);
-		else result.errors.push(outcome.error);
+		if ("error" in outcome) {
+			result.errors.push(outcome.error);
+			continue;
+		}
+		result.findings.push(...outcome.findings);
+		if (outcome.unreadFiles) result.unreadFiles = outcome.unreadFiles;
 	}
 	return result;
 }

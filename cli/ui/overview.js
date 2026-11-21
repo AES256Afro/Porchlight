@@ -7,6 +7,8 @@ import { coverageBanner } from "./finding-parts.js";
 import { githubPanel } from "./github.js";
 import { emptyScanHints, previewAdvice, scheduleWords } from "./hints.js";
 import { buildHash } from "./list.js";
+import { choicesFromParams, choicesToParams, describeChoices, PRESETS } from "./scan-choices.js";
+import { scanOptions, sendsToHosted } from "./scan-options.js";
 import { cancelScan, findingRows, load, loadCloudflare, startScan, store, subscribe } from "./store.js";
 import { changeSummary } from "./tracking.js";
 
@@ -23,9 +25,10 @@ const CHIPS = 14;
  * The Overview page: start a scan, see where things stand, and go to what needs doing first.
  *
  * @param {HTMLElement} view
+ * @param {import("./finding-parts.js").Route} context
  * @returns {Promise<() => void>}
  */
-export async function renderOverview(view) {
+export async function renderOverview(view, context) {
 	await load();
 	// The Cloudflare card needs the latest audit. It is fetched without holding the page up, and the
 	// card is drawn again when it arrives: a page that waits here can draw itself over a later one.
@@ -56,6 +59,16 @@ export async function renderOverview(view) {
 	rootInput.addEventListener("input", forget);
 	rootInput.addEventListener("change", () => void look());
 	depthInput.addEventListener("change", () => void look());
+	// What the scan looks at lives in the address, like a page's filters, so a reload or a shared link keeps it.
+	const initial = choicesFromParams(context.params);
+	const optionsSummary = h("summary", null);
+	const options = scanOptions(initial, h("label", { class: "field" }, h("span", null, "Folder levels to look through for repositories (0 to 6)"), depthInput), (choices) => {
+		context.replace(choicesToParams(choices));
+		nameOptions();
+		drawPreview();
+		drawScan();
+	});
+	nameOptions();
 
 	replace(
 		view,
@@ -76,7 +89,8 @@ export async function renderOverview(view) {
 						onsubmit: async (/** @type {SubmitEvent} */ event) => {
 							event.preventDefault();
 							try {
-								await startScan(rootInput.value, Number(depthInput.value));
+								const choices = options.choices();
+								await startScan(rootInput.value, Number(depthInput.value), choices, sendsToHosted(choices));
 							} catch (err) {
 								toast(err instanceof Error ? err.message : String(err), "error");
 							}
@@ -85,18 +99,9 @@ export async function renderOverview(view) {
 					// A service checks the one folder its server gave it, so there is nothing to type.
 					service ? null : h("label", { class: "field grow" }, h("span", null, "Folder that holds your projects"), rootInput),
 					previewSlot,
-					h(
-						"div",
-						{ class: "actions" },
-						scanButton,
-						h("button", { type: "button", class: "button quiet", onclick: () => void look() }, "Look again"),
-						h(
-							"details",
-							{ class: "options" },
-							h("summary", null, "Options"),
-							h("label", { class: "field" }, h("span", null, "Folder levels to look through for repositories (0 to 6)"), depthInput),
-						),
-					),
+					// Open when the address asks for anything but a Standard scan, so what will run is in sight.
+					h("details", { class: "options", open: Object.values(choicesToParams(initial)).some((value) => value !== undefined) }, optionsSummary, options.node),
+					h("div", { class: "actions" }, scanButton, h("button", { type: "button", class: "button quiet", onclick: () => void look() }, "Look again")),
 				),
 				scanSlot,
 				github.node,
@@ -119,6 +124,18 @@ export async function renderOverview(view) {
 		unsubscribe();
 	};
 
+	/** "Options: Quick", so the preset is in sight with the panel closed. */
+	function nameOptions() {
+		const preset = options.choices().preset;
+		optionsSummary.textContent = `Options: ${PRESETS.find((entry) => entry.key === preset)?.label ?? "Custom"}`;
+	}
+
+	/** The repositories the choices leave out, among those the folder holds. */
+	function skippedHere() {
+		const skip = options.choices().skip;
+		return preview ? preview.repos.filter((name) => skip.includes(name)) : [];
+	}
+
 	function forget() {
 		asked++;
 		preview = null;
@@ -137,25 +154,7 @@ export async function renderOverview(view) {
 			const answer = await api("GET", `/repos/preview?root=${encodeURIComponent(root)}&depth=${encodeURIComponent(depthInput.value || "3")}`);
 			if (left || current !== asked) return;
 			preview = /** @type {import("./hints.js").ScanPreview} */ (answer.preview);
-			const advice = previewAdvice(preview, store.settings);
-			const shown = preview.repos.slice(0, CHIPS);
-			replace(
-				previewSlot,
-				advice.found
-					? h(
-							"div",
-							{ class: "found" },
-							h("strong", null, h("span", { class: "severity status-good" }, icon("good"), advice.title)),
-							h("ul", { class: "chips" }, ...shown.map((name) => h("li", null, name)), preview.total > shown.length ? h("li", { class: "more" }, `and ${(preview.total - shown.length).toLocaleString()} more`) : null),
-						)
-					: h(
-							"div",
-							{ class: "guide" },
-							h("strong", null, h("span", { class: "severity status-pending" }, icon("pending"), advice.title)),
-							...advice.lines.map((line) => h("p", null, ...stepNodes(line))),
-							advice.steps.length > 0 ? h("ol", { class: "steps" }, ...advice.steps.map((step) => h("li", null, ...stepNodes(step)))) : null,
-						),
-			);
+			drawPreview();
 		} catch (err) {
 			if (left || current !== asked) return;
 			preview = null;
@@ -164,12 +163,43 @@ export async function renderOverview(view) {
 		drawScan();
 	}
 
+	/** What the folder holds, with the repositories the choices skip marked as such. */
+	function drawPreview() {
+		if (!preview) return;
+		const advice = previewAdvice(preview, store.settings);
+		const shown = preview.repos.slice(0, CHIPS);
+		const skip = options.choices().skip;
+		replace(
+			previewSlot,
+			advice.found
+				? h(
+						"div",
+						{ class: "found" },
+						h("strong", null, h("span", { class: "severity status-good" }, icon("good"), advice.title)),
+						h(
+							"ul",
+							{ class: "chips" },
+							...shown.map((name) => (skip.includes(name) ? h("li", { class: "skipped" }, h("s", null, name), " skipped") : h("li", null, name))),
+							preview.total > shown.length ? h("li", { class: "more" }, `and ${(preview.total - shown.length).toLocaleString()} more`) : null,
+						),
+					)
+				: h(
+						"div",
+						{ class: "guide" },
+						h("strong", null, h("span", { class: "severity status-pending" }, icon("pending"), advice.title)),
+						...advice.lines.map((line) => h("p", null, ...stepNodes(line))),
+						advice.steps.length > 0 ? h("ol", { class: "steps" }, ...advice.steps.map((step) => h("li", null, ...stepNodes(step)))) : null,
+					),
+		);
+	}
+
 	function drawScan() {
 		const scan = store.scan;
 		const running = scan.state === "running";
+		const total = preview ? preview.total - skippedHere().length : 0;
 		// Nothing to check is said above the button; pressing it would only say so again.
-		scanButton.disabled = running || preview?.total === 0;
-		const count = preview && preview.total > 0 ? ` ${plural(preview.total, "repository", "repositories")}` : "";
+		scanButton.disabled = running || (preview !== null && total <= 0);
+		const count = preview && total > 0 ? ` ${plural(total, "repository", "repositories")}` : "";
 		scanButton.textContent = running ? "Checking…" : store.report ? `Check${count} again` : `Check${count}`;
 		if (running) {
 			const known = scan.total > 0;
@@ -234,7 +264,7 @@ export async function renderOverview(view) {
 			h(
 				"p",
 				{ class: "sub scan-line" },
-				`Last scan: ${plural(report.repos.length, "repository", "repositories")} under ${report.root}, ${formatWhen(report.scannedAt)}.`,
+				`Last scan: ${plural(report.repos.length, "repository", "repositories")} under ${report.root}, ${formatWhen(report.scannedAt)}. ${describeChoices(report.choices)}.`,
 				scheduleWords(store.settings?.scanEveryHours ?? 0) ? ` ${scheduleWords(store.settings?.scanEveryHours ?? 0)}` : null,
 			),
 			coverageBanner(),
