@@ -115,3 +115,18 @@ test("the new checks run within the host check, under their own area, and only r
 	assert.ok(report.checks.some((check) => check.id === "ssh-forward-agent" && check.status === "failed"));
 	assert.ok(!run.calls.some((call) => call[0] === "sudo"));
 });
+
+test("a program reached through a link is judged by the file it points to, never the link's own mode", async (t) => {
+	const { riskyPlace } = await import("../src/host/extras.ts");
+	const { lstat, readdir } = await import("node:fs/promises");
+	// A link the system itself ships, outside any temporary folder: /usr/bin/true on Ubuntu, others on macOS.
+	let link: string | undefined;
+	for (const name of await readdir("/usr/bin").catch(() => [] as string[])) {
+		if ((await lstat(join("/usr/bin", name)).catch(() => null))?.isSymbolicLink()) {
+			link = join("/usr/bin", name);
+			break;
+		}
+	}
+	if (!link) return t.skip("no link in /usr/bin on this computer");
+	assert.equal(await riskyPlace(link, "/nonexistent-home", false), null, `${link} is a link, whose own mode is 0777`);
+});

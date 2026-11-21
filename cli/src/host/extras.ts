@@ -13,7 +13,7 @@
  * and is said in the detail when something was: never a pass (invariant 5). Nothing here contacts
  * another machine or needs more privilege than the person running it has.
  */
-import { lstat, readdir, readFile, stat } from "node:fs/promises";
+import { lstat, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import type { Runner } from "../repos/exec.ts";
 import { output } from "./macos.ts";
@@ -191,7 +191,18 @@ export async function riskyPlace(program: string, home: string, systemWide: bool
 	if (!isAbsolute(program)) return null;
 	if (systemWide && (program.startsWith(`${home}/`) || /^\/Users\/[^/]+\//.test(program) || /^\/home\/[^/]+\//.test(program))) return "it starts for every user from a folder one account can change";
 	if (TEMPORARY.some((pattern) => pattern.test(program)) || program.startsWith(`${home}/Downloads/`)) return "it is in a temporary or shared folder";
-	for (const path of [program, dirname(program)]) {
+	// Where the program really is: a link's own mode is always 0777 and says nothing about who can
+	// change what it points to (/usr/bin/true is a link on Ubuntu).
+	let real: string;
+	try {
+		real = await realpath(program);
+	} catch {
+		// A program that is not there starts nothing.
+		return null;
+	}
+	// A link into a temporary folder runs from there just the same.
+	if (real !== program && TEMPORARY.some((pattern) => pattern.test(real))) return "it is in a temporary or shared folder";
+	for (const path of [real, dirname(real)]) {
 		try {
 			const info = await lstat(path);
 			if ((info.mode & 0o002) !== 0 && !(info.isDirectory() && (info.mode & 0o1000) !== 0)) return "other users of this computer can change it";
