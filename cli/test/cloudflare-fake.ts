@@ -30,6 +30,8 @@ export interface FakeOptions {
 	owned?: boolean;
 	/** Answer 403 to every change of a zone setting, as for a token without "Zone Settings Write". */
 	denySettingWrites?: boolean;
+	/** The account's name, as Cloudflare gives it: "<email>'s Account" for a personal one. */
+	accountName?: string;
 	now?: Date;
 }
 
@@ -148,7 +150,7 @@ export function fakeCloudflare(options: FakeOptions = {}) {
 		}
 		if (path === "/user/tokens/verify") return options.accountToken ? envelope(null, 401) : envelope({ id: SELF_TOKEN_ID, status: "active" });
 		if (path === `/accounts/${ACCOUNT_ID}/tokens/verify`) return envelope({ id: SELF_TOKEN_ID, status: "active", expires_on: iso(90) });
-		if (path === "/accounts") return envelope([{ id: ACCOUNT_ID, name: "Owner's account" }]);
+		if (path === "/accounts") return envelope([{ id: ACCOUNT_ID, name: options.accountName ?? "Owner's account" }]);
 		if (path === "/zones") {
 			return envelope([
 				{ id: FREE_ZONE, name: "free.example", status: "active", paused: false, type: "full", plan: { legacy_id: "free", name: "Free Website" }, account: { id: ACCOUNT_ID, name: "Owner's account" } },

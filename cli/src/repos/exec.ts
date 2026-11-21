@@ -138,6 +138,19 @@ export const run: Runner = (command, args, options) =>
 		});
 	});
 
+/**
+ * A scanner's error line with what it quotes from a repository's own settings put in fixed words
+ * (S58): git quotes a bad value as it is ('run: curl … | sh'), and the page would show it in
+ * Porchlight's voice. A quoted path or a setting's name is kept.
+ */
+export function quotedValuesOut(line: string): string {
+	return line.replace(/'([^'\n]*)'|"([^"\n]*)"/g, (whole, single: string | undefined, double: string | undefined) => {
+		const inner = single ?? double ?? "";
+		// A path, a setting's name, or an address without spaces (osv-scanner quotes the one it could not reach).
+		return /^(?:\/[^|;&$`<>\\]*|[A-Za-z0-9_.-]{1,60}|https?:\/\/[^\s|;&$`<>\\]+)$/.test(inner) ? whole : "(a value from the repository)";
+	});
+}
+
 export function firstLine(text: string): string {
 	return text.trim().split("\n")[0]?.slice(0, 300) ?? "";
 }

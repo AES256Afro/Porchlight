@@ -45,12 +45,24 @@ export function html(text: string): string {
 /**
  * One CSV cell. A cell that begins with = + - @ (or a tab or return) is run
  * as a formula by spreadsheets, so it is prefixed with an apostrophe, which
- * they show as text.
+ * they show as text. A cell holding a semicolon or a tab is quoted too: a
+ * spreadsheet set to a language whose lists use semicolons splits on them, and
+ * the part after one would be read as a cell of its own, formula and all (S41).
  */
 export function csvCell(value: string | number): string {
 	let text = stripControls(String(value));
 	if (typeof value === "string" && /^[=+\-@\t\r]/.test(text)) text = `'${text}`;
-	return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+	return /[",;\t\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+/**
+ * Rows a CSV export ends with, so a spreadsheet of it is never read as complete when it is not (B67):
+ * one for a partial export, saying what it covers, and one for each thing the scan did not cover. The
+ * words go in `column` of a row `width` cells wide, after a first cell that names the kind of row.
+ */
+export function csvNoteRows(width: number, column: number, partial: string | null, notCovered: string[]): string[] {
+	const row = (kind: string, text: string) => csvRow(Array.from({ length: width }, (_, index) => (index === 0 ? kind : index === column ? text : "")));
+	return [...(partial ? [row("Partial", partial)] : []), ...notCovered.map((note) => row("Not covered", note))];
 }
 
 export function csvRow(cells: (string | number)[]): string {

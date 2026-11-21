@@ -67,7 +67,7 @@ export function listDomainFindings(report: MonitorReport): FindingsList {
 			how: finding.id.startsWith("missing-header:") ? action.how.filter((_, index) => action.clears[index] === finding.id.split(":").at(-1)) : action.how,
 		})),
 	);
-	rows.sort((a, b) => rank[a.severity as keyof typeof rank] - rank[b.severity as keyof typeof rank] || a.place.localeCompare(b.place) || a.title.localeCompare(b.title));
+	rows.sort((a, b) => rank[a.severity as keyof typeof rank] - rank[b.severity as keyof typeof rank] || a.place.localeCompare(b.place, "en") || a.title.localeCompare(b.title, "en"));
 	return { title: `Findings and suggested fixes for ${report.domain}`, source: report.domain, scannedAt: report.takenAt, scope: null, caveats: report.notes, rows };
 }
 

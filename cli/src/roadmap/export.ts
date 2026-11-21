@@ -1,5 +1,6 @@
 import { ALL_SEVERITIES, isFiltering, noFilter, type FindingFilter } from "../../ui/filter.js";
 import type { Mural } from "../assist/mural.ts";
+import { repoName } from "../repos/report.ts";
 import type { ScanReport } from "../repos/types.ts";
 import { buildDomainRoadmap, listDomainFindings, type MonitorReport } from "./domains.ts";
 import { fileStem, FORMATS, isFormat, renderFindings, renderRoadmap, type Format, type Rendered } from "./render.ts";
@@ -64,6 +65,11 @@ export function exportRepos(report: ScanReport, choice: ExportChoice = {}, filte
 	const content = checkContent(choice.content ?? "roadmap");
 	const format = checkFormat(choice.format ?? "md");
 	if (mural && format === "csv") throw new ExportError("A mural cannot go in a spreadsheet. Choose HTML, Markdown or JSON");
+	// A repository the report does not have (a mistyped --repo) is refused, never exported as "no problems" (B50).
+	if (filter.repo && !report.repos.some((repo) => repoName(report, repo) === filter.repo)) {
+		const names = report.repos.map((repo) => repoName(report, repo));
+		throw new ExportError(`No repository in this scan is named ${filter.repo}. ${names.length === 0 ? "It has none." : `Its repositories: ${names.slice(0, 10).join(", ")}${names.length > 10 ? ` and ${names.length - 10} more` : ""}.`}`);
+	}
 	const rendered = content === "roadmap" ? renderRoadmap(buildRepoRoadmap(report, filter), format, mural) : renderFindings(listRepoFindings(report, filter), format, mural);
 	const partial = isFiltering(filter);
 	return { ...rendered, filename: `${fileStem(content, report.scannedAt, partial ? "partial" : undefined)}.${rendered.extension}` };

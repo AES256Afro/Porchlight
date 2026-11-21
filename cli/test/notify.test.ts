@@ -84,3 +84,50 @@ test("a scan's notice counts, names what is new and fixed, and holds no secret o
 	assert.equal(scanNotice(report, { ...change, newKeys: [keyOf("a")], newCount: 1 }).urgent, false);
 	assert.ok(failedScanNotice("/work", "gitleaks failed").urgent);
 });
+
+test("JSON text forms no mention, link, image or tag in a chat that renders it as Markdown (S52)", () => {
+	const hostile: Notice = { title: "Porchlight: 1 finding", lines: ["  [high] shop: AWS key (@channel ![](https://x.example/p).env:1) <users/all> [here](https://x.example)"], urgent: true };
+	const text = JSON.parse(noticeRequest("json", hostile).body).text as string;
+	assert.doesNotMatch(text, /@channel|@all|@here/);
+	assert.doesNotMatch(text, /\]\(/);
+	assert.doesNotMatch(text, /<users/);
+	assert.equal(text.replace(/​/g, ""), `Porchlight: 1 finding\n\n${hostile.lines[0]}`, "it reads as written");
+});
+
+test("a scheduled scan that checked nothing says so, urgently, and every scan notice says whether it was complete (B54)", () => {
+	const base: ScanReport = { format: 2, root: "/p", scannedAt: "2026-11-20T09:00:00.000Z", tools: [{ tool: "gitleaks", status: "missing", installHint: "brew install gitleaks" }, { tool: "osv-scanner", status: "missing", installHint: "brew install osv-scanner" }], repos: [{ path: "/p/app", findings: [], errors: [] }] };
+	const nothing = scanNotice(base, { newCount: 0, fixedCount: 0, newKeys: [], fixed: [], uncheckedCount: 0, previousScannedAt: "2026-11-19T09:00:00.000Z" } as never);
+	assert.equal(nothing.title, "Porchlight: the scheduled scan checked nothing");
+	assert.equal(nothing.urgent, true);
+	assert.deepEqual([(nothing.payload as Record<string, unknown>).complete, (nothing.payload as Record<string, unknown>).checkedNothing], [false, true]);
+
+	const failed = scanNotice({ ...base, tools: base.tools.map((tool) => ({ ...tool, status: "ok" as const })), repos: [{ path: "/p/app", findings: [], errors: [{ tool: "gitleaks", message: "x" }, { tool: "osv-scanner", message: "y" }] }] }, null);
+	assert.equal(failed.title, "Porchlight: the scheduled scan checked nothing", "each scanner failed on every repository");
+
+	const partial = scanNotice({ ...base, tools: [{ ...base.tools[0]!, status: "ok" }, base.tools[1]!] }, null);
+	assert.equal(partial.title, "Porchlight: 0 findings in 1 repository (not everything was covered)");
+	assert.equal(partial.urgent, false);
+	assert.equal((partial.payload as Record<string, unknown>).complete, false);
+
+	const whole = scanNotice({ ...base, tools: base.tools.map((tool) => ({ ...tool, status: "ok" as const })) }, null);
+	assert.equal(whole.title, "Porchlight: 0 findings in 1 repository");
+	assert.equal((whole.payload as Record<string, unknown>).complete, true);
+});
+
+test("nothing that leaves the computer names the scanned folder's path or the owner's home folder (S35)", async () => {
+	const { homedir } = await import("node:os");
+	const { coverageNotes } = await import("../src/repos/report.ts");
+	const root = `${homedir()}/Projects`;
+	const report: ScanReport = {
+		format: 2,
+		root,
+		scannedAt: "2026-11-20T09:00:00.000Z",
+		tools: [{ tool: "gitleaks", status: "ok", installHint: "" }],
+		repos: [{ path: `${root}/shop`, findings: [], errors: [{ tool: "gitleaks", message: `[git] fatal: detected dubious ownership in repository at '${root}/shop'; see ${homedir()}/.gitconfig` }] }],
+	};
+	const notes = coverageNotes(report).join("\n");
+	assert.ok(!notes.includes(homedir()), notes);
+	assert.match(notes, /gitleaks failed on shop: \[git\] fatal: detected dubious ownership in repository at 'shop'; see ~\/\.gitconfig/);
+	const failed = failedScanNotice(root, `No git repositories found under ${root}`);
+	assert.deepEqual(failed.lines.slice(0, 2), ["Folder: Projects", "Why: No git repositories found under Projects"]);
+});

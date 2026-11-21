@@ -91,7 +91,7 @@ export class RunStore {
 			const run = await this.read(id);
 			if (run) runs.push(run);
 		}
-		return runs.sort((a, b) => b.startedAt.localeCompare(a.startedAt)).map(summarise);
+		return runs.sort((a, b) => b.startedAt.localeCompare(a.startedAt, "en")).map(summarise);
 	}
 
 	/** Removes the oldest runs beyond MAX_RUNS. */

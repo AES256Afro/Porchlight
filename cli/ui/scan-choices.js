@@ -226,6 +226,24 @@ export function choiceGaps(choices = standardChoices(), skipped = []) {
 }
 
 /**
+ * Whether anything was left out of a repository's scan: a scanner that failed on it or is not
+ * installed, something a scanner could not cover, files not read, or a scan that chose to read less
+ * than Standard. Such a repository with no findings is never shown as clean (B46).
+ *
+ * @param {{ tools?: { status: string }[], choices?: ScanChoices }} report
+ * @param {{ errors: unknown[], notCovered?: unknown[], unreadFiles?: number }} repo
+ */
+export function repoIncomplete(report, repo) {
+	return (
+		repo.errors.length > 0 ||
+		(report.tools ?? []).some((tool) => tool.status === "missing") ||
+		(repo.notCovered?.length ?? 0) > 0 ||
+		(repo.unreadFiles ?? 0) > 0 ||
+		choiceGaps(report.choices).length > 0
+	);
+}
+
+/**
  * Where a secret or private data was found. Older reports read history alone and did not say.
  *
  * @param {{ kind: string, source?: string }} finding

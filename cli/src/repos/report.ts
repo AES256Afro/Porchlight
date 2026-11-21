@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { basename, isAbsolute, relative } from "node:path";
 import { mdCode, mdText } from "../roadmap/escape.ts";
 import { choiceGaps, describeChoices, standardChoices } from "../../ui/scan-choices.js";
@@ -34,9 +35,9 @@ export function rank(findings: Finding[]): Finding[] {
 	return [...findings].sort(
 		(a, b) =>
 			severityRank(a.severity) - severityRank(b.severity) ||
-			a.kind.localeCompare(b.kind) ||
-			a.location.localeCompare(b.location) ||
-			a.ruleId.localeCompare(b.ruleId),
+			a.kind.localeCompare(b.kind, "en") ||
+			a.location.localeCompare(b.location, "en") ||
+			a.ruleId.localeCompare(b.ruleId, "en"),
 	);
 }
 
@@ -48,7 +49,7 @@ export function rankRepos(repos: RepoResult[]): RepoResult[] {
 		for (let i = 0; i < ka.length; i++) {
 			if (ka[i] !== kb[i]) return kb[i]! - ka[i]!;
 		}
-		return a.path.localeCompare(b.path);
+		return a.path.localeCompare(b.path, "en");
 	});
 }
 
@@ -77,13 +78,14 @@ export function coverageNotes(report: ScanReport): string[] {
 	const checks = (tool: ToolName) =>
 		tool === "gitleaks" ? [choices.secrets ? "Secrets were not checked" : null, choices.privateData ? "Private data was not checked" : null] : [choices.dependencies ? "Dependencies were not checked" : null];
 	const notes: string[] = [...choiceGaps(choices, report.skipped)];
+	for (const folder of report.notSearched ?? []) notes.push(`${folder.name} was not scanned: ${folder.reason}.`);
 	for (const tool of report.tools) {
 		if (tool.status !== "missing") continue;
 		for (const skipped of checks(tool.tool)) if (skipped) notes.push(`${skipped}: ${tool.tool} is not installed (${tool.installHint}).`);
 	}
 	for (const repo of report.repos) {
 		for (const error of repo.errors) {
-			notes.push(`${error.tool} failed on ${repoName(report, repo)}: ${error.message}`);
+			notes.push(`${error.tool} failed on ${repoName(report, repo)}: ${withoutPaths(report, error.message)}`);
 		}
 		for (const note of repo.notCovered ?? []) notes.push(`${note.tool} on ${repoName(report, repo)}: ${note.message}.`);
 		if (repo.unreadFiles) {
@@ -131,7 +133,7 @@ export function renderMarkdown(report: ScanReport): string {
 	const lines = [
 		"# Porchlight repository scan",
 		"",
-		`Scanned ${repoCount(report)} under ${mdCode(report.root)} on ${report.scannedAt.slice(0, 10)}: ` +
+		`Scanned ${repoCount(report)} under ${mdCode(folderName(report.root))} on ${report.scannedAt.slice(0, 10)}: ` +
 			`${all.length === 1 ? "1 finding" : `${all.length} findings`} ` +
 			`(${SEVERITIES.map((severity) => `${totals[severity]} ${severity}`).join(", ")}).`,
 		"",
@@ -187,6 +189,31 @@ export function renderSummary(report: ScanReport): string {
 
 function repoCount(report: ScanReport): string {
 	return report.repos.length === 1 ? "1 repository" : `${report.repos.length} repositories`;
+}
+
+/**
+ * A scanned folder by its own name, never its path: an export, a prompt or a notice leaves this
+ * computer, and a path names the owner (`/Users/<name>/…`) (S35).
+ */
+export function folderName(path: string): string {
+	return basename(path) || path;
+}
+
+/**
+ * An error line with the paths it names put as Porchlight names them: each repository by its name, a
+ * scanned folder by its own name, and the home folder as ~ (S35). Longest first, so a repository
+ * inside the folder is named as the repository.
+ */
+export function withoutPaths(report: Pick<ScanReport, "root" | "otherRoots" | "repos">, text: string): string {
+	const named: [string, string][] = [
+		...report.repos.map((repo): [string, string] => [repo.path, nameUnder(report.root, report.otherRoots, repo.path)]),
+		...[report.root, ...(report.otherRoots ?? [])].map((root): [string, string] => [root, folderName(root)]),
+	];
+	const home = homedir();
+	if (home && home !== "/") named.push([home, "~"]);
+	let out = text;
+	for (const [path, name] of named.filter(([path]) => path.length > 1).sort((a, b) => b[0].length - a[0].length)) out = out.split(path).join(name);
+	return out;
 }
 
 /**

@@ -3,6 +3,7 @@ import { banner, emptyState, formatWhen, h, icon, pager, replace, severityBadge,
 import { coverageBanner, filterBar, findingDetail, findingsHeader, noScanYet, settingsBanner, severityTiles } from "./finding-parts.js";
 import { ALL_SEVERITIES, isFiltering, matchesFilter } from "./filter.js";
 import { filterFromParams, paginate, paramsFromFilter, repoSortFromParams, repoSortParams } from "./list.js";
+import { repoIncomplete as incomplete } from "./scan-choices.js";
 import { findingRows, load, rescanRepo, store, subscribe } from "./store.js";
 
 /** @typedef {import("./filter.js").Severity} Severity */
@@ -104,7 +105,8 @@ export async function renderByRepo(view, route) {
 		const body = h("tbody");
 		for (const row of visible) {
 			const open = expanded.has(row.repo.path);
-			const expandable = row.findings.length > 0;
+			// Every row opens, so a clean or failed repository can be scanned again too (B47).
+			const expandable = true;
 			const toggle = () => {
 				if (open) expanded.delete(row.repo.path);
 				else expanded.add(row.repo.path);
@@ -134,8 +136,7 @@ export async function renderByRepo(view, route) {
 								)
 							: h("span", { class: "disclosure static" }, row.repo.name),
 					),
-					// A scanner that is not installed checked no repository, so none of them is clean.
-					h("td", null, worstBadge(row.counts, row.repo.errors.length > 0 || (store.report?.tools ?? []).some((tool) => tool.status === "missing"))),
+					h("td", null, worstBadge(row.counts, incomplete(report, row.repo))),
 					...ALL_SEVERITIES.map((severity) => countCell(row.counts[severity], SEVERITY_LABELS[severity])),
 					countCell(row.secrets, "Secrets"),
 					countCell(row.vulnerabilities, "Vulnerabilities"),
@@ -240,7 +241,9 @@ export async function renderByRepo(view, route) {
 						repo.errors.map((error) => `${error.tool}: ${error.message}`),
 					)
 				: null,
-			h(
+			findings.length === 0
+				? h("p", { class: "hint" }, repo.findings.length > 0 ? "No finding here matches the filters." : incomplete(/** @type {NonNullable<typeof store.report>} */ (store.report), repo) ? "Nothing was found, but this repository was not fully scanned: the notes under Not covered say what was left out." : "Nothing was found.")
+				: h(
 				"table",
 				{ class: "data nested" },
 				h("thead", null, h("tr", null, ...["Severity", "Finding", "Where", "Suggested fix"].map((label) => h("th", { scope: "col" }, label)))),
@@ -287,7 +290,7 @@ export async function renderByRepo(view, route) {
 					}),
 				),
 			),
-			paged.pages > 1
+			findings.length > 0 && paged.pages > 1
 				? pager(paged, "findings", (next) => {
 						pages.set(repo.path, next);
 						update();

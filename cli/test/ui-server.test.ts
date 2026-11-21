@@ -280,7 +280,8 @@ test("fetches chosen repositories from GitHub one at a time, and scans them alon
 	assert.deepEqual([preview.total, preview.fetched, preview.repos], [1, 1, ["github/me/app"]]);
 	assert.equal((await send(withToken, "POST", "/api/repos/scan", { body: { root: dir } })).status, 202);
 	await untilScan(withToken, "done");
-	assert.deepEqual(scanned?.also, [{ root: join(dir, "state", "github"), depth: 2 }]);
+	// Exactly the repositories fetched, by path, whatever they are named (S50).
+	assert.deepEqual(scanned?.also, [{ root: join(dir, "state", "github"), repos: [join(dir, "state", "github", "me", "app")] }]);
 
 	assert.equal((await send(withToken, "DELETE", "/api/github/fetched?repo=..%2F..")).status, 400);
 	assert.deepEqual((await send(withToken, "DELETE", "/api/github/fetched?repo=me%2Fapp")).json.fetched, []);
@@ -517,7 +518,8 @@ test("a scheduled scan tells the owner what is new and fixed, and a scan they st
 	for (let i = 0; i < 50 && sent.length < 1; i++) await new Promise((resolve) => setTimeout(resolve, 10));
 	assert.equal(sent.length, 1);
 	assert.equal(sent[0]!.url, "https://hooks.slack.com/services/T/B/x");
-	assert.match(JSON.parse(sent[0]!.body).text, /^\*Porchlight: 4 findings in 3 repositories\*/);
+	// osv-scanner is not installed, so the title says not everything was covered (B54).
+	assert.match(JSON.parse(sent[0]!.body).text, /^\*Porchlight: 4 findings in 3 repositories \(not everything was covered\)\*/);
 
 	// A day later a new one appears, and the critical one is gone. osv-scanner, which reported it, is not
 	// installed, so its absence is not counted as fixed: the notice says it could not be checked.

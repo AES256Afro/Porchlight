@@ -335,8 +335,6 @@ const MAX_ANALYSE = 500;
 const DEFAULT_ANALYSE = 25;
 /** Repositories one fetch may name. */
 const MAX_FETCH = 300;
-/** Fetched repositories sit two folders down: owner, then repository. */
-const GITHUB_DEPTH = 2;
 const DOMAIN_PATTERN = /^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/;
 /** What the local model can be asked for, one route each. */
 const ASSIST_ROUTES = ["finding", "roadmap", "domain", "ask", "cloudflare"];
@@ -1308,7 +1306,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	async function investigateDomains() {
 		const file = await readDomains(investigateDomainsPath);
 		return Object.entries(file.domains)
-			.sort(([a], [b]) => a.localeCompare(b))
+			.sort(([a], [b]) => a.localeCompare(b, "en"))
 			.map(([name, entry]) => ({
 				name,
 				source: entry.source,
@@ -2255,7 +2253,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			if (route === "GET /api/github/repos") {
 				const owner = url.searchParams.get("owner")?.trim() || undefined;
 				if (owner !== undefined && !validOwner(owner)) throw new HttpError(400, "That is not a GitHub account name. Type the name alone, such as octocat.");
-				return sendJson(res, 200, { repos: await listRepos(github, owner, options.fetchFn) });
+				return sendJson(res, 200, await listRepos(github, owner, options.fetchFn));
 			}
 			if (route === "POST /api/github/fetch") {
 				if (fetching.state === "running") throw new HttpError(409, "Repositories are already being fetched");
@@ -2416,7 +2414,9 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		scanCancel = cancel;
 		// Running before the first await, so a second request in the meantime is refused, not started too (B24).
 		status = { state: "running", root, startedAt: new Date().toISOString(), done: 0, total: 0, current: null };
-		const also = (await fetchedRepos(github.dir)).length > 0 ? [{ root: github.dir, depth: GITHUB_DEPTH }] : undefined;
+		// Exactly the repositories fetched, whatever they are named: a search would pass over .dotfiles or vendor (S50).
+		const fetched = await fetchedRepos(github.dir);
+		const also = fetched.length > 0 ? [{ root: github.dir, repos: fetched.map((name) => join(github.dir, ...name.split("/"))) }] : undefined;
 		// The scan is logged in the project in use when it starts, even if the owner moves to another meanwhile.
 		const project = await projects.current();
 		log(`Scan started: ${root}, ${depth} ${depth === 1 ? "level" : "levels"} down. ${describeChoices(choices)}`, project);
@@ -2521,7 +2521,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		log(`Scanning ${name} again`, project);
 		// Scanned as the whole report was, so what it covers stays what the report says it covers.
 		const choices = { ...(report.choices ?? standardChoices()), analyse: false };
-		void rescan(before.path, { signal: cancel.signal, choices, ...(osvDatabase ? { osvDatabase } : {}) })
+		void rescan(before.path, { signal: cancel.signal, choices, scanned: report.repos.map((other) => other.path), ...(osvDatabase ? { osvDatabase } : {}) })
 			.then(async ({ repo, tools }) => {
 				if (cancel.signal.aborted) throw new CancelledError();
 				// Scanners that did not look this time: not chosen, not installed any more, or failed on the repository.
@@ -2976,7 +2976,7 @@ async function previewScan(root: string, depthText: string | null, githubDir: st
 	const info = await stat(absolute).catch(() => null);
 	if (!info?.isDirectory()) return { root: absolute, exists: false, total: 0, repos: [], fetched: 0, depth };
 	const inFolder = await discoverRepos(absolute, depth);
-	const fromGithub = (await discoverRepos(githubDir, GITHUB_DEPTH)).filter((path) => !inFolder.includes(path));
+	const fromGithub = (await fetchedRepos(githubDir)).map((name) => join(githubDir, ...name.split("/"))).filter((path) => !inFolder.includes(path));
 	const names = [...inFolder, ...fromGithub].slice(0, PREVIEW_NAMES).map((path) => nameUnder(absolute, [githubDir], path));
 	return { root: absolute, exists: true, total: inFolder.length + fromGithub.length, repos: names, fetched: fromGithub.length, depth };
 }

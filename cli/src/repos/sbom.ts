@@ -1,6 +1,7 @@
 import { basename, resolve } from "node:path";
 import { discoverRepos } from "./discover.ts";
 import { run as defaultRun, ToolMissingError, type Runner } from "./exec.ts";
+import { outsideWords, readsOutside } from "./includes.ts";
 import { OSV_LIMITS } from "./osv.ts";
 import { nameUnder } from "./report.ts";
 
@@ -72,12 +73,20 @@ export async function buildSbom(options: SbomOptions): Promise<Sbom> {
 	const missed: { name: string; value: string }[] = [];
 	for (const [index, { path, name }] of repos.entries()) {
 		options.onProgress?.(index, repos.length, name);
+		// A manifest that would read a file outside the repository keeps osv-scanner away from it (S56).
+		const outside = await readsOutside(path);
+		if (outside.found.length > 0) {
+			missed.push({ name: "porchlight:not-covered", value: `${name}: ${outsideWords(outside.found)}` });
+			continue;
+		}
 		const { code, stdout, stderr } = await run("osv-scanner", ["scan", "source", "--recursive", ...INVENTORY_ONLY, "--format", "cyclonedx-1-5", path]);
 		if (/flag provided but not defined/.test(stderr)) {
 			throw new Error(`This osv-scanner (${version ?? "unknown version"}) cannot list packages without a vulnerability database. Porchlight is tested with 2.7.`);
 		}
 		if (!READ.has(code)) {
-			missed.push({ name: "porchlight:not-covered", value: `${name}: ${stderr.trim().split("\n").at(-1)?.slice(0, 300) || `osv-scanner exited with code ${code}`}` });
+			// Fixed words and the exit code, never osv-scanner's own: its last line can quote a lockfile's
+			// address, token and all, or a path on this computer (S49).
+			missed.push({ name: "porchlight:not-covered", value: `${name}: osv-scanner could not read its lockfiles (exit code ${code})` });
 			continue;
 		}
 		components.push({ type: "application", "bom-ref": `repository:${name}`, name, components: code === 128 ? [] : packagesOf(stdout, name) });
@@ -106,6 +115,9 @@ export function packagesOf(output: string, repo: string): Component[] {
 		if (typeof raw !== "object" || raw === null) continue;
 		const { name, version, purl, licenses } = raw as Record<string, unknown>;
 		if (typeof name !== "string" || name === "") continue;
+		// A package named by a path on this computer (a go.mod `replace` to /Users/<name>/…) is not a
+		// package anyone else can look up, and the path names the owner (S49).
+		if (localPath(name) || (typeof purl === "string" && localPath(decodeURIComponentSafe(purl.replace(/^pkg:[^/]+\//, ""))))) continue;
 		const id = typeof purl === "string" && purl.startsWith("pkg:") ? purl : `${name}@${typeof version === "string" ? version : ""}`;
 		// The reference is unique across the whole document: the same package can be in several repositories.
 		const component: Component = {
@@ -119,7 +131,20 @@ export function packagesOf(output: string, repo: string): Component[] {
 		if (known.length > 0) component.licenses = known;
 		byRef.set(component["bom-ref"], component);
 	}
-	return [...byRef.values()].sort((a, b) => a["bom-ref"].localeCompare(b["bom-ref"]));
+	return [...byRef.values()].sort((a, b) => a["bom-ref"].localeCompare(b["bom-ref"], "en"));
+}
+
+/** Whether a name is a path on a computer rather than a package's name. */
+function localPath(text: string): boolean {
+	return /^(?:\/|~|\.\.?[\\/]|[A-Za-z]:[\\/]|file:)/.test(text);
+}
+
+function decodeURIComponentSafe(text: string): string {
+	try {
+		return decodeURIComponent(text);
+	} catch {
+		return text;
+	}
 }
 
 /** The licences osv-scanner gave, as SPDX ids or names; anything else is left out. */

@@ -93,8 +93,10 @@ async function reportCheck(dir: string): Promise<Check> {
 	let text: string;
 	try {
 		text = await readFile(path, "utf8");
-	} catch {
-		return { name, status: "note", detail: "No scan is kept yet.", fix: "porchlight ui   (then choose Check your code), or: porchlight repos scan <folder> --save" };
+	} catch (err) {
+		// Only a file that is not there means no scan is kept; one that cannot be read is said as that (B62).
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return { name, status: "note", detail: "No scan is kept yet.", fix: "porchlight ui   (then choose Check your code), or: porchlight repos scan <folder> --save" };
+		return { name, status: "problem", detail: `${path} cannot be read: ${err instanceof Error ? err.message : String(err)}`, fix: `Check who owns it and its permissions: ls -l ${path}` };
 	}
 	try {
 		const report = JSON.parse(text) as { scannedAt?: unknown; repos?: unknown };

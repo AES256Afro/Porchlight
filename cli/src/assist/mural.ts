@@ -9,6 +9,7 @@
  */
 import { unitKey, unitsOf, VERDICTS, type AnalysisFile, type Verdict } from "../analysis/analyse.ts";
 import type { Comparison } from "../repos/history.ts";
+import { folderName } from "../repos/report.ts";
 import type { ScanReport, Severity } from "../repos/types.ts";
 import type { FindingsList, Roadmap } from "../roadmap/types.ts";
 
@@ -88,7 +89,7 @@ export function muralFacts(report: ScanReport, roadmap: Roadmap, list: FindingsL
 		verdicts[judgement.verdict]++;
 	}
 	return {
-		source: report.root,
+		source: folderName(report.root),
 		scannedAt: report.scannedAt,
 		scope: roadmap.scope,
 		notCovered: roadmap.caveats,

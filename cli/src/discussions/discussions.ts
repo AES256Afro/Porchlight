@@ -275,7 +275,7 @@ export class DiscussionStore {
 			const discussion = await this.read(id);
 			if (discussion) found.push(discussion);
 		}
-		return found.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(summaryOf);
+		return found.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt, "en")).map(summaryOf);
 	}
 
 	/** Removes the discussions beyond MAX_DISCUSSIONS, least recently added to first. */

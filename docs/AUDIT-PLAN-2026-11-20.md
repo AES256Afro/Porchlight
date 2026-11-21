@@ -663,6 +663,23 @@ B20, B21, B24, B25, B26 (the rest of it), B27, B53, B68, B70, B71, S20, S24, S25
 
 ### M11: Repairs that are complete, coverage that is stated. Size: M–L
 
+**Status, 2026-11-20: built.** Tests in `cli/test/roadmap.test.ts`, `hostile-history.test.ts` (real git and gitleaks: B28, B29, B30, S57), `private.test.ts` (B32, REP-B12, S42), `discover.test.ts` (S59), `scan.test.ts` (S50, S58, S60), `scan-choices.test.ts` (B46), `notify.test.ts` (B54, S35, S52), `sbom.test.ts` (S49, S56), `cloudflare.test.ts` (S35, B67), `github.test.ts` and `doctor.test.ts` (B62).
+
+- **The fix planner** picks the lowest version outside every advisory's affected ranges (`safeVersion`), gives the install-at-version command for a major or 0.x upgrade in each package manager, and gives keys typed into a tracked file their own repair (B22, B23, B31). Building it is linear (B55).
+- **"Committed" is read from HEAD's tree**, not git's index (B28).
+- **Deep reads the files as they are now for private data**, so a file grown one address a commit is counted whole (B29).
+- **A repository inside another is scanned in its own right**, and its files are no longer called the outer one's "on this computer only". A submodule that is not checked out, a nested repository deeper than the search, and folders the search passed over (unreadable, a link, hidden, `vendor`) are said under "Not covered" (`notSearched`) without stopping the outer repository's findings counting as fixed (B30, S59).
+- **Repositories fetched from GitHub are scanned exactly as listed** (S50).
+- **"Clean" only after a full Standard scan that left nothing out**, and every repository row opens to "Scan this repository again" (B46, B47).
+- **Exports:** an unknown `--repo` is refused, and an export filtered to nothing says the scan's other findings are not in it (B50). CSV ends with "Partial" and "Not covered" rows, a domain's notes included; a one-zone Cloudflare CSV says it is partial and is named as a part (B67). A cell holding `;` or a tab is quoted (S41).
+- **Nothing that leaves the computer names a path:** exports, prompts and the mural give the folder's name; error lines name repositories and `~`; the failed-scan notice gives the folder's name; a personal Cloudflare account's email is masked (S35). The SBOM carries fixed words and the exit code, never osv-scanner's stderr, and drops a package named by a path (S49).
+- **osv-scanner is not run on a repository whose manifests would read an existing file outside it** (a requirements `-r` or `-c`, a pom's `<relativePath>`, a manifest that is a link out): it would send that file's lines to OSV.dev as package names. Said under "Not covered", in scans and the SBOM. Maven's default `../pom.xml` is left alone (S56).
+- **Commit messages, annotated tags' messages and files a tag points at are read** for secrets; a tag pointing at a folder is said (S57).
+- **A repository's own config value quoted in an error is put in fixed words** (S58). **Past 25 secrets of one rule in one file, the rest are one finding with a count** (S60).
+- **Notices:** a scheduled scan that checked nothing says so, urgently; every scan notice says whether it was complete, in its title and its JSON (B54). The JSON format's text forms no mention, link, image or tag in a chat that renders Markdown (S52).
+- **Smaller:** private-data rules for international phone numbers, real addresses under an example-looking label, `threading.local()`, and probability pairs (B32, REP-B12); grouping private data is linear (S51); a tracked file that cannot be opened is unread, not gone (S61); a control character in a file name cannot forge a commit (S42); order no longer depends on the computer's language (B61); `doctor` tells an unreadable scan from a missing one, and GitHub's list says when an account has more than 1,000 repositories (B62).
+- **Not done:** the repository-scanning lows not named above; skipping only the offending manifest rather than the whole repository's dependency check (osv-scanner can exclude folders, not files); reading what a tag pointing at a folder holds.
+
 B22, B23, B28, B29, B30, B31, B32, B46, B47, B50, B54, B55, B61, B62, B67, S35, S41, S42, S49, S50, S51, S52, S56, S57, S58, S59, S60, S61, and the repository-scanning lows.
 
 - **The fix planner:**

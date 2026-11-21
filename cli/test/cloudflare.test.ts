@@ -264,3 +264,19 @@ test("porchlight cloudflare audit prints the audit from a token in the environme
 	await assert.rejects(cloudflareAudit([], { fetchFn: world.fetchFn, env: {}, dataDir: await tempDir(), write: () => {} }), /No Cloudflare API token/);
 	assert.equal(JSON.parse(await readFile(join(dir, "cloudflare-settings.json"), "utf8")).token, fakeCloudflareToken());
 });
+
+test("a personal account's name has its email masked, as a member's is, on the page and in every export (S35)", async () => {
+	const email = ["jane.doe", "@", "mail.example"].join("");
+	const { report } = await audit({ accountName: `${email}'s Account` });
+	assert.deepEqual(report.accounts.map((account) => account.name), ["j…@mail.example's Account"]);
+	for (const format of ["md", "html", "csv", "json"] as const) assert.ok(!exportCloudflare(report, format).body.includes(email), format);
+});
+
+test("a one-zone CSV says it is partial, says what was not covered, and is not named as the full audit (B67)", async () => {
+	const { report } = await audit();
+	const zone = report.zones.find((candidate) => candidate.name === "free.example")!;
+	const file = exportCloudflare(report, "csv", zone.id);
+	assert.match(file.filename, /^porchlight-cloudflare-zone-\d{4}-\d{2}-\d{2}\.csv$/);
+	assert.match(file.body, /^Partial,.*This export covers one zone, free\.example/m);
+	for (const note of report.notCovered) assert.ok(file.body.includes(note.replace(/"/g, '""')), note);
+});

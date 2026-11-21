@@ -122,10 +122,16 @@ test("the private-data rules match what they are for, and leave example values t
 	const lines: [string, string | null][] = [
 		[`contact = "${j("jane.doe", "@", "gmail.com")}"`, "private-email"],
 		[`user = "${j("alice", "@", "example.com")}"`, "private-email-example"],
+		// REP-B12: an address on a real domain under an example-looking label is a real address.
+		[`mail ${j("alice", "@", "test.acme-corp.io")}`, "private-email"],
 		[`from ${j("noreply", "@", "github.com")} and ${j("git", "@", "github.com")}:me/repo.git`, null],
 		[`icon${j("@", "2x.png")} lodash@4.17.21 @babel/core@7.0.0`, null],
 		[`call ${j("+44 20 ", "8123 4567")}`, "private-phone"],
 		[`call ${j("(212) 555-", "0142")}`, "private-phone-example"],
+		// B32: international numbers written compact or in groups of their own country.
+		[`call ${j("+1415", "5552671")}`, "private-phone"],
+		[`fr ${j("+33 1 23 ", "45 67 89")}`, "private-phone"],
+		[`call ${j("+1212", "5550142")}`, "private-phone-example"],
 		["version 1.2.3, built 2026-11-20", null],
 		[`ssn ${j("536-", "22-", "4471")}`, "private-us-ssn"],
 		[`ssn ${j("078-05-", "1120")}`, "private-us-ssn-example"],
@@ -136,9 +142,12 @@ test("the private-data rules match what they are for, and leave example values t
 		[`iban ${j("DE89370400", "440532013000")}`, "private-iban-example"],
 		[`home: ${j("51.50735", ", -0.12776")}`, "private-gps"],
 		["probabilities 0.12345, 0.98765", null],
+		["weights [0.123456, 1.234567]", null],
+		[`quito ${j("-0.180653", ", -78.467838")}`, "private-gps"],
 		["hosts 192.168.1.20 and 8.8.8.8", "private-ip"],
 		[`peer at ${j("box.tail1234", ".ts.net")}`, "private-tailnet-name"],
 		[`db at ${j("db1.prod", ".internal")}:5432, not service-1.internal-cluster.example.test`, "private-internal-name"],
+		["store = threading.local(); self.internal = True; this.local.value", null],
 	];
 	await writeFile(join(dir, "sample.txt"), `${lines.map(([line]) => line).join("\n")}\n`);
 	const { stdout } = await exec("gitleaks", ["dir", "--config", gitleaksConfig({ privateData: true }), "--report-format", "json", "--report-path", "-", "--redact", "--no-banner", "--no-color", "--log-level", "error", "--exit-code", "0", "."], { cwd: dir });
@@ -149,4 +158,26 @@ test("the private-data rules match what they are for, and leave example values t
 		lines.map(([, rule]) => (rule ? [rule] : [])),
 	);
 	for (const row of rows) assert.ok(!row.Secret.match(/\d{4}|@/), "gitleaks hands over no value");
+});
+
+test("a file name holding a control character or a space never forges a commit in the list of added files (S42)", async () => {
+	const { parseAdded } = await import("../src/repos/gitleaks.ts");
+	const [one, two, blob] = ["a".repeat(40), "b".repeat(40), "c".repeat(40)];
+	const forged = `x\x01${"d".repeat(40)} 2026-01-01T00:00:00Z`;
+	const out = [
+		`\x01${one} 2026-11-20T10:00:00+00:00`,
+		`\n:000000 100644 ${"0".repeat(40)} ${blob} A`,
+		"two.txt",
+		`\x01${two} 2026-11-19T10:00:00+00:00`,
+		`\n:000000 100644 ${"0".repeat(40)} ${blob} A`,
+		forged,
+		`:000000 160000 ${"0".repeat(40)} ${blob} A`,
+		"modules/theme",
+		"",
+	].join("\0");
+	const added = parseAdded(out);
+	assert.deepEqual([...added.keys()].sort(), ["modules/theme", forged, "two.txt"].sort());
+	assert.equal(added.get(forged)?.commit, two, "the oddly named file was added by the commit that added it");
+	assert.equal(added.get("modules/theme")?.blob, "", "a submodule has no content to read");
+	assert.equal(added.get("two.txt")?.commit, one);
 });

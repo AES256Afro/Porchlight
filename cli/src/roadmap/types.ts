@@ -120,7 +120,7 @@ export function assemble(
 			byGroup.set(entry.group, [...(byGroup.get(entry.group) ?? []), entry.action]);
 		}
 		const groups = [...byGroup].map(([name, actions]) => ({ name, actions: actions.sort(byUrgency) }));
-		groups.sort((a, b) => compareCounts(sumCounts(b.actions), sumCounts(a.actions)) || a.name.localeCompare(b.name));
+		groups.sort((a, b) => compareCounts(sumCounts(b.actions), sumCounts(a.actions)) || a.name.localeCompare(b.name, "en"));
 		return { key, title, summary: summaries[key], groups };
 	});
 	return {
@@ -150,5 +150,5 @@ function compareCounts(a: Counts, b: Counts): number {
 /** Credentials to rotate lead; then whatever clears the most severe findings. */
 function byUrgency(a: Action, b: Action): number {
 	const rotateFirst = Number(b.kind === "rotate") - Number(a.kind === "rotate");
-	return rotateFirst || compareCounts(b.counts, a.counts) || a.title.localeCompare(b.title);
+	return rotateFirst || compareCounts(b.counts, a.counts) || a.title.localeCompare(b.title, "en");
 }

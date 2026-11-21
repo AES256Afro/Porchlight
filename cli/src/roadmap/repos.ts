@@ -1,9 +1,10 @@
 import { basename } from "node:path";
 import { describeFilter, matchesFilter, noFilter, type FindingFilter } from "../../ui/filter.js";
-import { coverageNotes, rankRepos, repoName } from "../repos/report.ts";
+import { coverageNotes, folderName, rankRepos, repoName } from "../repos/report.ts";
 import { severityRank, type Finding, type ScanReport, type Severity } from "../repos/types.ts";
 import { assemble, emptyCounts, type Action, type FindingRow, type FindingsList, type PhaseKey, type Planned, type Roadmap } from "./types.ts";
-import { bumpKind, highestVersion, mayBreak } from "./versions.ts";
+import { bumpKind, compareVersions, highestVersion, mayBreak } from "./versions.ts";
+import { PLACES } from "../repos/private.ts";
 
 const SUMMARIES: Record<PhaseKey, string> = {
 	now: "Credentials that look live, and critical vulnerabilities.",
@@ -30,7 +31,7 @@ export function buildRepoRoadmap(report: ScanReport, filter: FindingFilter = noF
 	return assemble(
 		{
 			title: "Repair roadmap",
-			source: report.root,
+			source: folderName(report.root),
 			scannedAt: report.scannedAt,
 			scope: describeFilter(filter),
 			caveats: coverageNotes(report),
@@ -69,14 +70,14 @@ export function listRepoFindings(report: ScanReport, filter: FindingFilter = noF
 	rows.sort(
 		(a, b) =>
 			severityRank(a.severity) - severityRank(b.severity) ||
-			a.type.localeCompare(b.type) ||
-			a.place.localeCompare(b.place) ||
-			a.where.localeCompare(b.where) ||
-			a.id.localeCompare(b.id),
+			a.type.localeCompare(b.type, "en") ||
+			a.place.localeCompare(b.place, "en") ||
+			a.where.localeCompare(b.where, "en") ||
+			a.id.localeCompare(b.id, "en"),
 	);
 	return {
 		title: "Findings and suggested fixes",
-		source: report.root,
+		source: folderName(report.root),
 		scannedAt: report.scannedAt,
 		scope: describeFilter(filter),
 		caveats: coverageNotes(report),
@@ -110,11 +111,18 @@ function plan(report: ScanReport): Planned<Finding>[] {
 			entries.push({ group: name, phase: PHASE_OF[action.priority], action, findings: group });
 		}
 
-		// A key in a file git does not track has never left this computer: it is kept out of git, not rotated.
+		// A key that has never left this computer is kept out of git, not rotated: one in a file git does not
+		// track stays out by .gitignore, one typed into a tracked file is taken out before the next commit (B31).
 		const local = findings.filter((finding) => finding.kind === "secret" && finding.source === "local");
-		if (local.length > 0) {
-			const action = keepAction(local, "keys");
-			entries.push({ group: name, phase: PHASE_OF[action.priority], action, findings: local });
+		const typed = local.filter((finding) => finding.detail.startsWith(PLACES.uncommitted));
+		const untracked = local.filter((finding) => !typed.includes(finding));
+		if (untracked.length > 0) {
+			const action = keepAction(untracked, "keys");
+			entries.push({ group: name, phase: PHASE_OF[action.priority], action, findings: untracked });
+		}
+		if (typed.length > 0) {
+			const action = uncommittedAction(typed);
+			entries.push({ group: name, phase: PHASE_OF[action.priority], action, findings: typed });
 		}
 		entries.push(...privateActions(name, findings.filter((finding) => finding.kind === "private-data")));
 		const secrets = findings.filter((finding) => finding.kind === "secret" && finding.source !== "local");
@@ -136,7 +144,11 @@ function upgradeAction(findings: Finding[]): Action {
 	const at = first.detail.lastIndexOf("@");
 	// Steps mark commands with backticks, so a name may not bring its own.
 	const [name, version] = [first.detail.slice(0, at), first.detail.slice(at + 1)].map((part) => part.replace(/`/g, "")) as [string, string];
-	const target = highestVersion(findings.map((finding) => finding.fixedIn).filter((fix) => fix !== undefined))?.replace(/`/g, "");
+	// The release that clears every advisory against the package (osv.ts's safeIn), not merely the highest
+	// of their own fixes, which can sit inside another advisory's affected range (invariant 12, B23).
+	const highest = highestVersion(findings.map((finding) => finding.fixedIn).filter((fix) => fix !== undefined));
+	const safe = highestVersion(findings.map((finding) => finding.safeIn).filter((fix) => fix !== undefined));
+	const target = (safe !== undefined && (highest === undefined || compareVersions(safe, highest) >= 0) ? safe : highest)?.replace(/`/g, "");
 	const unfixed = findings.filter((finding) => finding.fixedIn === undefined);
 	const base = { priority: worst(findings), where: first.location, clears: unique(findings.map((finding) => finding.ruleId)), counts: count(findings), match: first.detail };
 
@@ -151,13 +163,34 @@ function upgradeAction(findings: Finding[]): Action {
 			],
 		};
 	}
-	const how = [upgradeHint(name, target, first.location)];
+	// A major version, or a minor one before 1.0, is outside the range a manifest usually allows, so an
+	// update command would stop short of it: the repair then names the version to install (B22).
+	const crossing = bumpKind(version, target) === "major" || mayBreak(version, target);
+	const how = [crossing ? installHint(name, target, first.location) : upgradeHint(name, target, first.location)];
 	if (bumpKind(version, target) === "major") how.push("This is a major version change: read the changelog for breaking changes before upgrading.");
 	else if (mayBreak(version, target)) how.push("Before version 1.0, this change can break things like a major version: read the changelog before upgrading.");
 	if (unfixed.length > 0) {
 		how.push(`${unfixed.length} of these have no fixed release yet and will remain: ${unfixed.map((finding) => finding.ruleId).join(", ")}.`);
 	}
 	return { ...base, kind: "upgrade", title: `Upgrade ${name} from ${version} to ${target} or later`, how };
+}
+
+/**
+ * How to install a version the declared range may not allow: the update commands stay inside it, so for
+ * a major upgrade (or a minor one before 1.0) they would stop short and the advisories would remain.
+ */
+function installHint(name: string, target: string, lockfile: string): string {
+	const file = basename(lockfile).toLowerCase();
+	if (file === "package-lock.json" || file === "npm-shrinkwrap.json") return `Run \`npm install ${name}@${target}\`. If ${name} is not a dependency you declare, upgrade the package that pulls it in instead: \`npm ls ${name}\` shows which.`;
+	if (file === "pnpm-lock.yaml") return `Run \`pnpm add ${name}@${target}\`. If ${name} is not a dependency you declare, upgrade the package that pulls it in instead: \`pnpm why ${name}\` shows which.`;
+	if (file === "yarn.lock") return `Run \`yarn up ${name}@${target}\` (\`yarn upgrade ${name}@${target}\` on Yarn 1). If ${name} is not a dependency you declare, upgrade the package that pulls it in instead: \`yarn why ${name}\` shows which.`;
+	if (file === "cargo.lock") return `Raise ${name}'s requirement in Cargo.toml to ${target}, then run \`cargo update -p ${name}\`.`;
+	if (file === "gemfile.lock") return `Raise ${name}'s requirement in the Gemfile to allow ${target}, then run \`bundle update ${name}\`.`;
+	if (file === "composer.lock") return `Run \`composer require ${name}:^${target}\`.`;
+	if (file === "poetry.lock") return `Run \`poetry add ${name}@^${target}\`.`;
+	if (file === "pipfile.lock") return `Run \`pipenv install "${name}>=${target}"\`.`;
+	if (file === "uv.lock") return `Raise ${name}'s requirement in pyproject.toml to allow ${target}, then run \`uv lock --upgrade-package ${name}\`.`;
+	return upgradeHint(name, target, lockfile);
 }
 
 /** The command for the package manager that owns the lockfile. */
@@ -301,6 +334,30 @@ function privateReviewAction(findings: Finding[], kind: "network" | "metadata" |
 	};
 }
 
+/**
+ * Keys typed into files git tracks, in changes not yet committed. A .gitignore does nothing for a tracked
+ * file, and the next `git commit -a` would commit the key, so the key comes out of the file first.
+ */
+function uncommittedAction(found: Finding[]): Action {
+	const files = unique(found.map(fileOf));
+	const listed = files.slice(0, MAX_LISTED);
+	if (files.length > MAX_LISTED) listed.push(`and ${files.length - MAX_LISTED} more`);
+	return {
+		kind: "keep",
+		priority: worst(found),
+		title: `Take the ${found.length === 1 ? "key" : "keys"} out of ${files.length === 1 ? "1 tracked file" : `${files.length} tracked files`} before the next commit`,
+		where: listed.join(", "),
+		how: [
+			"These keys are in changes not yet committed to files git tracks: they have not left this computer, so they need no rotation while that stays true.",
+			"Move each key out of the file, into an environment variable or a secret store the code reads, before you commit. A .gitignore does not cover a file git already tracks, so `git commit -a` would commit the key.",
+			"`git diff` shows the change that holds it.",
+		],
+		clears: unique(found.map((finding) => finding.ruleId)),
+		counts: count(found),
+		...(files.length === 1 ? { match: files[0]! } : {}),
+	};
+}
+
 /** Keys or personal data in files git does not track: nothing to repair while they stay out of every commit. */
 function keepAction(found: Finding[], what: "keys" | "personal data"): Action {
 	const files = unique(found.map(fileOf));
@@ -349,7 +406,13 @@ function reviewAction(secrets: Finding[]): Action {
 
 function groupBy<T>(items: T[], key: (item: T) => string): T[][] {
 	const groups = new Map<string, T[]>();
-	for (const item of items) groups.set(key(item), [...(groups.get(key(item)) ?? []), item]);
+	// Appended in place: copying each group on every item took seconds for tens of thousands (B55).
+	for (const item of items) {
+		const name = key(item);
+		const group = groups.get(name);
+		if (group) group.push(item);
+		else groups.set(name, [item]);
+	}
 	return [...groups.values()];
 }
 

@@ -6,13 +6,13 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { access, chmod, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
 import { coverageNotes } from "../src/repos/report.ts";
 import { scanRepos } from "../src/repos/scan.ts";
 import type { RepoResult, ScanReport } from "../src/repos/types.ts";
-import { fakeAwsKeyId, git, installed, makeTree, tempDir } from "./helpers.ts";
+import { FAKE_COMMIT, fakeAwsKeyId, git, installed, makeTree, tempDir } from "./helpers.ts";
 
 const exec = promisify(execFile);
 const NOW = () => new Date("2026-11-21T12:00:00Z");
@@ -261,4 +261,113 @@ test("the copy leaves nothing behind, and the repository's own files are untouch
 
 	assert.equal(await copies(), before, "the copy of the history is removed once read");
 	assert.equal(await readFile(join(repo, ".git", "config"), "utf8"), config, "the repository's config is as it was");
+});
+
+test("a key staged but never committed is on this computer only, whatever the scan reads (B28)", async (t) => {
+	if (!(await installed("gitleaks"))) return t.skip("gitleaks is not installed");
+	const root = await tempDir();
+	const repo = join(root, "staged");
+	await makeTree(repo, { "README.md": "one\n" });
+	await git(repo, "init", "-q");
+	await git(repo, "add", "-A");
+	await git(repo, "commit", "-q", "-m", "one");
+	await writeFile(join(repo, "app.env"), `aws_access_key_id = ${fakeAwsKeyId()}\n`);
+	await git(repo, "add", "app.env");
+
+	const base = { preset: "custom" as const, secrets: true, dependencies: false, privateData: false, skip: [], analyse: false };
+	const quick = await scanRepos({ root, depth: 1, now: NOW, settingFiles: async () => [], choices: { ...base, history: "none", localFiles: false } });
+	const standard = await scanRepos({ root, depth: 1, now: NOW, settingFiles: async () => [], choices: { ...base, history: "all", localFiles: true } });
+	for (const [name, report] of [["quick", quick], ["standard with local files", standard]] as const) {
+		const found = report.repos[0]!.findings.filter((finding) => finding.location === "app.env:1");
+		assert.equal(found.length, 1, `${name}: the staged key is found`);
+		assert.equal(found[0]!.detail, "on this computer only, an uncommitted change", `${name}: and is not called committed`);
+	}
+});
+
+test("Deep counts the addresses a file holds now, not only one commit's worth: a file grown one address a commit is a data dump (B29)", async (t) => {
+	if (!(await installed("gitleaks"))) return t.skip("gitleaks is not installed");
+	const root = await tempDir();
+	const repo = join(root, "grown");
+	await makeTree(repo, { "README.md": "one\n" });
+	await git(repo, "init", "-q");
+	const lines: string[] = [];
+	for (let n = 1; n <= 25; n++) {
+		lines.push(`person ${n}: ${["person", String(n)].join("")}${"@"}mailbox-${n}.org`);
+		await writeFile(join(repo, "people.txt"), `${lines.join("\n")}\n`);
+		await git(repo, "add", "-A");
+		await git(repo, "commit", "-q", "-m", `add ${n}`);
+	}
+	const deep = await scanRepos({ root, depth: 1, now: NOW, settingFiles: async () => [], choices: { preset: "custom", secrets: true, dependencies: false, privateData: true, history: "all", localFiles: false, skip: [], analyse: false } });
+	const found = deep.repos[0]!.findings.filter((finding) => finding.kind === "private-data" && finding.location.startsWith("people.txt"));
+	assert.deepEqual(
+		found.map((finding) => [finding.ruleId, finding.count, finding.severity]),
+		[["private-data-dump", 25, "high"]],
+	);
+	assert.match(found[0]!.detail ?? "", /^commit [0-9a-f]{8} on /, "placed at the oldest commit, where it is most exposed");
+	assert.deepEqual(deep.repos[0]!.notCovered ?? [], [], "reading the files as they are now adds nothing to Not covered");
+});
+
+test("a key committed in a repository nested in another is that repository's, committed, and a submodule not checked out is named (B30)", async (t) => {
+	if (!(await installed("gitleaks"))) return t.skip("gitleaks is not installed");
+	const root = await tempDir();
+	const outer = join(root, "outer");
+	await makeTree(outer, { "README.md": "outer\n" });
+	await git(outer, "init", "-q");
+	const inner = join(outer, "libs", "inner");
+	await makeTree(inner, { "app.env": `aws_access_key_id = ${fakeAwsKeyId()}\n` });
+	await git(inner, "init", "-q");
+	await git(inner, "add", "-A");
+	await git(inner, "commit", "-q", "-m", "inner");
+	// A submodule the outer repository records but that is not checked out: a gitlink in its index alone.
+	await git(outer, "update-index", "--add", "--cacheinfo", `160000,${FAKE_COMMIT},modules/theme`);
+	await git(outer, "add", "README.md");
+	await git(outer, "commit", "-q", "-m", "outer");
+
+	const choices = { preset: "custom" as const, secrets: true, dependencies: false, privateData: false, history: "all" as const, localFiles: true, skip: [], analyse: false };
+	const report = await scanRepos({ root, depth: 3, now: NOW, settingFiles: async () => [], choices });
+	assert.deepEqual(
+		report.repos.map((repo) => relative(root, repo.path)),
+		["outer", "outer/libs/inner"],
+		"the nested repository is scanned in its own right",
+	);
+	const [outerResult, innerResult] = report.repos;
+	assert.deepEqual(outerResult!.findings, [], "its key is not called the outer repository's, on this computer only");
+	assert.equal(innerResult!.findings.length, 1);
+	assert.match(innerResult!.findings[0]!.detail, /^commit [0-9a-f]{8}/, "it is committed, in the repository that holds it");
+	assert.deepEqual(report.notSearched, [{ name: "outer/modules/theme", reason: "it is a submodule that is not checked out here, so nothing in it was read" }]);
+
+	// Searched less deep, the nested repository is not found, and is named rather than read as the outer's.
+	const shallow = await scanRepos({ root: outer, depth: 0, now: NOW, settingFiles: async () => [], choices });
+	assert.deepEqual(shallow.repos[0]!.findings, []);
+	assert.deepEqual(
+		shallow.notSearched?.map((entry) => entry.name),
+		["libs/inner", "modules/theme"],
+	);
+});
+
+test("keys in commit messages, tag messages and a file a tag points at are found, and a tag pointing at a folder is named (S57)", async (t) => {
+	if (!(await installed("gitleaks"))) return t.skip("gitleaks is not installed");
+	const root = await tempDir();
+	const repo = join(root, "messages");
+	await makeTree(repo, { "README.md": "one\n" });
+	await git(repo, "init", "-q");
+	await git(repo, "add", "-A");
+	await git(repo, "commit", "-q", "-m", `deploy\n\nused aws_access_key_id = ${fakeAwsKeyId()} for this`);
+	await git(repo, "tag", "-a", "v1", "-m", `release\n\naws_access_key_id = ${fakeAwsKeyId()}`);
+	const blob = await new Promise<string>((done, fail) => {
+		const child = execFile("git", ["-C", repo, "hash-object", "-w", "--stdin"], (err, stdout) => (err ? fail(err) : done(stdout.trim())));
+		child.stdin!.end(`aws_access_key_id = ${fakeAwsKeyId()}\n`);
+	});
+	await git(repo, "tag", "loose-file", blob);
+	const tree = await new Promise<string>((done, fail) => execFile("git", ["-C", repo, "rev-parse", "HEAD^{tree}"], (err, stdout) => (err ? fail(err) : done(stdout.trim()))));
+	await git(repo, "tag", "a-folder", tree);
+
+	const report = await scanRepos({ root, depth: 1, now: NOW, settingFiles: async () => [], choices: { preset: "standard", secrets: true, dependencies: false, privateData: false, history: "all", localFiles: false, skip: [], analyse: false } });
+	const found = report.repos[0]!.findings.map((finding) => [finding.location, finding.detail.replace(/[0-9a-f]{8} on \d{4}-\d{2}-\d{2}/, "<commit>")]).sort();
+	assert.deepEqual(found, [
+		["commit message:3", "commit <commit>"],
+		["file refs/tags/loose-file points at:1", "refs/tags/loose-file, a file rather than a commit"],
+		["message of tag v1:3", "tag v1"],
+	]);
+	assert.deepEqual(report.repos[0]!.notCovered, [{ tool: "gitleaks", message: "refs/tags/a-folder points at a folder rather than a commit, which was not read" }]);
 });

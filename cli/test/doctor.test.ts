@@ -120,3 +120,13 @@ test("help and the version exit 0, and a mistyped command exits 1", async () => 
 	assert.equal(await main(["help", "doctor"]), 0);
 	assert.equal(await main(["repos", "scna"]), 1);
 });
+
+test("doctor says a kept scan it cannot read, rather than that none is kept (B62)", async () => {
+	await withDataDir(async (dataDir) => {
+		const { mkdir } = await import("node:fs/promises");
+		await mkdir(join(dataDir, "repo-scan.json"));
+		const checks = byName(await runDoctor({ run: installed("git", "gitleaks", "osv-scanner"), env: {}, dataDir, nodeVersion: "24.22.0" }));
+		assert.equal(checks["Last scan"]!.status, "problem");
+		assert.match(checks["Last scan"]!.detail, /repo-scan\.json cannot be read/);
+	});
+});

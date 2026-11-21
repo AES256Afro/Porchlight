@@ -100,7 +100,11 @@ export function privateFindings(matches: Match[]): Finding[] {
 	for (const match of matches) {
 		if (!KINDS[match.ruleId] || match.file === "") continue;
 		const key = `${match.ruleId}\n${match.file}`;
-		groups.set(key, [...(groups.get(key) ?? []), match]);
+		// Appended in place: copying the group for each match was quadratic, and blocked the server for
+		// seconds on a large data file (S51).
+		const group = groups.get(key);
+		if (group) group.push(match);
+		else groups.set(key, [match]);
 	}
 
 	const findings: Finding[] = [];
@@ -111,7 +115,8 @@ export function privateFindings(matches: Match[]): Finding[] {
 		const count = distinctValues(group);
 		if (kind.contact) {
 			const entry: { matches: Match[]; counts: Map<string, number> } = contacts.get(first.file) ?? { matches: [], counts: new Map() };
-			entry.matches.push(...group);
+			// One at a time: spreading a group of 160,000 overflowed the call stack (S51).
+			for (const match of group) entry.matches.push(match);
 			entry.counts.set(first.ruleId, count);
 			contacts.set(first.file, entry);
 			continue;

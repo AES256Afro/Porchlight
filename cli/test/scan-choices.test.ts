@@ -153,3 +153,17 @@ test("the command line takes the same choices, and refuses what it does not unde
 	assert.throws(() => choicesFromFlags({ checks: "" }), /--checks takes/);
 	assert.throws(() => choicesFromFlags({ history: "lots" }), /^Error: --history must be/);
 });
+
+test("a repository with no findings is shown as clean only after a full Standard scan that left nothing out (B46)", async () => {
+	const { repoIncomplete: incomplete } = await import("../ui/scan-choices.js");
+	const repo = { path: "/p/app", name: "app", findings: [], errors: [] };
+	const report = (choices: ScanReport["choices"], extra: object = {}) =>
+		({ format: 2, root: "/p", scannedAt: "2026-11-20T00:00:00Z", tools: [{ tool: "gitleaks", status: "ok", installHint: "" }, { tool: "osv-scanner", status: "ok", installHint: "" }], repos: [{ ...repo, ...extra }], choices }) as ScanReport;
+	const standard = presetChoices("standard");
+	assert.equal(incomplete(report(standard) as never, repo as never), false, "Standard, nothing left out: clean");
+	assert.equal(incomplete(report(presetChoices("quick")) as never, repo as never), true, "a Quick scan is never clean");
+	assert.equal(incomplete(report({ ...standard, preset: "custom", history: 50 }) as never, repo as never), true, "nor one that read part of history");
+	assert.equal(incomplete(report(standard) as never, { ...repo, unreadFiles: 2 } as never), true, "nor one with unread files");
+	assert.equal(incomplete(report(standard) as never, { ...repo, notCovered: [{ tool: "gitleaks", message: "shallow" }] } as never), true);
+	assert.equal(incomplete(report(standard) as never, { ...repo, errors: [{ tool: "osv-scanner", message: "failed" }] } as never), true);
+});

@@ -112,7 +112,8 @@ test("lists a token's repositories page by page, sending the token only as a hea
 		return Response.json(number === 1 ? [...page(99, 0), { full_name: "../../evil", private: false }] : page(3, 100));
 	}) as unknown as typeof fetch;
 
-	const repos = await listRepos({ dir: "/unused", token: TOKEN }, undefined, fetchFn);
+	const { repos, more } = await listRepos({ dir: "/unused", token: TOKEN }, undefined, fetchFn);
+	assert.equal(more, false);
 
 	assert.equal(repos.length, 102, "a name that is not a GitHub name is dropped");
 	assert.deepEqual(repos[0], { name: "me/repo-0", private: true, fork: false, archived: false, sizeKb: 10, pushedAt: "2026-11-01T00:00:00Z" });
@@ -134,7 +135,7 @@ test("lists an account's public repositories without a token, and explains GitHu
 			return Response.json(body, { status });
 		}) as unknown as typeof fetch;
 
-	const repos = await listRepos({ dir: "/unused" }, "octocat", answer(200, [{ full_name: "octocat/Hello-World", fork: true }]));
+	const { repos } = await listRepos({ dir: "/unused" }, "octocat", answer(200, [{ full_name: "octocat/Hello-World", fork: true }]));
 	assert.deepEqual(repos.map((repo) => [repo.name, repo.fork, repo.pushedAt]), [["octocat/Hello-World", true, null]]);
 	assert.ok(urls[0]?.startsWith("https://api.github.com/users/octocat/repos?type=owner&"));
 
@@ -147,4 +148,14 @@ test("lists an account's public repositories without a token, and explains GitHu
 	await assert.rejects(listRepos({ dir: "/unused" }, undefined, answer(200, [])), /Name a GitHub account/);
 	await assert.rejects(listRepos({ dir: "/unused" }, "../users", answer(200, [])), /not a GitHub account name/);
 	assert.equal(urls.length, before);
+});
+
+test("an account with more repositories than one list holds is said to have more, never cut short silently (B62)", async () => {
+	const full = (async (url: string) => {
+		const number = Number(new URL(url).searchParams.get("page"));
+		return Response.json(Array.from({ length: 100 }, (_, index) => ({ full_name: `big/repo-${number}-${index}` })));
+	}) as unknown as typeof fetch;
+	const { repos, more } = await listRepos({ dir: "/unused" }, "big", full);
+	assert.equal(repos.length, 1000);
+	assert.equal(more, true);
 });

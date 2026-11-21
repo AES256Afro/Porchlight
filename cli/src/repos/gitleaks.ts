@@ -4,12 +4,13 @@ import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, join, sep } from "node:path";
 import { GIT_SAFE_ARGS } from "../github/github.ts";
 import { firstLine, type Runner } from "./exec.ts";
+import type { NotSearched } from "./discover.ts";
 import { copyHistory, gitReadEnv, type HistoryCopy } from "./git-copy.ts";
 import { hasGpsPosition, isPrivateRule, namedFindings, PHOTO_TYPES, photoFinding, placeOf, privateFindings, type Match, type NamedFile } from "./private.ts";
 import { gitleaksConfig } from "./rules.ts";
 import { makeTemp, removeTemp } from "./temp.ts";
 import { triageSecret } from "./triage.ts";
-import type { Finding, HistoryReach, NotCovered, SecretSource } from "./types.ts";
+import { severityRank, type Finding, type HistoryReach, type NotCovered, type SecretSource } from "./types.ts";
 
 /**
  * What gitleaks hands to `git log`, which reads Porchlight's own copy of the history (git-copy.ts), so
@@ -30,6 +31,13 @@ export interface SecretScope {
 	secrets?: boolean;
 	/** Also look for private data, with Porchlight's own rules in the same gitleaks pass (see private.ts). */
 	privateData?: boolean;
+	/**
+	 * Every repository the scan covers, by path. A repository nested in this one, or a submodule, that
+	 * is not among them is added to `notSearched` (B30). It belongs to the report rather than to this
+	 * repository, whose own files and commits were read in full. Absent: none is named.
+	 */
+	scanned?: Set<string>;
+	notSearched?: NotSearched[];
 }
 
 /** Every commit, and nothing git does not track: what a scan looked at before there were choices. */
@@ -88,21 +96,36 @@ async function scanWith(repo: string, copy: HistoryCopy | null, run: Runner, sco
 	const notCovered: NotCovered[] = [];
 	if (copy?.shallow) notCovered.push({ tool: "gitleaks", message: "its history is cut short (a shallow clone), so commits older than the cut were not read" });
 	const rows: Located[] = [];
-	if (copy && !copy.empty && scope.history !== "none") rows.push(...(await historyRows(copy.dir, repo, run, scope.history, config)).map((row) => ({ row, source: "history" as const })));
+	if (copy && !copy.empty && scope.history !== "none") {
+		rows.push(...(await historyRows(copy.dir, repo, run, scope.history, config)).map((row) => ({ row, source: "history" as const })));
+		if (scope.secrets !== false) {
+			const unseen = await unseenRows(copy.dir, repo, run, scope.history);
+			rows.push(...unseen.rows.map((row) => ({ row, source: "history" as const })));
+			notCovered.push(...unseen.notCovered);
+		}
+	}
 	if (scope.history === "all" && !scope.localFiles && !scope.privateData) return { findings: findingsOf(rows), unreadFiles: 0, notCovered };
 
-	const tracked = await trackedFiles(repo, run);
+	const { files: tracked, submodules } = await trackedFiles(repo, run);
+	// What "committed" means: in HEAD's own tree, not merely staged in git's index (B28).
+	const head = await headFiles(repo, run);
 	let unreadFiles = 0;
-	if (scope.history !== "all") {
-		const files = await copyTracked(repo, tracked);
+	const nestedRepos = new Set<string>();
+	// The files as they are now: for everything when history is not read in full, and for private data
+	// in any case. History is read one commit at a time, so a file of 25 addresses added one per commit
+	// shows one in each; the file as it is now shows all 25 (B29). Secrets in it were read in history.
+	const isPrivateRow = (row: unknown) => isPrivateRule((row as { RuleID?: unknown } | null)?.RuleID);
+	if (scope.history !== "all" || scope.privateData) {
+		const files = await copyTracked(repo, tracked, head);
 		try {
-			unreadFiles = files.unread;
-			const found = await folderRows(files.dir, repo, run, config);
+			if (scope.history !== "all") unreadFiles = files.unread;
+			const found = (await folderRows(files.dir, repo, run, config)).filter((row) => scope.history !== "all" || isPrivateRow(row));
 			// A key in a file changed since it was committed may be in that change alone: then it is on this computer only.
-			const committed = await committedSecrets(repo, run, tracked, [...new Set(found.map(fileOf).filter((file) => files.changed.has(file)))], config);
+			const committed = await committedSecrets(repo, run, head, [...new Set(found.map(fileOf).filter((file) => files.changed.has(file)))], config);
 			for (const row of found) {
 				const file = fileOf(row);
-				const uncommitted = committed.read.has(file) && !committed.ids.has(secretId(row));
+				// A file no commit holds yet (staged, say) has never left this computer.
+				const uncommitted = !head.has(file) || (committed.read.has(file) && !committed.ids.has(secretId(row)));
 				rows.push(uncommitted ? { row, source: "local", changed: true } : { row, source: "files", changed: files.changed.has(file) });
 			}
 		} finally {
@@ -116,18 +139,40 @@ async function scanWith(repo: string, copy: HistoryCopy | null, run: Runner, sco
 		// that key in that file.
 		const committed = new Set(rows.filter((located) => located.source === "history").map((located) => secretId(located.row)));
 		const top = await realpath(repo);
+		const insideRepo = new Map<string, boolean>();
 		// Third-party code a package manager installed beside the project is not read here (rules.ts).
 		for (const row of await folderRows(repo, repo, run, gitleaksConfig({ privateData: scope.privateData === true, thirdParty: true }))) {
 			const file = fileOf(row);
-			const id = tracked.get(file);
-			if (id === undefined) rows.push({ row, source: "local" });
+			if (!tracked.has(file)) {
+				// A file in a repository nested in this one is that repository's, committed there or not: it is
+				// read when that repository is scanned, never called "on this computer only" here (B30).
+				const nested = await nestedRepo(top, file, insideRepo);
+				if (nested !== null) nestedRepos.add(nested);
+				else rows.push({ row, source: "local" });
+			}
 			else if (scope.history === "all" && !committed.has(secretId(row))) {
+				const id = head.get(file) ?? "";
 				const content = await readTracked(top, file);
 				if (Buffer.isBuffer(content) && (id === "" || blobId(content, id.length) !== id)) rows.push({ row, source: "local", changed: true });
 			}
 		}
 	}
-	const isPrivate = (located: Located) => isPrivateRule((located.row as { RuleID?: unknown } | null)?.RuleID);
+	if (scope.scanned && scope.notSearched) {
+		for (const path of submodules) {
+			const at = join(repo, ...path.split("/"));
+			const checkedOut = await lstat(join(at, ".git")).then(
+				() => true,
+				() => false,
+			);
+			if (!checkedOut) scope.notSearched.push({ path: at, reason: "it is a submodule that is not checked out here, so nothing in it was read" });
+			else nestedRepos.add(path);
+		}
+		for (const path of nestedRepos) {
+			const at = join(repo, ...path.split("/"));
+			if (!scope.scanned.has(at)) scope.notSearched.push({ path: at, reason: "it is a repository inside another, deeper than the folders searched, so its commits were not read" });
+		}
+	}
+	const isPrivate = (located: Located) => isPrivateRow(located.row);
 	const findings = scope.secrets === false ? [] : findingsOf(rows.filter((located) => !isPrivate(located)));
 	if (scope.privateData) findings.push(...(await privateData(repo, copy, run, scope.history, rows.filter(isPrivate), tracked)));
 	return { findings, unreadFiles, notCovered };
@@ -181,7 +226,7 @@ async function privateData(repo: string, copy: HistoryCopy | null, run: Runner, 
 }
 
 /** A file a commit added: the oldest such commit, and the id of the content it added (empty for a link or a submodule). */
-interface Added {
+export interface Added {
 	commit: string;
 	date: string;
 	blob: string;
@@ -199,19 +244,32 @@ async function addedFiles(repo: string, run: Runner, reach: "all" | number): Pro
 		{ env: gitReadEnv() },
 	);
 	if (code !== 0) throw new Error(firstLine(stderr) || `git exited with code ${code}`);
+	return parseAdded(stdout);
+}
+
+/**
+ * `git log --raw -z --format=%x01%H %aI` read token by token: a commit's line, then for each file a
+ * ":000000 100644 <old id> <new id> A" entry and its path. A path is taken whole as the token after its
+ * entry, whatever it holds, so a file named with \x01 or a space cannot pass itself off as a commit
+ * (S42). Newest first: an older commit that added the same path again overwrites, so the oldest stays.
+ */
+export function parseAdded(stdout: string): Map<string, Added> {
 	const added = new Map<string, Added>();
-	// Newest first: an older commit that added the same path again overwrites, so the oldest stays.
-	for (const chunk of stdout.split("\x01")) {
-		const end = chunk.indexOf("\0");
-		if (end < 0) continue;
-		const [commit = "", date = ""] = chunk.slice(0, end).split(" ");
-		// Each file: ":000000 100644 <old id> <new id> A", then its path.
-		const fields = chunk.slice(end + 1).replace(/^\n/, "").split("\0");
-		for (let i = 0; i + 1 < fields.length; i += 2) {
-			const [, mode = "", , blob = ""] = (fields[i] ?? "").split(" ");
-			const path = fields[i + 1] ?? "";
-			if (path !== "") added.set(path, { commit, date, blob: mode === "100644" || mode === "100755" || mode === "100664" ? blob : "" });
+	const tokens = stdout.split("\0");
+	let commit = "";
+	let date = "";
+	for (let i = 0; i < tokens.length; i++) {
+		const token = (tokens[i] ?? "").replace(/^\n/, "");
+		const header = /^\x01([0-9a-f]{40,64}) (\S+)$/.exec(token);
+		if (header) {
+			[, commit = "", date = ""] = header;
+			continue;
 		}
+		const entry = /^:\d{6} (\d{6}) [0-9a-f]{40,64} ([0-9a-f]{40,64}) [A-Z]\d*$/.exec(token);
+		if (!entry) continue;
+		const path = tokens[++i] ?? "";
+		const [, mode = "", blob = ""] = entry;
+		if (path !== "" && commit !== "") added.set(path, { commit, date, blob: mode === "100644" || mode === "100755" || mode === "100664" ? blob : "" });
 	}
 	return added;
 }
@@ -222,15 +280,15 @@ async function addedFiles(repo: string, run: Runner, reach: "all" | number): Pro
  * nothing a repository's settings name. A file that cannot be read is left out of `read`, so its
  * keys are reported as committed: the more careful reading.
  */
-async function committedSecrets(repo: string, run: Runner, tracked: Map<string, string>, files: string[], config: string): Promise<{ ids: Set<string>; read: Set<string> }> {
+async function committedSecrets(repo: string, run: Runner, head: Map<string, string>, files: string[], config: string): Promise<{ ids: Set<string>; read: Set<string> }> {
 	const ids = new Set<string>();
 	const read = new Set<string>();
 	if (files.length === 0) return { ids, read };
 	const dir = await makeTemp("committed");
 	try {
 		for (const file of files) {
-			const id = tracked.get(file);
-			// In a merge conflict there is no one committed version to compare with.
+			const id = head.get(file);
+			// A file no commit holds has no committed version to compare with.
 			if (!id) continue;
 			const { code, stdout } = await run("git", [...GIT_SAFE_ARGS, "-C", repo, "cat-file", "blob", id], { env: gitReadEnv() });
 			if (code !== 0) continue;
@@ -268,6 +326,95 @@ async function historyRows(history: string, repo: string, run: Runner, reach: "a
 	return rowsOf(stdout);
 }
 
+/** Part of the text `unseenRows` gives gitleaks: where it came from, and the lines it takes up. */
+interface Section {
+	file: string;
+	first: number;
+	last: number;
+	/** What a finding there is called: its place in the repository, as a finding's file is. */
+	name: string;
+	commit?: string;
+	date?: string;
+	/** Said instead of a commit, for a tag. */
+	place?: string;
+}
+
+/** The most a tag's file is read; a larger one is said under "Not covered". */
+const MAX_TAGGED_BYTES = 5 * 1024 * 1024;
+
+/**
+ * What `git log -p` never shows, which is pushed all the same (S57): commit messages, annotated tags'
+ * messages, and what a tag holds when it points at a file rather than a commit. They are written to a
+ * private folder, read by gitleaks with --redact, and each match is put back where it came from by its
+ * line. A tag pointing at a folder is said under "Not covered". Secrets only, by gitleaks' own rules: a
+ * message's sign-off names its author, which is not a leak. Tags are read only with every commit.
+ */
+async function unseenRows(copy: string, repo: string, run: Runner, reach: "all" | number): Promise<{ rows: unknown[]; notCovered: NotCovered[] }> {
+	const notCovered: NotCovered[] = [];
+	const files = new Map<string, string[]>();
+	const sections: Section[] = [];
+	const add = (file: string, body: string, where: Omit<Section, "file" | "first" | "last">) => {
+		const lines = files.get(file) ?? [];
+		const text = body.replace(/\n+$/, "").split("\n");
+		sections.push({ file, first: lines.length + 1, last: lines.length + text.length, ...where });
+		for (const line of text) lines.push(line);
+		files.set(file, lines);
+	};
+	const git = async (args: string[], latin1 = false) => {
+		const answer = await run("git", [...GIT_SAFE_ARGS, "-C", copy, ...args], { env: gitReadEnv(), ...(latin1 ? { latin1 } : {}) });
+		if (answer.code !== 0) throw new Error(firstLine(answer.stderr) || `git exited with code ${answer.code}`);
+		return answer.stdout;
+	};
+
+	const limit = typeof reach === "number" ? [`--max-count=${reach}`] : [];
+	for (const record of (await git(["log", "--all", "--full-history", "--no-show-signature", "--encoding=none", ...limit, "--format=%x01%H %aI%x02%B%x00"])).split("\0")) {
+		const found = /^\n?\x01([0-9a-f]{40,64}) (\S*)\x02([\s\S]*)$/.exec(record);
+		if (found) add("messages.txt", found[3]!, { name: "commit message", commit: found[1]!, date: found[2]! });
+	}
+	if (reach === "all") {
+		const refs = await git(["for-each-ref", "--format=%(objecttype) %(objectname) %(*objecttype) %(*objectname) %(refname)", "refs/tags/", "refs/heads/", "refs/notes/"]);
+		for (const line of refs.split("\n")) {
+			const ref = /^(\w+) ([0-9a-f]{40,64}) (\w*) ([0-9a-f]*) (refs\/.+)$/.exec(line);
+			if (!ref) continue;
+			const [, type, id, peeledType, peeledId, refname] = ref as unknown as [string, string, string, string, string, string];
+			const name = refname.replace(/^refs\/(?:tags|heads)\//, "");
+			if (type === "tag") {
+				const tag = await git(["cat-file", "tag", id]);
+				const message = tag.slice(tag.indexOf("\n\n") + 2);
+				if (tag.includes("\n\n") && message.trim() !== "") add("tags.txt", message, { name: `message of tag ${name}`, place: `tag ${name}` });
+			}
+			const [target, targetId] = type === "tag" ? [peeledType, peeledId] : [type, id];
+			if (target === "tree") notCovered.push({ tool: "gitleaks", message: `${refname} points at a folder rather than a commit, which was not read` });
+			if (target !== "blob") continue;
+			const size = Number((await git(["cat-file", "-s", targetId])).trim());
+			if (!(size <= MAX_TAGGED_BYTES)) {
+				notCovered.push({ tool: "gitleaks", message: `${refname} points at a file larger than 5 MB rather than a commit, which was not read` });
+				continue;
+			}
+			add(`tagged-${sections.length}.txt`, Buffer.from(await git(["cat-file", "blob", targetId], true), "latin1").toString("utf8"), { name: `file ${refname} points at`, place: `${refname}, a file rather than a commit` });
+		}
+	}
+	if (sections.length === 0) return { rows: [], notCovered };
+
+	const dir = await makeTemp("unseen");
+	try {
+		for (const [file, lines] of files) await writeFile(join(dir, file), `${lines.join("\n")}\n`, { mode: 0o600, flag: "wx" });
+		// gitleaks' own rules alone: private data is looked for in files, not in messages.
+		const rows = await folderRows(dir, repo, run, gitleaksConfig({ privateData: false }));
+		return {
+			notCovered,
+			rows: rows.flatMap((row) => {
+				const { StartLine } = (row ?? {}) as Record<string, unknown>;
+				const section = sections.find((part) => part.file === fileOf(row) && typeof StartLine === "number" && StartLine >= part.first && StartLine <= part.last);
+				if (!section || typeof StartLine !== "number") return [];
+				return [{ ...(row as object), File: section.name, StartLine: StartLine - section.first + 1, Commit: section.commit ?? "", Date: section.date, Place: section.place }];
+			}),
+		};
+	} finally {
+		await removeTemp(dir);
+	}
+}
+
 /**
  * gitleaks over a folder, run from inside it so the files it names are relative to it (and match a
  * repository's .gitleaksignore). It does not follow symbolic links, and skips .git.
@@ -292,30 +439,72 @@ function fileOf(row: unknown): string {
 }
 
 /**
- * The regular files git tracks, by path, with the id of each as committed. Read from git's index
- * alone with `ls-files --stage`: nothing in the working tree is compared or converted, so no filter
- * or other program a repository's settings name can run (invariant 14).
+ * The regular files HEAD's own tree holds, by path, with the id of each: what is committed. Read with
+ * `ls-tree`, which converts nothing. A repository with no commit yet has none.
  */
-async function trackedFiles(repo: string, run: Runner): Promise<Map<string, string>> {
+async function headFiles(repo: string, run: Runner): Promise<Map<string, string>> {
+	const { code, stdout, stderr } = await run("git", [...GIT_SAFE_ARGS, "-C", repo, "ls-tree", "-r", "-z", "--full-tree", "HEAD"], { env: gitReadEnv() });
+	const files = new Map<string, string>();
+	if (code !== 0) {
+		if (/not a valid object name|unknown revision|bad revision|does not have any commits/i.test(stderr)) return files;
+		throw new Error(firstLine(stderr) || `git exited with code ${code}`);
+	}
+	for (const entry of stdout.split("\0")) {
+		const match = /^(\d{6}) blob ([0-9a-f]{40,64})\t(.+)$/s.exec(entry);
+		if (match && (match[1] === "100644" || match[1] === "100755" || match[1] === "100664")) files.set(match[3]!, match[2]!);
+	}
+	return files;
+}
+
+/**
+ * The repository nested in this one that holds `file` (one of its folders has a `.git` of its own), by
+ * its path inside this one; the outermost if there are several. null when there is none.
+ */
+async function nestedRepo(top: string, file: string, known: Map<string, boolean>): Promise<string | null> {
+	const parts = file.split("/");
+	for (let end = 1; end < parts.length; end++) {
+		const folder = parts.slice(0, end).join("/");
+		let found = known.get(folder);
+		if (found === undefined) {
+			found = await lstat(join(top, ...parts.slice(0, end), ".git")).then(
+				() => true,
+				() => false,
+			);
+			known.set(folder, found);
+		}
+		if (found) return folder;
+	}
+	return null;
+}
+
+/**
+ * The regular files git tracks, by path, with the id of each as committed, and the paths of its
+ * submodules. Read from git's index alone with `ls-files --stage`: nothing in the working tree is
+ * compared or converted, so no filter or other program a repository's settings name can run
+ * (invariant 14).
+ */
+async function trackedFiles(repo: string, run: Runner): Promise<{ files: Map<string, string>; submodules: string[] }> {
 	const { code, stdout, stderr } = await run("git", [...GIT_SAFE_ARGS, "-C", repo, "ls-files", "--stage", "-z"], { env: gitReadEnv() });
 	if (code !== 0) throw new Error(firstLine(stderr) || `git exited with code ${code}`);
 	const files = new Map<string, string>();
+	const submodules: string[] = [];
 	for (const entry of stdout.split("\0")) {
 		const match = /^(\d{6}) ([0-9a-f]{40,64}) (\d)\t(.+)$/s.exec(entry);
 		if (!match) continue;
 		const [, mode, id, stage, path] = match as unknown as [string, string, string, string, string];
+		if (mode === "160000") submodules.push(path);
 		// Symbolic links and submodules are not files to read; a file in a merge conflict has no one committed version.
 		if (mode !== "100644" && mode !== "100755" && mode !== "100664") continue;
 		files.set(path, stage === "0" ? id : "");
 	}
-	return files;
+	return { files, submodules };
 }
 
 /**
  * Copies the tracked files, as they are now, into a private temporary folder for gitleaks to read,
  * and notes which differ from what was committed (by git's own id for the content, worked out here).
  */
-async function copyTracked(repo: string, tracked: Map<string, string>): Promise<{ dir: string; changed: Set<string>; unread: number }> {
+async function copyTracked(repo: string, tracked: Map<string, string>, head: Map<string, string>): Promise<{ dir: string; changed: Set<string>; unread: number }> {
 	const dir = await makeTemp("files");
 	const top = await realpath(repo);
 	const changed = new Set<string>();
@@ -323,7 +512,8 @@ async function copyTracked(repo: string, tracked: Map<string, string>): Promise<
 	const queue = [...tracked.entries()];
 	const worker = async () => {
 		for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
-			const [path, committed] = next;
+			const [path] = next;
+			const committed = head.get(path) ?? "";
 			const content = await readTracked(top, path);
 			if (content === "gone") continue;
 			if (content === "unread") {
@@ -354,8 +544,11 @@ async function readTracked(top: string, path: string): Promise<Buffer | "gone" |
 	const parts = path.split("/");
 	if (parts.some((part) => part === "" || part === "." || part === ".." || part.toLowerCase() === ".git")) return "unread";
 	const source = join(top, ...parts);
-	const parent = await realpath(dirname(source)).catch(() => null);
+	// Gone only when it is not there; a path too long to open, or a folder that cannot be read, is a file
+	// that was not read, and is counted as one (S61).
+	const parent = await realpath(dirname(source)).catch((err: NodeJS.ErrnoException) => (err.code === "ENOENT" || err.code === "ENOTDIR" ? null : "unread"));
 	if (parent === null) return "gone";
+	if (parent === "unread") return "unread";
 	if (parent !== top && !parent.startsWith(top + sep)) return "unread";
 	const stats = await lstat(source).catch(() => null);
 	if (stats === null || stats.isSymbolicLink()) return "gone";
@@ -420,14 +613,16 @@ function findingsOf(located: Located[]): Finding[] {
 	const details = new Set<string>();
 	for (const { row, source, changed } of inOrder(located)) {
 		if (typeof row !== "object" || row === null) continue;
-		const { RuleID, Description, StartLine, StartColumn, Entropy, Commit, Date: date } = row as Record<string, unknown>;
+		const { RuleID, Description, StartLine, StartColumn, Entropy, Commit, Date: date, Place } = row as Record<string, unknown>;
 		const File = fileOf(row);
 		if (typeof RuleID !== "string" || File === "") continue;
 		const location = typeof StartLine === "number" ? `${File}:${StartLine}` : File;
 		const key = `${RuleID}\n${location}\n${typeof Entropy === "number" ? Entropy : ""}`;
 		if (bySecret.has(key)) continue;
 		let detail =
-			source === "history"
+			typeof Place === "string"
+				? Place
+				: source === "history"
 				? typeof Commit === "string" && Commit
 					? placeOf({ source, commit: Commit, ...(typeof date === "string" ? { date } : {}) })
 					: `working tree${typeof date === "string" ? ` on ${date.slice(0, 10)}` : ""}`
@@ -453,7 +648,47 @@ function findingsOf(located: Located[]): Finding[] {
 			...triageSecret(RuleID, File, source === "local"),
 		});
 	}
-	return [...bySecret.values()];
+	return grouped([...bySecret.values()]);
+}
+
+/** Secrets of one rule listed one by one in a file before the rest are counted in one finding. */
+export const PER_FILE = 25;
+
+/**
+ * Past PER_FILE matches of one rule in one file and place, the rest are one finding with their
+ * count (S60): a file of 100,000 tokens is a handful of findings, not a 20 MB report kept 50 times.
+ * The grouped finding's identity does not change with the count, so it is not new each scan.
+ */
+function grouped(findings: Finding[]): Finding[] {
+	const groups = new Map<string, Finding[]>();
+	for (const finding of findings) {
+		const key = `${finding.ruleId}\n${finding.location.replace(/:\d+$/, "")}\n${finding.source ?? ""}`;
+		const group = groups.get(key);
+		if (group) group.push(finding);
+		else groups.set(key, [finding]);
+	}
+	const out: Finding[] = [];
+	for (const group of groups.values()) {
+		if (group.length <= PER_FILE) {
+			for (const finding of group) out.push(finding);
+			continue;
+		}
+		const shown = group.slice(0, PER_FILE - 1);
+		const rest = group.slice(PER_FILE - 1);
+		for (const finding of shown) out.push(finding);
+		const first = rest[0]!;
+		const file = first.location.replace(/:\d+$/, "");
+		out.push({
+			...first,
+			title: `${rest.length.toLocaleString("en")} more: ${first.title}`,
+			location: file,
+			// A commit would change as matches are removed; where a match is on this computer, its words stay, as the roadmap reads them.
+			detail: first.source === "history" || first.source === undefined ? "more matches in this file" : `${first.detail}, more matches in this file`,
+			count: rest.length,
+			severity: rest.reduce((worst, finding) => (severityRank(finding.severity) < severityRank(worst) ? finding.severity : worst), first.severity),
+		});
+	}
+	return out;
 }
 
 function firstSentence(text: string): string {

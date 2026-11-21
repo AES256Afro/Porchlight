@@ -4,6 +4,7 @@ import { GIT_SAFE_ARGS } from "../github/github.ts";
 import { compareVersions, highestVersion } from "../roadmap/versions.ts";
 import { lastLine, type Runner } from "./exec.ts";
 import { gitReadEnv } from "./git-copy.ts";
+import { outsideWords, readsOutside } from "./includes.ts";
 import type { Finding, NotCovered, Severity } from "./types.ts";
 
 /**
@@ -101,6 +102,9 @@ function namedPaths(stderr: string, prefix: RegExp, repo: string, top: string): 
  * - the packages a requirements.txt or pom.xml pulls in indirectly, which were not worked out.
  */
 export async function scanDependencies(repo: string, run: Runner, options: OsvOptions = {}): Promise<{ findings: Finding[]; notCovered: NotCovered[]; settingFiles: string[] }> {
+	// A manifest that would read a file outside the repository keeps osv-scanner away from it (S56).
+	const outside = await readsOutside(repo);
+	if (outside.found.length > 0) return { findings: [], notCovered: [{ tool: "osv-scanner", message: outsideWords(outside.found) }], settingFiles: [] };
 	const { findings, stderr } = await osvScan(repo, run, options);
 	const top = await realpath(repo).catch(() => repo);
 	const settingFiles = [...new Set(namedPaths(stderr, /^Loaded filter from: (.+)$/, repo, top))].sort();
@@ -109,6 +113,7 @@ export async function scanDependencies(repo: string, run: Runner, options: OsvOp
 	// Third-party code committed with the project carries lockfiles of its own, which are not the project's.
 	const tracked = listed && listed.code === 0 ? listed.stdout.split("\0").filter((path) => path !== "" && !path.split("/").includes("node_modules")) : [];
 	const notCovered: NotCovered[] = [];
+	if (!outside.complete) notCovered.push({ tool: "osv-scanner", message: "it holds too many files to check every include its manifests name, so one may have been read from outside it" });
 	const missed = tracked.filter((path) => !read.has(path));
 	if (missed.length > 0) {
 		const shown = missed.slice(0, 3).join(", ") + (missed.length > 3 ? ` and ${missed.length - 3} more` : "");
@@ -124,7 +129,7 @@ export async function scanDependencies(repo: string, run: Runner, options: OsvOp
 
 interface OsvAffected {
 	package?: { name?: string; ecosystem?: string };
-	ranges?: { type?: string; events?: { fixed?: string }[] }[];
+	ranges?: { type?: string; events?: { introduced?: string; fixed?: string; last_affected?: string }[] }[];
 }
 
 interface OsvVulnerability {
@@ -154,6 +159,7 @@ export function parseOsv(output: string, repo: string): Finding[] {
 			const version = entry.package?.version ?? "?";
 			const ecosystem = entry.package?.ecosystem ?? "";
 			const summaries = new Map((entry.vulnerabilities ?? []).map((vuln) => [vuln.id, vuln.summary]));
+			const safeIn = safeVersion(entry.vulnerabilities ?? [], name, ecosystem, version);
 			// A group is one underlying flaw, which may be listed under several IDs.
 			for (const group of entry.groups ?? []) {
 				const id = group.ids?.[0];
@@ -175,6 +181,7 @@ export function parseOsv(output: string, repo: string): Finding[] {
 					location: lockfile,
 					detail,
 					...(fixedIn ? { fixedIn } : {}),
+					...(safeIn ? { safeIn } : {}),
 				});
 			}
 		}
@@ -195,6 +202,58 @@ export function fixedVersion(vuln: OsvVulnerability, name: string, ecosystem: st
 		.flatMap((range) => (range.events ?? []).map((event) => event.fixed))
 		.filter((fix): fix is string => typeof fix === "string" && compareVersions(fix, current) > 0);
 	return fixes.sort(compareVersions)[0];
+}
+
+/** A version range an advisory lists as affected: from `introduced` up to `fixed` (not included) or `lastAffected` (included). */
+interface Affected {
+	introduced: string;
+	fixed?: string;
+	lastAffected?: string;
+}
+
+/** The ranges an advisory lists as affected for this package, from its ECOSYSTEM and SEMVER ranges. */
+function affectedRanges(vuln: OsvVulnerability, name: string, ecosystem: string): Affected[] {
+	const ranges: Affected[] = [];
+	for (const affected of vuln.affected ?? []) {
+		if (!samePackage(affected.package, name, ecosystem)) continue;
+		for (const range of affected.ranges ?? []) {
+			if (range.type === "GIT") continue;
+			let open: Affected | null = null;
+			for (const event of range.events ?? []) {
+				if (typeof event.introduced === "string") {
+					if (open) ranges.push(open);
+					open = { introduced: event.introduced };
+				} else if (open && typeof event.fixed === "string") {
+					ranges.push({ ...open, fixed: event.fixed });
+					open = null;
+				} else if (open && typeof event.last_affected === "string") {
+					ranges.push({ ...open, lastAffected: event.last_affected });
+					open = null;
+				}
+			}
+			if (open) ranges.push(open);
+		}
+	}
+	return ranges;
+}
+
+function inRange(version: string, range: Affected): boolean {
+	if (range.introduced !== "0" && compareVersions(version, range.introduced) < 0) return false;
+	if (range.fixed !== undefined) return compareVersions(version, range.fixed) < 0;
+	if (range.lastAffected !== undefined) return compareVersions(version, range.lastAffected) <= 0;
+	return true;
+}
+
+/**
+ * The lowest release above `current` that none of these advisories lists as affected, out of the fixed
+ * releases they name. Undefined when there is none: then no single upgrade clears them all.
+ */
+export function safeVersion(vulns: OsvVulnerability[], name: string, ecosystem: string, current: string): string | undefined {
+	const ranges = vulns.map((vuln) => affectedRanges(vuln, name, ecosystem));
+	const candidates = [...new Set(ranges.flat().flatMap((range) => (range.fixed !== undefined ? [range.fixed] : [])))]
+		.filter((fix) => compareVersions(fix, current) > 0)
+		.sort(compareVersions);
+	return candidates.find((candidate) => ranges.every((advisory) => !advisory.some((range) => inRange(candidate, range))));
 }
 
 function samePackage(candidate: OsvAffected["package"], name: string, ecosystem: string): boolean {

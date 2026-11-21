@@ -1,6 +1,7 @@
-import { coverageNotes, rank } from "../repos/report.ts";
+import { coverageNotes, folderName, rank, withoutPaths } from "../repos/report.ts";
 import { keyed, type Comparison } from "../repos/history.ts";
-import { SEVERITIES, type ScanReport } from "../repos/types.ts";
+import { SEVERITIES, type ScanReport, type ToolName } from "../repos/types.ts";
+import { standardChoices } from "../../ui/scan-choices.js";
 import type { Notice } from "./format.ts";
 
 // What the owner is told after a scan that ran on its own (PORCHLIGHT_SCAN_EVERY_HOURS): counts, what
@@ -18,13 +19,18 @@ export function scanNotice(report: ScanReport, change: Comparison | null, unread
 	const findings = report.repos.flatMap((repo) => repo.findings);
 	const counts = SEVERITIES.map((severity) => [severity, findings.filter((finding) => finding.severity === severity).length] as const);
 	const total = findings.length;
-	const title = `Porchlight: ${total === 1 ? "1 finding" : `${total} findings`} in ${report.repos.length === 1 ? "1 repository" : `${report.repos.length} repositories`}${
-		change ? `, ${change.newCount} new and ${change.fixedCount} fixed since the last scan` : ""
-	}`;
+	const notes = coverageNotes(report);
+	// A scan in which no scanner read any repository is not "0 findings": it is said as what it is, and
+	// wants looking at (B54).
+	const nothing = checkedNothing(report);
+	const title = nothing
+		? "Porchlight: the scheduled scan checked nothing"
+		: `Porchlight: ${total === 1 ? "1 finding" : `${total} findings`} in ${report.repos.length === 1 ? "1 repository" : `${report.repos.length} repositories`}${
+				change ? `, ${change.newCount} new and ${change.fixedCount} fixed since the last scan` : ""
+			}${notes.length > 0 ? " (not everything was covered)" : ""}`;
 	const lines = [`By severity: ${counts.map(([severity, count]) => `${count} ${severity}`).join(", ")}.`];
 
 	if (unreadable) lines.push("", `The scan before this one could not be read, so nothing is marked new or fixed: ${unreadable}`);
-	const notes = coverageNotes(report);
 	if (notes.length > 0) lines.push("", "Not covered, so this is not a clean bill of health:", ...notes.map((note) => `  ${note}`));
 
 	if (change && change.newCount > 0) {
@@ -49,12 +55,29 @@ export function scanNotice(report: ScanReport, change: Comparison | null, unread
 	return {
 		title,
 		lines,
-		urgent: (unreadable ? findings.map((finding) => finding.severity) : worstNew).some((severity) => severity === "critical" || severity === "high"),
-		payload: { scannedAt: report.scannedAt, findings: Object.fromEntries(counts), ...(change ? { new: change.newCount, fixed: change.fixedCount } : {}) },
+		urgent: nothing || (unreadable ? findings.map((finding) => finding.severity) : worstNew).some((severity) => severity === "critical" || severity === "high"),
+		payload: {
+			scannedAt: report.scannedAt,
+			findings: Object.fromEntries(counts),
+			...(change ? { new: change.newCount, fixed: change.fixedCount } : {}),
+			// For a script reading the notice: whether the scan covered everything it was asked to, and if not, how many things it missed.
+			complete: notes.length === 0,
+			notCovered: notes.length,
+			checkedNothing: nothing,
+		},
 	};
 }
 
-/** A scheduled scan that did not finish. */
+/** Whether no scanner the scan chose read any repository: none was found, none is installed, or each failed on every one. */
+function checkedNothing(report: ScanReport): boolean {
+	const choices = report.choices ?? standardChoices();
+	const chosen: ToolName[] = [...(choices.secrets || choices.privateData === true ? (["gitleaks"] as const) : []), ...(choices.dependencies ? (["osv-scanner"] as const) : [])];
+	const installed = chosen.filter((tool) => report.tools.some((status) => status.tool === tool && status.status === "ok"));
+	return !report.repos.some((repo) => installed.some((tool) => !repo.errors.some((error) => error.tool === tool)));
+}
+
+/** A scheduled scan that did not finish. The folder by its name, and its path taken out of the error (S35). */
 export function failedScanNotice(root: string, error: string): Notice {
-	return { title: "Porchlight: the scheduled scan failed", lines: [`Folder: ${root}`, `Why: ${error}`, "", "The last scan is unchanged. The next one runs on schedule."], urgent: true, payload: { failed: true } };
+	const why = withoutPaths({ root, repos: [] }, error);
+	return { title: "Porchlight: the scheduled scan failed", lines: [`Folder: ${folderName(root)}`, `Why: ${why}`, "", "The last scan is unchanged. The next one runs on schedule."], urgent: true, payload: { failed: true } };
 }

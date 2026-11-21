@@ -19,7 +19,17 @@ export interface Finding {
 	note?: string;
 	/** For a vulnerability: the lowest release that fixes it, when the advisory names one. */
 	fixedIn?: string;
-	/** For private data: how many different values of this kind the file holds. Never a value itself. */
+	/**
+	 * For a vulnerability: the lowest release above the installed one that no advisory against this
+	 * package lists as affected, when there is one. Each advisory's own fix can sit inside another's
+	 * affected range, so this is what a complete repair upgrades to (invariant 12, B23).
+	 */
+	safeIn?: string;
+	/**
+	 * For private data: how many different values of this kind the file holds. For secrets past
+	 * PER_FILE of one rule in one file: how many more matches this one finding stands for (S60). Never
+	 * a value itself.
+	 */
 	count?: number;
 	/**
 	 * For a secret or private data: where it was found. `history`: in a commit. `files`: in a file git tracks, as it is
@@ -99,8 +109,9 @@ export interface NotCovered {
 }
 
 /**
- * The shape of a report this version writes. 2 adds `notCovered` (M9), which an older Porchlight would
- * not know to read as an incomplete scan; a reader refuses a report newer than it knows.
+ * The shape of a report this version writes. 2 adds `notCovered` (M9) and `notSearched` (M11), which an
+ * older Porchlight would not know to read as an incomplete scan; a reader refuses a report newer than it
+ * knows.
  */
 export const REPORT_FORMAT = 2;
 
@@ -120,6 +131,11 @@ export interface ScanReport {
 	choices?: ScanChoices;
 	/** Repositories found and left out because the choices named them. */
 	skipped?: string[];
+	/**
+	 * Folders the search for repositories passed over that could hold one, named under the scanned
+	 * folder, with why (S59). Said under "Not covered". Missing when there were none.
+	 */
+	notSearched?: { name: string; reason: string }[];
 }
 
 /** Lower is more severe. */

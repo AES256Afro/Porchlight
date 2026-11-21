@@ -92,7 +92,7 @@ export function noticeRequest(format: NotifyFormat, notice: Notice): NotifyReque
 				body: body || title,
 			};
 		default:
-			return json({ text: [title, ...(body ? ["", body] : [])].join("\n"), ...(notice.payload ?? {}) });
+			return json({ text: chatSafe([title, ...(body ? ["", body] : [])].join("\n")), ...(notice.payload ?? {}) });
 	}
 }
 
@@ -119,6 +119,16 @@ function cut(lines: string[], limit: number): string {
 		size += short.length + 1;
 	}
 	return kept.join("\n");
+}
+
+/**
+ * The JSON format goes to any webhook, and Mattermost, Rocket.Chat and Google Chat render its `text` as
+ * Markdown: a file named `@channel ![](https://x.example/p).env` would ping everyone and load an image
+ * from someone else's server (S52). A zero-width space after each `@` and `<`, and between `]` and `(`,
+ * leaves the text as it reads while no mention, link, image or tag can be formed from it.
+ */
+function chatSafe(text: string): string {
+	return text.replace(/@/g, "@\u200b").replace(/</g, "<\u200b").replace(/\]\(/g, "]\u200b(");
 }
 
 /** Three backticks would end the code block early; the text keeps its meaning with them broken up. */

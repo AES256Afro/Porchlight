@@ -172,7 +172,8 @@ test("renders a Markdown checklist", () => {
 	const { body, contentType, extension } = renderRoadmap(buildRepoRoadmap(sampleReport()), "md");
 
 	assert.deepEqual([contentType, extension], ["text/markdown; charset=utf-8", "md"]);
-	assert.ok(body.startsWith("# Repair roadmap\n\nSource: `/work`, scanned 2026-11-17.\n\n7 actions clear 11 findings across 1 place."));
+	// The folder by its name, never its path (S35).
+	assert.ok(body.startsWith("# Repair roadmap\n\nSource: `work`, scanned 2026-11-17.\n\n7 actions clear 11 findings across 1 place."));
 	assert.ok(body.includes("| 1. Fix now | 2 | 2 |\n| 2. Fix next | 2 | 5 |\n| 3. Schedule | 1 | 2 |\n| 4. When convenient | 2 | 2 |"));
 	assert.ok(
 		body.includes(
@@ -267,7 +268,9 @@ test("the page's \"no severity\" filter can be exported", () => {
 
 test("escaping helpers", () => {
 	assert.equal(html(`<a href="x">&'`), "&#60;a href=&#34;x&#34;&#62;&#38;&#39;");
-	assert.deepEqual(["=1+1", "+1", "-1", "@x", "\tx", "plain", 'say "hi"', "a,b", 12].map(csvCell), ["'=1+1", "'+1", "'-1", "'@x", "'\tx", "plain", '"say ""hi"""', '"a,b"', "12"]);
+	assert.deepEqual(["=1+1", "+1", "-1", "@x", "\tx", "plain", 'say "hi"', "a,b", 12].map(csvCell), ["'=1+1", "'+1", "'-1", "'@x", "\"'\tx\"", "plain", '"say ""hi"""', '"a,b"', "12"]);
+	// S41: a semicolon or a tab splits a cell in a spreadsheet set to a semicolon locale, so either is quoted.
+	assert.deepEqual(["x;=HYPERLINK(\"https://x.example\")", "a\tb"].map(csvCell), ['"x;=HYPERLINK(""https://x.example"")"', '"a\tb"']);
 	assert.equal(mdText("[x](y) *b* <i> a|b\n# h"), "\\[x\\]\\(y\\) \\*b\\* \\<i\\> a\\|b \\# h");
 	assert.deepEqual([mdCode("plain"), mdCode("a`b"), mdCode("``x`"), mdCode("line\nbreak")], ["`plain`", "``a`b``", "``` ``x` ```", "`line break`"]);
 });
@@ -315,7 +318,7 @@ test("renders the findings list in every format", () => {
 	const list = listRepoFindings(sampleReport());
 
 	const markdown = renderFindings(list, "md").body;
-	assert.ok(markdown.startsWith("# Findings and suggested fixes\n\nSource: `/work`, scanned 2026-11-17.\n\n11 findings (1 critical, 4 high, 4 medium, 2 low) across 1 place, most severe first."));
+	assert.ok(markdown.startsWith("# Findings and suggested fixes\n\nSource: `work`, scanned 2026-11-17.\n\n11 findings (1 critical, 4 high, 4 medium, 2 low) across 1 place, most severe first."));
 	assert.ok(markdown.includes("| critical | GHSA-d: Problem GHSA-d \\(next\\@15.2.6\\) | package-lock.json | Upgrade next from 15.2.6 to 16.0.1 or later | Fix now |"));
 
 	const rows = renderFindings(list, "csv").body.trimEnd().split("\r\n");
@@ -420,7 +423,12 @@ test("a key that was never committed is kept out of git, not rotated", () => {
 	const actions = buildRepoRoadmap(report).phases.flatMap((phase) => phase.groups.flatMap((group) => group.actions));
 	assert.deepEqual(
 		actions.map((action) => [action.kind, action.title, action.where]),
-		[["keep", "Keep 2 files with keys out of git", ".env, src/config.ts"]],
+		// A key in a file git does not track is kept out by .gitignore; one typed into a tracked file is
+		// taken out before the next commit, which a .gitignore would not stop (B31).
+		[
+			["keep", "Keep 1 file with keys out of git", ".env"],
+			["keep", "Take the key out of 1 tracked file before the next commit", "src/config.ts"],
+		],
 	);
 	assert.match(actions[0]!.how.join(" "), /need no rotation while that stays true/);
 	// Every finding is still listed, each with that repair.
@@ -481,4 +489,60 @@ test("private data in history is removed from it, file by file; network names an
 	assert.equal(listRepoFindings(report, parseFilter({ kind: "private-data" })).rows.length, 8);
 	assert.equal(listRepoFindings(report, parseFilter({ kind: "secret" })).rows.length, 0);
 	assert.throws(() => parseFilter({ kind: "personal" }), /Choose secret, vulnerability or private-data/);
+});
+
+test("an upgrade clears every advisory: never to a release another advisory still lists as affected (B23)", async () => {
+	const { safeVersion } = await import("../src/repos/osv.ts");
+	const advisory = (id: string, ...ranges: { introduced?: string; fixed?: string }[][]) => ({
+		id,
+		affected: [{ package: { name: "widget", ecosystem: "npm" }, ranges: ranges.map((events) => ({ type: "SEMVER", events })) }],
+	});
+	// A: affected before 1.2.5 and again from 1.5.0 to 1.5.2. B: fixed in 1.5.0.
+	const a = advisory("A", [{ introduced: "0" }, { fixed: "1.2.5" }], [{ introduced: "1.5.0" }, { fixed: "1.5.2" }]);
+	const b = advisory("B", [{ introduced: "0" }, { fixed: "1.5.0" }]);
+	assert.equal(safeVersion([a, b], "widget", "npm", "1.2.0"), "1.5.2");
+	assert.equal(safeVersion([b], "widget", "npm", "1.2.0"), "1.5.0");
+	assert.equal(safeVersion([advisory("C", [{ introduced: "0" }])], "widget", "npm", "1.2.0"), undefined, "no release clears an advisory with no fix");
+
+	const finding = (ruleId: string, fixedIn: string): Finding => ({ tool: "osv-scanner", kind: "vulnerability", severity: "high", ruleId, title: ruleId, location: "package-lock.json", detail: "widget@1.2.0", fixedIn, safeIn: "1.5.2" });
+	const report: ScanReport = { root: "/p", scannedAt: "2026-11-21T00:00:00Z", tools: [], repos: [{ path: "/p/app", findings: [finding("A", "1.2.5"), finding("B", "1.5.0")], errors: [] }] };
+	const upgrade = buildRepoRoadmap(report).phases.flatMap((phase) => phase.groups.flatMap((group) => group.actions)).find((action) => action.kind === "upgrade")!;
+	assert.equal(upgrade.title, "Upgrade widget from 1.2.0 to 1.5.2 or later");
+});
+
+test("an upgrade across a major version names the version to install, not an update that stops short of it (B22)", () => {
+	const report = (lockfile: string, from: string, to: string): ScanReport => ({
+		root: "/p",
+		scannedAt: "2026-11-21T00:00:00Z",
+		tools: [],
+		repos: [{ path: "/p/app", findings: [{ tool: "osv-scanner", kind: "vulnerability", severity: "high", ruleId: "GHSA-x", title: "x", location: lockfile, detail: `next@${from}`, fixedIn: to }], errors: [] }],
+	});
+	const how = (lockfile: string, from: string, to: string) => buildRepoRoadmap(report(lockfile, from, to)).phases.flatMap((phase) => phase.groups.flatMap((group) => group.actions))[0]!.how.join(" ");
+	assert.match(how("package-lock.json", "15.2.6", "16.0.1"), /`npm install next@16\.0\.1`/);
+	assert.match(how("pnpm-lock.yaml", "0.4.0", "0.5.0"), /`pnpm add next@0\.5\.0`/, "before 1.0 a minor change is outside the range too");
+	assert.match(how("Cargo.lock", "1.0.0", "2.0.0"), /requirement in Cargo\.toml to 2\.0\.0/);
+	assert.match(how("composer.lock", "1.0.0", "2.0.0"), /`composer require next:\^2\.0\.0`/);
+	assert.match(how("package-lock.json", "15.2.6", "15.2.9"), /`npm update next`/, "an upgrade within the range still updates");
+});
+
+test("an export filtered to a repository the scan does not have is refused, and one filtered to nothing says so (B50)", () => {
+	assert.throws(() => exportRepos(sampleReport(), { content: "roadmap", format: "md" }, { ...noFilter(), repo: "shpo" }), /No repository in this scan is named shpo\. Its repositories: clean, shop\./);
+	const nothing = exportRepos(sampleReport(), { content: "roadmap", format: "md" }, { ...noFilter(), repo: "clean" });
+	assert.doesNotMatch(nothing.body, /found no problems/);
+	assert.match(nothing.body, /Nothing to repair matches what this export covers\. The scan's other findings are not in it\./);
+	const list = exportRepos(sampleReport(), { content: "findings", format: "md" }, { ...noFilter(), repo: "clean" });
+	assert.match(list.body, /No finding matches what this list covers/);
+});
+
+test("a CSV export says when it is partial and what the scan did not cover, so it never reads as clean (B67)", () => {
+	const quick: ScanReport = { ...sampleReport(), choices: { preset: "quick", secrets: true, dependencies: true, privateData: false, history: "none", localFiles: false, skip: [], analyse: false } };
+	quick.repos = [{ path: "/work/clean", findings: [], errors: [] }];
+	for (const content of ["roadmap", "findings"]) {
+		const rows = exportRepos(quick, { content, format: "csv" }, { ...noFilter(), severities: ["critical"] }).body.trim().split("\r\n");
+		assert.ok(rows.length > 1, `${content}: more than a header row`);
+		assert.ok(rows.some((row) => row.startsWith("Partial,") && row.includes("It covers only")), `${content}: the partial line`);
+		assert.ok(rows.some((row) => row.startsWith("Not covered,") && row.includes("Git history was not read")), `${content}: the Not covered line`);
+	}
+	const domain = renderRoadmap(buildDomainRoadmap({ domain: "example.com", takenAt: "2026-11-20T12:00:00.000Z", notes: ["DNS could not be read"], findings: [] }), "csv").body;
+	assert.match(domain, /^Not covered,.*DNS could not be read/m, "a domain's notes are in its CSV");
 });

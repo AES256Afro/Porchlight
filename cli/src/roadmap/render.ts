@@ -1,6 +1,6 @@
 import { MURAL_COLUMNS, type Mural } from "../assist/mural.ts";
 import { SEVERITIES } from "../repos/types.ts";
-import { csvRow, html, jsonText, mdCode, mdText } from "./escape.ts";
+import { csvNoteRows, csvRow, html, jsonText, mdCode, mdText } from "./escape.ts";
 import { emptyCounts, phaseTitle, sumCounts, totalOf, type Action, type Counts, type FindingRow, type FindingsList, type Phase, type Roadmap } from "./types.ts";
 
 export const FORMATS = ["md", "html", "csv", "json"] as const;
@@ -122,7 +122,8 @@ function shortList(items: string[], limit = 6): string[] {
 
 function intro(roadmap: Roadmap): string {
 	const { actions, findings, groups } = roadmap.totals;
-	if (actions === 0) return "Nothing to repair: the scan found no problems in what it covered.";
+	// A filtered export that matches nothing says so: the scan's other findings are not in it (B50).
+	if (actions === 0) return roadmap.scope ? "Nothing to repair matches what this export covers. The scan's other findings are not in it." : "Nothing to repair: the scan found no problems in what it covered.";
 	return `${plural(actions, "action clears", "actions clear")} ${plural(findings, "finding", "findings")} across ${plural(groups, "place", "places")}. Work down the list: each phase is more pressing than the one after it.`;
 }
 
@@ -204,6 +205,7 @@ function csv(roadmap: Roadmap): string {
 			}
 		}
 	});
+	rows.push(...csvNoteRows(13, 3, roadmap.scope ? `It covers only: ${roadmap.scope}.` : null, roadmap.caveats));
 	return `${rows.join("\r\n")}\r\n`;
 }
 
@@ -292,12 +294,17 @@ function countRows(rows: FindingRow[]): Counts {
 /** Rows by place, keeping the order of first appearance: the place with the worst finding leads. */
 function byPlace(rows: FindingRow[]): [string, FindingRow[]][] {
 	const places = new Map<string, FindingRow[]>();
-	for (const row of rows) places.set(row.place, [...(places.get(row.place) ?? []), row]);
+	// Appended in place: copying a place's rows for each row is quadratic (B55).
+	for (const row of rows) {
+		const place = places.get(row.place);
+		if (place) place.push(row);
+		else places.set(row.place, [row]);
+	}
 	return [...places];
 }
 
 function findingsIntro(list: FindingsList): string {
-	if (list.rows.length === 0) return "No findings: the scan found no problems in what it covered.";
+	if (list.rows.length === 0) return list.scope ? "No finding matches what this list covers. The scan's other findings are not in it." : "No findings: the scan found no problems in what it covered.";
 	return `${clearsText(countRows(list.rows))} across ${plural(byPlace(list.rows).length, "place", "places")}, most severe first. Each comes with the repair that clears it.`;
 }
 
@@ -331,6 +338,7 @@ function findingsCsv(list: FindingsList): string {
 			csvRow([row.severity, row.type, row.place, row.id, row.title, row.where, row.detail, phaseTitle(row.phase), row.suggestion, row.how.join(" ").replace(/`/g, ""), row.note ?? ""]),
 		);
 	}
+	rows.push(...csvNoteRows(11, 4, list.scope ? `It covers only: ${list.scope}.` : null, list.caveats));
 	return `${rows.join("\r\n")}\r\n`;
 }
 

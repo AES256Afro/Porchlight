@@ -73,7 +73,7 @@ export function parseRepoName(name: string): { owner: string; repo: string } | n
  * Repositories to choose from: with no owner, everything the token can read; with one, that
  * account's public repositories.
  */
-export async function listRepos(config: GithubConfig, owner: string | undefined, fetchFn: typeof fetch = fetch): Promise<GithubRepo[]> {
+export async function listRepos(config: GithubConfig, owner: string | undefined, fetchFn: typeof fetch = fetch): Promise<{ repos: GithubRepo[]; more: boolean }> {
 	if (owner === undefined && !config.token) throw new GithubError(400, "Name a GitHub account, or add a token to list your own repositories");
 	if (owner !== undefined && !validOwner(owner)) throw new GithubError(400, "That is not a GitHub account name");
 	const path = owner === undefined ? "/user/repos?affiliation=owner,collaborator,organization_member&" : `/users/${owner}/repos?type=owner&`;
@@ -103,9 +103,10 @@ export async function listRepos(config: GithubConfig, owner: string | undefined,
 			const repo = toRepo(item);
 			if (repo) repos.push(repo);
 		}
-		if (items.length < PAGE_SIZE) break;
+		// The last page asked for was full: GitHub has more, which the page says rather than stop silently (B62).
+		if (items.length < PAGE_SIZE) return { repos, more: false };
 	}
-	return repos;
+	return { repos, more: true };
 }
 
 function apiProblem(status: number, owner: string | undefined): string {
@@ -140,7 +141,7 @@ export async function fetchedRepos(dir: string): Promise<string[]> {
 			if (parseRepoName(name) && (await stat(join(dir, owner, repo, ".git")).catch(() => null))) names.push(name);
 		}
 	}
-	return names.sort((a, b) => a.localeCompare(b));
+	return names.sort((a, b) => a.localeCompare(b, "en"));
 }
 
 async function folders(dir: string): Promise<string[]> {

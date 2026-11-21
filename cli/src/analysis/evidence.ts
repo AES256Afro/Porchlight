@@ -51,7 +51,7 @@ export async function gatherEvidence(repo: string, manifest: string, name: strin
 	while (queue.length > 0) {
 		const dir = queue.shift() as string;
 		const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
-		for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+		for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name, "en"))) {
 			const full = join(dir, entry.name);
 			// `isDirectory` and `isFile` are false for a symbolic link, so none is followed.
 			if (entry.isDirectory()) {

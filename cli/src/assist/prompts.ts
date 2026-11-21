@@ -1,4 +1,4 @@
-import { countBySeverity, coverageNotes, rank, rankRepos, repoName } from "../repos/report.ts";
+import { countBySeverity, coverageNotes, folderName, rank, rankRepos, repoName } from "../repos/report.ts";
 import type { Finding, RepoResult, ScanReport } from "../repos/types.ts";
 import { domainSuggestions, type MonitorFinding, type MonitorReport } from "../roadmap/domains.ts";
 import { buildRepoRoadmap, suggestionsFor } from "../roadmap/repos.ts";
@@ -286,7 +286,7 @@ function findingsData(report: ScanReport, filter: FindingFilter, cap: number): {
 	const affected = rankRepos(report.repos).filter((repo) => repo.findings.length > 0);
 
 	const data: Record<string, unknown> = {
-		scannedFolder: clip(report.root),
+		scannedFolder: clip(folderName(report.root)),
 		scannedAt: report.scannedAt,
 		scanners: report.tools.map((tool) => ({ tool: tool.tool, status: tool.status, ...(tool.version ? { version: clip(tool.version) } : {}) })),
 		notCovered: coverageNotes(report).map(clip),

@@ -1,7 +1,7 @@
 import { availableParallelism } from "node:os";
 import { resolve } from "node:path";
-import { discoverRepos } from "./discover.ts";
-import { CancelledError, run as defaultRun, ToolMissingError, type Runner } from "./exec.ts";
+import { findRepos, type NotSearched } from "./discover.ts";
+import { CancelledError, quotedValuesOut, run as defaultRun, ToolMissingError, type Runner } from "./exec.ts";
 import { standardChoices } from "../../ui/scan-choices.js";
 import { scanSecrets } from "./gitleaks.ts";
 import { scanDependencies } from "./osv.ts";
@@ -25,8 +25,8 @@ const TOOLS: Tool[] = [
 		installHint: "brew install gitleaks",
 		// One gitleaks pass finds secrets and, with Porchlight's rules beside its own, private data.
 		chosen: (choices) => choices.secrets || choices.privateData === true,
-		scan: (repo, run, { choices }) =>
-			scanSecrets(repo, run, { history: choices.history, localFiles: choices.localFiles, secrets: choices.secrets, privateData: choices.privateData === true }),
+		scan: (repo, run, { choices, scanned, notSearched }) =>
+			scanSecrets(repo, run, { history: choices.history, localFiles: choices.localFiles, secrets: choices.secrets, privateData: choices.privateData === true, scanned, notSearched }),
 	},
 	{
 		name: "osv-scanner",
@@ -69,8 +69,11 @@ export interface RepoDone {
 export interface ScanOptions {
 	root: string;
 	depth: number;
-	/** Further folders to scan in the same report, each looked through to its own depth. */
-	also?: { root: string; depth: number }[];
+	/**
+	 * Further folders to scan in the same report: each looked through to its own depth, or, for the
+	 * repositories fetched from GitHub, exactly the repositories listed (S50).
+	 */
+	also?: ({ root: string; depth: number } | { root: string; repos: string[] })[];
 	run?: Runner;
 	now?: () => Date;
 	/** Lists a repository's scanner setting files; tests replace it. */
@@ -91,6 +94,10 @@ export interface ScanOptions {
 interface ScannerSettings {
 	osvDatabase?: string;
 	choices: ScanChoices;
+	/** Every repository the scan found, by path: a repository nested in another that is not among them is named under "Not covered" (B30). */
+	scanned: Set<string>;
+	/** Where a scanner adds folders it found that the scan did not cover. */
+	notSearched: NotSearched[];
 }
 
 export async function scanRepos(options: ScanOptions): Promise<ScanReport> {
@@ -103,14 +110,20 @@ export async function scanRepos(options: ScanOptions): Promise<ScanReport> {
 	const choices = options.choices ?? standardChoices();
 	const tools = await Promise.all(TOOLS.map((tool) => detect(tool, run)));
 	const available = usable(tools, choices);
-	const others = (options.also ?? []).map((other) => ({ root: resolve(other.root), depth: other.depth }));
-	const found = await Promise.all([{ root, depth: options.depth }, ...others].map((place) => discoverRepos(place.root, place.depth)));
-	const otherRoots = others.map((other) => other.root);
+	const others = options.also ?? [];
+	const found: { repos: string[]; notSearched: NotSearched[] }[] = await Promise.all(
+		[{ root, depth: options.depth }, ...others].map((place) =>
+			"repos" in place ? { repos: place.repos.map((repo) => resolve(repo)), notSearched: [] } : findRepos(resolve(place.root), place.depth),
+		),
+	);
+	const otherRoots = others.map((other) => resolve(other.root));
+	const nameOf = (path: string) => nameUnder(root, otherRoots.length > 0 ? otherRoots : undefined, path);
 	// A folder inside another is found twice; it is scanned once. One the choices name is left out, by its name.
-	const named = [...new Set(found.flat())].map((path) => ({ path, name: nameUnder(root, otherRoots.length > 0 ? otherRoots : undefined, path) }));
+	const named = [...new Set(found.flatMap((place) => place.repos))].map((path) => ({ path, name: nameOf(path) }));
 	const skipped = named.filter(({ name }) => choices.skip.includes(name)).map(({ name }) => name);
 	const paths = named.filter(({ name }) => !choices.skip.includes(name)).map(({ path }) => path);
-	const settings: ScannerSettings = { choices, ...(options.osvDatabase ? { osvDatabase: options.osvDatabase } : {}) };
+	const passedOver: NotSearched[] = found.flatMap((place) => place.notSearched);
+	const settings: ScannerSettings = { choices, scanned: new Set(named.map(({ path }) => path)), notSearched: passedOver, ...(options.osvDatabase ? { osvDatabase: options.osvDatabase } : {}) };
 
 	const repos: RepoResult[] = [];
 	const queue = [...paths];
@@ -127,9 +140,27 @@ export async function scanRepos(options: ScanOptions): Promise<ScanReport> {
 		}
 	};
 	await Promise.all(Array.from({ length: Math.max(1, options.concurrency ?? repoConcurrency()) }, worker));
-	repos.sort((a, b) => a.path.localeCompare(b.path));
+	// In code-unit order, so a report does not depend on the language the computer is set to (B61).
+	repos.sort((a, b) => byText(a.path, b.path));
+	// What the search and the scanners passed over, each folder once, named as repositories are.
+	const notSearched = [...new Map(passedOver.map((entry) => [entry.path, { name: nameOf(entry.path), reason: entry.reason }])).values()];
 
-	return { format: REPORT_FORMAT, root, ...(otherRoots.length > 0 ? { otherRoots } : {}), scannedAt: now().toISOString(), tools, repos, choices, ...(skipped.length > 0 ? { skipped: skipped.sort() } : {}) };
+	return {
+		format: REPORT_FORMAT,
+		root,
+		...(otherRoots.length > 0 ? { otherRoots } : {}),
+		scannedAt: now().toISOString(),
+		tools,
+		repos,
+		choices,
+		...(skipped.length > 0 ? { skipped: skipped.sort() } : {}),
+		...(notSearched.length > 0 ? { notSearched: notSearched.sort((a, b) => byText(a.name, b.name)) } : {}),
+	};
+}
+
+/** Text in code-unit order: the same on every computer, whatever language it is set to. */
+export function byText(a: string, b: string): number {
+	return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /** The scanners that are installed and that the choices ask for. */
@@ -141,14 +172,21 @@ function usable(tools: ToolStatus[], choices: ScanChoices): Tool[] {
  * Scans one repository again with the scanners installed now, as a full scan would. For the
  * interface's "Scan this repository again"; the caller puts the result in place of the old one.
  */
-export async function rescanRepo(path: string, options: Pick<ScanOptions, "run" | "settingFiles" | "signal" | "osvDatabase" | "choices"> = {}): Promise<{ repo: RepoResult; tools: ToolStatus[] }> {
+export async function rescanRepo(
+	path: string,
+	options: Pick<ScanOptions, "run" | "settingFiles" | "signal" | "osvDatabase" | "choices"> & {
+		/** The report's other repositories, by path, so one nested in this one is not named as unscanned. */
+		scanned?: string[];
+	} = {},
+): Promise<{ repo: RepoResult; tools: ToolStatus[] }> {
 	const { signal } = options;
 	const baseRun = options.run ?? defaultRun;
 	const run: Runner = signal ? (command, args, runOptions) => baseRun(command, args, { ...runOptions, signal }) : baseRun;
 	const choices = options.choices ?? standardChoices();
 	const tools = await Promise.all(TOOLS.map((tool) => detect(tool, run)));
 	const available = usable(tools, choices);
-	const repo = await scanRepo(resolve(path), available, run, options.settingFiles ?? scannerSettingFiles, { choices, ...(options.osvDatabase ? { osvDatabase: options.osvDatabase } : {}) });
+	const scanned = new Set([resolve(path), ...(options.scanned ?? []).map((other) => resolve(other))]);
+	const repo = await scanRepo(resolve(path), available, run, options.settingFiles ?? scannerSettingFiles, { choices, scanned, notSearched: [], ...(options.osvDatabase ? { osvDatabase: options.osvDatabase } : {}) });
 	if (signal?.aborted) throw new CancelledError();
 	return { repo, tools };
 }
@@ -176,7 +214,7 @@ async function scanRepo(path: string, tools: Tool[], run: Runner, settingFiles: 
 			try {
 				return await tool.scan(path, run, settings);
 			} catch (err) {
-				return { error: { tool: tool.name, message: err instanceof Error ? err.message : String(err) } };
+				return { error: { tool: tool.name, message: quotedValuesOut(err instanceof Error ? err.message : String(err)) } };
 			}
 		}),
 	);

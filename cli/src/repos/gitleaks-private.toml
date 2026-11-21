@@ -27,23 +27,27 @@ keywords = ["@"]
 [[rules]]
 id = "private-email-example"
 description = "Example or test email address"
-regex = '''(?i)\b[a-z0-9][a-z0-9._%+-]{0,63}@(?:[a-z0-9-]+\.)*(?:example\.(?:com|org|net|edu)|example|test|invalid|localhost)\b'''
+# The domain must end at the example label: alice@test.acme-corp.io is a real address, not an example.
+regex = '''(?i)\b([a-z0-9][a-z0-9._%+-]{0,63}@(?:[a-z0-9-]+\.)*(?:example\.(?:com|org|net|edu)|example|test|invalid|localhost))(?:[^a-z0-9.-]|$)'''
+secretGroup = 1
 keywords = ["@"]
 
 [[rules]]
 id = "private-phone"
 description = "Phone number"
-regex = '''(?:\+[1-9]\d{0,2}[ .-]?(?:\(\d{1,4}\)[ .-]?)?\d{2,4}(?:[ .-]\d{2,4}){1,4}|\(\d{3}\)[ .-]?\d{3}[ .-]\d{4}|\b\d{3}[.-]\d{3}[.-]\d{4})\b'''
+# International numbers written compact (+14155552671) or in groups (+44 7700 900123, +33 1 23 45 67 89),
+# and the North American forms.
+regex = '''(?:\+[1-9]\d{7,14}|\+[1-9]\d{0,2}[ .-]?(?:\(\d{1,4}\)[ .-]?)?\d{1,4}(?:[ .-]\d{2,8}){1,5}|\(\d{3}\)[ .-]?\d{3}[ .-]\d{4}|\b\d{3}[.-]\d{3}[.-]\d{4})\b'''
 
   [[rules.allowlists]]
   description = "Numbers set aside for fiction and examples: private-phone-example matches them"
   regexTarget = "match"
-  regexes = ['''(?:\+?1[ .-]?)?(?:\(\d{3}\)|\b\d{3})?[ .-]?555[ .-]01\d{2}\b|\+?44[ .-]?\(?0?\)?20[ .-]?7946[ .-]?0\d{3}\b''']
+  regexes = ['''(?:\+?1[ .-]?)?(?:\(\d{3}\)|\b\d{3})?[ .-]?555[ .-]?01\d{2}\b|\+?44[ .-]?\(?0?\)?20[ .-]?7946[ .-]?0\d{3}\b''']
 
 [[rules]]
 id = "private-phone-example"
 description = "Example phone number"
-regex = '''(?:\+?1[ .-]?)?(?:\(\d{3}\)|\b\d{3})?[ .-]?555[ .-]01\d{2}\b|\+?44[ .-]?\(?0?\)?20[ .-]?7946[ .-]?0\d{3}\b'''
+regex = '''(?:\+?1[ .-]?)?(?:\(\d{3}\)|\b\d{3})?[ .-]?555[ .-]?01\d{2}\b|\+?44[ .-]?\(?0?\)?20[ .-]?7946[ .-]?0\d{3}\b'''
 keywords = ["555", "7946"]
 
 [[rules]]
@@ -94,7 +98,7 @@ regex = '''\b(?:DE89 ?3704 ?0044 ?0532 ?0130 ?00|GB82 ?WEST ?1234 ?5698 ?7654 ?3
 [[rules]]
 id = "private-gps"
 description = "GPS coordinates precise enough to find a building"
-regex = '''(?:^|[^\d.])((?:[-+]?(?:1[0-7]\d|180|[1-9]\d?)\.\d{4,}\s*,\s*[-+]?(?:1[0-7]\d|180|[1-9]?\d)\.\d{4,}|[-+]?0\.\d{4,}\s*,\s*[-+]?(?:1[0-7]\d|180|[1-9]\d?)\.\d{4,}))'''
+regex = '''(?:^|[^\d.])((?:[-+]?(?:1[0-7]\d|180|[1-9]\d?)\.\d{4,}\s*,\s*[-+]?(?:1[0-7]\d|180|[1-9]?\d)\.\d{4,}|[-+]?0\.\d{4,}\s*,\s*[-+]?(?:1[0-7]\d|180|[1-9]\d|[2-9])\.\d{4,}))'''
 secretGroup = 1
 
 [[rules]]
@@ -118,6 +122,12 @@ keywords = ["ts.net"]
 [[rules]]
 id = "private-internal-name"
 description = "Internal host name"
-regex = '''(?i)\b((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:internal|intranet|corp|lan|local|home\.arpa))(?:[^a-z0-9.-]|$)'''
+# Not a call (threading.local()) and not an attribute of an object in code (self.internal).
+regex = '''(?i)\b((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:internal|intranet|corp|lan|local|home\.arpa))(?:[^a-z0-9.(-]|$)'''
 secretGroup = 1
 keywords = [".internal", ".intranet", ".corp", ".lan", ".local", ".home.arpa"]
+
+  [[rules.allowlists]]
+  description = "An attribute of an object in code, not a host"
+  regexTarget = "match"
+  regexes = ['''(?i)^(?:self|this|cls|ctx|context|req|res|window|document|module|exports|threading|os|sys)\.''']

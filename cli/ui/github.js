@@ -26,6 +26,8 @@ export function githubPanel(onChange) {
 	let fetched = [];
 	/** @type {GithubRepo[] | null} */
 	let listed = null;
+	/** Whether GitHub has more repositories than the list holds. */
+	let more = false;
 	/** @type {Set<string>} */
 	const chosen = new Set();
 	/** @type {FetchStatus} */
@@ -112,6 +114,7 @@ export function githubPanel(onChange) {
 			const answer = await api("GET", `/github/repos${owner ? `?owner=${encodeURIComponent(owner)}` : ""}`);
 			if (stopped) return;
 			listed = /** @type {GithubRepo[]} */ (answer.repos);
+			more = answer.more === true;
 			chosen.clear();
 			for (const repo of listed) if (fetchByDefault(repo) && !fetched.includes(repo.name)) chosen.add(repo.name);
 		} catch (err) {
@@ -247,6 +250,7 @@ export function githubPanel(onChange) {
 					h("button", { type: "button", class: "button quiet", onclick: () => setAll(false) }, "Untick all"),
 				),
 				h("p", { class: "hint" }, "Forks and archived repositories start unticked."),
+				more ? h("p", { class: "hint" }, `GitHub has more than these ${listed.length.toLocaleString("en")}: the list holds the ones pushed to most recently.`) : null,
 				h("ul", { class: "repo-pick scroll" }, ...rows),
 				h("div", { class: "actions" }, fetchButton),
 			),

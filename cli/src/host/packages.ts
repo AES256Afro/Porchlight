@@ -178,7 +178,7 @@ export function packageChecks(findings: Finding[], npmEntries: NpmEntry[], pytho
 			commands: specs.map((spec) => ({ kind: npm ? ("npm-global" as const) : ("pip" as const), spec })),
 		});
 	}
-	return checks.sort((a, b) => severityRank(a.severity) - severityRank(b.severity) || a.title.localeCompare(b.title));
+	return checks.sort((a, b) => severityRank(a.severity) - severityRank(b.severity) || a.title.localeCompare(b.title, "en"));
 }
 
 interface BrewOutdated {

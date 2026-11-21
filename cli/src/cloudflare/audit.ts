@@ -11,6 +11,7 @@ import {
 	dnsChecks,
 	emailChecks,
 	firewallChecks,
+	maskEmail,
 	memberChecks,
 	ownershipCheck,
 	PERMISSIONS,
@@ -210,8 +211,10 @@ export async function auditCloudflare(options: AuditOptions): Promise<CfReport> 
 	options.onProgress?.({ done: audited.length, total, current: "account members and API tokens" });
 	const accountList = await client.list<{ id?: unknown; name?: unknown }>("/accounts", {}, 50);
 	const accountsSeen = new Map<string, string>();
-	if (accountList.ok) for (const account of accountList.result) if (isCloudflareId(account.id)) accountsSeen.set(account.id, typeof account.name === "string" ? account.name.slice(0, 100) : "Account");
-	for (const raw of rawZones) if (isCloudflareId(raw.account?.id) && !accountsSeen.has(raw.account.id)) accountsSeen.set(raw.account.id, typeof raw.account.name === "string" ? raw.account.name.slice(0, 100) : "Account");
+	// Cloudflare names a personal account "<email>'s Account": the email is masked as a member's is (S35).
+	const accountName = (name: unknown) => (typeof name === "string" ? name.slice(0, 100).replace(/[^\s@'"<>(),;:]+@[^\s@'"<>(),;:]+\.[a-z]{2,}/gi, (email) => maskEmail(email)) : "Account");
+	if (accountList.ok) for (const account of accountList.result) if (isCloudflareId(account.id)) accountsSeen.set(account.id, accountName(account.name));
+	for (const raw of rawZones) if (isCloudflareId(raw.account?.id) && !accountsSeen.has(raw.account.id)) accountsSeen.set(raw.account.id, accountName(raw.account.name));
 
 	const accounts: CfAccountReport[] = [];
 	for (const [id, name] of accountsSeen) {

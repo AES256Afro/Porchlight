@@ -10,8 +10,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 /** The kinds of folder Porchlight makes, as they are named: `porchlight-<kind>-XXXXXX`. */
-export type TempKind = "files" | "committed" | "copy" | "host" | "run" | "rules";
-const KINDS: readonly TempKind[] = ["files", "committed", "copy", "host", "run", "rules"];
+export type TempKind = "files" | "committed" | "copy" | "host" | "run" | "rules" | "unseen";
+const KINDS: readonly TempKind[] = ["files", "committed", "copy", "host", "run", "rules", "unseen"];
 
 const live = new Set<string>();
 let handled = false;
