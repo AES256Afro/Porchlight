@@ -1,6 +1,6 @@
 // @ts-check
-import { api } from "./api.js";
-import { announce, banner, formatNumber, h, icon, isOff, pager, pageVisibility, plural, replace, setOff, shownText, stepNodes, toast } from "./dom.js";
+import { api, download } from "./api.js";
+import { announce, banner, checkTiles, formatNumber, formatWhen, h, icon, isOff, pager, pageVisibility, plural, replace, setOff, severityBadge, shownText, stepNodes, tileRow, toast } from "./dom.js";
 import { fetchByDefault, githubTokenSteps } from "./hints.js";
 import { paginate } from "./list.js";
 import { poller } from "./poller.js";
@@ -8,6 +8,10 @@ import { store } from "./store.js";
 
 /** @typedef {import("../src/github/github.ts").GithubRepo} GithubRepo */
 /** @typedef {import("../src/ui/server.ts").FetchStatus} FetchStatus */
+/** @typedef {import("../src/github/audit-types.ts").GhReport} GhReport */
+/** @typedef {import("../src/github/audit-types.ts").GhCheck} GhCheck */
+/** @typedef {import("../src/github/audit-types.ts").GhRepoReport} GhRepoReport */
+/** @typedef {import("../src/github/audit-types.ts").GithubAuditStatus} GithubAuditStatus */
 
 const POLL_MS = 1000;
 /** Repositories listed from GitHub at a time. */
@@ -84,6 +88,9 @@ export function githubPanel(onChange) {
 		jobSlot,
 		fetchedSlot,
 	);
+	// The settings audit has its own section, and its own polling while it runs (invariant 24).
+	const settings = githubSettingsSection(hasToken);
+	node.append(settings.node);
 	/** Reads what is fetched and whether a fetch is running, and keeps reading while one is. */
 	const follow = poller({
 		every: POLL_MS,
@@ -110,6 +117,7 @@ export function githubPanel(onChange) {
 		stop: () => {
 			stopped = true;
 			follow.stop();
+			settings.stop();
 		},
 	};
 
@@ -271,6 +279,211 @@ export function githubPanel(onChange) {
 						})
 					: null,
 				h("div", { class: "actions" }, fetchButton),
+			),
+		);
+	}
+}
+
+/** Repositories with something to look at, shown at a time. */
+const AUDIT_PAGE = 10;
+const AREA_TITLES = /** @type {const} */ ({ branches: "Branch protection", secrets: "Secret scanning", dependencies: "Dependabot", actions: "Actions", access: "Deploy keys and webhooks" });
+
+/**
+ * "GitHub settings": the read-only audit of the repositories the token administers. Built-in rules,
+ * no model; it changes nothing on GitHub. What the token could not read says Could not check with
+ * the permission to add, never passed. Every element is built with h(): repository names, alert types,
+ * key titles and webhook hosts come from GitHub and are never treated as HTML.
+ *
+ * @param {boolean} hasToken
+ * @returns {{ node: HTMLElement, stop: () => void }}
+ */
+export function githubSettingsSection(hasToken) {
+	let stopped = false;
+	/** @type {GithubAuditStatus} */
+	let status = { state: "idle" };
+	/** @type {GhReport | null} */
+	let report = null;
+	let unreadable = "";
+	/** @type {{ name: string, classic: string, purpose: string }[]} */
+	let permissions = [];
+	let page = 1;
+	const statusSlot = h("div");
+	const reportSlot = h("div");
+	const button = /** @type {HTMLButtonElement} */ (h("button", { type: "button", class: "button", onclick: () => void start() }, "Audit GitHub settings"));
+	const node = h(
+		"section",
+		{ class: "github-settings", "aria-label": "GitHub settings" },
+		h("h3", null, "GitHub settings"),
+		h(
+			"p",
+			{ class: "sub" },
+			"Reads the settings of the repositories your token administers: default branch protection and rulesets, secret scanning, push protection and open alerts, Dependabot alerts, the Actions token, deploy keys and webhooks. It only reads, and changes nothing on GitHub.",
+		),
+		hasToken ? h("div", { class: "actions" }, button) : h("p", { class: "hint" }, "It reads with the GitHub token. Add one as described above, with the read-only permissions listed below."),
+		statusSlot,
+		reportSlot,
+	);
+	const follow = poller({
+		every: 1000,
+		visibility: pageVisibility(),
+		run: async () => {
+			const state = await api("GET", "/github/audit");
+			if (stopped) return false;
+			const finished = status.state === "running" && state.status.state !== "running";
+			status = state.status;
+			report = state.report;
+			unreadable = typeof state.unreadable === "string" ? state.unreadable : "";
+			permissions = Array.isArray(state.permissions) ? state.permissions : [];
+			draw();
+			if (finished) announce(status.state === "done" ? "The GitHub settings audit finished" : "The GitHub settings audit failed");
+			return status.state === "running";
+		},
+		onGiveUp: (err) => {
+			if (!stopped) replace(statusSlot, banner("error", "Could not read the GitHub settings audit", [message(err)]));
+		},
+	});
+	follow.now();
+	return {
+		node,
+		stop: () => {
+			stopped = true;
+			follow.stop();
+		},
+	};
+
+	async function start() {
+		if (isOff(button)) return;
+		setOff(button, true);
+		try {
+			const answer = await api("POST", "/github/audit", {});
+			status = answer.status;
+			announce("The GitHub settings audit started");
+			draw();
+			follow.start();
+		} catch (err) {
+			toast(message(err), "error");
+		} finally {
+			setOff(button, false);
+		}
+	}
+
+	/** @param {"md" | "csv" | "json"} format */
+	async function save(format) {
+		try {
+			toast(`Saved ${await download(`/github/audit/export?format=${format}`)}`);
+		} catch (err) {
+			toast(message(err), "error");
+		}
+	}
+
+	function draw() {
+		setOff(button, status.state === "running");
+		if (status.state === "running") {
+			replace(
+				statusSlot,
+				h(
+					"div",
+					{ class: "progress" },
+					h("div", { class: "progress-text" }, h("strong", null, status.total > 0 ? `Reading ${Math.min(status.done + 1, status.total)} of ${status.total}` : "Listing your repositories"), status.current ? h("span", { class: "path" }, status.current) : null),
+					h("progress", { max: Math.max(status.total, 1), value: status.done, "aria-label": "GitHub audit progress" }),
+				),
+			);
+		} else if (status.state === "failed") replace(statusSlot, banner("error", "The GitHub settings audit failed", [status.error]));
+		else replace(statusSlot);
+		if (unreadable) return replace(reportSlot, banner("error", "The kept audit could not be read", [unreadable]), permissionList(null));
+		if (!report) return replace(reportSlot, h("p", { class: "hint" }, hasToken ? "No audit yet." : ""), permissionList(null));
+		const checks = report.repos.flatMap((repo) => repo.checks);
+		const count = (/** @type {GhCheck["status"]} */ state) => checks.filter((item) => item.status === state).length;
+		const flagged = report.repos.filter((repo) => repo.checks.some((item) => item.status === "failed" || item.status === "unknown"));
+		const clean = report.repos.length - flagged.length;
+		const view = paginate(flagged, page, AUDIT_PAGE);
+		page = view.page;
+		replace(
+			reportSlot,
+			h("p", { class: "hint" }, `Checked ${formatWhen(report.checkedAt)}: ${plural(report.repos.length, "repository", "repositories")}${report.reposSkipped ? `, ${formatNumber(report.reposSkipped)} more not audited` : ""}. Built-in rules, no model.`),
+			tileRow(...checkTiles(count("failed"), count("unknown"), count("passed"))),
+			report.rateLimited ? banner("warning", "GitHub's rate limit stopped some reads", ["Those checks say Could not check. Audit again later."]) : null,
+			...view.items.map((repo) => repoBlock(repo)),
+			view.pages > 1
+				? pager(view, "repositories", (next) => {
+						page = next;
+						draw();
+					})
+				: null,
+			clean > 0 ? h("p", { class: "hint" }, `${plural(clean, "repository", "repositories")} with nothing to fix and nothing left unchecked.`) : null,
+			report.notCovered.length > 0 ? banner("warning", "Not covered", report.notCovered) : null,
+			permissionList(report),
+			h(
+				"div",
+				{ class: "actions" },
+				h("span", { class: "hint" }, "Export:"),
+				h("button", { type: "button", class: "button quiet", onclick: () => void save("md") }, "Markdown"),
+				h("button", { type: "button", class: "button quiet", onclick: () => void save("csv") }, "CSV"),
+				h("button", { type: "button", class: "button quiet", onclick: () => void save("json") }, "JSON"),
+			),
+		);
+	}
+
+	/** @param {GhRepoReport} repo */
+	function repoBlock(repo) {
+		const shown = repo.checks.filter((item) => item.status === "failed" || item.status === "unknown");
+		const rest = repo.checks.length - shown.length;
+		return h(
+			"details",
+			{ class: "options", open: repo.checks.some((item) => item.status === "failed") },
+			h("summary", null, h("span", { class: "wrap" }, repo.name), " ", h("span", { class: "hint" }, `${repo.private ? "private" : "public"} · ${plural(repo.checks.filter((item) => item.status === "failed").length, "finding", "findings")}`)),
+			h("div", { class: "host-list" }, ...shown.map((item) => checkRow(item))),
+			rest > 0 ? h("p", { class: "hint" }, `${plural(rest, "other check", "other checks")} passed or not available for this repository.`) : null,
+		);
+	}
+
+	/** @param {GhCheck} check */
+	function checkRow(check) {
+		const mark =
+			check.status === "failed"
+				? severityBadge(check.severity)
+				: check.status === "unknown"
+					? h("span", { class: "severity status-pending" }, icon("pending"), "Could not check")
+					: check.status === "unavailable"
+						? h("span", { class: "severity status-pending" }, icon("minus"), "Not available")
+						: h("span", { class: "severity status-good" }, icon("good"), "Passed");
+		const items = check.items ?? [];
+		return h(
+			"div",
+			{ class: `host-check host-${check.status === "unavailable" ? "passed" : check.status}` },
+			h("div", { class: "host-check-head" }, mark, h("strong", null, check.title), h("span", { class: "hint" }, AREA_TITLES[check.area])),
+			h("p", { class: "host-detail" }, check.detail),
+			h("p", { class: "hint" }, check.why),
+			items.length > 0 ? h("ul", null, ...items.map((item) => h("li", null, h("code", null, item)))) : null,
+			check.fix?.length ? h("ol", { class: "host-fix" }, ...check.fix.map((step) => h("li", null, ...stepNodes(step)))) : null,
+		);
+	}
+
+	/**
+	 * What the token needs, and what this audit found it could read.
+	 *
+	 * @param {GhReport | null} kept
+	 */
+	function permissionList(kept) {
+		const list = kept ? kept.permissions : permissions.map((permission) => ({ ...permission, granted: null }));
+		if (list.length === 0) return null;
+		return h(
+			"details",
+			{ class: "options" },
+			h("summary", null, "Read permissions the token needs"),
+			h("p", { class: "hint" }, "A fine-grained token's repository permissions, each Read-only; a classic token's scopes in brackets. A permission it lacks makes those checks Could not check, never passed."),
+			h(
+				"ul",
+				null,
+				...list.map((permission) =>
+					h(
+						"li",
+						null,
+						h("strong", null, permission.name),
+						` (classic: ${permission.classic}): ${permission.purpose}`,
+						permission.granted === true ? h("span", { class: "hint" }, " · answered") : permission.granted === false ? h("span", { class: "hint" }, " · refused: add it to the token") : null,
+					),
+				),
 			),
 		);
 	}

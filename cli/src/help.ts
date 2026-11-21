@@ -183,6 +183,25 @@ Uses the token saved under Settings → Cloudflare in the interface, or
 PORCHLIGHT_CLOUDFLARE_TOKEN. It is sent only to Cloudflare's API.`,
 	},
 	{
+		command: "github audit",
+		summary: "Check the settings of the GitHub repositories you administer; only reads",
+		detail: `Usage: porchlight github audit
+
+Checks each repository's default branch protection and rulesets, secret scanning and push
+protection, open secret-scanning alerts (counted by type, never a secret), Dependabot alerts, the
+Actions token's default permission, deploy keys that can write and insecure webhooks (by host
+alone). It only reads, and covers at most 100 repositories, the ones pushed to most recently.
+
+  --json                 Print the result as JSON
+  --fail-on <severity>   Exit 2 if a failed check is at or above: ${SEVERITIES.join(", ")}.
+                         Exit 1 if a check could not be made
+
+Uses PORCHLIGHT_GITHUB_TOKEN, sent only to GitHub's API. A fine-grained token needs these
+repository permissions, all Read-only: Metadata, Administration, Secret scanning alerts,
+Dependabot alerts and Webhooks (a classic token: repo, security_events and read:repo_hook). A
+permission it lacks makes those checks "Could not check", never passed.`,
+	},
+	{
 		command: "ui",
 		summary: "Open the local web interface",
 		detail: `Usage: porchlight ui

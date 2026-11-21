@@ -184,6 +184,7 @@ const DATA_ENTRIES: Record<string, string> = {
 	"cloudflare-audit.json": "the latest Cloudflare audit",
 	"cloudflare-audits": "earlier Cloudflare audits",
 	"cloudflare-changes.json": "the record of Cloudflare changes sent",
+	"github-audit.json": "the latest GitHub settings audit",
 	"host-check.json": "the latest check of this computer",
 	"host-checks": "earlier checks of this computer",
 	"investigate-domains.json": "domains and their ownership tokens for investigations",

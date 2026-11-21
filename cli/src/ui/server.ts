@@ -32,6 +32,7 @@ import { createDiscussions } from "./routes/discussions.ts";
 import { createDownload } from "./routes/download.ts";
 import { egressRoutes } from "./routes/egress.ts";
 import { createGithub } from "./routes/github.ts";
+import { createGithubAudit } from "./routes/github-audit.ts";
 import { createHostCheck } from "./routes/host.ts";
 import { claimsHosts, hostsRoute } from "./routes/hosts.ts";
 import { createInvestigate } from "./routes/investigate.ts";
@@ -264,6 +265,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	const cloudflareArea = createCloudflare(ctx, investigateArea.domainsPath);
 	const digestArea = createDigest(ctx);
 	const githubArea = createGithub(ctx);
+	const githubAudit = createGithubAudit(ctx, githubArea.github);
 	const analysis = createAnalysis(ctx);
 	const reportArea = await createReport(ctx, monitorArea);
 	const scanning = createScanning(ctx, githubArea.github, { analyseAfterScan: analysis.analyseAfterScan, afterScheduledScan: digestArea.afterScheduledScan });
@@ -295,6 +297,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		if (hostArea.hostStatus().state === "running") busy.push("This computer is being checked");
 		if (investigateArea.investigation()) busy.push(`An investigation of ${investigateArea.investigation()!.run.domain} is running`);
 		if (cloudflareArea.cloudflareStatus().state === "running") busy.push("Your Cloudflare account is being audited");
+		if (githubAudit.status().state === "running") busy.push("Your GitHub repositories' settings are being audited");
 		if (models.sendingNow() > 0) busy.push("A model is answering what you sent it");
 		else if (models.modelBusy() && !muralRunning && !analysisRunning) busy.push("The model is answering");
 		return busy;
@@ -328,6 +331,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		...reportArea.roadmapRoutes,
 		...scanning.readRoutes,
 		...reportArea.sbomRoutes,
+		...githubAudit.routes,
 		...githubArea.routes,
 		...scanning.startRoutes,
 		...reportArea.domainExportRoutes,

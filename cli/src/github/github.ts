@@ -51,6 +51,73 @@ const PAGE_SIZE = 100;
 const MAX_PAGES = 10;
 const API_TIMEOUT_MS = 20_000;
 
+/**
+ * The settings audit's reads (invariant 24), each a fixed template under one repository. The audit
+ * only reads: every request is a GET, and nothing here names a path that changes anything.
+ */
+export const REPO_READS = {
+	repo: "",
+	hooks: "/hooks",
+	keys: "/keys",
+	vulnerabilityAlerts: "/vulnerability-alerts",
+	dependabotAlerts: "/dependabot/alerts",
+	secretAlerts: "/secret-scanning/alerts",
+	actions: "/actions/permissions",
+	workflow: "/actions/permissions/workflow",
+	forkApproval: "/actions/permissions/fork-pr-contributor-approval",
+} as const;
+export type RepoRead = keyof typeof REPO_READS;
+/** Reads about one branch: its classic protection, and the ruleset rules that apply to it. */
+export type BranchRead = "protection" | "rules";
+
+/** A branch name as git allows it, kept to characters an address carries as they are. */
+const BRANCH_PATTERN = /^[A-Za-z0-9._/-]{1,200}$/;
+/** Query values the audit sends: its own words and numbers, never anything from a request. */
+const QUERY_VALUE = /^[A-Za-z0-9_,-]{1,60}$/;
+/** A cursor GitHub hands back for the next page of a list (`after`): base64-like, never anything else. */
+const CURSOR = /^[A-Za-z0-9+/=_-]{1,200}$/;
+
+/** Whether a branch name, as GitHub gave it, may go into an address: no `..`, no empty or hidden part. */
+export function validBranch(branch: string): boolean {
+	return BRANCH_PATTERN.test(branch) && branch.split("/").every((part) => part !== "" && !part.startsWith(".") && !part.endsWith(".lock"));
+}
+
+/**
+ * The address of one read of the settings audit, always under api.github.com. The repository must be a
+ * GitHub name (`parseRepoName`), the branch one `validBranch` allows, and the rest is a fixed template
+ * from this file. The address is checked once built, so nothing can move it off GitHub's API.
+ */
+export function auditAddress(target: { list: true } | { repo: string; read: RepoRead } | { repo: string; branch: string; read: BranchRead }, query: Record<string, string> = {}): URL {
+	let path: string;
+	if ("list" in target) path = "/user/repos";
+	else {
+		const parsed = parseRepoName(target.repo);
+		if (!parsed) throw new GithubError(400, "Not a GitHub repository name");
+		const base = `/repos/${parsed.owner}/${parsed.repo}`;
+		if ("branch" in target) {
+			if (!validBranch(target.branch)) throw new GithubError(400, "Not a branch name Porchlight puts in an address");
+			path = target.read === "protection" ? `${base}/branches/${target.branch}/protection` : `${base}/rules/branches/${target.branch}`;
+		} else path = `${base}${REPO_READS[target.read]}`;
+	}
+	const url = new URL(`${API}${path}`);
+	for (const [key, value] of Object.entries(query)) {
+		if (!/^[a-z_]{1,20}$/.test(key) || !(key === "after" ? CURSOR : QUERY_VALUE).test(value)) throw new GithubError(400, "Not a query Porchlight sends");
+		url.searchParams.set(key, value);
+	}
+	if (url.origin !== API || url.pathname !== path) throw new GithubError(400, "Not GitHub's API");
+	return url;
+}
+
+/** The headers of every API request: the token, when there is one, travels here and nowhere else. */
+export function apiHeaders(token: string | undefined): Record<string, string> {
+	return {
+		accept: "application/vnd.github+json",
+		"x-github-api-version": "2022-11-28",
+		"user-agent": "porchlight",
+		...(token ? { authorization: `Bearer ${token}` } : {}),
+	};
+}
+
 /** Why a token cannot be used, or null when it is well formed. Says nothing about whether GitHub accepts it. */
 export function tokenProblem(token: string): string | null {
 	return TOKEN_PATTERN.test(token) ? null : "PORCHLIGHT_GITHUB_TOKEN is not a GitHub token: expected 20 or more letters, digits and underscores";
@@ -83,12 +150,7 @@ export async function listRepos(config: GithubConfig, owner: string | undefined,
 		let response: Response;
 		try {
 			response = await fetchFn(`${API}${path}sort=pushed&per_page=${PAGE_SIZE}&page=${page}`, {
-				headers: {
-					accept: "application/vnd.github+json",
-					"x-github-api-version": "2022-11-28",
-					"user-agent": "porchlight",
-					...(config.token ? { authorization: `Bearer ${config.token}` } : {}),
-				},
+				headers: apiHeaders(config.token),
 				// The token is for this host alone, so the request is never passed on to another.
 				redirect: "error",
 				signal: AbortSignal.timeout(API_TIMEOUT_MS),

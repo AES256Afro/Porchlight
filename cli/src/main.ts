@@ -24,6 +24,7 @@ import type { MonitorReport } from "./roadmap/domains.ts";
 import { CONTENTS, exportDomain, exportRepos, parseFilter, type ExportFile } from "./roadmap/export.ts";
 import { FORMATS } from "./roadmap/render.ts";
 import { tokenProblem } from "./github/github.ts";
+import { githubAuditCommand } from "./github/audit-command.ts";
 import { checkHost } from "./host/check.ts";
 import { renderHostText } from "./host/render.ts";
 import { run, type Runner } from "./repos/exec.ts";
@@ -96,6 +97,7 @@ export async function main(argv: string[]): Promise<number> {
 		if (group === "domains" && command) return await domains(command, rest);
 		if (group === "host" && command === "check") return await hostCheck(rest);
 		if (group === "cloudflare" && command === "audit") return await cloudflareAudit(rest);
+		if (group === "github" && command === "audit") return await githubAuditCommand(rest, { write: print, warn, failCode });
 		if (group === "ui") return await ui(argv.slice(1));
 	} catch (err) {
 		warn(`porchlight: ${err instanceof Error ? err.message : String(err)}`);

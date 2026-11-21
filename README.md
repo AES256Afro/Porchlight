@@ -150,7 +150,7 @@ Porchlight is one Node.js process. The browser page and the Mac app are clients 
 | A hosted model (Anthropic, OpenAI, Google, DeepSeek) | The fields the page displays for the item asked about | Only when a hosted model is selected and asked. The page names the destination before anything is sent |
 | A model server of the operator's | The same fields | When it is the selected model |
 | Hugging Face | The search words and filters | Model search in Settings |
-| GitHub | API requests and `git clone` over https, with the operator's token if given | Fetching repositories |
+| GitHub | API requests and `git clone` over https, with the operator's token if given | Fetching repositories; the settings audit (read-only API requests) |
 | Devices on the operator's tailnet | The web interface | Only while Access from other devices is on |
 
 Never sent anywhere: secret values (reports do not hold them), commit author names and emails, the monitor's admin token, a domain's challenge value, and Set-Cookie values from investigated sites.
@@ -186,6 +186,7 @@ These hold for every release. They are numbered as the invariants in `CLAUDE.md`
 | 21 | The Cloudflare token is sent only to `api.cloudflare.com`, as a header. A change is one of the fixed templates, offered only for a problem the latest audit found, and sent once after approval. | `cli/test/cloudflare.test.ts`, "every request goes to Cloudflare's API with the token as a header only, and only reads"; `cli/test/cloudflare-server.test.ts`, "a change is sent only after the owner approves the exact request, once, and is recorded" |
 | 22 | A discussion keeps a model's answers beside the findings; a follow-up goes only to the model it began with and adds nothing but the operator's question. | `cli/test/discussions.test.ts`, "a follow-up sends the first prompt, the answers so far and the question, dropping the oldest answers when they do not fit"; `cli/test/ui-server.test.ts`, "keeps each answer as a discussion, and answers follow-up questions from the same data" |
 | 23 | Porchlight writes into a project folder only inside its `Porchlight` subfolder, under its own file names, never over an existing file. | `cli/test/projects.test.ts`, "saved files are new files, readable only by the owner, inside Porchlight's own folder"; `cli/test/ui-server.test.ts`, "a project folder gets saved exports, discussions and a log, under Porchlight's own names and nowhere else" |
+| 24 | The GitHub settings audit only reads: GET requests to `api.github.com` at addresses built from GitHub names, the token as a header only. It keeps no secret, key or webhook path, and a read that was refused or failed is "Could not check", never passed. | `cli/test/github-audit.test.ts`, "every request is a GET to api.github.com at an address built from GitHub names, with the token as a header only (invariant 24)", "no secret, deploy key, webhook path or query is kept…", "a permission the token lacks is Could not check…"; `cli/test/github-audit-server.test.ts` |
 
 ## 7. Failure behaviour
 
@@ -271,6 +272,7 @@ The figures show made-up repositories checked by the real gitleaks and osv-scann
 | `porchlight domains` | Register, verify and scan the domains your monitor watches |
 | `porchlight host check` | Check this computer: updates, protection, open services, credentials in files |
 | `porchlight cloudflare audit` | Check every domain in your Cloudflare account against built-in rules |
+| `porchlight github audit` | Check the settings of the GitHub repositories you administer; only reads |
 | `porchlight ui` | Open the local web interface |
 | `porchlight doctor` | Check that Porchlight has what it needs, and say what to fix |
 | `porchlight forget` | List, then remove, everything Porchlight keeps on this computer |
@@ -279,7 +281,7 @@ The figures show made-up repositories checked by the real gitleaks and osv-scann
 | `porchlight schedule print` | Print a launchd or systemd unit that scans a folder on a schedule |
 | `porchlight settings export`, `porchlight settings import` | Move your settings to another computer; keys only in a passphrase-encrypted file |
 
-Exit codes: an error (an unknown option, a file that cannot be read, a service that refused) exits 1. A scan, check or audit that ran exits 0 whatever it found, unless `--fail-on <severity>` is given (`repos scan`, `host check`, `cloudflare audit`): then it exits 2 when a finding is at or above that severity, otherwise 1 when something could not be scanned or checked, otherwise 0. `doctor` exits 1 when something Porchlight cannot work without is missing.
+Exit codes: an error (an unknown option, a file that cannot be read, a service that refused) exits 1. A scan, check or audit that ran exits 0 whatever it found, unless `--fail-on <severity>` is given (`repos scan`, `host check`, `cloudflare audit`, `github audit`): then it exits 2 when a finding is at or above that severity, otherwise 1 when something could not be scanned or checked, otherwise 0. `doctor` exits 1 when something Porchlight cannot work without is missing.
 
 ## 11. Environment variables
 
@@ -292,7 +294,7 @@ Read when Porchlight starts. A choice saved in the interface's Settings comes fi
 | `PORCHLIGHT_LLM_PROVIDER` | `ollama` (default), `compatible`, `anthropic`, `openai`, `gemini` or `deepseek`; see [Deeper analysis](#deeper-analysis-with-a-model) | `ui`, `doctor` |
 | `PORCHLIGHT_LLM_URL`, `PORCHLIGHT_LLM_MODEL` | A model server's address and the model's name | `ui`, `doctor` |
 | `PORCHLIGHT_LLM_API_KEY` | A hosted provider's key, or a key for the operator's own server | `ui` |
-| `PORCHLIGHT_GITHUB_TOKEN` | A GitHub token for fetching private repositories | `ui`, `doctor` |
+| `PORCHLIGHT_GITHUB_TOKEN` | A GitHub token for fetching private repositories and the settings audit | `ui`, `doctor`, `github audit` |
 | `PORCHLIGHT_CLOUDFLARE_TOKEN` | A Cloudflare API token, when none is saved under Settings → Cloudflare | `ui`, `cloudflare audit`, `doctor` |
 | `PORCHLIGHT_SCAN_DEPTH` | Folder levels a scan looks through, 0 to 6 (default 3) | `ui` |
 | `PORCHLIGHT_SCAN_EVERY_HOURS` | Scan `--root` again this often while the server runs, 1 to 720 | `ui` |
@@ -739,6 +741,41 @@ What to know:
 - The token is sent only to GitHub. It is never put in a command's arguments, an address, a repository's configuration, a report or the browser.
 - Only `github.com` is contacted, at addresses built from names that match GitHub's naming rules. Cloning runs none of a repository's code: hooks, submodules, symbolic links, credential helpers and your own git settings are switched off, and redirects are not followed.
 - Forks and archived repositories start unticked.
+
+### Audit the repositories' settings
+
+**GitHub settings** (in the same section, below the repositories) reads the settings of every repository the token can administer, the 100 pushed to most recently, and checks them against built-in rules. From a terminal:
+
+```bash
+porchlight github audit            # add --json for JSON; --fail-on <severity> exits 2 at or above it, 1 when a check could not be made
+```
+
+| Area | What it checks |
+| --- | --- |
+| Branch protection | On the default branch, from classic branch protection or a ruleset: a pull request needs an approving review, force pushes are blocked, the branch cannot be deleted |
+| Secret scanning | Secret scanning and push protection are on; open secret-scanning alerts, counted by type. GitHub is asked with `hide_secret=true`, and no secret or location is kept |
+| Dependabot | Dependabot alerts are on; open alerts, counted by severity |
+| Actions | The workflow token is read-only by default; workflows may not approve pull requests; on a public repository, every first-time contributor's workflows wait for approval |
+| Deploy keys and webhooks | Deploy keys that can write, by title (never the key); webhooks sent over plain http or without checking the certificate, by host alone (never the path, query or secret) |
+
+It only reads. Fetching needs only **Contents: Read-only**; the audit needs these read permissions as well. A fine-grained token's are repository permissions, each **Read-only**:
+
+| Fine-grained permission | Classic token scope | What it reads |
+| --- | --- | --- |
+| Contents | `repo` (`public_repo` for public repositories alone) | Fetching repositories (not used by the audit) |
+| Metadata | `repo` | The list of repositories, default branches, and the ruleset rules on a branch |
+| Administration | `repo` | Classic branch protection, whether secret scanning, push protection and Dependabot alerts are on, the Actions settings, deploy keys |
+| Secret scanning alerts | `security_events` (or `repo`) | Open secret-scanning alerts, by type |
+| Dependabot alerts | `security_events` (or `repo`) | Open Dependabot alerts, by severity |
+| Webhooks | `read:repo_hook` | Webhooks' addresses, of which only the host is kept |
+
+What to know:
+
+- A permission the token lacks makes the checks that need it **Could not check**, naming the permission and the classic scope; never passed. The page lists which permissions the last audit found answered and which refused.
+- A feature GitHub does not offer the repository (branch protection on a private repository on the Free plan, secret scanning on a private one without GitHub Secret Protection) is **Not available**, never a problem.
+- GitHub's rate limit is waited out when it asks for a minute or less, twice at most; past that, what it stopped says Could not check and the audit says the limit was reached.
+- Not audited, and listed under **Not covered**: archived repositories, ones you can read but not administer, more than 100, branches other than the default, an organisation's own settings, Actions secrets and runners, apps and tokens with access, and code scanning alerts.
+- The audit is kept in `github-audit.json` in the data folder, readable only by you. Exports (Markdown, CSV, JSON) escape everything for their format. The token is sent only to `api.github.com`, as a header, and never to the page, a log, a report, an export or a model.
 
 ## Export a repair roadmap
 
