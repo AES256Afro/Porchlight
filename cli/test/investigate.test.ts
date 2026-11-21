@@ -522,3 +522,42 @@ test("export: says how the run's requests were approved, in Porchlight's own wor
 	const later = exportInvestigation((await runWith(replies(), { approve: () => "rest" })).run, "md").body;
 	assert.match(later, /- Approval: you approved each HTTP request and TCP connection up to turn 1, and at that turn every later one/);
 });
+
+test("the ownership token is replaced in every tool output before it reaches the model, and so is every way of writing a cookie's value (S26, S27)", async () => {
+	const { withoutCookieValues } = await import("../src/investigate/engine.ts");
+	// Assembled at run time, so this repository's own secret scan has nothing to find.
+	const token = ["a1b2c3d4", "e5f6a7b8", "c9d0"].join("");
+	const run = newRun({ domain: "example.com", goal: "g", model: "m", modelHost: "h", hosted: false });
+	run.evidence.push({ id: "ev_1", tool: "dns_lookup", args: { name: "target.example.net", type: "TXT" }, request: "TXT target.example.net", response: `"porchlight-verify=${token}"`, at: "2026-11-20T00:00:00Z" } as never);
+	run.steps.push({ id: "st_1", turn: 1, tool: "dns_lookup", args: {}, outcome: "ran", evidenceId: "ev_1" } as never);
+	const prompt = buildPrompt(run, new Scope("example.com"), [token]);
+	assert.ok(!prompt.includes(token));
+	assert.match(prompt, /porchlight-verify=\[ownership token not sent\]/);
+
+	const headers = ["Set-Cookie: SECRET1", "set-cookie: =SECRET2; Path=/", "Set-Cookie: sid = SECRET3; Secure; HttpOnly", "Set-Cookie: id=SECRET4", "Set-Cookie: we ird=SECRET5"].join("\n");
+	const out = withoutCookieValues(headers);
+	assert.doesNotMatch(out, /SECRET/);
+	assert.deepEqual(out.split("\n"), [
+		"Set-Cookie: [value not sent]",
+		"set-cookie: [value not sent]; Path=/",
+		"Set-Cookie: sid=[value not sent]; Secure; HttpOnly",
+		"Set-Cookie: id=[value not sent]",
+		"Set-Cookie: [value not sent]",
+	]);
+});
+
+test("a port this computer could not reach, or a Stop, is never given as the host's state (B57)", async () => {
+	const { runAction } = await import("../src/investigate/tools.ts");
+	const outcome = async (detail: string) => {
+		const { net } = scriptedNet();
+		net.tcp = async () => ({ open: false, detail });
+		return runAction({ tool: "tcp_connect", host: "example.com", port: 443 }, net);
+	};
+	assert.deepEqual(await outcome("ECONNREFUSED"), { ok: true, request: "TCP connect example.com:443 (address 93.184.215.14); nothing is sent", response: "closed: the host refused the connection" });
+	assert.match((await outcome("no answer within 10 seconds")).response, /^filtered, or the host is down/);
+	for (const local of ["ENETUNREACH", "EHOSTUNREACH", "EADDRNOTAVAIL", "stopped"]) {
+		const result = await outcome(local);
+		assert.equal(result.ok, false, local);
+		assert.match(result.response, /this says nothing about the port/, local);
+	}
+});

@@ -28,6 +28,8 @@ export class DownloadError extends Error {}
 export interface HubModel {
 	id: string;
 	pull: string;
+	/** Its page on the Hub, built here from the checked id: the page never builds an address from the search's answer (S37). */
+	page: string;
 	downloads: number;
 	likes: number;
 	/** What kind of model the Hub says it is, when it is one of `HUB_TASKS`. */
@@ -214,6 +216,7 @@ export async function searchHub(query: HubQuery, fetchFn: typeof fetch = fetch):
 			format: format as HubFormat,
 			...(billions !== null ? { params: billions } : {}),
 			pull: `hf.co/${id}`,
+			page: new URL(`https://${HUB_HOST}/${id.split("/").map(encodeURIComponent).join("/")}`).href,
 			downloads: count((item as { downloads?: unknown }).downloads),
 			likes: count((item as { likes?: unknown }).likes),
 			...(typeof kind === "string" && HUB_TASKS.some(([known]) => known !== "" && known === kind) ? { task: kind } : {}),

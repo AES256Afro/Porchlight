@@ -7,7 +7,7 @@
 import { activityList } from "./activity.js";
 import { api, ApiError, download } from "./api.js";
 import { assistAction } from "./assist.js";
-import { banner, formatWhen, h, icon, plural, replace, select, severityBadge, statTile, stepNodes, tileRow, toast } from "./dom.js";
+import { banner, formatWhen, h, icon, plural, replace, select, severityBadge, shownText, statTile, stepNodes, tileRow, toast } from "./dom.js";
 import { fixBrief, fixGroups, tokenFixSteps } from "./hints.js";
 import { announceSaved } from "./projects.js";
 import { currentProject, load, loadCloudflare, startCloudflareAudit, store, subscribe, updateCloudflare } from "./store.js";
@@ -448,7 +448,7 @@ export async function renderCloudflare(view) {
 		const applied = store.cloudflare.changes.filter((change) => change.ok).length;
 		const copy = async () => {
 			try {
-				await navigator.clipboard.writeText(fixBrief(groups, formatWhen(report.checkedAt)));
+				await navigator.clipboard.writeText(shownText(fixBrief(groups, formatWhen(report.checkedAt))));
 				toast("Copied. Paste it into Claude, or any model that can act on your Cloudflare account.");
 			} catch {
 				toast("Could not copy. Use Export below instead.", "error");

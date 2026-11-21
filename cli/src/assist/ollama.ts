@@ -30,9 +30,34 @@ export const HOSTED: Record<HostedProvider, { name: string; url: string; modelsU
 	deepseek: { name: "DeepSeek", url: "https://api.deepseek.com/chat/completions", modelsUrl: "https://api.deepseek.com/models" },
 };
 
-/** Whether what is sent leaves the owner's own machines. */
+/**
+ * Whether what is sent leaves the owner's own machines: always for a hosted provider, and for Ollama or
+ * a server that speaks OpenAI's format unless its address is on this computer or a private network
+ * (S23). Settings offers OpenRouter as such a server, and one on the internet is someone else's, or
+ * reached across the internet, so the page says what is sent there as it does for a provider.
+ */
 export function isHosted(config: AssistantConfig): boolean {
-	return config.provider !== undefined && config.provider in HOSTED;
+	if (config.provider !== undefined && config.provider in HOSTED) return true;
+	return !privateHost(config.url.hostname);
+}
+
+/**
+ * An address on this computer or a private network: loopback, a private or carrier-grade NAT range
+ * (Tailscale), link-local, a unique local IPv6 address, a single label, or a name only a local network
+ * answers (`.local`, `.internal`, `.lan`, `.home.arpa`, `.test`, a tailnet's `.ts.net`).
+ */
+export function privateHost(hostname: string): boolean {
+	const host = hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+	if (host === "localhost" || host.endsWith(".localhost") || host === "::1" || host === "host.docker.internal") return true;
+	const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+	if (v4) {
+		const [a, b] = [Number(v4[1]), Number(v4[2])];
+		return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254);
+	}
+	if (host.includes(":")) return /^f[cd][0-9a-f]{2}:/.test(host) || /^fe[89ab][0-9a-f]:/.test(host);
+	if (!host.includes(".")) return true;
+	// `.test` is reserved (RFC 6761): only this computer's or this network's own settings resolve it.
+	return /\.(?:local|internal|lan|home\.arpa|ts\.net|test)$/.test(host);
 }
 
 /** "assistant": an earlier answer of the model's, sent back in a follow-up (a discussion). */
@@ -49,6 +74,12 @@ export interface ChatOptions {
 	signal?: AbortSignal;
 	/** The longest answer, in tokens, for a local model; longer than usual for a mural. */
 	maxTokens?: number;
+	/**
+	 * The answer must be one JSON object: Ollama is asked for its JSON format, and OpenAI, Gemini and
+	 * DeepSeek for a JSON object (R6F-9). Claude and the owner's own servers are asked in words only,
+	 * which the prompt already does; what comes back is checked the same way either way.
+	 */
+	json?: boolean;
 }
 
 /** A failure talking to the model, in words for the page. `status` is the HTTP status to answer with. */
@@ -156,7 +187,7 @@ export async function chat(config: AssistantConfig, messages: ChatMessage[], opt
 		return new AssistantError(502, `Could not reach the model at ${host}${typeof code === "string" ? ` (${code})` : ""}. ${where}`);
 	};
 
-	if (config.provider !== undefined && config.provider !== "ollama") return hostedChat(config, messages, fetchFn, signal, failed);
+	if (config.provider !== undefined && config.provider !== "ollama") return hostedChat(config, messages, fetchFn, signal, failed, options.json === true);
 
 	let response: Response;
 	let text: string;
@@ -164,7 +195,7 @@ export async function chat(config: AssistantConfig, messages: ChatMessage[], opt
 		response = await fetchFn(new URL("api/chat", config.url), {
 			method: "POST",
 			headers: { "content-type": "application/json" },
-			body: JSON.stringify({ model: config.model, messages, stream: false, think: false, options: options.maxTokens ? { ...MODEL_OPTIONS, num_predict: options.maxTokens } : MODEL_OPTIONS }),
+			body: JSON.stringify({ model: config.model, messages, stream: false, think: false, ...(options.json ? { format: "json" } : {}), options: options.maxTokens ? { ...MODEL_OPTIONS, num_predict: options.maxTokens } : MODEL_OPTIONS }),
 			redirect: "error",
 			signal,
 		});
@@ -173,7 +204,7 @@ export async function chat(config: AssistantConfig, messages: ChatMessage[], opt
 		throw failed(err);
 	}
 
-	let body: { error?: unknown; message?: { content?: unknown } } | null = null;
+	let body: { error?: unknown; message?: { content?: unknown }; done_reason?: unknown } | null = null;
 	try {
 		body = JSON.parse(text);
 	} catch {
@@ -195,15 +226,22 @@ export async function chat(config: AssistantConfig, messages: ChatMessage[], opt
 	if (typeof content !== "string") throw new AssistantError(502, `The answer from ${host} is not one Porchlight can read. Is it Ollama?`);
 	const answer = withoutThinking(content);
 	if (answer === "") throw new AssistantError(502, "The model gave an empty answer. Try again");
-	return answer;
+	return body?.done_reason === "length" ? `${answer}${CUT_OFF}` : answer;
 }
+
+/**
+ * Added to an answer the model stopped at its length limit, so a page, an export or a follow-up never
+ * takes it for a whole one (H-F1). An answer that should be JSON no longer reads as JSON with it, so a
+ * cut-off judgement is "unclear" rather than half read.
+ */
+export const CUT_OFF = "\n\n[Cut off: the model reached its length limit before it finished.]";
 
 /**
  * Asks a hosted model, or a server of the owner's that speaks OpenAI's chat format. The key travels in a header to the provider's fixed address and nowhere
  * else; redirects are refused so it cannot be passed on. A refusal or an empty answer is an error
  * that says so, never an answer.
  */
-async function hostedChat(config: AssistantConfig, messages: ChatMessage[], fetchFn: typeof fetch, signal: AbortSignal, failed: (err: unknown) => AssistantError): Promise<string> {
+async function hostedChat(config: AssistantConfig, messages: ChatMessage[], fetchFn: typeof fetch, signal: AbortSignal, failed: (err: unknown) => AssistantError, json = false): Promise<string> {
 	const name = config.provider === "compatible" || config.provider === undefined || config.provider === "ollama" ? `The model server at ${config.url.host}` : HOSTED[config.provider].name;
 	const claude = config.provider === "anthropic";
 	const system = messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
@@ -215,7 +253,7 @@ async function hostedChat(config: AssistantConfig, messages: ChatMessage[], fetc
 		: { "content-type": "application/json", ...(config.apiKey ? { authorization: `Bearer ${config.apiKey}` } : {}) };
 	const body = claude
 		? { model: config.model, max_tokens: HOSTED_MAX_TOKENS, system, messages: user, output_config: { effort: "medium" }, ...(fallback ? { fallbacks: "default" } : {}) }
-		: { model: config.model, messages };
+		: { model: config.model, messages, ...(json && (config.provider === "openai" || config.provider === "gemini" || config.provider === "deepseek") ? { response_format: { type: "json_object" } } : {}) };
 
 	let response: Response;
 	let text: string;
@@ -240,17 +278,20 @@ async function hostedChat(config: AssistantConfig, messages: ChatMessage[], fetc
 		throw new AssistantError(502, `${name} failed (HTTP ${response.status})${why}`);
 	}
 	let content = "";
+	let cut = false;
 	if (claude) {
 		if (answer?.stop_reason === "refusal") throw new AssistantError(502, `${name} declined to answer this request`);
 		const blocks = Array.isArray(answer?.content) ? (answer.content as { type?: unknown; text?: unknown }[]) : [];
 		content = blocks.filter((block) => block?.type === "text" && typeof block.text === "string").map((block) => block.text).join("");
+		cut = answer?.stop_reason === "max_tokens";
 	} else {
-		const choice = (Array.isArray(answer?.choices) ? answer.choices[0] : null) as { message?: { content?: unknown } } | null;
+		const choice = (Array.isArray(answer?.choices) ? answer.choices[0] : null) as { message?: { content?: unknown }; finish_reason?: unknown } | null;
 		if (typeof choice?.message?.content === "string") content = choice.message.content;
+		cut = choice?.finish_reason === "length";
 	}
 	const cleaned = withoutThinking(content);
 	if (cleaned === "") throw new AssistantError(502, `${name} gave an empty answer. Try again`);
-	return cleaned;
+	return cut ? `${cleaned}${CUT_OFF}` : cleaned;
 }
 
 /** Model names a server or an account offers, for choosing one in Settings. */

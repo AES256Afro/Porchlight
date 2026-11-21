@@ -694,6 +694,19 @@ B22, B23, B28, B29, B30, B31, B32, B46, B47, B50, B54, B55, B61, B62, B67, S35, 
 
 ### M12: Models see only what they are told. Size: M
 
+**Status, 2026-11-21: built.** Tests in `cli/test/ui-server.test.ts` (S22, S23, B36, B38), `assist.test.ts` (B37, AI-B7, H-F1), `investigate.test.ts` and `investigate-server.test.ts` (S26, S27, B57, S37), `analysis.test.ts` (B39, S39, R6F-9), `notify.test.ts` (S38), `discussions.test.ts`, `model-download.test.ts`.
+
+- **Each model request names the model the page showed**, and one that names another is refused with 409; a hosted model also needs the page's yes. Explain, Summarise, Ask, the analysis, the mural, an investigation and a Deep scan's analysis all carry it (S22).
+- **Hosted is decided by host:** Ollama or a `compatible` server outside this computer and its private networks (loopback, private and CGNAT ranges, link-local, ULA, a single label, `.local`, `.internal`, `.lan`, `.home.arpa`, `.test`, `.ts.net`) is hosted. This answers owner decision 6 with the rule by host; an explicit "this server is mine" is not built (S23).
+- **The ownership token is replaced in every prompt** an investigation sends, and every way of writing a Set-Cookie value is left out, keeping the attributes (S26, S27). The TCP tool no longer gives this computer's failure or a Stop as the host's state (B57).
+- **Budgets are estimated tokens**, `pack()` uses the cap it is given (a hosted roadmap went from 24 to about 300 actions), and the data before the lists is cut to fit (B37, AI-B7).
+- **The analysis stops after three failures in a row**, and the page says why (B36).
+- **Murals and discussions are keyed on the report's content stamp**, which "Scan again" changes; a discussion kept before has its scan time compared as before (B38). A domain's discussion offers a follow-up only while the monitor's latest scan is the one it read (AI-B10).
+- **Imports are looked for per ecosystem** (Rust `use`, Java and C# imports, Python packages imported under another name), and "unlikely" from finding none is made "unclear" by plain code where the search could not find one; the model's reason is kept as written, beside Porchlight's note (B39). How a package is declared is read only from a folder really inside the repository (S39).
+- **Model text stays text:** the analysis's repair steps are no longer links; a tool name the model invents never reaches the Activity view; the Hub link is built by the server (S37). Control, direction and separator characters are replaced in exports, Copy, Save as text, notices, the log, Activity and every text node on the page (S38).
+- **Smaller:** an answer cut off at the length limit says so (H-F1); a mural can be stopped (AI-B8); "Use this model" keeps https and the port (AI-B9); "Save and use" asks the model first, with "Save anyway" (H-F3); "fits this computer" is offered only for Ollama on this computer (H-F5); judgements, murals and investigation turns ask for JSON where the server supports it (R6F-9).
+- **Not done:** R6F-8 (reading each model's real context length to size its budget); a sweep of the 22 `textContent` assignments that bypass the page's text helper (with M14's static tests).
+
 S22, S23, S26, S27, S37, S38, S39, B36, B37, B38, B39, B57, R6F-8, R6F-9, and the model lows (AI-B7–B10, H-F1, H-F3, H-F5). (S11 is in M9 and S20 in M10.)
 
 - **Capability checks before use, and structured output requests (R6F-8, R6F-9).** Each model's real context length feeds the token budgets of B37.

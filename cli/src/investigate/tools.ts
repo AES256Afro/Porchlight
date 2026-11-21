@@ -152,6 +152,9 @@ export interface Net {
 	tcp(request: { host: string; address: string; port: number; signal?: AbortSignal }): Promise<{ open: boolean; detail: string }>;
 }
 
+/** Errors that come from this computer or its network, not from the host asked about. */
+const LOCAL_FAILURES = new Set(["ENETUNREACH", "ENETDOWN", "EHOSTUNREACH", "EADDRNOTAVAIL", "EADDRINUSE", "EACCES", "EPERM", "ENOBUFS", "EMFILE", "ENFILE", "EAI_AGAIN"]);
+
 export interface ToolOutcome {
 	ok: boolean;
 	request: string;
@@ -176,7 +179,14 @@ export async function runAction(action: Action, net: Net, signal?: AbortSignal):
 		const request = `TCP connect ${action.host}:${action.port} (address ${address}); nothing is sent`;
 		try {
 			const { open, detail } = await net.tcp({ host: action.host, address, port: action.port, signal });
-			return { ok: true, request, response: open ? `open: the port accepted a connection` : `closed or filtered: ${detail}` };
+			if (open) return { ok: true, request, response: "open: the port accepted a connection" };
+			// What this computer could not do, or a Stop, says nothing about the host's port: it is not
+			// given to the model as the host's state (B57).
+			if (detail === "stopped" || signal?.aborted) return { ok: false, request, response: "stopped before an answer came: this says nothing about the port" };
+			if (LOCAL_FAILURES.has(detail)) return { ok: false, request, response: `this computer could not make the connection (${detail}): this says nothing about the port` };
+			if (detail === "ECONNREFUSED") return { ok: true, request, response: "closed: the host refused the connection" };
+			if (detail.startsWith("no answer")) return { ok: true, request, response: `filtered, or the host is down: ${detail}` };
+			return { ok: true, request, response: `not open: ${detail}` };
 		} catch (err) {
 			return { ok: false, request, response: `connect failed: ${message(err)}` };
 		}

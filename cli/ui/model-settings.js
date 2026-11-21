@@ -111,8 +111,24 @@ export async function modelSection() {
 			);
 		});
 
-	const save = () =>
-		run("Saving…", async () => {
+	// The model is asked first, and saved only once it has answered: a choice that cannot answer would
+	// replace one that can (H-F3). "No model" has nothing to ask. A failed answer leaves "Save anyway".
+	/** @param {boolean} [anyway] */
+	const save = (anyway = false) =>
+		run(anyway || form.choice === "off" ? "Saving…" : "Asking the model before saving…", async () => {
+			if (!anyway && form.choice !== "off") {
+				try {
+					await api("POST", "/model/test", request());
+				} catch (err) {
+					result = h(
+						"div",
+						{ class: "model-result error", role: "alert" },
+						h("p", null, icon("warning"), " ", `Not saved: ${err instanceof Error ? err.message : String(err)}`),
+						h("button", { type: "button", class: "button", onclick: () => void save(true) }, "Save anyway"),
+					);
+					return;
+				}
+			}
 			state = /** @type {ModelState} */ (await api("POST", "/model", request()));
 			form = fromState(state);
 			setAssistant(state.assistant);
@@ -179,7 +195,7 @@ export async function modelSection() {
 			h(
 				"div",
 				{ class: "actions" },
-				h("button", { type: "button", class: "button primary", disabled: Boolean(busy) || !unsaved, onclick: save }, busy === "Saving…" ? busy : "Save and use"),
+				h("button", { type: "button", class: "button primary", disabled: Boolean(busy) || !unsaved, onclick: () => void save() }, busy === "Saving…" || busy === "Asking the model before saving…" ? busy : "Save and use"),
 				choice.provider === null
 					? null
 					: h("button", { type: "button", class: "button", disabled: Boolean(busy), onclick: test }, busy === "Waiting for the model…" ? busy : "Send a test message"),

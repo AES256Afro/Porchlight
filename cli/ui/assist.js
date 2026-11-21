@@ -5,7 +5,7 @@
 import { api, ApiError } from "./api.js";
 import { followUpBox } from "./discussion.js";
 import { banner, h, icon, replace, stepNodes } from "./dom.js";
-import { generatedLabel, localModelSetup, MAX_QUESTION, paragraphs, questionProblem, waitingLabel } from "./generated.js";
+import { generatedLabel, localModelSetup, MAX_QUESTION, modelFields, paragraphs, questionProblem, waitingLabel } from "./generated.js";
 import { answersPlace, retitle, showAnswer } from "./panel.js";
 
 /** @typedef {import("./generated.js").AssistantSettings} AssistantSettings */
@@ -103,7 +103,7 @@ function createAssist(path, assistant, labels, body, submit) {
 		redrawAnswers();
 		if (answersPlace() !== "below") showAnswer(self, content, head);
 		try {
-			const answer = await api("POST", path, body(), { signal: stop.signal });
+			const answer = await api("POST", path, { .../** @type {object} */ (body() ?? {}), ...modelFields(assistant) }, { signal: stop.signal });
 			const model = typeof answer.model === "string" ? answer.model : modelName(assistant);
 			const discussion = typeof answer.discussion === "string" ? answer.discussion : null;
 			state = {

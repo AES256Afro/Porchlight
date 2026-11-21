@@ -56,9 +56,11 @@ test("the search asks Hugging Face only for what was typed and chosen, and keeps
 		["qwen security", "text-generation", "likes", "unsloth", "20"],
 	);
 	assert.deepEqual(found, [
-		{ id: "unsloth/Qwen3-8B-GGUF", format: "gguf", params: 8, pull: "hf.co/unsloth/Qwen3-8B-GGUF", downloads: 1200, likes: 30, task: "text-generation", updated: "2026-10-01T10:00:00.000Z" },
-		{ id: "odd/Model", format: "gguf", pull: "hf.co/odd/Model", downloads: 0, likes: 0 },
+		{ id: "unsloth/Qwen3-8B-GGUF", format: "gguf", params: 8, pull: "hf.co/unsloth/Qwen3-8B-GGUF", page: "https://huggingface.co/unsloth/Qwen3-8B-GGUF", downloads: 1200, likes: 30, task: "text-generation", updated: "2026-10-01T10:00:00.000Z" },
+		{ id: "odd/Model", format: "gguf", pull: "hf.co/odd/Model", page: "https://huggingface.co/odd/Model", downloads: 0, likes: 0 },
 	]);
+	// Each model's page is built by the server from the checked id, on the Hub's own address (S37).
+	assert.ok(found.every((model) => model.page.startsWith("https://huggingface.co/")));
 	// Every name the search gives is one the download accepts.
 	assert.ok(found.every((model) => modelNameProblem(model.pull) === null));
 

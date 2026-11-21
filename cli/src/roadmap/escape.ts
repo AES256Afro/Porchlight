@@ -5,10 +5,11 @@
 /**
  * Characters a terminal acts on rather than shows: C0 controls other than
  * tab, line feed and carriage return (ESC starts an escape sequence), DEL, C1
- * controls (CSI is a one-character ESC [), and the bidirectional overrides and
- * isolates that make a name read differently from what it is.
+ * controls (CSI is a one-character ESC [), the bidirectional overrides,
+ * isolates and marks that make a name read differently from what it is, and
+ * the line and paragraph separators some viewers break a line at (S38).
  */
-const CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f‪-‮⁦-⁩]/g;
+const CONTROLS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
 /** A carriage return that does not end a line moves back to its start, so later text overwrites what is there. */
 const BARE_RETURN = /\r(?!\n)/g;
 /** Shown in place of a removed character, so the reader can tell something was there. */
@@ -25,7 +26,7 @@ export function forTerminal(text: string): string {
 }
 
 /** Characters JSON.stringify leaves as they are that a terminal or viewer would act on. */
-const JSON_UNESCAPED = /[\u007f-\u009f‪-‮⁦-⁩]/g;
+const JSON_UNESCAPED = /[\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
 
 /**
  * JSON for a file or a terminal. JSON.stringify already writes C0 controls as

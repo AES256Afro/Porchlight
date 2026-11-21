@@ -1,7 +1,7 @@
 // @ts-check
 import { api, ApiError } from "./api.js";
 import { assistAction } from "./assist.js";
-import { banner, formatWhen, h, icon, plural, replace, severityBadge, statTile, stepNodes, tileRow, toast } from "./dom.js";
+import { banner, formatWhen, h, icon, plural, replace, severityBadge, shownText, statTile, stepNodes, tileRow, toast } from "./dom.js";
 import { exportButton, openExportDialog } from "./export.js";
 import { domainFromInput, monitorSetupSteps } from "./hints.js";
 
@@ -432,7 +432,7 @@ function copyButton(text, what) {
 			title: `Copy ${what}`,
 			onclick: async () => {
 				try {
-					await navigator.clipboard.writeText(text);
+					await navigator.clipboard.writeText(shownText(text));
 					toast(what === "command" ? "Copied the command" : `Copied the record ${what}`);
 				} catch {
 					toast("Could not copy. Select the text and copy it by hand.", "error");

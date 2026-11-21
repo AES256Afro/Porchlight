@@ -20,15 +20,31 @@ export interface Prompt {
 }
 
 /**
- * The largest data block, in characters: about 3 500 tokens of escaped JSON. With the instructions
- * and a 500-token answer it stays well inside num_ctx 8192, so Ollama never trims the start of the
- * prompt, where the rules are, and a CPU reads it in under a minute.
+ * The largest data block, in estimated tokens (`estimateTokens`): about 12 000 characters of escaped
+ * JSON in English. With the instructions and a 500-token answer it stays inside num_ctx 8192, so
+ * Ollama never trims the start of the prompt, where the rules are, and a CPU reads it in under a
+ * minute. Counted in tokens, not characters, so text in another script cannot overflow it (AI-B7).
  */
-export const DATA_CAP = 12_000;
+export const DATA_CAP = 4_000;
+
+/**
+ * Tokens a text takes, estimated on the safe side: a token for every three characters of ASCII, which
+ * JSON and English take at least, and one and a half for every other character, since a character of
+ * Chinese, Japanese or an emoji takes one or more.
+ */
+export function estimateTokens(text: string): number {
+	let ascii = 0;
+	let other = 0;
+	for (let index = 0; index < text.length; index++) {
+		if (text.charCodeAt(index) < 128) ascii++;
+		else other++;
+	}
+	return Math.ceil(ascii / 3 + other * 1.5);
+}
 /** The longest text taken from any one field, so one hostile title cannot crowd out the rest. */
 const FIELD_CAP = 400;
-/** Room kept for the sentence saying what was cut. */
-const CUT_RESERVE = 300;
+/** Room kept for the sentence saying what was cut, in tokens. */
+const CUT_RESERVE = 100;
 /** Repositories listed by name in a question's data; the rest are counted. */
 const MAX_REPOS = 100;
 /** Advisory IDs listed on a roadmap action. */
@@ -285,7 +301,7 @@ function findingsData(report: ScanReport, filter: FindingFilter, cap: number): {
 	const ranked = rank([...repoOf.keys()].filter((finding) => matchesFilter(finding, repoOf.get(finding)!, filter)));
 	const affected = rankRepos(report.repos).filter((repo) => repo.findings.length > 0);
 
-	const data: Record<string, unknown> = {
+	const data: Record<string, unknown> = fitBase({
 		scannedFolder: clip(folderName(report.root)),
 		scannedAt: report.scannedAt,
 		scanners: report.tools.map((tool) => ({ tool: tool.tool, status: tool.status, ...(tool.version ? { version: clip(tool.version) } : {}) })),
@@ -293,18 +309,18 @@ function findingsData(report: ScanReport, filter: FindingFilter, cap: number): {
 		totals: { repositories: report.repos.length, findings: ranked.length, ...countBySeverity(ranked) },
 		repositoriesWithFindings: affected.slice(0, MAX_REPOS).map((repo) => ({ name: clip(repoName(report, repo)), ...countBySeverity(repo.findings) })),
 		...(affected.length > MAX_REPOS ? { moreRepositoriesWithFindings: affected.length - MAX_REPOS } : {}),
-		findings: [],
-		fixSteps: {},
-	};
+	}, Math.floor(cap / 3));
+	data.findings = [];
+	data.fixSteps = {};
 	const findings = data.findings as unknown[];
 	const fixSteps = data.fixSteps as Record<string, string[]>;
-	let used = frameJson(data).length + CUT_RESERVE;
+	let used = estimateTokens(frameJson(data)) + CUT_RESERVE;
 	for (const finding of ranked) {
 		const suggestion = suggestions.get(finding);
 		const entry = findingData(finding, repoOf.get(finding)!, suggestion, false);
 		const fixTitle = suggestion ? clip(suggestion.title) : null;
 		const steps = fixTitle !== null && !(fixTitle in fixSteps) ? suggestion!.how.map(clip) : null;
-		const size = frameJson(entry).length + 1 + (steps ? frameJson({ [fixTitle!]: steps }).length : 0);
+		const size = estimateTokens(frameJson(entry)) + 1 + (steps ? estimateTokens(frameJson({ [fixTitle!]: steps })) : 0);
 		if (used + size > cap) break;
 		findings.push(entry);
 		if (steps) fixSteps[fixTitle!] = steps;
@@ -322,11 +338,10 @@ export const SEND_CONTENTS = ["roadmap", "findings"] as const;
 export type SendContent = (typeof SEND_CONTENTS)[number];
 
 /**
- * How much a hosted model is sent: about 40 000 tokens. It reads far more than a model on a
- * processor, so a whole roadmap usually fits; past this, the most pressing part is kept and the
- * model is told so.
+ * How much a hosted model is sent, in estimated tokens. It reads far more than a model on a processor,
+ * so a whole roadmap usually fits; past this, the most pressing part is kept and the model is told so.
  */
-export const HOSTED_DATA_CAP = 150_000;
+export const HOSTED_DATA_CAP = 50_000;
 
 const SEND_INTRO: Record<SendContent, string[]> = {
 	roadmap: [
@@ -419,16 +434,18 @@ function changeData(change: { kind: string; host: string; record?: unknown; befo
  * fit, nothing after it is added, so what is kept is always the front of the order.
  */
 function pack(base: Record<string, unknown>, lists: [key: string, items: unknown[], noun: string][], order: string, cap: number = DATA_CAP): { data: Record<string, unknown>; cut: string | null } {
-	const data: Record<string, unknown> = { ...base };
+	// What comes before the lists counts against the cap too, and is cut first if it alone is too much (B37).
+	const data: Record<string, unknown> = fitBase(base, Math.floor(cap / 3));
 	for (const [key] of lists) data[key] = [];
-	let used = frameJson(data).length + CUT_RESERVE;
+	let used = estimateTokens(frameJson(data)) + CUT_RESERVE;
 	let full = false;
 	const partial: string[] = [];
 	for (const [key, items, noun] of lists) {
 		const kept = data[key] as unknown[];
 		for (const item of items) {
-			const size = frameJson(item).length + 1;
-			if (full || used + size > DATA_CAP) {
+			const size = estimateTokens(frameJson(item)) + 1;
+			// The cap given, never the local one: a hosted model was sent 24 of 1,200 actions (B37).
+			if (full || used + size > cap) {
 				full = true;
 				break;
 			}
@@ -440,6 +457,27 @@ function pack(base: Record<string, unknown>, lists: [key: string, items: unknown
 	const cut = partial.length > 0 ? cutSentence(partial, order) : null;
 	if (cut) data.cut = cut;
 	return { data, cut };
+}
+
+/**
+ * The data that comes before a prompt's lists (repositories, notes, account checks), cut to `cap`
+ * tokens: the longest of its lists loses items from its end, and says how many, until it fits. 120
+ * repositories once made a block twice what a local model reads (B37).
+ */
+function fitBase(base: Record<string, unknown>, cap: number): Record<string, unknown> {
+	const data: Record<string, unknown> = { ...base };
+	const dropped = new Map<string, number>();
+	while (estimateTokens(frameJson(data)) > cap) {
+		const longest = Object.entries(data)
+			.filter((entry): entry is [string, unknown[]] => Array.isArray(entry[1]) && entry[1].length > 0)
+			.sort((a, b) => estimateTokens(frameJson(b[1])) - estimateTokens(frameJson(a[1])))[0];
+		if (!longest) break;
+		const [key, items] = longest;
+		data[key] = items.slice(0, -1);
+		dropped.set(key, (dropped.get(key) ?? 0) + 1);
+		data[`${key}NotShown`] = dropped.get(key);
+	}
+	return data;
 }
 
 function cutSentence(parts: string[], order: string): string {

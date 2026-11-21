@@ -6,6 +6,7 @@ import { paramsFromFilter } from "./list.js";
 import { announceSaved } from "./projects.js";
 import { openSendDialog, sendTargets } from "./send.js";
 import { currentProject, store } from "./store.js";
+import { modelFields } from "./generated.js";
 
 /** @typedef {import("./filter.js").FindingFilter} FindingFilter */
 
@@ -145,7 +146,18 @@ export function openExportDialog(target, initialContent = "roadmap") {
 			),
 		)
 	);
-	const dialog = /** @type {HTMLDialogElement} */ (h("dialog", { class: "dialog wide", "aria-labelledby": "export-title", onclose: () => dialog.remove() }, form));
+	/** Whether a mural is being written for this dialog: closing it then stops the model (AI-B8). */
+	let writing = false;
+	const dialog = /** @type {HTMLDialogElement} */ (
+		h("dialog", {
+			class: "dialog wide",
+			"aria-labelledby": "export-title",
+			onclose: () => {
+				if (writing) void api("POST", "/repos/mural/stop").catch(() => {});
+				dialog.remove();
+			},
+		}, form)
+	);
 
 	/** @param {SubmitEvent} event */
 	async function save(event) {
@@ -202,16 +214,19 @@ export function openExportDialog(target, initialContent = "roadmap") {
 		query.delete("content");
 		query.delete("format");
 		const started = Date.now();
-		await api("POST", `/repos/mural?${query}`);
+		await api("POST", `/repos/mural?${query}`, modelFields(assistant));
+		writing = true;
 		progress.hidden = false;
 		for (;;) {
+			if (!dialog.open) return;
 			await new Promise((resolve) => setTimeout(resolve, 2000));
 			const job = await api("GET", `/repos/mural?${query}`);
 			if (job.state === "done" && job.current) break;
 			if (job.state === "failed") throw new Error(job.error);
 			const seconds = Math.round((Date.now() - started) / 1000);
-			progress.textContent = `${assistant?.model} is writing the mural: ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")} so far. You can leave this open.`;
+			progress.textContent = `${assistant?.model} is writing the mural: ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")} so far. Cancel stops it.`;
 		}
+		writing = false;
 		progress.hidden = true;
 	}
 

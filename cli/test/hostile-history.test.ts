@@ -252,14 +252,19 @@ test("the copy leaves nothing behind, and the repository's own files are untouch
 	await git(repo, "add", "-A");
 	await git(repo, "commit", "-q", "-m", "one");
 	const config = await readFile(join(repo, ".git", "config"), "utf8");
-	const { tmpdir } = await import("node:os");
 	const { readdir } = await import("node:fs/promises");
-	const copies = async () => (await readdir(tmpdir())).filter((name) => name.startsWith("porchlight-copy-")).length;
-	const before = await copies();
+	// A temporary folder of this test's own: other test files run at the same time and make copies too.
+	const temporary = await tempDir();
+	const earlier = process.env.TMPDIR;
+	process.env.TMPDIR = temporary;
+	try {
+		await scanRepos({ root, depth: 1, now: NOW, settingFiles: async () => [] });
+	} finally {
+		if (earlier === undefined) delete process.env.TMPDIR;
+		else process.env.TMPDIR = earlier;
+	}
 
-	await scanRepos({ root, depth: 1, now: NOW, settingFiles: async () => [] });
-
-	assert.equal(await copies(), before, "the copy of the history is removed once read");
+	assert.deepEqual((await readdir(temporary)).filter((name) => name.startsWith("porchlight-")), [], "the copy of the history, and every other temporary folder, is removed once read");
 	assert.equal(await readFile(join(repo, ".git", "config"), "utf8"), config, "the repository's config is as it was");
 });
 

@@ -150,3 +150,55 @@ test("keeps judgements beside the scan they are about, readable only by the owne
 	const { stat } = await import("node:fs/promises");
 	assert.equal((await stat(path)).mode & 0o777, 0o600);
 });
+
+test("imports are looked for as each ecosystem writes them, and \"unlikely\" from finding none stands only where the search could find one (B39)", async () => {
+	const repo = await tempDir();
+	await makeTree(repo, {
+		"Cargo.lock": "",
+		"src/main.rs": "use serde_json::Value;\n",
+		"requirements.txt": "",
+		"app/load.py": "import yaml\n",
+		"pom.xml": "",
+		"src/main/java/App.java": "package app;\nclass App {}\n",
+	});
+	const rust = await gatherEvidence(repo, "Cargo.lock", "serde-json");
+	assert.deepEqual([rust.usedInFiles, rust.searched], [1, { ecosystem: "crates.io", reliable: true }]);
+	const python = await gatherEvidence(repo, "requirements.txt", "PyYAML");
+	assert.deepEqual([python.usedInFiles, python.uses[0]?.line, python.searched?.reliable], [1, "import yaml", true]);
+	const java = await gatherEvidence(repo, "pom.xml", "org.apache.logging.log4j:log4j-core");
+	assert.deepEqual([java.usedInFiles, java.searched], [0, { ecosystem: "Maven", reliable: false }]);
+
+	// The model says unlikely for want of an import Java code would not show by this name: plain code makes it unclear.
+	const report: ScanReport = { root: repo, scannedAt: "2026-11-17T12:00:00.000Z", tools: [], repos: [{ path: repo, findings: [{ ...vulnerability("GHSA-jfh8-c2jp-5v3q", "critical"), location: "pom.xml", detail: "org.apache.logging.log4j:log4j-core@2.14.1" }], errors: [] }] };
+	const fetchFn = (async () => Response.json({ message: { content: '{"verdict":"unlikely","reason":"Nothing imports it.","steps":[]}' } })) as unknown as typeof fetch;
+	const judged = await judge(report, unitsOf(report)[0]!, { url: new URL("http://ollama.test:11434/"), model: "m" }, { fetchFn });
+	assert.equal(judged.verdict, "unclear");
+	assert.equal(judged.reason, "Nothing imports it.", "the model's reason is kept as it wrote it");
+	assert.match(judged.overruled ?? "", /Maven packages are often imported under another name/);
+});
+
+test("how a package is declared is read only from a folder really inside the repository (S39)", async () => {
+	const outside = await tempDir();
+	await makeTree(outside, { "package.json": JSON.stringify({ dependencies: { sharp: "1" } }) });
+	const repo = await tempDir();
+	await makeTree(repo, { "README.md": "" });
+	await symlink(outside, join(repo, "web"));
+	const evidence = await gatherEvidence(repo, "web/package-lock.json", "sharp");
+	assert.equal(evidence.declared, "unknown");
+});
+
+test("a judgement asks Ollama for its JSON format, and OpenAI for a JSON object (R6F-9)", async () => {
+	const repo = await tempDir();
+	await makeTree(repo, { "web/package.json": "{}" });
+	const report: ScanReport = { root: repo, scannedAt: "2026-11-17T12:00:00.000Z", tools: [], repos: [{ path: repo, findings: [vulnerability("GHSA-a", "high")], errors: [] }] };
+	const bodies: Record<string, unknown>[] = [];
+	const fetchFn = (async (_url: string, init: RequestInit) => {
+		bodies.push(JSON.parse(String(init.body)));
+		return Response.json({ message: { content: '{"verdict":"likely","reason":"r","steps":[]}' }, choices: [{ message: { content: '{"verdict":"likely","reason":"r","steps":[]}' } }] });
+	}) as unknown as typeof fetch;
+	const unit = unitsOf(report)[0]!;
+	await judge(report, unit, { url: new URL("http://ollama.test:11434/"), model: "m" }, { fetchFn });
+	await judge(report, unit, { url: new URL("https://api.openai.com/v1/chat/completions"), model: "m", provider: "openai", apiKey: "k".repeat(40) }, { fetchFn });
+	assert.equal(bodies[0]!.format, "json");
+	assert.deepEqual(bodies[1]!.response_format, { type: "json_object" });
+});

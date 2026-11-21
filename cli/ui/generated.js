@@ -120,6 +120,19 @@ export function analysisProgress(summary) {
 }
 
 /**
+ * What every request to a model carries: the model this page showed, so a switch made since in another
+ * tab or on another device is refused rather than sent to (S22), and, for a hosted one, that the page
+ * said what is sent there.
+ *
+ * @param {AssistantSettings | undefined} assistant
+ * @returns {{ shown?: { model: string, host: string }, sendsToHosted?: true }}
+ */
+export function modelFields(assistant) {
+	if (!assistant?.model || assistant.host === undefined) return {};
+	return { shown: { model: assistant.model, host: assistant.host }, ...(assistant.hosted ? { sendsToHosted: /** @type {const} */ (true) } : {}) };
+}
+
+/**
  * What starting an analysis sends, and where, said before it is sent.
  *
  * @param {AssistantSettings} assistant

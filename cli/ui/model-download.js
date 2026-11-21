@@ -10,7 +10,7 @@ import { setAssistant } from "./store.js";
 /** @typedef {import("../src/assist/download.ts").HubModel} HubModel */
 /** @typedef {import("../src/assist/download.ts").InstalledModel} InstalledModel */
 /** @typedef {import("../src/ui/server.ts").DownloadStatus} DownloadStatus */
-/** @typedef {{ ollama: { host: string, reachable: boolean, problem?: string }, installed: InstalledModel[], download: DownloadStatus, canChange: boolean, hub: string, tasks: [string, string][], sorts: [string, string][], formats: [string, string][], sizes: [string, string][], machine: import("../src/assist/download.ts").Machine }} LocalModels */
+/** @typedef {{ ollama: { host: string, origin?: string, onThisComputer?: boolean, reachable: boolean, problem?: string }, installed: InstalledModel[], download: DownloadStatus, canChange: boolean, hub: string, tasks: [string, string][], sorts: [string, string][], formats: [string, string][], sizes: [string, string][], machine: import("../src/assist/download.ts").Machine }} LocalModels */
 
 const POLL_MS = 1000;
 
@@ -62,7 +62,7 @@ export async function modelDownloadSection() {
 	/** Makes a downloaded model the one Porchlight uses, through the same route as the form above. @param {string} name */
 	async function use(name) {
 		try {
-			const saved = await api("POST", "/model", { choice: "ollama-mac", url: `http://${state.ollama.host}`, model: name });
+			const saved = await api("POST", "/model", { choice: "ollama-mac", url: state.ollama.origin ?? `http://${state.ollama.host}`, model: name });
 			setAssistant(saved.assistant);
 			// The form above shows the choice it loaded; the page is drawn again so both agree.
 			location.reload();
@@ -78,7 +78,7 @@ export async function modelDownloadSection() {
 		problem = "";
 		draw();
 		try {
-			const asked = new URLSearchParams({ q: query.value, task: filters.task, sort: filters.sort, author: author.value, tag: tag.value, format: filters.format, size: filters.size, ...(fits.checked ? { fits: "1" } : {}) });
+			const asked = new URLSearchParams({ q: query.value, task: filters.task, sort: filters.sort, author: author.value, tag: tag.value, format: filters.format, size: filters.size, ...(fits.checked && state?.ollama.onThisComputer !== false ? { fits: "1" } : {}) });
 			found = (await api("GET", `/model/local/search?${asked}`)).models;
 		} catch (err) {
 			problem = err instanceof Error ? err.message : String(err);
@@ -128,7 +128,8 @@ export async function modelDownloadSection() {
 			"span",
 			{ class: "actions" },
 			h("button", { type: "button", class: "button", onclick: () => void copy() }, icon("copy"), "Copy name"),
-			h("a", { class: "button quiet", href: `https://${state.hub}/${model.id}`, target: "_blank", rel: "noopener noreferrer", title: `Opens ${state.hub} in your browser` }, "Open its page"),
+			// The address comes whole from Porchlight's server, which builds it from the checked id (S37).
+			model.page?.startsWith(`https://${state.hub}/`) ? h("a", { class: "button quiet", href: model.page, target: "_blank", rel: "noopener noreferrer", title: `Opens ${state.hub} in your browser` }, "Open its page") : null,
 		);
 	}
 
@@ -222,7 +223,10 @@ export async function modelDownloadSection() {
 								h("label", { class: "field" }, h("span", null, "Publisher"), author),
 								h("label", { class: "field" }, h("span", null, "Tag"), tag),
 							),
-							h("label", { class: "check-line" }, fits, `Only models that fit this computer (up to about ${state.machine.fitsUpTo}B). Sizes are read from each model's name, so one that does not give its size is left out.`),
+							// This computer's memory says nothing about a model run by Ollama on another machine (H-F5).
+							state.ollama.onThisComputer === false
+								? h("p", { class: "hint" }, `Ollama runs at ${state.ollama.host}, not on this computer, so which models fit depends on that machine's memory.`)
+								: h("label", { class: "check-line" }, fits, `Only models that fit this computer (up to about ${state.machine.fitsUpTo}B). Sizes are read from each model's name, so one that does not give its size is left out.`),
 							h("div", { class: "actions" }, h("button", { type: "submit", class: "button primary", disabled: searching }, searching ? "Searching…" : "Search")),
 						),
 						found !== null && filters.format === "mlx"

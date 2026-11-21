@@ -24,6 +24,12 @@ export interface Judgement {
 	steps: string[];
 	/** What the model was given beyond the finding itself. Absent for a secret. */
 	evidence?: Evidence;
+	/**
+	 * Porchlight's own words, when plain code set the model's verdict aside: "unlikely" where the
+	 * search for imports could not find one by the package's name (B39). The model's reason is kept as
+	 * it wrote it.
+	 */
+	overruled?: string;
 	model: string;
 	at: string;
 }
@@ -94,8 +100,16 @@ export async function judge(report: ScanReport, unit: Unit, config: AssistantCon
 			: { rule: first.ruleId, title: first.title, foundIn: first.detail, ...(first.count ? { count: first.count } : {}), ...(first.note ? { rankingNote: first.note } : {}) }),
 		...(suggestion ? { suggestedFix: { title: suggestion.title, steps: suggestion.how } } : {}),
 	};
-	const answer = await chat(config, analysisPrompt(item).messages, options);
-	return { ...parseJudgement(answer), ...(evidence ? { evidence } : {}), model: config.model, at: (options.now?.() ?? new Date()).toISOString() };
+	const answer = await chat(config, analysisPrompt(item).messages, { ...options, json: true });
+	const judged = parseJudgement(answer);
+	// "Unlikely" from no import found stands only where the search could find one: a Maven artifact or a
+	// package imported under another name is not found by name, and Log4Shell would sort last (B39).
+	// Plain code decides this, not the model (invariant 16).
+	const unfounded = judged.verdict === "unlikely" && evidence?.searched?.reliable === false && evidence.usedInFiles === 0;
+	const settled = unfounded
+		? { ...judged, verdict: "unclear" as const, overruled: `The model said unlikely, but ${evidence!.searched!.ecosystem} packages are often imported under another name than they are installed by, so finding no import does not show this one is unused.` }
+		: judged;
+	return { ...settled, ...(evidence ? { evidence } : {}), model: config.model, at: (options.now?.() ?? new Date()).toISOString() };
 }
 
 /**

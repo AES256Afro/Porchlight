@@ -145,6 +145,11 @@ export interface EngineDeps {
 	/** Called after every change, to save the run and show it. */
 	onChange(run: Run): void | Promise<void>;
 	now?: () => Date;
+	/**
+	 * Text never sent to the model, however a tool came by it: the domain's ownership token, which a
+	 * TXT lookup of a CNAME's target returns as it is (S26).
+	 */
+	hidden?: string[];
 }
 
 export function newId(prefix: string, bytes = 6): string {
@@ -208,7 +213,7 @@ export async function investigate(run: Run, deps: EngineDeps, signal: AbortSigna
 
 			let reply: string;
 			try {
-				reply = await deps.ask(SYSTEM_PROMPT, buildPrompt(run, scope), signal);
+				reply = await deps.ask(SYSTEM_PROMPT, buildPrompt(run, scope, deps.hidden), signal);
 			} catch (err) {
 				if (signal.aborted) return await stopped();
 				return await finish("failed", `The model could not answer: ${err instanceof Error ? err.message : String(err)}`);
@@ -391,12 +396,22 @@ export function fence(text: string): string {
 	return text.replace(/<(\/?)(\s*)tool_output/gi, "<$1$2tool_output_");
 }
 
+/**
+ * A response with each Set-Cookie value replaced, however it is written: `name=value`, `=value`,
+ * `name = value` or a bare `value` (S27). The name is kept only when it is a valid cookie name, and the
+ * attributes after the first `;` (Secure, HttpOnly, SameSite) are kept, since they are what is judged.
+ */
 export function withoutCookieValues(response: string): string {
-	return response.replace(/^(set-cookie:\s*)([^=;\s]+)=[^;\r\n]*/gim, "$1$2=[value not sent]");
+	return response.replace(/^(set-cookie\s*:)([^\r\n]*)/gim, (_whole, head: string, rest: string) => {
+		const end = rest.indexOf(";");
+		const pair = end < 0 ? rest : rest.slice(0, end);
+		const name = /^\s*([!#$%&'*+.^_`|~0-9A-Za-z-]+)\s*=/.exec(pair)?.[1];
+		return `${head} ${name ? `${name}=` : ""}[value not sent]${end < 0 ? "" : rest.slice(end)}`;
+	});
 }
 
-/** The turn's prompt: goal, scope, tools, findings so far and the latest results. */
-export function buildPrompt(run: Run, scope: Scope): string {
+/** The turn's prompt: goal, scope, tools, findings so far and the latest results, with `hidden` text replaced wherever it is. */
+export function buildPrompt(run: Run, scope: Scope, hidden: string[] = []): string {
 	const lines = [
 		`Domain: ${run.domain}`,
 		`Goal: ${run.goal}`,
@@ -422,5 +437,7 @@ export function buildPrompt(run: Run, scope: Scope): string {
 			lines.push(`Result: ${fence(step.reason ?? step.outcome)}`);
 		}
 	}
-	return lines.join("\n");
+	let prompt = lines.join("\n");
+	for (const text of hidden) if (text.length >= 8) prompt = prompt.split(text).join("[ownership token not sent]");
+	return prompt;
 }

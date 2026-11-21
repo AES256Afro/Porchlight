@@ -1,7 +1,7 @@
 // @ts-check
 import { api } from "./api.js";
 import { banner, h, icon, replace, stepNodes, toast } from "./dom.js";
-import { analysisNotice, analysisProgress, generatedLabel, VERDICT_LABELS } from "./generated.js";
+import { analysisNotice, analysisProgress, generatedLabel, modelFields, VERDICT_LABELS } from "./generated.js";
 import { loadReport, store } from "./store.js";
 
 /** @typedef {import("../src/ui/server.ts").AnalysisStatus} AnalysisStatus */
@@ -39,7 +39,9 @@ export function judgementBlock(finding) {
 		h("div", { class: "generated-label" }, icon("spark"), generatedLabel(judgement.model)),
 		h("p", null, verdictMark(finding)),
 		judgement.reason ? h("p", null, judgement.reason) : null,
-		judgement.steps.length > 0 ? h("div", null, h("strong", null, "The model's repair steps"), h("ol", null, ...judgement.steps.map((step) => h("li", null, ...stepNodes(step))))) : null,
+		judgement.overruled ? h("p", { class: "hint" }, `Porchlight: ${judgement.overruled}`) : null,
+		// The model's words stay text: a click path in them is not made a link (S37).
+		judgement.steps.length > 0 ? h("div", null, h("strong", null, "The model's repair steps"), h("ol", null, ...judgement.steps.map((step) => h("li", null, step)))) : null,
 		evidence
 			? h(
 					"details",
@@ -123,7 +125,7 @@ export function analysisCard() {
 	/** @param {string} path @param {unknown} [send] */
 	async function act(path, send) {
 		try {
-			await api("POST", path, send);
+			await api("POST", path, path === "/analysis" ? { .../** @type {object} */ (send ?? {}), ...modelFields(store.settings?.assistant) } : send);
 			clearTimeout(timer);
 			await refresh();
 		} catch (err) {
@@ -159,7 +161,11 @@ export function analysisCard() {
 					)
 				: null,
 			(status.state === "done" || status.state === "stopped") && status.failed > 0
-				? banner("warning", `${status.failed.toLocaleString()} of ${status.total.toLocaleString()} could not be analysed`, status.lastError ? [status.lastError] : [])
+				? banner(
+						"warning",
+						status.gaveUp ? `Stopped after ${status.failed.toLocaleString()} ${status.failed === 1 ? "item" : "items"} could not be analysed in a row` : `${status.failed.toLocaleString()} of ${status.total.toLocaleString()} could not be analysed`,
+						[...(status.lastError ? [status.lastError] : []), ...(status.gaveUp ? ["The rest were not sent. Check the model under Settings → Model, then analyse again."] : [])],
+					)
 				: null,
 			running || waiting === 0 ? null : h("p", { class: "hint" }, analysisNotice(assistant ?? { configured: true })),
 			h(

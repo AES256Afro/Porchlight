@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, isAbsolute, relative } from "node:path";
 import { mdCode, mdText } from "../roadmap/escape.ts";
@@ -22,6 +23,16 @@ export function parseScanReport(text: string, path: string): ScanReport {
 		throw new Error(`This report was written by a newer Porchlight (report format ${report.format}; this one reads ${REPORT_FORMAT} and older). Update Porchlight to read it: ${path}`);
 	}
 	return report;
+}
+
+/**
+ * What a report holds, as a short stamp: its scan time and each repository scanned again since, by
+ * when. A mural or a discussion made from one report is out of date once the stamp changes, though
+ * "Scan this repository again" keeps the report's scan time (B38).
+ */
+export function reportStamp(report: Pick<ScanReport, "scannedAt" | "repos">): string {
+	const rescans = report.repos.filter((repo) => repo.rescannedAt).map((repo) => `${repo.path}\n${repo.rescannedAt}`).sort();
+	return createHash("sha256").update(JSON.stringify([report.scannedAt, rescans])).digest("hex").slice(0, 16);
 }
 
 export function countBySeverity(findings: Finding[]): Counts {

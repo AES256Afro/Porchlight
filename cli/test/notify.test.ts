@@ -131,3 +131,14 @@ test("nothing that leaves the computer names the scanned folder's path or the ow
 	const failed = failedScanNotice(root, `No git repositories found under ${root}`);
 	assert.deepEqual(failed.lines.slice(0, 2), ["Folder: Projects", "Why: No git repositories found under Projects"]);
 });
+
+test("line and paragraph separators and direction marks never reach a notice, an export or the log (S38)", async () => {
+	const { stripControls, jsonText } = await import("../src/roadmap/escape.ts");
+	const { oneLine } = await import("../src/projects/projects.ts");
+	const hostile = "file\u2028X-Injected: 1 \u202Egnp.exe\u200F.txt";
+	const acting = /[\u2028\u2029\u202A-\u202E\u2066-\u2069\u200E\u200F\u061C]/;
+	for (const out of [stripControls(hostile), oneLine(hostile), JSON.parse(noticeRequest("json", { title: "t", lines: [hostile], urgent: false }).body).text as string]) {
+		assert.doesNotMatch(out, acting, JSON.stringify(out));
+	}
+	assert.doesNotMatch(jsonText({ name: hostile }), acting, "escaped in JSON, so the data is unchanged");
+});

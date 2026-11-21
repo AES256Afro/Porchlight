@@ -6,10 +6,11 @@
 // steps, the evidence and what the model judged. Everything here comes from the target or the
 // model, so every element is built with h() and shown as text.
 import { api, ApiError, download } from "./api.js";
-import { emptyState, formatWhen, h, icon, plural, replace, stepNodes, toast } from "./dom.js";
+import { emptyState, formatWhen, h, icon, plural, replace, shownText, stepNodes, toast } from "./dom.js";
 import { approvalLine, ownershipSteps, runLimits } from "./hints.js";
 import { announceSaved } from "./projects.js";
 import { currentProject, loadCloudflare, store } from "./store.js";
+import { modelFields } from "./generated.js";
 
 /** @typedef {import("../src/investigate/engine.ts").Run} Run */
 /** @typedef {import("../src/investigate/engine.ts").Step} Step */
@@ -319,7 +320,7 @@ export async function renderInvestigate(view, runId) {
 							goal: goal.value,
 							maxTurns: Number(turns.value),
 							approveAll: approveAll.checked,
-							...(assistant.hosted ? { sendsToHosted: true } : {}),
+							...modelFields(assistant),
 						});
 						runId = undefined;
 						if (location.hash !== "#/investigate") history.replaceState(null, "", "#/investigate");
@@ -642,7 +643,7 @@ function copyButton(text, what) {
 			title: `Copy ${what}`,
 			onclick: async () => {
 				try {
-					await navigator.clipboard.writeText(text);
+					await navigator.clipboard.writeText(shownText(text));
 					toast(`Copied the record ${what}`);
 				} catch {
 					toast("Could not copy. Select the text and copy it by hand.", "error");

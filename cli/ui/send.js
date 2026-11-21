@@ -8,7 +8,7 @@ import { api } from "./api.js";
 import { generatedText } from "./assist.js";
 import { followUpBox } from "./discussion.js";
 import { answersPlace, retitle, showAnswer } from "./panel.js";
-import { banner, h, icon, replace, stepNodes, toast } from "./dom.js";
+import { banner, h, icon, replace, shownText, stepNodes, toast } from "./dom.js";
 import { isFiltering } from "./filter.js";
 import { paramsFromFilter } from "./list.js";
 import { sendFilename, sendTargetNote, sendText } from "./send-text.js";
@@ -198,7 +198,7 @@ export function openSendDialog(target, initialContent = "roadmap") {
 	/** @param {string} text */
 	async function copy(text) {
 		try {
-			await navigator.clipboard.writeText(text);
+			await navigator.clipboard.writeText(shownText(text));
 			toast("Copied");
 		} catch {
 			toast("Could not copy. Select the text and copy it instead", "error");
@@ -212,7 +212,7 @@ export function openSendDialog(target, initialContent = "roadmap") {
 	 * @param {string} purpose
 	 */
 	function save(text, purpose) {
-		const url = URL.createObjectURL(new Blob([text], { type: "text/plain;charset=utf-8" }));
+		const url = URL.createObjectURL(new Blob([shownText(text)], { type: "text/plain;charset=utf-8" }));
 		const link = document.createElement("a");
 		link.href = url;
 		link.download = sendFilename(purpose, store.report?.scannedAt ?? "");

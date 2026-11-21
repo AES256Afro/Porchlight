@@ -45,7 +45,7 @@ import { callMonitor, type MonitorConfig } from "../monitor/client.ts";
 import { forgetMonitor, monitorProblem, MonitorSettingsError, parseMonitorSettings, readSavedMonitor, saveMonitor } from "../monitor/settings.ts";
 import { discoverRepos } from "../repos/discover.ts";
 import type { Runner } from "../repos/exec.ts";
-import { coverageNotes, nameUnder, rank, rankRepos, repoName, settingNotes } from "../repos/report.ts";
+import { coverageNotes, nameUnder, rank, rankRepos, repoName, reportStamp, settingNotes } from "../repos/report.ts";
 import { carryNotes, History, notesForPage, setNote, type HistoryEntry } from "../repos/history.ts";
 import { checkHost, type HostCheckOptions } from "../host/check.ts";
 import type { HostReport } from "../host/types.ts";
@@ -293,7 +293,7 @@ export type FetchStatus =
 export type AnalysisStatus =
 	| { state: "idle" }
 	| { state: "running"; done: number; total: number; current: string | null; failed: number }
-	| { state: "done" | "stopped"; finishedAt: string; done: number; total: number; failed: number; lastError?: string };
+	| { state: "done" | "stopped"; finishedAt: string; done: number; total: number; failed: number; lastError?: string; gaveUp?: boolean };
 
 const UI_DIR = join(import.meta.dirname, "../../ui");
 /** The page's own modules. Nothing else in the folder is served. */
@@ -405,6 +405,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	// The mural for an export, written in the background: a model on a processor takes minutes.
 	const muralPath = join(reportDir, "repo-mural.json");
 	let muralJob: MuralJob = (await readMural(muralPath)) ?? { state: "idle" };
+	/** Stops the mural being written, when one is (AI-B8). */
+	let stopMural: AbortController | null = null;
 	// The check of this computer: what it found is kept beside the report, readable only by its owner.
 	const hostPath = join(dataDir, "host-check.json");
 	const runHostCheck = options.hostCheck ?? ((hostOptions) => checkHost({ run: runCommand, ...hostOptions }));
@@ -412,7 +414,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	const startup: ModelInUse = { config: options.assistant ?? null, error: options.assistantError, unset: options.assistantUnset ?? false, source: "startup" };
 	/** A key given at start-up for a hosted provider, used for that provider when Settings has none. */
 	const startupKeys: Partial<Record<HostedProvider, string>> =
-		startup.config && isHosted(startup.config) && startup.config.apiKey ? { [startup.config.provider as HostedProvider]: startup.config.apiKey } : {};
+		startup.config && startup.config.provider !== undefined && startup.config.provider in HOSTED && startup.config.apiKey ? { [startup.config.provider as HostedProvider]: startup.config.apiKey } : {};
 	let savedModel = await readSavedModel(modelPath);
 	let model: ModelInUse = savedModel ? inUse(savedModel) : startup;
 
@@ -550,7 +552,23 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 
 	/** The model and where it runs, for the log: a hosted one is said to be outside the owner's machines. */
 	function modelWords(config: AssistantConfig): string {
-		return isHosted(config) ? `${config.model} (${HOSTED[config.provider as HostedProvider].name}, outside your machines)` : `${config.model} at ${config.url.host}`;
+		return isHosted(config) ? `${config.model} (${hostedName(config)}, outside your machines)` : `${config.model} at ${config.url.host}`;
+	}
+
+	/**
+	 * A request to a model names the model the page showed, since another tab or device may have
+	 * switched it since (S22): one that names another is refused. A hosted model also needs the page's
+	 * word that it showed what is sent there; with none named, nothing is sent to a hosted model.
+	 */
+	function confirmModel(fields: Record<string, unknown>, config: AssistantConfig): void {
+		const shown = fields.shown;
+		const named = typeof shown === "object" && shown !== null && typeof (shown as { model?: unknown }).model === "string" && typeof (shown as { host?: unknown }).host === "string";
+		if (shown !== undefined && (!named || (shown as { model: string }).model !== config.model || (shown as { host: string }).host !== config.url.host)) {
+			throw new HttpError(409, `The model is now ${modelWords(config)}, not the one this page showed. Reload the page to see what it sends there.`);
+		}
+		if (isHosted(config) && (!named || fields.sendsToHosted !== true)) {
+			throw new HttpError(409, `${modelWords(config)} is outside your machines. Reload the page: it says what is sent there before you ask.`);
+		}
 	}
 
 	/** Writes a discussion's transcript into a project as a new file, and records where. */
@@ -687,9 +705,19 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		if (discussion.kind === "cloudflare") {
 			const audit = await readAudit(cloudflareAuditPath).catch(() => null);
 			if (!audit || audit.checkedAt !== discussion.about.checkedAt) return { ok: false, reason: NEWER_AUDIT };
-		} else if (discussion.kind !== "domain") {
+		} else if (discussion.kind === "domain") {
+			// A domain's discussion is offered a follow-up only while the monitor's latest scan of it is the
+			// one it read (AI-B10); a monitor that cannot be asked is said, and offers none.
+			const domain = discussion.about.domain ?? "";
+			const latest = await latestDomainReport(domain).then(
+				(report) => String(report.takenAt),
+				(err: unknown) => (err instanceof Error ? err : new Error(String(err))),
+			);
+			if (latest instanceof Error) return { ok: false, reason: `The monitor could not be asked whether ${domain} has been scanned since: ${latest.message}` };
+			if (latest !== discussion.about.takenAt) return { ok: false, reason: `A newer scan of ${domain} has replaced the one this discussion is about. Ask again from the Domains page to start a new discussion about it.` };
+		} else {
 			const report = await readReport(options.reportPath).catch(() => null);
-			if (!report || report.scannedAt !== discussion.about.scannedAt) return { ok: false, reason: NEWER_SCAN };
+			if (!report || !sameScan(report, discussion.about)) return { ok: false, reason: NEWER_SCAN };
 		}
 		return { ok: true, target };
 	}
@@ -710,7 +738,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			return cloudflarePrompt(audit);
 		}
 		const report = await storedReport();
-		if (report.scannedAt !== about.scannedAt) throw new HttpError(409, NEWER_SCAN);
+		if (!sameScan(report, about)) throw new HttpError(409, NEWER_SCAN);
 		if (discussion.kind === "finding") {
 			const found = locateFinding(report, { repo: about.repo ?? "", ruleId: about.ruleId ?? "", location: about.location ?? "", detail: about.detail });
 			if (!found) throw new HttpError(409, NEWER_SCAN);
@@ -860,6 +888,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			);
 			const about: DiscussionAbout = {
 				scannedAt: report.scannedAt,
+				stamp: reportStamp(report),
 				content: fields.content as string,
 				purpose: fields.purpose as string,
 				...(Object.keys(filterWords).length > 0 ? { filter: filterWords } : {}),
@@ -1006,7 +1035,10 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				} catch (err) {
 					problem = err instanceof Error ? err.message : String(err);
 				}
-				return sendJson(res, 200, { ollama: { host: base.host, reachable: problem === undefined, ...(problem ? { problem } : {}) }, installed, download, canChange: here, hub: HUB_HOST, tasks: HUB_TASKS, sorts: HUB_SORTS, formats: HUB_FORMATS, sizes: HUB_SIZES, machine });
+				// Its whole address, so "Use this model" keeps https and the port (AI-B9); and whether it runs on this
+				// computer, since only then does this computer's memory say which models fit (H-F5).
+				const onThisComputer = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(base.hostname) || base.hostname.startsWith("127.");
+				return sendJson(res, 200, { ollama: { host: base.host, origin: base.origin, onThisComputer, reachable: problem === undefined, ...(problem ? { problem } : {}) }, installed, download, canChange: here, hub: HUB_HOST, tasks: HUB_TASKS, sorts: HUB_SORTS, formats: HUB_FORMATS, sizes: HUB_SIZES, machine });
 			}
 			if (!here) throw new HttpError(403, "Models are searched for and downloaded from the page on the computer that runs Porchlight");
 			if (route === "GET /api/model/local/search") {
@@ -1148,7 +1180,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	}
 
 	/** The mural for this scan and these filters: its state, or a request to write it. */
-	async function muralRoute(res: ServerResponse, route: string, report: ScanReport, filter: ReturnType<typeof parseFilter>, key: string): Promise<void> {
+	async function muralRoute(res: ServerResponse, route: string, report: ScanReport, filter: ReturnType<typeof parseFilter>, key: string, body: unknown): Promise<void> {
 		const describe = () =>
 			muralJob.state === "done"
 				? { state: "done", current: muralJob.key === key, model: muralJob.mural.model, generatedAt: muralJob.mural.generatedAt, headline: muralJob.mural.headline }
@@ -1159,6 +1191,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		if (route !== "POST /api/repos/mural") throw new HttpError(404, "Not found");
 		const config = model.config;
 		if (!config) throw new HttpError(503, "Choose a model in Settings → Model to write a mural");
+		confirmModel(bodyObject(body ?? {}), config);
 		if (muralJob.state === "running") throw new HttpError(409, "A mural is already being written");
 		if (analysing.state === "running") throw new HttpError(409, "Deeper analysis is running. Write the mural when it has finished, so it can include it");
 		if (modelBusy) throw new HttpError(409, "The model is still answering another request. Try again when it has finished.");
@@ -1181,12 +1214,14 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			modelBusy = false;
 			throw err;
 		}
+		const stop = new AbortController();
+		stopMural = stop;
 		void (async () => {
 			try {
 				// A small model now and then answers with something other than the JSON asked for: it gets one more try.
 				let written: ReturnType<typeof parseMural> | undefined;
 				for (let attempt = 1; !written; attempt++) {
-					const text = await chat(config, prompt.messages, { fetchFn: options.fetchFn, timeoutMs: MURAL_TIMEOUT_MS, maxTokens: MURAL_TOKENS });
+					const text = await chat(config, prompt.messages, { fetchFn: options.fetchFn, timeoutMs: MURAL_TIMEOUT_MS, maxTokens: MURAL_TOKENS, signal: stop.signal, json: true });
 					try {
 						written = parseMural(text);
 					} catch (err) {
@@ -1199,9 +1234,10 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				muralJob = { state: "done", key, mural };
 			} catch (err) {
 				const known = err instanceof AssistantError || err instanceof MuralError;
-				muralJob = { state: "failed", key, error: known ? err.message : "The mural could not be written" };
+				muralJob = { state: "failed", key, error: stop.signal.aborted ? "Stopped: no mural was written" : known ? err.message : "The mural could not be written" };
 			} finally {
 				modelBusy = false;
+				if (stopMural === stop) stopMural = null;
 			}
 		})();
 		return sendJson(res, 202, describe());
@@ -1299,7 +1335,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 
 	/** What a run sends to the model, in words, for the page to show before anything is sent. */
 	function investigationDisclosure(config: AssistantConfig): string {
-		const where = isHosted(config) ? `${HOSTED[config.provider as HostedProvider].name} (${config.url.host}), outside your machines` : `the model at ${config.url.host}`;
+		const where = isHosted(config) ? `${hostedName(config)} (${config.url.host}), outside your machines` : `the model at ${config.url.host}`;
 		return `Each turn sends ${where}: the domain, your goal, the tool list, the findings so far and the latest results of the tools, which are your site's DNS records and HTTP responses (headers and up to 1 500 characters of each body, with Set-Cookie values left out). It never sends the ownership token, your scans, keys or anything from this computer.`;
 	}
 
@@ -1467,6 +1503,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			const hosted = isHosted(config);
 			// The page shows what will be sent; a hosted model is used only once the owner has said yes to it.
 			if (hosted && fields.sendsToHosted !== true) throw new HttpError(409, investigationDisclosure(config));
+			confirmModel(fields, config);
 			if (!(await proveOwnership(name, token))) {
 				throw new HttpError(409, `The TXT record ${challengeName(name)} does not hold ${challengeValue(token)} yet. Publish it, wait a few minutes, and check again`);
 			}
@@ -1494,7 +1531,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				while (local && modelBusy && !signal.aborted) await abortableSleep(500, signal);
 				if (local) modelBusy = true;
 				try {
-					return await chat(config, [{ role: "system", content: system }, { role: "user", content: user }], { fetchFn: options.fetchFn, signal, timeoutMs: INVESTIGATE_TIMEOUT_MS, maxTokens: INVESTIGATE_TOKENS });
+					return await chat(config, [{ role: "system", content: system }, { role: "user", content: user }], { fetchFn: options.fetchFn, signal, timeoutMs: INVESTIGATE_TIMEOUT_MS, maxTokens: INVESTIGATE_TOKENS, json: true });
 				} finally {
 					if (local) modelBusy = false;
 				}
@@ -1523,6 +1560,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 					active.approval = { stepId: request.stepId, resolve: done };
 				}),
 			limiter: new RateLimiter(run.minGapMs),
+			hidden: [token],
 			onChange: (changed) => {
 				for (const step of changed.steps) {
 					if (step.outcome === "waiting" && !waitingNoted.has(step.id)) {
@@ -1533,7 +1571,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 					// A step that ran under the run's approval is saved once more when it finishes; noted then.
 					if (step.outcome === "refused" && step.reason === undefined) continue;
 					stepsNoted.add(step.id);
-					const what = step.description ?? (step.tool ? `${step.tool} (not a valid action)` : "no action");
+					// The model's words never reach the Activity view: a tool it named that is not one is said in fixed words (S37).
+					const what = step.description ?? (step.tool ? (INVESTIGATION_TOOLS.some((tool) => tool.name === step.tool) ? `${step.tool} (refused)` : "an action that is not one of the tools") : "no action");
 					note(`Investigation of ${name}, turn ${step.turn}: ${what}: ${step.outcome}`, step.outcome === "ran" ? "good" : step.outcome === "no action" ? "info" : "warning");
 				}
 				return saveActive(changed);
@@ -1962,6 +2001,13 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				},
 			],
 			[paths("/api/analysis", "/api/analysis/stop"), ({ res, route, body }) => analysisRoute(res, route, body)],
+			[
+				exact("POST /api/repos/mural/stop"),
+				({ res }) => {
+					stopMural?.abort();
+					return sendJson(res, 200, { stopped: stopMural !== null });
+				},
+			],
 			[(call) => call.route === "GET /api/repos/roadmap" || call.url.pathname === "/api/repos/export" || call.url.pathname === "/api/repos/mural", roadmapRoute],
 			[exact("GET /api/repos/scan"), ({ res }) => sendJson(res, 200, { scan: status })],
 			[exact("GET /api/repos/sbom"), sbomRoute],
@@ -1973,8 +2019,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			[
 				exact("POST /api/repos/scan"),
 				async ({ res, body }) => {
-					const { root, depth, choices, sendsToHosted } = await scanRequest(body, defaultDepth);
-					return sendJson(res, 202, { scan: await beginScan(root, depth, { choices, sendsToHosted }) });
+					const { root, depth, choices, sendsToHosted, shown } = await scanRequest(body, defaultDepth);
+					return sendJson(res, 202, { scan: await beginScan(root, depth, { choices, sendsToHosted, ...(shown ? { shown } : {}) }) });
 				},
 			],
 			[exact("POST /api/repos/scan/cancel"), cancelScanRoute],
@@ -2070,7 +2116,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	}
 
 	/** The roadmap for the page, an export of it or of the findings, and the mural an export can carry. */
-	async function roadmapRoute({ req, res, url, route }: Call): Promise<void> {
+	async function roadmapRoute({ req, res, url, route, body }: Call): Promise<void> {
 		if (url.pathname === "/api/repos/export" && req.method !== "GET" && req.method !== "POST") throw new HttpError(405, "Method not allowed");
 		const report = await readReport(options.reportPath);
 		if (!report) throw new HttpError(404, "There is no scan yet. Scan a folder first.");
@@ -2078,7 +2124,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		const filter = parseFilter({ severity: query.get("severity"), kind: query.get("kind"), match: query.get("q"), repo: query.get("repo") });
 		if (route === "GET /api/repos/roadmap") return sendJson(res, 200, { roadmap: buildRepoRoadmap(report, filter) });
 		const key = muralKey(report, filter);
-		if (url.pathname === "/api/repos/mural") return muralRoute(res, route, report, filter, key);
+		if (url.pathname === "/api/repos/mural") return muralRoute(res, route, report, filter, key, body);
 		let mural: Mural | undefined;
 		if (query.get("mural") === "1") {
 			if (muralJob.state !== "done" || muralJob.key !== key) throw new HttpError(409, "Write the mural first: it is made for this scan and these filters");
@@ -2165,6 +2211,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		if (!Array.isArray(severities) || severities.length === 0 || !severities.every((severity) => SEVERITIES.includes(severity as Severity))) {
 			throw new HttpError(400, "Severities must be some of: critical, high, medium, low");
 		}
+		const assistant = model.config;
+		if (assistant) confirmModel(fields, assistant);
 		return sendJson(res, 202, { status: await startAnalysis(limit, severities as Severity[]) });
 	}
 
@@ -2174,9 +2222,11 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	 * sending to it, which the page asks for beside the Deep choice. Whatever stops it is said in
 	 * the log; the scan itself has finished either way.
 	 */
-	function analyseAfterScan(sendsToHosted: boolean, project: Awaited<ReturnType<typeof projects.current>>): void {
+	function analyseAfterScan(sendsToHosted: boolean, project: Awaited<ReturnType<typeof projects.current>>, shown?: { model: string; host: string }): void {
 		const assistant = model.config;
 		if (!assistant) return log("Deeper analysis did not start: no model is set up (Settings → Model)", project);
+		// The model may have been switched while the scan ran: the analysis uses only the one the page showed (S22).
+		if (shown && (shown.model !== assistant.model || shown.host !== assistant.url.host)) return log(`Deeper analysis did not start: the model is now ${modelWords(assistant)}, not the one the page showed when the scan started`, project);
 		if (isHosted(assistant) && !sendsToHosted) return log(`Deeper analysis did not start: ${modelWords(assistant)} is hosted, and the scan did not say yes to sending to it`, project);
 		void startAnalysis(DEFAULT_ANALYSE, ["critical", "high"]).catch((err) => log(`Deeper analysis did not start: ${err instanceof Error ? err.message : String(err)}`, project));
 	}
@@ -2213,6 +2263,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		void (async () => {
 			let done = 0;
 			let failed = 0;
+			let inARow = 0;
+			let gaveUp = false;
 			let lastError: string | undefined;
 			for (const unit of queue) {
 				if (stop.signal.aborted) break;
@@ -2224,19 +2276,34 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				try {
 					stored.items[unit.key] = await judge(report, unit, assistant, { fetchFn: options.fetchFn, signal: stop.signal });
 					await saveAnalysis(analysisPath, stored);
+					inARow = 0;
 				} catch (err) {
 					if (stop.signal.aborted) break;
 					failed++;
+					inARow++;
 					lastError = err instanceof Error ? err.message : String(err);
-					// A model that cannot be reached, or a key it refuses, will fail every item the same way.
-					if (failed >= 3 && done === 0) break;
+					// A model that cannot be reached, or a key it refuses, fails every item the same way:
+					// three failures in a row end the run rather than spend the rest of it (B36).
+					if (inARow >= 3) {
+						done++;
+						gaveUp = true;
+						break;
+					}
 				} finally {
 					modelBusy = false;
 				}
 				done++;
 			}
-			analysing = { state: stop.signal.aborted ? "stopped" : "done", finishedAt: new Date().toISOString(), done: done - failed, total: queue.length, failed, ...(lastError ? { lastError } : {}) };
-			log(`Deeper analysis ${stop.signal.aborted ? "stopped" : "finished"}: ${done - failed} judged, ${failed} failed`, project);
+			analysing = {
+				state: stop.signal.aborted ? "stopped" : "done",
+				finishedAt: new Date().toISOString(),
+				done: done - failed,
+				total: queue.length,
+				failed,
+				...(lastError ? { lastError } : {}),
+				...(gaveUp ? { gaveUp } : {}),
+			};
+			log(`Deeper analysis ${stop.signal.aborted ? "stopped" : gaveUp ? "stopped after 3 failures in a row" : "finished"}: ${done - failed} judged, ${failed} failed`, project);
 		})();
 		return analysing;
 	}
@@ -2315,6 +2382,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		const assistant = model.config;
 		if (!assistant) throw new HttpError(503, model.error ?? "No model is connected. Choose one in Settings → Model");
 		const fields = bodyObject(body);
+		confirmModel(fields, assistant);
 
 		let prompt: Prompt;
 		/** What the answer is about, kept with it as a discussion so it can be followed up. */
@@ -2337,7 +2405,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			}
 			const report = await storedReport();
 			prompt = askPrompt(report, question);
-			about = { scannedAt: report.scannedAt };
+			about = { scannedAt: report.scannedAt, stamp: reportStamp(report) };
 			firstQuestion = question.trim();
 		} else if (kind === "finding") {
 			const target = {
@@ -2352,6 +2420,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			prompt = findingPrompt(report, found.repo, found.finding);
 			about = {
 				scannedAt: report.scannedAt,
+				stamp: reportStamp(report),
 				repo: target.repo,
 				ruleId: target.ruleId,
 				location: target.location,
@@ -2362,7 +2431,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		} else {
 			const report = await storedReport();
 			prompt = roadmapPrompt(report);
-			about = { scannedAt: report.scannedAt };
+			about = { scannedAt: report.scannedAt, stamp: reportStamp(report) };
 		}
 
 		if (modelBusy) throw new HttpError(409, "The model is still answering another request. Try again when it has finished.");
@@ -2405,7 +2474,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	 * Starts a scan of `root` and returns at once: the scan outlives the request, and the page polls
 	 * for progress. Used by the page's button and by the schedule.
 	 */
-	async function beginScan(root: string, depth: number, how: { scheduled?: boolean; choices?: ScanChoices; sendsToHosted?: boolean } = {}): Promise<ScanStatus> {
+	async function beginScan(root: string, depth: number, how: { scheduled?: boolean; choices?: ScanChoices; sendsToHosted?: boolean; shown?: { model: string; host: string } } = {}): Promise<ScanStatus> {
 		scanMayStart();
 		const scheduled = how.scheduled === true;
 		// A scheduled scan is always a Standard one: nobody is there to have chosen less, or to say yes to a model.
@@ -2458,7 +2527,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 					const latest = await history.compare(report);
 					await tell(scanNotice(report, latest.state === "compared" ? latest.change : null, latest.state === "unreadable" ? latest.reason : undefined), project);
 				}
-				if (choices.analyse) analyseAfterScan(how.sendsToHosted === true, project);
+				if (choices.analyse) analyseAfterScan(how.sendsToHosted === true, project, how.shown);
 			})
 			.catch((err) => {
 				// A cancelled scan saved nothing: the last report stands, and the page goes back to it.
@@ -2698,8 +2767,18 @@ type MuralJob =
 	| { state: "failed"; key: string; error: string };
 
 /** A mural is for one scan and one filter; a new scan or other filters need a new one. */
+/** A mural belongs to one report's content and one filter: scanning one repository again makes it out of date (B38). */
 function muralKey(report: ScanReport, filter: ReturnType<typeof parseFilter>): string {
-	return `${report.scannedAt}\n${JSON.stringify(filter)}`;
+	return `${reportStamp(report)}\n${JSON.stringify(filter)}`;
+}
+
+/**
+ * Whether a discussion is about this report as it is now: by its content stamp, which scanning one
+ * repository again changes (B38). A discussion kept before there were stamps has its scan time alone,
+ * which is compared as before, so it does not all turn stale at once.
+ */
+function sameScan(report: ScanReport, about: DiscussionAbout): boolean {
+	return about.stamp !== undefined ? about.stamp === reportStamp(report) : about.scannedAt === report.scannedAt;
 }
 
 async function readMural(path: string): Promise<MuralJob | null> {
@@ -2981,8 +3060,13 @@ async function previewScan(root: string, depthText: string | null, githubDir: st
 	return { root: absolute, exists: true, total: inFolder.length + fromGithub.length, repos: names, fetched: fromGithub.length, depth };
 }
 
-async function scanRequest(body: unknown, defaultDepth: number): Promise<{ root: string; depth: number; choices: ScanChoices; sendsToHosted: boolean }> {
-	const { root, depth = defaultDepth, choices: asked, sendsToHosted } = (body ?? {}) as { root?: unknown; depth?: unknown; choices?: unknown; sendsToHosted?: unknown };
+/** Who runs a hosted model: its provider's name, or the server's address for one of the owner's servers reached over the internet. */
+function hostedName(config: AssistantConfig): string {
+	return config.provider !== undefined && config.provider in HOSTED ? HOSTED[config.provider as HostedProvider].name : `the model server at ${config.url.host}`;
+}
+
+async function scanRequest(body: unknown, defaultDepth: number): Promise<{ root: string; depth: number; choices: ScanChoices; sendsToHosted: boolean; shown?: { model: string; host: string } }> {
+	const { root, depth = defaultDepth, choices: asked, sendsToHosted, shown } = (body ?? {}) as { root?: unknown; depth?: unknown; choices?: unknown; sendsToHosted?: unknown; shown?: { model?: unknown; host?: unknown } };
 	if (typeof root !== "string" || root.trim() === "") throw new HttpError(400, "Choose a folder to scan");
 	if (typeof depth !== "number" || !Number.isInteger(depth) || depth < 0 || depth > MAX_DEPTH) {
 		throw new HttpError(400, `Depth must be a whole number from 0 to ${MAX_DEPTH}`);
@@ -2999,7 +3083,8 @@ async function scanRequest(body: unknown, defaultDepth: number): Promise<{ root:
 		if (err instanceof ChoiceError) throw new HttpError(400, err.message);
 		throw err;
 	}
-	return { root: absolute, depth, choices, sendsToHosted: sendsToHosted === true };
+	const named = typeof shown?.model === "string" && typeof shown.host === "string" ? { shown: { model: shown.model, host: shown.host } } : {};
+	return { root: absolute, depth, choices, sendsToHosted: sendsToHosted === true, ...named };
 }
 
 /**

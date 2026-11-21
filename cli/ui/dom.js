@@ -28,13 +28,26 @@ export function h(tag, props, ...children) {
 }
 
 /**
+ * Characters that change how text reads rather than show: C0 and C1 controls but tab and line feed,
+ * and the bidirectional overrides, isolates and marks with which a scanned file name or a model's
+ * answer would display reordered (S38). The page's one text helper: every text node and every text
+ * copied or saved goes through it.
+ */
+const ACTING = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+
+/** @param {string} text */
+export function shownText(text) {
+	return text.replace(ACTING, "\uFFFD");
+}
+
+/**
  * @param {Element} parent
  * @param {(Node | string | number | null | undefined | false)[]} children
  */
 export function append(parent, children) {
 	for (const child of children) {
 		if (child === null || child === undefined || child === false) continue;
-		parent.append(child instanceof Node ? child : document.createTextNode(String(child)));
+		parent.append(child instanceof Node ? child : document.createTextNode(shownText(String(child))));
 	}
 }
 

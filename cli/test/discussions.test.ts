@@ -15,6 +15,7 @@ import {
 } from "../src/discussions/discussions.ts";
 import { aboutLink, filterDiscussions, kindLabel } from "../ui/discussion-links.js";
 import { tempDir } from "./helpers.ts";
+import { estimateTokens } from "../src/assist/prompts.ts";
 
 const config = assistantConfig({ PORCHLIGHT_LLM_URL: "http://ollama.test:11434", PORCHLIGHT_LLM_MODEL: "qwen-test:9b" });
 const turn = (answer: string, question: string | null = null, at = "2026-11-19T10:00:00.000Z"): DiscussionTurn => ({ question, answer, model: "qwen-test:9b", at, seconds: 1 });
@@ -53,7 +54,8 @@ test("a follow-up sends the first prompt, the answers so far and the question, d
 	assert.equal(all.note, null);
 
 	// Room for the last two exchanges only: the rules and the data stay, the first answer goes, and both sides are told.
-	const tight = followUpPrompt(base, turns, "last question", "second answer".length + "why?".length + "third answer".length + "and then?".length);
+	// The cap is in estimated tokens (AI-B7).
+	const tight = followUpPrompt(base, turns, "last question", ["second answer", "why?", "third answer", "and then?"].reduce((sum, text) => sum + estimateTokens(text), 0));
 	assert.deepEqual(tight.messages.slice(0, 3).map((message) => message.content), ["rules", "task <<<DATA {} DATA>>>", "The owner's follow-up question:\nwhy?"]);
 	assert.match(tight.messages.at(-1)!.content, /Your first answer was left out/);
 	assert.equal(tight.note, "The model was not sent the first answer of this discussion, so the rest fit in what it can read.");

@@ -99,7 +99,8 @@ export function cleanName(value: unknown): string | null {
 
 /** One line of text for the log: no line breaks or control characters, so nothing can forge a line. */
 export function oneLine(text: string, max = 300): string {
-	const line = text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ").replace(/\s+/g, " ").trim();
+	// The direction controls too, which would make a scanned name in the log or the Activity view read reordered (S38).
+	const line = text.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, " ").replace(/\s+/g, " ").trim();
 	return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 }
 

@@ -269,7 +269,10 @@ export async function saveFindingNote(repo, finding, status, note, until = "") {
  */
 export async function startScan(root, depth, choices, sendsToHosted = false) {
 	try {
-		const { scan } = await api("POST", "/repos/scan", { root, depth, choices, sendsToHosted });
+		// The model the page showed goes too: a Deep scan's analysis afterwards uses no other (S22).
+		const assistant = store.settings?.assistant;
+		const shown = assistant?.model && assistant.host !== undefined ? { shown: { model: assistant.model, host: assistant.host } } : {};
+		const { scan } = await api("POST", "/repos/scan", { root, depth, choices, sendsToHosted, ...shown });
 		setScan(scan);
 	} catch (err) {
 		// Someone else, or another tab, started one: follow that scan instead.

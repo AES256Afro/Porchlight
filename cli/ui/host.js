@@ -2,7 +2,7 @@
 // "This Mac": what Porchlight can see of the computer it runs on. The check only reads; this page
 // starts it, follows it, and shows what it found. Every element is built with h(): program names,
 // paths and update titles come from the system and are never treated as HTML.
-import { formatWhen, h, icon, plural, replace, severityBadge, statTile, stepNodes, tileRow, toast } from "./dom.js";
+import { formatWhen, h, icon, plural, replace, severityBadge, shownText, statTile, stepNodes, tileRow, toast } from "./dom.js";
 import { AREA_TITLES, combinedCommands, hostName as nameFor, splitChecks } from "./host-areas.js";
 import { load, loadHost, startHostCheck, store, subscribe } from "./store.js";
 
@@ -197,7 +197,7 @@ function commandsCard(commands) {
 	const block = h("pre", { class: "host-commands", tabindex: "0", "aria-label": "Commands to fix these" }, h("code", null, text));
 	const copy = async () => {
 		try {
-			await navigator.clipboard.writeText(text);
+			await navigator.clipboard.writeText(shownText(text));
 			toast(commands.length === 1 ? "Command copied" : `${commands.length} commands copied`);
 		} catch {
 			// Clipboard access can be refused: select the block so ⌘C copies it.

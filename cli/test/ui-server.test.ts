@@ -2181,3 +2181,85 @@ test("turning access on and off many times at once leaves the saved setting and 
 	assert.equal(state.listening, saved.enabled);
 	await send(server, "POST", "/api/access", { body: { enabled: false } });
 });
+
+test("a model request names the model the page showed: another is refused, and a hosted one needs the page's yes (S22, S23)", async (t) => {
+	const network = fakeNetwork();
+	const server = await start(t, { assistant, fetchFn: network.fetchFn });
+	await withReport(server);
+	const shown = { model: MODEL, host: "ollama.test:11434" };
+
+	// The page showed another model: nothing is sent.
+	for (const [path, body] of [...ASSIST_REQUESTS.filter(([path]) => path !== "/api/assist/domain"), ["/api/analysis", {}] as [string, unknown]]) {
+		const reply = await send(server, "POST", path, { body: { ...(body as object), shown: { model: "other:1b", host: "ollama.test:11434" } } });
+		assert.equal(reply.status, 409, path);
+		assert.match(reply.json.error, /not the one this page showed/);
+	}
+	assert.equal((await send(server, "POST", "/api/repos/mural", { body: { shown: { model: MODEL, host: "elsewhere.test" } } })).status, 409);
+	assert.equal(network.modelCalls.length, 0);
+	// The model it showed is the one in use.
+	assert.equal((await send(server, "POST", "/api/assist/roadmap", { body: { shown } })).status, 200);
+
+	// A server that speaks OpenAI's format on the internet is not the owner's: it is hosted, and is sent nothing without a yes.
+	const remote = assistantConfig({ PORCHLIGHT_LLM_PROVIDER: "compatible", PORCHLIGHT_LLM_URL: "https://openrouter.example/api/v1", PORCHLIGHT_LLM_MODEL: "some/model" });
+	const hosted = await start(t, { assistant: remote, fetchFn: network.fetchFn });
+	await withReport(hosted);
+	assert.equal((await send(hosted, "GET", "/api/state")).json.assistant.hosted, true);
+	const refused = await send(hosted, "POST", "/api/assist/roadmap", { body: { shown: { model: "some/model", host: "openrouter.example" } } });
+	assert.equal(refused.status, 409);
+	assert.match(refused.json.error, /outside your machines/);
+});
+
+test("which model servers are the owner's own is decided by their address (S23)", async () => {
+	const { isHosted, privateHost } = await import("../src/assist/ollama.ts");
+	for (const host of ["localhost", "127.0.0.1", "10.1.2.3", "172.20.0.4", "192.168.1.9", "100.101.1.2", "169.254.1.1", "[::1]", "fd12:3456::1", "studio", "mac.local", "gpu.tail1234.ts.net", "llm.home.arpa", "box.internal", "ollama.test"]) {
+		assert.ok(privateHost(host), host);
+	}
+	for (const host of ["openrouter.ai", "8.8.8.8", "100.128.0.1", "172.32.0.1", "api.example.com", "2001:db8::1"]) assert.ok(!privateHost(host), host);
+	assert.equal(isHosted(assistantConfig({ PORCHLIGHT_LLM_URL: "https://ollama.my-vps.example", PORCHLIGHT_LLM_MODEL: "m" })), true, "Ollama across the internet is said to be outside your machines");
+	assert.equal(isHosted(assistantConfig({ PORCHLIGHT_LLM_PROVIDER: "compatible", PORCHLIGHT_LLM_URL: "http://localhost:1234/v1", PORCHLIGHT_LLM_MODEL: "m" })), false);
+});
+
+test("the analysis stops after three failures in a row rather than ask a model that cannot answer about every item (B36)", async (t) => {
+	let asked = 0;
+	const server = await start(t, {
+		assistant,
+		fetchFn: (async () => {
+			asked++;
+			return new Response("unauthorised", { status: 500 });
+		}) as unknown as typeof fetch,
+	});
+	await makeTree(server.dir, { "state/": "" });
+	const report = sampleReport(server.dir);
+	// Enough repositories that there are more items than three.
+	report.repos = [1, 2, 3, 4].flatMap((copy) => report.repos.map((repo) => ({ ...repo, path: `${repo.path}-${copy}` })));
+	await writeFile(join(server.dir, "state", "repo-scan.json"), JSON.stringify(report));
+	assert.equal((await send(server, "POST", "/api/analysis", { body: { limit: 100, severities: ["critical", "high", "medium", "low"] } })).status, 202);
+	let after = (await send(server, "GET", "/api/analysis")).json;
+	for (let attempt = 0; attempt < 400 && after.status.state === "running"; attempt++) {
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		after = (await send(server, "GET", "/api/analysis")).json;
+	}
+	assert.ok(after.status.total > 3, "there were more items than the three tried");
+	assert.deepEqual([after.status.state, after.status.done, after.status.failed, after.status.gaveUp], ["done", 0, 3, true]);
+	assert.equal(asked, 3);
+});
+
+test("scanning one repository again makes a discussion and a mural about the report out of date; an older discussion keeps its scan time (B38)", async (t) => {
+	const network = fakeNetwork();
+	const server = await start(t, { assistant, fetchFn: network.fetchFn });
+	await withReport(server);
+	const answer = await send(server, "POST", "/api/assist/roadmap", { body: {} });
+	assert.equal(answer.status, 200);
+	assert.equal((await send(server, "POST", "/api/discussions/ask", { body: { id: answer.json.discussion, question: "And then?" } })).status, 200, "a follow-up while the report is as it was");
+
+	// The report now holds a repository scanned again: same scan time, other content.
+	const path = join(server.dir, "state", "repo-scan.json");
+	const report = JSON.parse(await readFile(path, "utf8")) as ScanReport;
+	report.repos[0]!.rescannedAt = "2026-11-21T09:00:00.000Z";
+	await writeFile(path, JSON.stringify(report));
+	const stale = await send(server, "POST", "/api/discussions/ask", { body: { id: answer.json.discussion, question: "Still?" } });
+	assert.equal(stale.status, 409);
+
+	const { reportStamp } = await import("../src/repos/report.ts");
+	assert.notEqual(reportStamp(report), reportStamp({ ...report, repos: report.repos.map((repo) => ({ ...repo, rescannedAt: undefined })) }));
+});

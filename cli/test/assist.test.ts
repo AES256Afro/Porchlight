@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
 import { AssistantError, assistantConfig, chat, withoutThinking, type ChatMessage } from "../src/assist/ollama.ts";
-import { askPrompt, DATA_CAP, DATA_END, DATA_START, domainPrompt, findingPrompt, locateFinding, roadmapPrompt, type Prompt } from "../src/assist/prompts.ts";
+import { askPrompt, DATA_CAP, DATA_END, DATA_START, domainPrompt, estimateTokens, findingPrompt, locateFinding, roadmapPrompt, type Prompt } from "../src/assist/prompts.ts";
 import type { Finding, ScanReport } from "../src/repos/types.ts";
 import type { MonitorReport } from "../src/roadmap/domains.ts";
 
@@ -242,7 +242,7 @@ test("cuts a large scan to fit, keeps the most severe part, and says so in the d
 
 	const ask = askPrompt(report, "What first?");
 	const data = dataOf(ask);
-	assert.ok(blockOf(ask).length <= DATA_CAP, `${blockOf(ask).length} characters`);
+	assert.ok(estimateTokens(blockOf(ask)) <= DATA_CAP, `${estimateTokens(blockOf(ask))} tokens`);
 	// Worst case: every finding has its own fix. The totals and per-repository counts always go in whole.
 	assert.ok(data.findings.length > 10 && data.findings.length < 2000, `${data.findings.length} findings`);
 	assert.equal(data.totals.findings, 2000);
@@ -402,7 +402,7 @@ test("a send carries the task asked for, says when it is partial, and fits its c
 	};
 	const block = (prompt: { messages: { content: string }[] }) => prompt.messages[1]!.content.split(DATA_START)[1]!.split(DATA_END)[0]!;
 	const local = sendPrompt(report, { content: "findings", purpose: "analyse" });
-	assert.ok(block(local).length <= DATA_CAP + 50);
+	assert.ok(estimateTokens(block(local)) <= DATA_CAP + 50);
 	assert.ok(local.cut, "a small model is told what was left out");
 	assert.match(local.messages[1]!.content, /Overall risk:/);
 	const hosted = sendPrompt(report, { content: "findings", purpose: "repair", cap: HOSTED_DATA_CAP });
@@ -412,4 +412,33 @@ test("a send carries the task asked for, says when it is partial, and fits its c
 	const one = sendPrompt(report, { content: "roadmap", purpose: "analyse", filter });
 	assert.match(block(one), /^\n\{"filtered":"in repo-3"/);
 	assert.ok(!block(one).includes("repo-4"));
+});
+
+test("a prompt's budget is the one given, counts everything before the lists, and is in tokens (B37, AI-B7)", async () => {
+	const { cloudflarePrompt, HOSTED_DATA_CAP, sendPrompt } = await import("../src/assist/prompts.ts");
+	// 1,200 actions for a hosted model: far more than 24 of them fit.
+	const report: ScanReport = {
+		...sampleReport(),
+		repos: [{ path: join("/work", "big"), errors: [], findings: Array.from({ length: 1200 }, (_, i) => finding("high", "vulnerability", { ruleId: `GHSA-${i}`, detail: `package-${i}@1.0.0`, fixedIn: "2.0.0", title: `Problem ${i}` })) }],
+	};
+	const hosted = sendPrompt(report, { content: "roadmap", purpose: "repair", cap: HOSTED_DATA_CAP });
+	const actions = (JSON.parse(blockOf(hosted)) as { actions: unknown[] }).actions.length;
+	assert.ok(actions > 200, `${actions} actions, where the local cap was once used and 24 fit`);
+
+	// 300 repositories with findings, and names in another script: the local block still fits.
+	const many: ScanReport = { ...report, repos: Array.from({ length: 300 }, (_, n) => ({ path: `/work/仓库-${n}-${"名".repeat(30)}`, findings: [report.repos[0]!.findings[0]!], errors: [] })) };
+	for (const prompt of [askPrompt(many, "What first?"), roadmapPrompt(many)]) assert.ok(estimateTokens(blockOf(prompt)) <= DATA_CAP, `${estimateTokens(blockOf(prompt))} tokens`);
+	assert.ok(typeof cloudflarePrompt === "function");
+});
+
+test("an answer the model stopped at its length limit says so, from every kind of server (H-F1)", async () => {
+	const { CUT_OFF } = await import("../src/assist/ollama.ts");
+	const ask = (config: Parameters<typeof chat>[0], body: unknown) => chat(config, [{ role: "user", content: "q" }], { fetchFn: (async () => Response.json(body)) as unknown as typeof fetch });
+	const ollama = assistantConfig({ PORCHLIGHT_LLM_URL: "http://ollama.test:11434", PORCHLIGHT_LLM_MODEL: "m" });
+	assert.equal(await ask(ollama, { message: { content: "half an" }, done_reason: "length" }), `half an${CUT_OFF}`);
+	assert.equal(await ask(ollama, { message: { content: "whole" }, done_reason: "stop" }), "whole");
+	const compatible = assistantConfig({ PORCHLIGHT_LLM_PROVIDER: "compatible", PORCHLIGHT_LLM_URL: "http://localhost:1234/v1", PORCHLIGHT_LLM_MODEL: "m" });
+	assert.equal(await ask(compatible, { choices: [{ message: { content: "half" }, finish_reason: "length" }] }), `half${CUT_OFF}`);
+	const claude = assistantConfig({ PORCHLIGHT_LLM_PROVIDER: "anthropic", PORCHLIGHT_LLM_API_KEY: "k".repeat(40) });
+	assert.equal(await ask(claude, { content: [{ type: "text", text: "half" }], stop_reason: "max_tokens" }), `half${CUT_OFF}`);
 });

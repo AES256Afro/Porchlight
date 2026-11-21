@@ -15,9 +15,9 @@ import { randomBytes } from "node:crypto";
 import { readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { AssistantConfig, ChatMessage } from "../assist/ollama.ts";
-import { DATA_END, DATA_START, type Prompt } from "../assist/prompts.ts";
+import { DATA_END, DATA_START, estimateTokens, type Prompt } from "../assist/prompts.ts";
 import { writePrivate } from "../investigate/ownership.ts";
-import { mdText } from "../roadmap/escape.ts";
+import { mdText, stripControls } from "../roadmap/escape.ts";
 
 export const DISCUSSION_KINDS = ["finding", "roadmap", "domain", "ask", "send", "cloudflare"] as const;
 export type DiscussionKind = (typeof DISCUSSION_KINDS)[number];
@@ -36,6 +36,8 @@ export const KIND_WORDS: Record<DiscussionKind, string> = {
 export interface DiscussionAbout {
 	/** The repository scan the data came from. A follow-up needs the same scan. */
 	scannedAt?: string;
+	/** The report's content stamp (`reportStamp`), which scanning one repository again changes. Missing from older discussions. */
+	stamp?: string;
 	repo?: string;
 	ruleId?: string;
 	location?: string;
@@ -116,13 +118,13 @@ export const MAX_DISCUSSIONS = 200;
 /** Answers in one discussion, the first included. Each follow-up sends the whole conversation again. */
 export const MAX_TURNS = 20;
 /**
- * How much of the earlier conversation a model on the owner's machines is sent, in characters. With
+ * How much of the earlier conversation a model on the owner's machines is sent, in estimated tokens. With
  * the data and the rules it stays inside Ollama's 8 192-token context, so the rules at the start are
  * never trimmed away.
  */
-export const LOCAL_HISTORY_CAP = 6_000;
-/** A hosted model reads far more. */
-export const HOSTED_HISTORY_CAP = 300_000;
+export const LOCAL_HISTORY_CAP = 2_000;
+/** A hosted model reads far more. Both in estimated tokens (`estimateTokens`), not characters (AI-B7). */
+export const HOSTED_HISTORY_CAP = 100_000;
 const TITLE_CAP = 140;
 const QUESTION_IN_TITLE = 60;
 
@@ -294,7 +296,7 @@ const FOLLOW_UP = [
 /**
  * The messages for a follow-up: the first prompt as it was built (rules, task and data), the answers
  * so far with the questions that led to them, then the new question. When the conversation is longer
- * than `cap` characters the oldest answers are left out, the newest kept, and `note` says so: the
+ * than `cap` estimated tokens the oldest answers are left out, the newest kept, and `note` says so: the
  * rules and the data are never the part that is cut.
  */
 export function followUpPrompt(base: Prompt, turns: DiscussionTurn[], question: string, cap: number): { messages: ChatMessage[]; note: string | null } {
@@ -303,7 +305,7 @@ export function followUpPrompt(base: Prompt, turns: DiscussionTurn[], question: 
 	for (let index = turns.length - 1; index >= 0; index--) {
 		const turn = turns[index]!;
 		// The first turn's question, if any, is already part of the first prompt.
-		const size = turn.answer.length + (index > 0 ? (turn.question?.length ?? 0) : 0);
+		const size = estimateTokens(turn.answer) + (index > 0 ? estimateTokens(turn.question ?? "") : 0);
 		if (used + size > cap) break;
 		kept.unshift(index);
 		used += size;
@@ -381,8 +383,9 @@ function mdParagraphs(text: string): string {
 }
 
 /** Plain text: no control characters, nothing a terminal or an editor would act on. */
+/** Text for the plain-text export and Copy: what a terminal or viewer would act on is replaced (S38). */
 function plain(text: string): string {
-	return text.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, "");
+	return stripControls(text.replace(/\r\n?/g, "\n"));
 }
 
 function plainText(discussion: Discussion): string {
