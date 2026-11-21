@@ -8,6 +8,8 @@
 import { csvNoteRows, csvRow, html, jsonText, mdCode, mdText } from "../roadmap/escape.ts";
 import { allChecks, cfCounts } from "./audit.ts";
 import type { CfCheck, CfReport, CfZoneReport } from "./types.ts";
+import { EXPORT_TOKENS, utcTime } from "../roadmap/style.ts";
+import { PORCHLIGHT_VERSION } from "../version.ts";
 
 export const CF_FORMATS = ["md", "html", "csv", "json"] as const;
 export type CfFormat = (typeof CF_FORMATS)[number];
@@ -76,6 +78,7 @@ function markdown(report: CfReport, partial: string | null): string {
 		}
 	}
 	out.push("## Not covered", "", ...report.notCovered.map((line) => `- ${mdText(line)}`), "");
+	out.push("---", "", `*${mdText(`Porchlight ${PORCHLIGHT_VERSION} · Cloudflare audit · checked ${utcTime(report.checkedAt)}`)}*`, "");
 	return `${out.join("\n")}\n`;
 }
 
@@ -110,11 +113,13 @@ function csv(report: CfReport, partial: string | null): string {
 	return `${rows.join("\r\n")}\r\n`;
 }
 
+/** The page's colour list (cli/ui/tokens.css), shared with the other exports, and light when printed (VS-11, R6V-1). */
 const STYLE =
-	"body{font:15px/1.5 system-ui,sans-serif;max-width:62rem;margin:2rem auto;padding:0 1rem;color:#1d1d1f;background:#fff}" +
-	"@media(prefers-color-scheme:dark){body{color:#eee;background:#1c1c1e}.check{border-color:#444}}" +
-	"h1{font-size:1.6rem}h2{margin-top:2rem;border-bottom:1px solid #8884;padding-bottom:.3rem}.check{border:1px solid #ddd;border-radius:8px;padding:.6rem .9rem;margin:.6rem 0}" +
-	".mark{font-weight:600}.sub{color:#666}code{font-size:.9em;overflow-wrap:anywhere}ul{margin:.3rem 0}";
+	`${EXPORT_TOKENS}` +
+	"body{font:15px/1.5 var(--sans);max-width:62rem;margin:2rem auto;padding:0 1rem;color:var(--ink);background:var(--page)}" +
+	"h1{font-size:1.6rem}h2{margin-top:2rem;border-bottom:1px solid var(--border);padding-bottom:.3rem}.check{border:1px solid var(--hairline);border-radius:8px;padding:.6rem .9rem;margin:.6rem 0;background:var(--surface)}" +
+	".mark{font-weight:600}.sub{color:var(--ink-2)}code{font-size:.9em;overflow-wrap:anywhere}ul{margin:.3rem 0}" +
+	".foot{margin-top:3rem;padding-top:.6rem;border-top:1px solid var(--hairline);color:var(--ink-2);font-size:.8rem}";
 
 function htmlDoc(report: CfReport, partial: string | null): string {
 	const body: string[] = [];
@@ -144,11 +149,12 @@ function htmlDoc(report: CfReport, partial: string | null): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
 <meta name="color-scheme" content="light dark">
-<title>Cloudflare audit</title>
+<title>Cloudflare audit, ${html(utcTime(report.checkedAt).slice(0, 10))}</title>
 <style>${STYLE}</style>
 </head>
 <body>
 ${body.join("\n")}
+<footer class="foot">${html(`Porchlight ${PORCHLIGHT_VERSION} · Cloudflare audit · checked ${utcTime(report.checkedAt)}`)}</footer>
 </body>
 </html>
 `;

@@ -31,7 +31,7 @@ export function scanNotice(report: ScanReport, change: Comparison | null, unread
 	const lines = [`By severity: ${counts.map(([severity, count]) => `${count} ${severity}`).join(", ")}.`];
 
 	if (unreadable) lines.push("", `The scan before this one could not be read, so nothing is marked new or fixed: ${unreadable}`);
-	if (notes.length > 0) lines.push("", "Not covered, so this is not a clean bill of health:", ...notes.map((note) => `  ${note}`));
+	if (notes.length > 0) lines.push("", "Not covered, so this scan is incomplete:", ...notes.map((note) => `  ${note}`));
 
 	if (change && change.newCount > 0) {
 		const all = keyed(report);
@@ -43,7 +43,7 @@ export function scanNotice(report: ScanReport, change: Comparison | null, unread
 	}
 	if (change && change.fixed.length > 0) {
 		lines.push("", "Fixed:");
-		for (const finding of change.fixed) lines.push(`  ${finding.repo}: ${finding.title} (${finding.location})`);
+		for (const finding of change.fixed) lines.push(`  [${finding.severity}] ${finding.repo}: ${finding.title} (${finding.location})`);
 		if (change.fixedCount > change.fixed.length) lines.push(`  and ${change.fixedCount - change.fixed.length} more`);
 	}
 	if (change && change.uncheckedCount > 0) {

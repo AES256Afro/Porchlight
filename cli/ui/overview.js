@@ -12,6 +12,7 @@ import { choicesToParams, depthOf, describeChoices, PRESETS, startingChoices } f
 import { scanOptions, sendsToHosted } from "./scan-options.js";
 import { cancelScan, findingRows, load, loadCloudflare, startScan, store, subscribe } from "./store.js";
 import { changeSummary } from "./tracking.js";
+import { trendChart, trendColumns } from "./charts.js";
 
 /** @typedef {import("../src/roadmap/types.ts").Roadmap} Roadmap */
 /** @typedef {import("./filter.js").Severity} Severity */
@@ -496,11 +497,7 @@ function liveCredentials(rotate) {
 	);
 }
 
-/**
- * Questions about the scan when a local model is connected and there is a scan to ask about; how to
- * connect one when there is not.
- */
-/** What changed since the previous scan, and the scans kept before it. */
+/** What changed since the previous scan, and the scans kept before it, with their trend (VS-12). */
 function historyCard() {
 	const change = store.change;
 	const scans = store.scans.slice(0, 10);
@@ -526,6 +523,10 @@ function historyCard() {
 			: null,
 		change && change.fixedCount > fixedShown.length ? h("p", { class: "hint" }, `And ${(change.fixedCount - fixedShown.length).toLocaleString("en-GB")} more fixed.`) : null,
 		change && change.newCount > 0 ? h("p", { class: "hint" }, h("a", { href: buildHash(["findings"], { new: "1" }) }, `Show the ${plural(change.newCount, "new finding", "new findings")}`), ". Each is marked New on the Findings page.") : null,
+		trendChart(
+			trendColumns(store.scans),
+			"Findings in each kept scan, oldest first, by severity. A hollow column is a scan of another folder or with another preset: it found less or more because it looked at less or more, so it is not compared.",
+		),
 		scans.length > 1
 			? h(
 					"table",
@@ -552,6 +553,10 @@ function historyCard() {
 	);
 }
 
+/**
+ * Questions about the scan when a local model is connected and there is a scan to ask about; how to
+ * connect one when there is not.
+ */
 function assistantCard() {
 	const assistant = store.settings?.assistant;
 	if (!assistant?.configured) return localModelCard(assistant, store.settings?.service === true);

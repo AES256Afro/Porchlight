@@ -12,6 +12,7 @@ import { ALL_SEVERITIES, isFiltering, matchesFilter, noFilter } from "./filter.j
 import { buildHash, debounce, paramsFromFilter } from "./list.js";
 import { discussionsOnce, findingRows, rescanRepo, rescanRepos, store } from "./store.js";
 import { coverageGroups } from "./hints.js";
+import { severityBar } from "./charts.js";
 
 /** @typedef {import("./filter.js").FindingFilter} FindingFilter */
 /** @typedef {import("./filter.js").Severity} Severity */
@@ -487,15 +488,17 @@ export function severityTiles(rows, filtering) {
 	const affected = new Set(rows.map((row) => row.repo)).size;
 	const tiles = tileRow(
 		statTile(filtering ? "Matching findings" : "Total findings", rows.length),
-		...ALL_SEVERITIES.map((severity) => statTile(SEVERITY_LABELS[severity], counts[severity], icon(severity, `severity-${severity}`))),
 		statTile("Repositories affected", `${formatNumber(affected)} of ${formatNumber(store.report?.repos.length ?? 0)}`),
 	);
 	tiles.classList.add("findings-tiles");
-	// On a phone the tiles fold into one line (W8); styles.css shows one or the other.
+	// One severity bar in place of a tile per severity (VS-14): each as shape, colour, word and number.
+	const bar = severityBar(counts);
+	bar.classList.add("findings-tiles");
+	// On a phone the tiles fold into one line (W8); pages.css shows one or the other.
 	const line = h(
 		"p",
 		{ class: "findings-line" },
 		`${plural(rows.length, filtering ? "matching finding" : "finding", filtering ? "matching findings" : "findings")}: ${ALL_SEVERITIES.map((severity) => `${formatNumber(counts[severity])} ${SEVERITY_LABELS[severity].toLowerCase()}`).join(", ")}, in ${plural(affected, "repository", "repositories")}.`,
 	);
-	return h("div", null, tiles, line);
+	return h("div", null, tiles, bar, line);
 }

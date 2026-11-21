@@ -31,7 +31,7 @@ const HEADER_VALUES: Record<string, string> = {
 /** Turns a monitor scan of one domain into repairs, grouped by host. */
 export function buildDomainRoadmap(report: MonitorReport): Roadmap {
 	return assemble(
-		{ title: `Repair roadmap for ${report.domain}`, source: report.domain, scannedAt: report.takenAt, scope: null, caveats: report.notes },
+		{ title: `Repair roadmap for ${report.domain}`, source: report.domain, scannedAt: report.takenAt, scope: null, caveats: report.notes, scanKind: "Monitor scan", places: ["host", "hosts"] },
 		SUMMARIES,
 		plan(report),
 	);
@@ -68,7 +68,7 @@ export function listDomainFindings(report: MonitorReport): FindingsList {
 		})),
 	);
 	rows.sort((a, b) => rank[a.severity as keyof typeof rank] - rank[b.severity as keyof typeof rank] || a.place.localeCompare(b.place, "en") || a.title.localeCompare(b.title, "en"));
-	return { title: `Findings and suggested fixes for ${report.domain}`, source: report.domain, scannedAt: report.takenAt, scope: null, caveats: report.notes, rows };
+	return { title: `Findings and suggested fixes for ${report.domain}`, source: report.domain, scannedAt: report.takenAt, scope: null, caveats: report.notes, scanKind: "Monitor scan", places: ["host", "hosts"], rows };
 }
 
 /** The repair for each open finding, keyed by the finding's ID, for showing beside it. */

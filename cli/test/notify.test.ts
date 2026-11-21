@@ -79,7 +79,8 @@ test("a scan's notice counts, names what is new and fixed, and holds no secret o
 	assert.equal(notice.title, "Porchlight: 2 findings in 1 repository, 2 new and 1 fixed since the last scan");
 	assert.ok(notice.urgent, "a new critical finding is urgent");
 	assert.deepEqual(notice.lines.slice(0, 5), ["By severity: 1 critical, 0 high, 0 medium, 1 low.", "", "New:", "  [critical] shop: Title b (src/b.ts:1)", "  [low] shop: Title a (src/a.ts:1)"]);
-	assert.ok(notice.lines.includes("  shop: Title c (src/c.ts:1)"));
+	// A fixed finding carries its severity, as a new one does (RD-17).
+	assert.ok(notice.lines.includes("  [high] shop: Title c (src/c.ts:1)"));
 	assert.equal(scanNotice(report, null).title, "Porchlight: 2 findings in 1 repository");
 	assert.equal(scanNotice(report, { ...change, newKeys: [keyOf("a")], newCount: 1 }).urgent, false);
 	assert.ok(failedScanNotice("/work", "gitleaks failed").urgent);

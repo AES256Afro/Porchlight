@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, isAbsolute, relative } from "node:path";
 import { mdCode, mdText } from "../roadmap/escape.ts";
+import { footLine, scanKindOf } from "../roadmap/style.ts";
 import { choiceGaps, describeChoices, standardChoices } from "../../ui/scan-choices.js";
 import { REPORT_FORMAT, SEVERITIES, severityRank, type Finding, type RepoResult, type ScanReport, type Severity, type ToolName } from "./types.ts";
 
@@ -181,6 +182,62 @@ export function renderMarkdown(report: ScanReport): string {
 		}
 		lines.push("");
 	}
+	// Which Porchlight made it, the kind of scan and when, in UTC (R6Q-4, R6V-2).
+	lines.push("---", "", `*${mdText(footLine(scanKindOf(report), report.scannedAt))}*`, "");
+	return lines.join("\n");
+}
+
+/** Names, paths and titles come from the repositories: no control character reaches the terminal. */
+function plain(text: string): string {
+	return text.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/g, "");
+}
+
+const KIND_WORDS: Record<Finding["kind"], string> = { secret: "secret", vulnerability: "vulnerability", "private-data": "private data" };
+
+/** "GHSA-bi62" before "GHSA-bi610": numbers in an ID compared as numbers. */
+function naturally(a: string, b: string): number {
+	return a.localeCompare(b, "en", { numeric: true });
+}
+
+/**
+ * The scan as plain text, for a terminal (RD-15): no Markdown escapes or code marks, the type in words,
+ * and a package's advisories under one line for the package, ordered as numbers. Markdown stays for
+ * --out, a pipe and the exports.
+ */
+export function renderText(report: ScanReport): string {
+	const all = report.repos.flatMap((repo) => repo.findings);
+	const totals = countBySeverity(all);
+	const lines = [
+		`Porchlight repository scan: ${repoCount(report)} under ${plain(folderName(report.root))} on ${report.scannedAt.slice(0, 10)}`,
+		`${all.length === 1 ? "1 finding" : `${all.length} findings`}: ${SEVERITIES.map((severity) => `${totals[severity]} ${severity}`).join(", ")}`,
+		`Scan: ${describeChoices(report.choices)}`,
+		"",
+	];
+	const notes = coverageNotes(report);
+	if (notes.length > 0) lines.push("Not covered:", ...notes.map((note) => `  ${plain(note)}`), "");
+	const settings = settingNotes(report);
+	if (settings.length > 0) lines.push("Left out by repository settings:", ...settings.map((note) => `  ${plain(note)}`), "");
+	for (const repo of rankRepos(report.repos)) {
+		if (repo.findings.length === 0) continue;
+		const counts = countBySeverity(repo.findings);
+		lines.push(`${plain(repoName(report, repo))}: ${SEVERITIES.filter((severity) => counts[severity] > 0).map((severity) => `${counts[severity]} ${severity}`).join(", ")}`);
+		const packages = new Map<string, Finding[]>();
+		for (const finding of rank(repo.findings)) {
+			if (finding.kind !== "vulnerability") {
+				lines.push(`  [${finding.severity}] ${KIND_WORDS[finding.kind]} ${plain(finding.ruleId)} in ${plain(finding.location)}: ${plain(finding.title)}${finding.detail ? ` (${plain(finding.detail)})` : ""}${finding.note ? `. ${plain(finding.note)}` : ""}`);
+				continue;
+			}
+			const key = `${finding.detail}\n${finding.location}`;
+			packages.set(key, [...(packages.get(key) ?? []), finding]);
+		}
+		for (const advisories of packages.values()) {
+			const first = advisories[0]!;
+			lines.push(`  [${first.severity}] vulnerable package ${plain(first.detail)} in ${plain(first.location)}: ${advisories.length === 1 ? "1 advisory" : `${advisories.length} advisories`}`);
+			for (const advisory of [...advisories].sort((a, b) => naturally(a.ruleId, b.ruleId))) lines.push(`      ${plain(advisory.ruleId)} (${advisory.severity}): ${plain(advisory.title)}`);
+		}
+		lines.push("");
+	}
+	lines.push(footLine(scanKindOf(report), report.scannedAt), "");
 	return lines.join("\n");
 }
 

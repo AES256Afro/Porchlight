@@ -1,5 +1,7 @@
 # Tailscale, WireGuard and VPNs: plan (2026-11-19)
 
+**Status, 2026-11-21: not built.** A proposal; nothing in it is true of Porchlight yet.
+
 Three questions from the owner, and a recommendation for each. Nothing here is built yet. The owner decides what is marked **Decide**.
 
 1. Should Porchlight's outbound checks go through a VPN, with a toggle or always on?
@@ -8,7 +10,7 @@ Three questions from the owner, and a recommendation for each. Nothing here is b
 
 ## Where things stand
 
-- Porchlight already uses Tailscale for one thing: **Access from other devices** adds a listener on this Mac's Tailscale address only (100.64.0.0/10, invariant 7), and BoxPilot publishes the container on the tailnet (`defaultExposure: tailnet`, invariant 9).
+- Porchlight already uses Tailscale for one thing: **Access from other devices** adds a listener on the Tailscale address of the computer that runs Porchlight only (100.64.0.0/10, invariant 7), and BoxPilot publishes the container on the tailnet (`defaultExposure: tailnet`, invariant 9).
 - **This Mac** treats a service listening only on the tailnet address as passed, and flags Remote Login and the other Sharing services.
 - Outbound traffic today, all over HTTPS to fixed addresses: OSV.dev, Apple's update servers, GitHub, the model you choose, Cloudflare's API and its DNS-over-HTTPS resolver, the monitor, and, in an investigation, the requests you approve to your own domain.
 

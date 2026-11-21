@@ -1,0 +1,595 @@
+/* Looks (Settings → Appearance, cli/ui/looks.js): each only overrides what the files before it set; the base
+   is "Standard". A look restyles or moves; it never hides a finding, changes a count or drops "Not covered".
+   Loaded last. */
+
+/* A drawn miniature of each look. Its colours are the look's own tokens, in either theme: each look's token
+   rule names its preview too ([data-preview="…"]), and tokens.css gives every preview the base set first,
+   so a preview never shows the look in use around it (VS-9, RD-7). */
+.look-preview {
+	--pv-page: var(--page);
+	--pv-side: var(--surface);
+	--pv-ink: var(--ink-2);
+	--pv-accent: var(--accent);
+	display: flex;
+	height: 92px;
+	overflow: hidden;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-md);
+	background: var(--pv-page);
+}
+
+.pv-side {
+	display: grid;
+	align-content: start;
+	gap: 4px;
+	width: 30%;
+	padding: 8px 6px;
+	background: var(--pv-side);
+}
+
+.pv-side i,
+.pv-main i {
+	display: block;
+	height: 5px;
+	border-radius: var(--radius-sm);
+	background: var(--pv-ink);
+	opacity: 0.55;
+}
+
+.pv-side i:first-child {
+	background: var(--pv-accent);
+	opacity: 1;
+}
+
+.pv-main {
+	display: grid;
+	align-content: start;
+	gap: 6px;
+	flex: 1;
+	padding: 8px;
+}
+
+.pv-main b {
+	display: block;
+	width: 55%;
+	height: 7px;
+	border-radius: var(--radius-sm);
+	background: var(--pv-ink);
+}
+
+.pv-main em {
+	display: block;
+	width: 40%;
+	height: 12px;
+	margin-top: 4px;
+	border-radius: var(--radius-sm);
+	background: var(--pv-accent);
+}
+
+[data-preview="tabs"] {
+	flex-direction: column;
+}
+
+[data-preview="tabs"] .pv-side {
+	display: flex;
+	width: auto;
+	height: 18px;
+	padding: 6px;
+}
+
+[data-preview="tabs"] .pv-side i {
+	width: 22px;
+}
+
+[data-preview="split"] .pv-main {
+	border-left: 30px solid var(--pv-side);
+}
+
+[data-preview="cards"] .pv-main {
+	grid-template-columns: 1fr 1fr;
+}
+
+[data-preview="contrast"] {
+	border: 2px solid var(--ink);
+}
+
+[data-preview="contrast"] .pv-side {
+	border-right: 2px solid var(--ink);
+}
+
+[data-preview="compact"] .pv-main,
+[data-preview="compact"] .pv-side {
+	gap: 4px;
+}
+
+/* Severity counts in the sidebar: shown by the "Severity dashboard" look only. */
+.severity-strip {
+	display: none;
+}
+
+[data-look="dashboard"] .severity-strip:not(:empty) {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 6px;
+	margin-top: auto;
+}
+
+[data-look="dashboard"] .severity-strip + .scan-status {
+	margin-top: 0;
+}
+
+.severity-count {
+	display: grid;
+	gap: 2px;
+	padding: 8px;
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-md);
+	color: var(--ink-2);
+	font-size: var(--text-xs);
+	text-decoration: none;
+}
+
+.severity-count strong {
+	color: var(--ink);
+	font-size: var(--text-lg);
+}
+
+.severity-count:hover {
+	border-color: var(--border);
+}
+
+/* Looks. Each one only overrides; the base above is "Standard". */
+
+:root[data-look="light"],
+:root[data-look="roadmap"],
+:root[data-look="native"],
+[data-preview="light"],
+[data-preview="roadmap"],
+[data-preview="native"] {
+	color-scheme: light;
+	--page: #f9f9f7;
+	--surface: #fcfcfb;
+	--ink: #0b0b0b;
+	--ink-2: #52514e;
+	--muted: #706f6a;
+	--hairline: #e1e0d9;
+	--border: rgba(11, 11, 11, 0.16);
+	--field-border: #8b8b87;
+	--accent: #3f6080;
+	--accent-hover: #2f4a64;
+	--link: #33506b;
+	--warning-mark: #b78212;
+	--serious-mark: #cd724e;
+	--critical-ink: #b42f2f;
+	--shadow: 0 8px 28px rgba(11, 11, 11, 0.16);
+}
+
+:root[data-look="light"],
+[data-preview="light"] {
+	--page: #ffffff;
+	--surface: #ffffff;
+}
+
+/* Roadmap first: Roadmap leads the sidebar and is where Porchlight opens. */
+:root[data-look="roadmap"],
+[data-preview="roadmap"] {
+	--accent: #0f6e56;
+	--accent-hover: #0f6e56;
+	--link: #0f6e56;
+}
+
+[data-look="roadmap"] .nav a[data-nav="roadmap"] {
+	order: -1;
+}
+
+/* Top tabs */
+[data-look="tabs"] .shell {
+	grid-template-columns: minmax(0, 1fr);
+	grid-template-rows: auto 1fr;
+}
+
+[data-look="tabs"] .sidebar {
+	z-index: 2;
+	flex-direction: row;
+	align-items: center;
+	gap: 16px;
+	height: auto;
+	padding: 8px 16px;
+	border-right: 0;
+	border-bottom: 1px solid var(--hairline);
+}
+
+[data-look="tabs"] .nav {
+	flex-direction: row;
+	flex-wrap: wrap;
+}
+
+[data-look="tabs"] .nav-group {
+	display: none;
+}
+
+[data-look="tabs"] .nav a {
+	padding: 6px 12px;
+}
+
+[data-look="tabs"] .nav a[aria-current="page"] {
+	box-shadow: inset 0 -2px 0 var(--accent-hover);
+}
+
+[data-look="tabs"] .scan-status {
+	margin: 0 0 0 auto;
+	padding: 0;
+	border-top: 0;
+	text-align: right;
+}
+
+[data-look="tabs"] .page {
+	max-width: 1480px;
+}
+
+/* Split view */
+.split-view {
+	display: grid;
+	grid-template-columns: minmax(0, 1.25fr) minmax(320px, 1fr);
+	gap: 20px;
+	align-items: start;
+}
+
+.split-detail {
+	position: sticky;
+	top: 16px;
+	display: grid;
+	gap: 12px;
+	max-height: calc(100vh - 32px);
+	overflow: auto;
+	padding: 16px;
+	background: var(--surface);
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-lg);
+}
+
+.split-detail .detail-panel {
+	grid-template-columns: minmax(0, 1fr);
+	padding: 0;
+	border: 0;
+}
+
+[data-look="split"] tr.finding-row.open > td {
+	background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+@media (max-width: 900px) {
+	.split-view {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.split-detail {
+		position: static;
+		max-height: none;
+	}
+}
+
+/* Terminal */
+:root[data-look="terminal"],
+[data-preview="terminal"] {
+	color-scheme: dark;
+	--page: #000;
+	--surface: #050805;
+	--ink: #b5e48c;
+	--ink-2: #8cc152;
+	--muted: #5c8a2e;
+	--hairline: #1e3311;
+	--border: rgba(151, 196, 89, 0.4);
+	--field-border: #6b8f45;
+	--warning-mark: #fab219;
+	--serious-mark: #ec835a;
+	--critical-ink: #ff8a8a;
+	--accent: #3b6d11;
+	--accent-hover: #639922;
+	--link: #c0dd97;
+	--sans: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+	--display: var(--sans);
+	--shadow: none;
+}
+
+[data-look="terminal"] .card,
+[data-look="terminal"] .tile,
+[data-look="terminal"] .button,
+[data-look="terminal"] .nav a,
+[data-look="terminal"] .detail-panel {
+	border-radius: 0;
+}
+
+[data-look="terminal"] h1::before {
+	content: "> ";
+	color: var(--muted);
+}
+
+/* Native Mac */
+:root[data-look="native"],
+[data-preview="native"] {
+	--page: #ffffff;
+	--surface: #f6f5f2;
+	--accent: #0973de;
+	--accent-hover: #0068cf;
+	--link: #006cda;
+	--sans: -apple-system, system-ui, sans-serif;
+	--display: var(--sans);
+}
+
+[data-look="native"] body {
+	font-size: var(--text-sm);
+}
+
+[data-look="native"] .sidebar {
+	background: #e8e6e1;
+	border-right-color: #d3d1c7;
+}
+
+[data-look="native"] .nav a {
+	padding: 4px 8px;
+	border-radius: var(--radius-md);
+}
+
+[data-look="native"] .nav a[aria-current="page"] {
+	background: #cfe3fc;
+	box-shadow: none;
+}
+
+[data-look="native"] .card,
+[data-look="native"] .tile {
+	border-radius: var(--radius-md);
+}
+
+[data-look="native"] .button {
+	padding-block: 4px;
+	border-radius: var(--radius-md);
+}
+
+/* Repository cards: By repository lays each project out as a card. */
+[data-look="cards"] table.data:has(> tbody > tr.repo-row) > thead {
+	display: none;
+}
+
+[data-look="cards"] table.data:has(> tbody > tr.repo-row) > tbody {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+	gap: 12px;
+	padding: 2px;
+}
+
+[data-look="cards"] tr.repo-row {
+	display: grid;
+	gap: 4px;
+	padding: 12px;
+	background: var(--surface);
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-lg);
+}
+
+[data-look="cards"] tr.repo-row.open {
+	border-color: var(--accent);
+}
+
+[data-look="cards"] tr.repo-row {
+	grid-template-columns: 1fr 1fr;
+	column-gap: 16px;
+}
+
+[data-look="cards"] tr.repo-row > * {
+	padding: 0;
+	border: 0;
+	text-align: left;
+}
+
+[data-look="cards"] tr.repo-row > th,
+[data-look="cards"] tr.repo-row > td:nth-child(2) {
+	grid-column: 1 / -1;
+}
+
+[data-look="cards"] tr.repo-row > td.num {
+	display: flex;
+	justify-content: space-between;
+	gap: 6px;
+	font-size: var(--text-sm);
+}
+
+[data-look="cards"] tr.repo-row > td.num::before {
+	content: attr(data-label);
+	color: var(--ink-2);
+}
+
+[data-look="cards"] tr.repo-row > :first-child {
+	font-size: var(--text-lg);
+}
+
+[data-look="cards"] table.data:has(> tbody > tr.repo-row) > tbody > tr.detail-row {
+	display: block;
+	grid-column: 1 / -1;
+}
+
+[data-look="cards"] table.data:has(> tbody > tr.repo-row) > tbody > tr.detail-row > td {
+	display: block;
+}
+
+[data-look="cards"] .table-wrap:has(tr.repo-row) {
+	border: 0;
+	background: none;
+	overflow: visible;
+}
+
+/* Model plan view: the model's analysis gets its own column beside the facts and the fix. */
+[data-look="model"] .detail-panel {
+	grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr) minmax(260px, 1fr);
+}
+
+[data-look="model"] .detail-panel > .judgement,
+[data-look="model"] .detail-panel > .assist-block {
+	grid-column: 3;
+	grid-row: 1 / span 3;
+	align-self: start;
+	padding: 12px;
+	background: color-mix(in srgb, #7f77dd 12%, var(--surface));
+	border: 1px solid color-mix(in srgb, #7f77dd 45%, transparent);
+	border-radius: var(--radius-md);
+}
+
+[data-look="model"] .detail-panel > .assist-block {
+	grid-row: auto;
+}
+
+[data-look="model"] .generated-label {
+	color: #9a93e6;
+}
+
+@media (max-width: 1100px) {
+	[data-look="model"] .detail-panel {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	[data-look="model"] .detail-panel > .judgement,
+	[data-look="model"] .detail-panel > .assist-block {
+		grid-column: auto;
+		grid-row: auto;
+	}
+}
+
+/* High contrast */
+:root[data-look="contrast"],
+[data-preview="contrast"] {
+	color-scheme: dark;
+	--page: #000;
+	--surface: #000;
+	--ink: #fff;
+	--ink-2: #fff;
+	--muted: #d3d1c7;
+	--hairline: #fff;
+	--border: #fff;
+	--accent: #fac775;
+	--accent-hover: #fac775;
+	--on-accent: #000;
+	--link: #fac775;
+	--field-border: #fff;
+	--warning-mark: #fab219;
+	--serious-mark: #ec835a;
+	--critical: #ff7b7b;
+	--critical-ink: #ff9b9b;
+	--on-warning: #000;
+	--shadow: none;
+}
+
+[data-look="contrast"] a {
+	text-decoration: underline;
+}
+
+/* A row of "At a glance" is a tile, drawn with its own border: no underline, as before the split (RD-6). */
+[data-look="contrast"] .glance-row > a {
+	text-decoration: none;
+}
+
+[data-look="contrast"] .card,
+[data-look="contrast"] .tile,
+[data-look="contrast"] .table-wrap,
+[data-look="contrast"] .detail-panel,
+[data-look="contrast"] .button,
+[data-look="contrast"] input,
+[data-look="contrast"] select,
+[data-look="contrast"] .look-option {
+	border-width: 2px;
+}
+
+[data-look="contrast"] .sidebar {
+	border-right: 2px solid #fff;
+}
+
+[data-look="contrast"] .nav a[aria-current="page"] {
+	background: #fac775;
+	color: #000;
+	box-shadow: none;
+}
+
+[data-look="contrast"] .button.primary {
+	background: #fff;
+	border-color: #fff;
+	color: #000;
+}
+
+/* Compact and dense */
+[data-look="compact"] body {
+	font-size: var(--text-sm);
+}
+
+[data-look="compact"] .shell {
+	grid-template-columns: 180px minmax(0, 1fr);
+}
+
+[data-look="compact"] .sidebar {
+	gap: 12px;
+	padding: 12px 8px;
+}
+
+[data-look="compact"] .nav a {
+	padding: 4px 8px;
+}
+
+[data-look="compact"] .page {
+	max-width: 1600px;
+	padding: 16px 16px 48px;
+}
+
+[data-look="compact"] .data th,
+[data-look="compact"] .data td {
+	padding: 4px 8px;
+}
+
+[data-look="compact"] table.data {
+	font-size: var(--text-xs);
+}
+
+[data-look="compact"] .card {
+	padding: 12px 16px;
+	margin-bottom: 12px;
+}
+
+[data-look="compact"] .tile {
+	padding: 8px 12px;
+}
+
+[data-look="compact"] .tile-value {
+	font-size: var(--text-xl);
+}
+
+[data-look="compact"] h1 {
+	font-size: var(--text-lg);
+}
+
+/* Poster moderne (VS-5): the brand's night palette from docs/brand. Cream on the brand's blacks, the steel
+   blue for buttons and links; the warm colours stay in the mark and the wordmark (VS-1). */
+:root[data-look="poster"],
+[data-preview="poster"] {
+	color-scheme: dark;
+	--page: #0c0e12;
+	--surface: #131a23;
+	--ink: #f5ebd3;
+	--ink-2: #cdc4ae;
+	--muted: #8b8676;
+	--hairline: #243140;
+	--border: rgba(245, 235, 211, 0.18);
+	--field-border: #6b7d90;
+	--accent: #3f6080;
+	--accent-hover: #8aa7c0;
+	--link: #8aa7c0;
+	--warning-mark: #fab219;
+	--serious-mark: #ec835a;
+	--critical-ink: #e66767;
+	--brand-lit: #dca63f;
+	--shadow: 0 8px 28px rgba(0, 0, 0, 0.6);
+}
+
+[data-look="poster"] .page-head h1 {
+	font-size: var(--text-2xl);
+}
+
+[data-look="poster"] .sidebar {
+	border-right-width: 2px;
+}

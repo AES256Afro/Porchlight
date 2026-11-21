@@ -1,0 +1,319 @@
+/* Base: the reset, the shell (sidebar and page frame) and the slots pages draw into. Loaded second. */
+
+* {
+	box-sizing: border-box;
+}
+
+/* An element marked hidden stays hidden, whatever display its class gives it (a .button is flex). */
+[hidden] {
+	display: none !important;
+}
+
+body {
+	margin: 0;
+	background: var(--page);
+	color: var(--ink);
+	font: var(--text-md)/1.45 var(--sans);
+}
+
+h1,
+h2,
+h3,
+p,
+ul,
+ol,
+dl,
+dd {
+	margin: 0;
+}
+
+h1 {
+	font-size: var(--text-xl);
+	font-weight: 600;
+	line-height: 1.2;
+}
+
+h2 {
+	font-size: var(--text-lg);
+	font-weight: 600;
+}
+
+h3 {
+	font-size: var(--text-md);
+	font-weight: 600;
+	margin: 24px 0 8px;
+}
+
+a {
+	color: var(--link);
+}
+
+code,
+.mono {
+	font-family: var(--mono);
+	font-size: var(--text-sm);
+}
+
+code {
+	background: var(--page);
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-sm);
+	padding: 1px 4px;
+	overflow-wrap: anywhere;
+}
+
+pre {
+	margin: 12px 0;
+	padding: 12px 16px;
+	background: var(--page);
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-md);
+	overflow-x: auto;
+}
+
+pre code {
+	border: 0;
+	padding: 0;
+	background: none;
+}
+
+:focus-visible {
+	outline: 2px solid var(--accent-hover);
+	outline-offset: 2px;
+}
+
+main:focus {
+	outline: none;
+}
+
+.icon {
+	width: 14px;
+	height: 14px;
+	flex: none;
+}
+
+.wrap {
+	overflow-wrap: anywhere;
+}
+
+.nowrap {
+	white-space: nowrap;
+}
+
+.skip-link {
+	position: absolute;
+	left: 8px;
+	top: -48px;
+	z-index: 20;
+	padding: 8px 12px;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-md);
+}
+
+.skip-link:focus {
+	top: 8px;
+}
+
+/* Shell: navigation at the side, the page beside it. */
+
+.shell {
+	display: grid;
+	grid-template-columns: 224px minmax(0, 1fr);
+	min-height: 100vh;
+}
+
+.sidebar {
+	position: sticky;
+	top: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 20px;
+	height: 100vh;
+	/* In a short window the foot (scan status, the Dashboard look's counts) stays reachable (I-D1). */
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	padding: 16px 12px;
+	background: var(--surface);
+	border-right: 1px solid var(--hairline);
+}
+
+.brand {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 8px;
+	color: var(--ink);
+	font-weight: 600;
+	font-size: var(--text-lg);
+	text-decoration: none;
+}
+
+/* The wordmark: condensed capitals, "PORCH" in ink and "LIGHT" lit, as in the logo (VS-4). The one place
+   outside the mark where a warm brand colour appears (VS-1). */
+.wordmark {
+	font-family: var(--display);
+	font-size: var(--text-xl);
+	font-weight: 800;
+	letter-spacing: 0.02em;
+	line-height: 1;
+	text-transform: uppercase;
+}
+
+.wordmark .lit {
+	color: var(--brand-lit);
+}
+
+.nav {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.nav a {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding: 8px 12px;
+	border-radius: var(--radius-md);
+	color: var(--ink-2);
+	font-weight: 500;
+	text-decoration: none;
+}
+
+.nav a:hover {
+	background: var(--page);
+	color: var(--ink);
+}
+
+.nav a[aria-current="page"] {
+	background: var(--page);
+	color: var(--ink);
+	box-shadow: inset 3px 0 0 var(--accent-hover);
+}
+
+.nav .icon {
+	width: 16px;
+	height: 16px;
+}
+
+.scan-status {
+	display: grid;
+	gap: 4px;
+	margin-top: auto;
+	padding: 12px;
+	border-top: 1px solid var(--hairline);
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+}
+
+.scan-status:empty {
+	display: none;
+}
+
+.scan-status strong {
+	color: var(--ink);
+}
+
+/* Page frame */
+
+.page {
+	max-width: 1280px;
+	margin: 0 auto;
+	padding: 24px 32px 64px;
+}
+
+.narrow-page {
+	max-width: 560px;
+	padding-top: 64px;
+}
+
+.page-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-end;
+	justify-content: space-between;
+	gap: 12px 32px;
+	margin-bottom: 20px;
+}
+
+.page-head > :first-child {
+	flex: 1 1 320px;
+	min-width: 0;
+}
+
+/* Page titles in the wordmark's condensed capitals (VS-4). */
+.page-head h1 {
+	font-family: var(--display);
+	font-weight: 800;
+	letter-spacing: 0.02em;
+	text-transform: uppercase;
+}
+
+.sub {
+	margin-top: 4px;
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+	overflow-wrap: anywhere;
+}
+
+.scan-line {
+	margin: 0 0 16px;
+}
+
+.hint {
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+}
+
+.hint.block {
+	display: block;
+	margin-top: 4px;
+}
+
+.loading {
+	padding: 32px 24px;
+	color: var(--ink-2);
+	text-align: center;
+}
+
+/*
+ * Three states, three looks (R6V-6). Content being worked out again keeps its colours, with a line
+ * saying so above it; a page on its way fades a little, late; a control that cannot be used now is
+ * drawn in muted ink on the page colour, not faded.
+ */
+.stale {
+	position: relative;
+}
+
+.stale::before {
+	content: "Updating…";
+	display: block;
+	margin-bottom: 8px;
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+}
+
+/* Each page draws into a slot of its own (app.js); the slot itself takes no room. */
+.view-slot {
+	display: contents;
+}
+
+/* Between pages the last one stays, faded only if the next takes a moment, so a quick page does not flicker. */
+#view.is-loading > .view-slot > *,
+#view.is-loading > .page {
+	opacity: 0.7;
+	cursor: progress;
+	transition: opacity 0.15s ease 0.2s;
+}
+
+/* A refusal or a problem said above a form, outside a dialog. */
+.form-error {
+	margin: 8px 0 12px;
+	color: var(--critical-ink);
+	font-weight: 600;
+}
+
+.noscript {
+	padding: 24px;
+}

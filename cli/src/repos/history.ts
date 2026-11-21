@@ -12,7 +12,7 @@
 import { mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { oneAtATime, readPrivateGzipJson, readPrivateJson, UnreadableFileError, updatePrivateJson, writePrivateGzipJson, writePrivateJson } from "../private-files.ts";
-import { looksFor } from "../../ui/scan-choices.js";
+import { looksFor, presetOf } from "../../ui/scan-choices.js";
 import { findingKey, isDay, isNoteSource, isStatus, MAX_NOTE, type FindingNote, type NoteSource } from "../../ui/tracking.js";
 import { countBySeverity, rank, repoName } from "./report.ts";
 import type { Finding, RepoResult, ScanChoices, ScanReport, Severity, ToolName, ToolStatus } from "./types.ts";
@@ -33,6 +33,12 @@ export interface HistoryEntry {
 	repositories: number;
 	findings: number;
 	counts: Record<Severity, number>;
+	/**
+	 * What the scan covered: its preset, or "custom" (VS-12). A narrower scan finds less, so the trend draws
+	 * it apart instead of as an improvement. Missing from entries made before M17, which were Standard
+	 * unless the report says otherwise.
+	 */
+	preset?: ScanChoices["preset"];
 	/** Against the scan before it; absent for the first scan kept. */
 	newCount?: number;
 	fixedCount?: number;
@@ -201,6 +207,7 @@ export class History {
 				repositories: report.repos.length,
 				findings: findings.length,
 				counts: countBySeverity(findings),
+				...(report.choices ? { preset: presetOf(report.choices) } : {}),
 			};
 			const change = await this.compareWith(entries, report);
 			if (change.state === "compared") {

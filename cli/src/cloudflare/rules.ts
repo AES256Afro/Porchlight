@@ -217,6 +217,34 @@ function servedElsewhere(id: string, area: CfArea, title: string, severity: Seve
 	return check(id, area, title, "unavailable", severity, `This zone uses a CNAME (partial) setup, so its DNS is served by another provider: check ${what} there.`, why);
 }
 
+/** What stays the same in every outcome of one rule: its id, area, title and why it matters. */
+interface RuleInfo {
+	id: string;
+	area: CfArea;
+	title: string;
+	why: string;
+}
+
+type Extra = Parameters<typeof check>[7];
+
+/**
+ * One rule, said once, with a method per outcome (RD-4): `rule.failed(severity, detail, extra)`, so a
+ * status and a severity can never be swapped, and the id, area, title and reason are never retyped.
+ */
+function defineRule(rule: RuleInfo) {
+	const { id, area, title, why } = rule;
+	const result = (status: CfStatus, severity: Severity, detail: string, extra?: Extra): CfCheck => check(id, area, title, status, severity, detail, why, extra);
+	return {
+		result,
+		passed: (severity: Severity, detail: string, extra?: Extra) => result("passed", severity, detail, extra),
+		failed: (severity: Severity, detail: string, extra?: Extra) => result("failed", severity, detail, extra),
+		unknown: (severity: Severity, detail: string, extra?: Extra) => result("unknown", severity, detail, extra),
+		unavailable: (severity: Severity, detail: string, extra?: Extra) => result("unavailable", severity, detail, extra),
+		couldNot: (severity: Severity, read: { denied: boolean; message: string }, permission: string) => couldNot(id, area, title, severity, why, read, permission),
+		servedElsewhere: (severity: Severity, what: string) => servedElsewhere(id, area, title, severity, why, what),
+	};
+}
+
 function txtValue(content: string): string {
 	// Cloudflare returns TXT content quoted, sometimes as several quoted strings.
 	const parts = [...content.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((match) => match[1] ?? "");
@@ -231,7 +259,8 @@ export function tlsChecks(zone: ZoneData, context: AccountContext): CfCheck[] {
 	const out: CfCheck[] = [];
 	const ssl = setting(zone, "ssl");
 	const sslWhy = "The encryption mode decides whether the connection from Cloudflare to your server is encrypted and whether your server's certificate is checked. Anything below Full (strict) lets someone on the path between Cloudflare and your server read or change traffic.";
-	if (!ssl.ok) out.push(couldNot("ssl-mode", "tls", "SSL/TLS encryption mode", "high", sslWhy, ssl, PERMISSIONS.settings));
+	const sslModeRule = defineRule({ id: "ssl-mode", area: "tls", title: "SSL/TLS encryption mode", why: sslWhy });
+	if (!ssl.ok) out.push(sslModeRule.couldNot("high", ssl, PERMISSIONS.settings));
 	else {
 		const mode = String(ssl.value);
 		const auto = setting(zone, "ssl_automatic_mode");
@@ -242,21 +271,22 @@ export function tlsChecks(zone: ZoneData, context: AccountContext): CfCheck[] {
 			"Then set the mode to Full (strict) in Cloudflare → SSL/TLS → Overview. Watch for 526 errors: they mean the server's certificate is not valid yet.",
 		];
 		const api = 'PATCH /zones/{zone_id}/settings/ssl with {"value":"strict"}';
-		if (mode === "strict" || mode === "origin_pull") out.push(check("ssl-mode", "tls", "SSL/TLS encryption mode", "passed", "high", `Full (strict): Cloudflare encrypts to your server and checks its certificate.${note}`, sslWhy));
+		if (mode === "strict" || mode === "origin_pull") out.push(sslModeRule.passed("high", `Full (strict): Cloudflare encrypts to your server and checks its certificate.${note}`));
 		// Offered from Full only: from Flexible or Off the server may not answer over HTTPS at all.
-		else if (mode === "full") out.push(check("ssl-mode", "tls", "SSL/TLS encryption mode", "failed", "medium", `Full: Cloudflare encrypts to your server but accepts any certificate, even an expired or self-signed one.${note}`, sslWhy, { fix, api, change: "ssl-strict" }));
-		else if (mode === "flexible") out.push(check("ssl-mode", "tls", "SSL/TLS encryption mode", "failed", "high", `Flexible: visitors connect to Cloudflare over HTTPS, but Cloudflare connects to your server over plain HTTP.${note}`, sslWhy, { fix, api }));
-		else if (mode === "off") out.push(check("ssl-mode", "tls", "SSL/TLS encryption mode", "failed", "critical", "Off: no encryption at all, between visitors and Cloudflare or between Cloudflare and your server.", sslWhy, { fix, api }));
-		else out.push(check("ssl-mode", "tls", "SSL/TLS encryption mode", "unknown", "high", `Cloudflare reported a mode Porchlight does not know: ${mode.slice(0, 40)}.`, sslWhy));
+		else if (mode === "full") out.push(sslModeRule.failed("medium", `Full: Cloudflare encrypts to your server but accepts any certificate, even an expired or self-signed one.${note}`, { fix, api, change: "ssl-strict" }));
+		else if (mode === "flexible") out.push(sslModeRule.failed("high", `Flexible: visitors connect to Cloudflare over HTTPS, but Cloudflare connects to your server over plain HTTP.${note}`, { fix, api }));
+		else if (mode === "off") out.push(sslModeRule.failed("critical", "Off: no encryption at all, between visitors and Cloudflare or between Cloudflare and your server.", { fix, api }));
+		else out.push(sslModeRule.unknown("high", `Cloudflare reported a mode Porchlight does not know: ${mode.slice(0, 40)}.`));
 	}
 
 	const https = setting(zone, "always_use_https");
 	const httpsWhy = "Without it a visitor who types the address or follows an old http:// link stays on plain HTTP, where what they send can be read or changed.";
-	if (!https.ok) out.push(couldNot("always-use-https", "tls", "Always Use HTTPS", "medium", httpsWhy, https, PERMISSIONS.settings));
-	else if (https.value === "on") out.push(check("always-use-https", "tls", "Always Use HTTPS", "passed", "medium", "On: plain HTTP requests are redirected to HTTPS.", httpsWhy));
+	const alwaysUseHttpsRule = defineRule({ id: "always-use-https", area: "tls", title: "Always Use HTTPS", why: httpsWhy });
+	if (!https.ok) out.push(alwaysUseHttpsRule.couldNot("medium", https, PERMISSIONS.settings));
+	else if (https.value === "on") out.push(alwaysUseHttpsRule.passed("medium", "On: plain HTTP requests are redirected to HTTPS."));
 	else
 		out.push(
-			check("always-use-https", "tls", "Always Use HTTPS", "failed", "medium", "Off: pages are also served over plain HTTP.", httpsWhy, {
+			alwaysUseHttpsRule.failed("medium", "Off: pages are also served over plain HTTP.", {
 				fix: ["Turn on Always Use HTTPS in Cloudflare → SSL/TLS → Edge Certificates. It needs an encryption mode other than Off."],
 				api: 'PATCH /zones/{zone_id}/settings/always_use_https with {"value":"on"}',
 				change: "always-use-https",
@@ -265,12 +295,13 @@ export function tlsChecks(zone: ZoneData, context: AccountContext): CfCheck[] {
 
 	const minTls = setting(zone, "min_tls_version");
 	const minWhy = "TLS 1.0 and 1.1 are deprecated (RFC 8996) and fail PCI DSS; browsers no longer use them, so allowing them only helps an attacker force a weaker connection.";
-	if (!minTls.ok) out.push(couldNot("min-tls", "tls", "Minimum TLS version", "medium", minWhy, minTls, PERMISSIONS.settings));
+	const minTlsRule = defineRule({ id: "min-tls", area: "tls", title: "Minimum TLS version", why: minWhy });
+	if (!minTls.ok) out.push(minTlsRule.couldNot("medium", minTls, PERMISSIONS.settings));
 	else {
 		const version = String(minTls.value);
 		const good = version === "1.2" || version === "1.3";
 		out.push(
-			check("min-tls", "tls", "Minimum TLS version", good ? "passed" : "failed", "medium", good ? `TLS ${version} or newer.` : `TLS ${version.slice(0, 8)}: deprecated versions are still accepted.`, minWhy, {
+			minTlsRule.result(good ? "passed" : "failed", "medium", good ? `TLS ${version} or newer.` : `TLS ${version.slice(0, 8)}: deprecated versions are still accepted.`, {
 				fix: ["Set Minimum TLS Version to TLS 1.2 in Cloudflare → SSL/TLS → Edge Certificates. Very old clients (Android 4.3, Internet Explorer 10) can no longer connect."],
 				api: 'PATCH /zones/{zone_id}/settings/min_tls_version with {"value":"1.2"}',
 				change: "min-tls-1.2",
@@ -280,11 +311,12 @@ export function tlsChecks(zone: ZoneData, context: AccountContext): CfCheck[] {
 
 	const tls13 = setting(zone, "tls_1_3");
 	const tls13Why = "TLS 1.3 removes the weak options of older versions and is faster. Cloudflare offers it on every plan.";
-	if (!tls13.ok) out.push(couldNot("tls-1-3", "tls", "TLS 1.3", "low", tls13Why, tls13, PERMISSIONS.settings));
+	const tls13Rule = defineRule({ id: "tls-1-3", area: "tls", title: "TLS 1.3", why: tls13Why });
+	if (!tls13.ok) out.push(tls13Rule.couldNot("low", tls13, PERMISSIONS.settings));
 	else {
 		const on = tls13.value === "on" || tls13.value === "zrt";
 		out.push(
-			check("tls-1-3", "tls", "TLS 1.3", on ? "passed" : "failed", "low", on ? "On." : "Off.", tls13Why, {
+			tls13Rule.result(on ? "passed" : "failed", "low", on ? "On." : "Off.", {
 				fix: ["Turn on TLS 1.3 in Cloudflare → SSL/TLS → Edge Certificates."],
 				api: 'PATCH /zones/{zone_id}/settings/tls_1_3 with {"value":"on"}',
 				change: "tls-1.3",
@@ -294,7 +326,8 @@ export function tlsChecks(zone: ZoneData, context: AccountContext): CfCheck[] {
 
 	const header = setting(zone, "security_header");
 	const hstsWhy = "HSTS tells browsers to use HTTPS only, so the first request of a visit cannot be quietly downgraded to HTTP. It is hard to undo: turn it on once every hostname works over HTTPS.";
-	if (!header.ok) out.push(couldNot("hsts", "tls", "HTTP Strict Transport Security (HSTS)", "medium", hstsWhy, header, PERMISSIONS.settings));
+	const hstsRule = defineRule({ id: "hsts", area: "tls", title: "HTTP Strict Transport Security (HSTS)", why: hstsWhy });
+	if (!header.ok) out.push(hstsRule.couldNot("medium", header, PERMISSIONS.settings));
 	else {
 		const hsts = (header.value as { strict_transport_security?: { enabled?: unknown; max_age?: unknown; include_subdomains?: unknown; preload?: unknown } } | null)?.strict_transport_security;
 		const fix = [
@@ -302,22 +335,23 @@ export function tlsChecks(zone: ZoneData, context: AccountContext): CfCheck[] {
 			"Turn on includeSubDomains only when every subdomain works over HTTPS, and preload only after that, with 12 months.",
 		];
 		const api = 'PATCH /zones/{zone_id}/settings/security_header with {"value":{"strict_transport_security":{"enabled":true,"max_age":15552000,"include_subdomains":false,"preload":false,"nosniff":true}}}';
-		if (!hsts || hsts.enabled !== true) out.push(check("hsts", "tls", "HTTP Strict Transport Security (HSTS)", "failed", "medium", "Off.", hstsWhy, { fix, api, change: "hsts" }));
+		if (!hsts || hsts.enabled !== true) out.push(hstsRule.failed("medium", "Off.", { fix, api, change: "hsts" }));
 		else {
 			const age = typeof hsts.max_age === "number" ? hsts.max_age : 0;
 			const extras = [hsts.include_subdomains === true ? "includeSubDomains" : null, hsts.preload === true ? "preload" : null].filter(Boolean).join(", ");
 			const months = Math.round(age / 2_592_000);
-			if (age < HSTS_MIN_AGE) out.push(check("hsts", "tls", "HTTP Strict Transport Security (HSTS)", "failed", "low", `On, but with a max-age of ${age} seconds (about ${months} months).`, hstsWhy, { fix, api }));
-			else out.push(check("hsts", "tls", "HTTP Strict Transport Security (HSTS)", "passed", "medium", `On, max-age about ${months} months${extras ? `, ${extras}` : ""}.`, hstsWhy));
+			if (age < HSTS_MIN_AGE) out.push(hstsRule.failed("low", `On, but with a max-age of ${age} seconds (about ${months} months).`, { fix, api }));
+			else out.push(hstsRule.passed("medium", `On, max-age about ${months} months${extras ? `, ${extras}` : ""}.`));
 		}
 	}
 
 	const rewrites = setting(zone, "automatic_https_rewrites");
 	const rewritesWhy = "It rewrites http:// links in your pages to https:// where that works, so pages do not load scripts or images over plain HTTP (mixed content).";
-	if (!rewrites.ok) out.push(couldNot("https-rewrites", "tls", "Automatic HTTPS Rewrites", "low", rewritesWhy, rewrites, PERMISSIONS.settings));
+	const httpsRewritesRule = defineRule({ id: "https-rewrites", area: "tls", title: "Automatic HTTPS Rewrites", why: rewritesWhy });
+	if (!rewrites.ok) out.push(httpsRewritesRule.couldNot("low", rewrites, PERMISSIONS.settings));
 	else
 		out.push(
-			check("https-rewrites", "tls", "Automatic HTTPS Rewrites", rewrites.value === "on" ? "passed" : "failed", "low", rewrites.value === "on" ? "On." : "Off.", rewritesWhy, {
+			httpsRewritesRule.result(rewrites.value === "on" ? "passed" : "failed", "low", rewrites.value === "on" ? "On." : "Off.", {
 				fix: ["Turn on Automatic HTTPS Rewrites in Cloudflare → SSL/TLS → Edge Certificates."],
 				api: 'PATCH /zones/{zone_id}/settings/automatic_https_rewrites with {"value":"on"}',
 				change: "automatic-https-rewrites",
@@ -330,16 +364,17 @@ export function tlsChecks(zone: ZoneData, context: AccountContext): CfCheck[] {
 
 function universalSslCheck(zone: ZoneData): CfCheck {
 	const why = "Universal SSL is the free certificate that lets visitors reach your proxied hostnames over HTTPS. Without it, or a certificate of your own, HTTPS to the zone fails.";
+	const universalSslRule = defineRule({ id: "universal-ssl", area: "tls", title: "Universal SSL", why: why });
 	const read = zone.universalSsl;
-	if (!read.ok) return couldNot("universal-ssl", "tls", "Universal SSL", "high", why, read, PERMISSIONS.ssl);
-	if (read.value.enabled !== false) return check("universal-ssl", "tls", "Universal SSL", "passed", "high", "On.", why);
+	if (!read.ok) return universalSslRule.couldNot("high", read, PERMISSIONS.ssl);
+	if (read.value.enabled !== false) return universalSslRule.passed("high", "On.");
 	const others = zone.certificatePacks.ok ? zone.certificatePacks.value.filter((pack) => pack.type !== "universal" && pack.status === "active").length : 0;
 	const custom = zone.customCertificates.ok ? zone.customCertificates.value.filter((cert) => cert.status === "active").length : 0;
-	if (others + custom > 0) return check("universal-ssl", "tls", "Universal SSL", "passed", "high", `Off, with ${others + custom} certificate${others + custom === 1 ? "" : "s"} of your own or advanced ones in its place.`, why);
+	if (others + custom > 0) return universalSslRule.passed("high", `Off, with ${others + custom} certificate${others + custom === 1 ? "" : "s"} of your own or advanced ones in its place.`);
 	// A list that could not be read may hold the certificate in its place: that is not "none found" (R2B-7).
-	if (!zone.certificatePacks.ok) return couldNot("universal-ssl", "tls", "Universal SSL", "high", why, zone.certificatePacks, PERMISSIONS.ssl);
-	if (!zone.customCertificates.ok) return couldNot("universal-ssl", "tls", "Universal SSL", "high", why, zone.customCertificates, PERMISSIONS.ssl);
-	return check("universal-ssl", "tls", "Universal SSL", "failed", "high", "Off, and no other active certificate was found.", why, {
+	if (!zone.certificatePacks.ok) return universalSslRule.couldNot("high", zone.certificatePacks, PERMISSIONS.ssl);
+	if (!zone.customCertificates.ok) return universalSslRule.couldNot("high", zone.customCertificates, PERMISSIONS.ssl);
+	return universalSslRule.failed("high", "Off, and no other active certificate was found.", {
 		fix: ["Re-enable Universal SSL in Cloudflare → SSL/TLS → Edge Certificates, or upload a certificate of your own."],
 		api: 'PATCH /zones/{zone_id}/ssl/universal/settings with {"enabled":true}',
 	});
@@ -347,7 +382,8 @@ function universalSslCheck(zone: ZoneData): CfCheck {
 
 function certificateCheck(zone: ZoneData, now: Date): CfCheck {
 	const why = "An expired certificate makes browsers refuse the site. Certificates Cloudflare manages renew themselves about 30 days before they expire; one that gets close has failed to renew. Certificates you uploaded never renew themselves.";
-	if (!zone.certificatePacks.ok) return couldNot("certificates", "tls", "Edge certificates", "high", why, zone.certificatePacks, PERMISSIONS.ssl);
+	const certificatesRule = defineRule({ id: "certificates", area: "tls", title: "Edge certificates", why: why });
+	if (!zone.certificatePacks.ok) return certificatesRule.couldNot("high", zone.certificatePacks, PERMISSIONS.ssl);
 	const problems: { severity: Severity; line: string }[] = [];
 	let soonest: number | null = null;
 	const days = (iso: string | undefined) => {
@@ -383,13 +419,13 @@ function certificateCheck(zone: ZoneData, now: Date): CfCheck {
 	const customs = zone.customCertificates;
 	if (!customs.ok && problems.length > 0) problems.push({ severity: "low", line: "Uploaded certificates could not be read, so they were not checked." });
 	if (problems.length === 0) {
-		if (!customs.ok) return couldNot("certificates", "tls", "Edge certificates", "high", why, { denied: customs.denied, message: `${customs.message} (uploaded certificates)` }, PERMISSIONS.ssl);
+		if (!customs.ok) return certificatesRule.couldNot("high", { denied: customs.denied, message: `${customs.message} (uploaded certificates)` }, PERMISSIONS.ssl);
 		const detail = soonest === null ? "No certificate with an expiry date was listed." : `The soonest expires in ${soonest} days.`;
-		return check("certificates", "tls", "Edge certificates", "passed", "high", detail, why);
+		return certificatesRule.passed("high", detail);
 	}
 	const order: Severity[] = ["critical", "high", "medium", "low"];
 	const worst = order.find((severity) => problems.some((problem) => problem.severity === severity)) ?? "medium";
-	return check("certificates", "tls", "Edge certificates", "failed", worst, `${problems.length} certificate${problems.length === 1 ? "" : "s"} expired, expiring or not active.`, why, {
+	return certificatesRule.failed(worst, `${problems.length} certificate${problems.length === 1 ? "" : "s"} expired, expiring or not active.`, {
 		fix: [
 			"Open Cloudflare → SSL/TLS → Edge Certificates and read the status of each certificate.",
 			"For one Cloudflare manages, a renewal usually stalls on a CAA record that leaves out Cloudflare's certificate authorities, or on a hostname no longer pointing at Cloudflare.",
@@ -402,33 +438,25 @@ function certificateCheck(zone: ZoneData, now: Date): CfCheck {
 
 function aopCheck(zone: ZoneData): CfCheck {
 	const why = "Without authenticated origin pulls your server answers anyone who finds its address, so an attacker can skip Cloudflare's firewall and go straight to it. With them, your server only accepts connections that present Cloudflare's client certificate. Origins behind Cloudflare Tunnel are already protected this way.";
+	const originPullsRule = defineRule({ id: "origin-pulls", area: "tls", title: "Authenticated origin pulls", why: why });
 	const global = setting(zone, "tls_client_auth");
 	const zoneLevel = zone.zoneAop;
-	if (!global.ok && !zoneLevel.ok) return couldNot("origin-pulls", "tls", "Authenticated origin pulls", "low", why, zoneLevel, PERMISSIONS.ssl);
+	if (!global.ok && !zoneLevel.ok) return originPullsRule.couldNot("low", zoneLevel, PERMISSIONS.ssl);
 	const on = (global.ok && global.value === "on") || (zoneLevel.ok && zoneLevel.value.enabled === true);
-	if (on) return check("origin-pulls", "tls", "Authenticated origin pulls", "passed", "low", "On.", why);
+	if (on) return originPullsRule.passed("low", "On.");
 	if (!global.ok || !zoneLevel.ok) {
 		const missing = !global.ok ? global : (zoneLevel as { ok: false; denied: boolean; message: string });
-		return couldNot("origin-pulls", "tls", "Authenticated origin pulls", "low", why, missing, !global.ok ? PERMISSIONS.settings : PERMISSIONS.ssl);
+		return originPullsRule.couldNot("low", missing, !global.ok ? PERMISSIONS.settings : PERMISSIONS.ssl);
 	}
 	const ssl = setting(zone, "ssl");
 	const weakMode = ssl.ok && (ssl.value === "off" || ssl.value === "flexible");
-	return check(
-		"origin-pulls",
-		"tls",
-		"Authenticated origin pulls",
-		"failed",
-		"low",
-		weakMode ? "Off. They also need the encryption mode at Full or Full (strict) first." : "Off: neither the global nor the zone-level setting is on.",
-		why,
-		{
+	return originPullsRule.failed("low", weakMode ? "Off. They also need the encryption mode at Full or Full (strict) first." : "Off: neither the global nor the zone-level setting is on.", {
 			fix: [
 				"Install Cloudflare's origin-pull certificate on your server and set it to require client certificates (nginx: ssl_verify_client on).",
 				"Then turn on Authenticated Origin Pulls in Cloudflare → SSL/TLS → Origin Server. Turning it on before the server is ready changes nothing; requiring the certificate on the server before turning it on breaks the site.",
 			],
 			api: 'PATCH /zones/{zone_id}/settings/tls_client_auth with {"value":"on"}',
-		},
-	);
+		});
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -447,7 +475,7 @@ export function dnsChecks(zone: ZoneData, context: AccountContext): CfCheck[] {
 			["dangling-internal", "Records pointing at names that do not exist in your zones"],
 			["dangling-external", "Records pointing at services that may be gone"],
 		] as const) {
-			out.push(couldNot(id, "dns", title, id === "origin-exposure" || id === "dangling-external" ? "high" : "medium", recordsWhy, zone.records, PERMISSIONS.dns));
+			out.push(defineRule({ id, area: "dns", title, why: recordsWhy }).couldNot(id === "origin-exposure" || id === "dangling-external" ? "high" : "medium", zone.records, PERMISSIONS.dns));
 		}
 		return out;
 	}
@@ -458,12 +486,13 @@ export function dnsChecks(zone: ZoneData, context: AccountContext): CfCheck[] {
 
 function dnssecCheck(zone: ZoneData): CfCheck {
 	const why = "DNSSEC signs your DNS records, so a resolver can tell a forged answer from a real one. Without it, a poisoned cache can send visitors and mail to someone else's server.";
-	if (zone.type === "partial") return check("dnssec", "dns", "DNSSEC", "unavailable", "medium", "This zone uses a CNAME (partial) setup, so its DNS is served elsewhere: turn on DNSSEC at that provider.", why);
-	if (!zone.dnssec.ok) return couldNot("dnssec", "dns", "DNSSEC", "medium", why, zone.dnssec, PERMISSIONS.dns);
+	const dnssecRule = defineRule({ id: "dnssec", area: "dns", title: "DNSSEC", why: why });
+	if (zone.type === "partial") return dnssecRule.unavailable("medium", "This zone uses a CNAME (partial) setup, so its DNS is served elsewhere: turn on DNSSEC at that provider.");
+	if (!zone.dnssec.ok) return dnssecRule.couldNot("medium", zone.dnssec, PERMISSIONS.dns);
 	const status = zone.dnssec.value.status ?? "unknown";
-	if (status === "active") return check("dnssec", "dns", "DNSSEC", "passed", "medium", "Active: the zone is signed and its DS record is at the registrar.", why);
+	if (status === "active") return dnssecRule.passed("medium", "Active: the zone is signed and its DS record is at the registrar.");
 	const pending = status === "pending";
-	return check("dnssec", "dns", "DNSSEC", "failed", "medium", pending ? "Turned on in Cloudflare, but the DS record has not been added at your registrar yet, so it does not protect anything." : `Not on (${status.slice(0, 30)}).`, why, {
+	return dnssecRule.failed("medium", pending ? "Turned on in Cloudflare, but the DS record has not been added at your registrar yet, so it does not protect anything." : `Not on (${status.slice(0, 30)}).`, {
 		fix: pending
 			? ["Copy the DS record from Cloudflare → DNS → Settings and add it at your domain's registrar. Cloudflare Registrar adds it for you within a day or two."]
 			: ["Select Enable DNSSEC in Cloudflare → DNS → Settings, then add the DS record it shows at your domain's registrar."],
@@ -475,12 +504,13 @@ function dnssecCheck(zone: ZoneData): CfCheck {
 
 function caaCheck(zone: ZoneData, records: DnsRecord[]): CfCheck {
 	const why = "CAA records name the certificate authorities that may issue certificates for your domain. Without them any authority may, so a mistake or a fooled check at any one of them can produce a valid certificate for your site.";
-	if (isPartial(zone)) return servedElsewhere("caa", "dns", "CAA records", "low", why, "its CAA records");
+	const caaRule = defineRule({ id: "caa", area: "dns", title: "CAA records", why: why });
+	if (isPartial(zone)) return caaRule.servedElsewhere("low", "its CAA records");
 	const caa = records.filter((record) => record.type === "CAA" && sameName(record.name, apex(zone)));
 	if (caa.length > 0) {
-		return check("caa", "dns", "CAA records", "passed", "low", `${caa.length} CAA record${caa.length === 1 ? "" : "s"} at ${zone.name}.`, why, { items: caa.map((record) => record.content.slice(0, 120)) });
+		return caaRule.passed("low", `${caa.length} CAA record${caa.length === 1 ? "" : "s"} at ${zone.name}.`, { items: caa.map((record) => record.content.slice(0, 120)) });
 	}
-	return check("caa", "dns", "CAA records", "failed", "low", `No CAA record at ${zone.name}: any certificate authority may issue for it.`, why, {
+	return caaRule.failed("low", `No CAA record at ${zone.name}: any certificate authority may issue for it.`, {
 		fix: [
 			"Add CAA records in Cloudflare → DNS → Records for the authorities you use, such as `0 issue \"letsencrypt.org\"`.",
 			"Once a zone has CAA records, Cloudflare adds the ones its own Universal SSL authorities need, so your edge certificates keep renewing.",
@@ -495,11 +525,12 @@ function isAddress(record: DnsRecord): boolean {
 
 function originExposureCheck(records: DnsRecord[]): CfCheck {
 	const why = "Cloudflare hides the address of a proxied host. A DNS-only record with the same address publishes it anyway, and anyone can then reach the server directly, past Cloudflare's firewall and DDoS protection.";
+	const originExposureRule = defineRule({ id: "origin-exposure", area: "dns", title: "Origin addresses behind proxied hosts", why: why });
 	const proxiedAddresses = new Map<string, string>();
 	for (const record of records) if (isAddress(record) && record.proxied === true) proxiedAddresses.set(record.content, record.name);
 	const leaks = records.filter((record) => isAddress(record) && record.proxied === false && proxiedAddresses.has(record.content));
-	if (leaks.length === 0) return check("origin-exposure", "dns", "Origin addresses behind proxied hosts", "passed", "high", "No DNS-only record shares an address with a proxied one.", why);
-	return check("origin-exposure", "dns", "Origin addresses behind proxied hosts", "failed", "high", `${leaks.length} DNS-only record${leaks.length === 1 ? " publishes" : "s publish"} the address of a proxied host.`, why, {
+	if (leaks.length === 0) return originExposureRule.passed("high", "No DNS-only record shares an address with a proxied one.");
+	return originExposureRule.failed("high", `${leaks.length} DNS-only record${leaks.length === 1 ? " publishes" : "s publish"} the address of a proxied host.`, {
 		fix: [
 			"Proxy these records too (orange cloud) in Cloudflare → DNS → Records, or move the service to another address.",
 			"An address that has been public is known: once it is hidden, change it, or allow only Cloudflare's addresses to reach the server.",
@@ -510,6 +541,7 @@ function originExposureCheck(records: DnsRecord[]): CfCheck {
 
 function dnsOnlyCheck(records: DnsRecord[]): CfCheck {
 	const why = "A DNS-only (grey cloud) record sends visitors straight to the server, without Cloudflare's firewall, DDoS protection or HTTPS. That is right for mail and some other services, and a gap for a website.";
+	const dnsOnlyRule = defineRule({ id: "dns-only", area: "dns", title: "DNS-only records", why: why });
 	const mailHosts = new Set(records.filter((record) => record.type === "MX").map((record) => record.content.toLowerCase().replace(/\.$/, "").replace(/^\d+\s+/, "")));
 	const direct = records.filter(
 		(record) =>
@@ -519,8 +551,8 @@ function dnsOnlyCheck(records: DnsRecord[]): CfCheck {
 			!mailHosts.has(record.name.toLowerCase()) &&
 			!(isAddress(record) && isInternal(record.content)),
 	);
-	if (direct.length === 0) return check("dns-only", "dns", "DNS-only records", "passed", "low", "Every A, AAAA and CNAME record for a website goes through Cloudflare's proxy, apart from mail and similar names.", why);
-	return check("dns-only", "dns", "DNS-only records", "failed", "low", `${direct.length} record${direct.length === 1 ? " skips" : "s skip"} Cloudflare's proxy. Check that each one is meant to be reached directly.`, why, {
+	if (direct.length === 0) return dnsOnlyRule.passed("low", "Every A, AAAA and CNAME record for a website goes through Cloudflare's proxy, apart from mail and similar names.");
+	return dnsOnlyRule.failed("low", `${direct.length} record${direct.length === 1 ? " skips" : "s skip"} Cloudflare's proxy. Check that each one is meant to be reached directly.`, {
 		fix: ["For a website or an API, proxy the record (orange cloud) in Cloudflare → DNS → Records. Leave mail, VPN and similar services DNS-only."],
 		items: direct.slice(0, 50).map((record) => `${record.name} (${record.type} ${record.content})`),
 	});
@@ -539,9 +571,10 @@ export function isInternal(address: string): boolean {
 
 function internalAddressCheck(records: DnsRecord[]): CfCheck {
 	const why = "A public record holding an internal address tells everyone how your private network is laid out, and a leftover one can point at whatever later takes that address on someone else's network.";
+	const internalAddressesRule = defineRule({ id: "internal-addresses", area: "dns", title: "Internal addresses in public DNS", why: why });
 	const internal = records.filter((record) => isAddress(record) && isInternal(record.content));
-	if (internal.length === 0) return check("internal-addresses", "dns", "Internal addresses in public DNS", "passed", "medium", "No record holds a private, loopback or link-local address.", why);
-	return check("internal-addresses", "dns", "Internal addresses in public DNS", "failed", "medium", `${internal.length} record${internal.length === 1 ? " holds" : "s hold"} an internal address.`, why, {
+	if (internal.length === 0) return internalAddressesRule.passed("medium", "No record holds a private, loopback or link-local address.");
+	return internalAddressesRule.failed("medium", `${internal.length} record${internal.length === 1 ? " holds" : "s hold"} an internal address.`, {
 		fix: ["Delete these records in Cloudflare → DNS → Records, or move them to private DNS (your router, Tailscale's MagicDNS, or a split-horizon zone)."],
 		items: internal.map((record) => `${record.name} (${record.type} ${record.content})`),
 	});
@@ -596,32 +629,34 @@ function danglingChecks(zone: ZoneData, records: DnsRecord[], context: AccountCo
 		} else outside.push(record);
 	}
 	const insideWhy = "A CNAME that points at a name with no record of its own fails for every visitor, and if the name is created later by someone else's mistake it serves whatever they put there.";
+	const danglingInternalRule = defineRule({ id: "dangling-internal", area: "dns", title: "Records pointing at names that do not exist in your zones", why: insideWhy });
 	const unreadNote = unread.length > 0 ? ` ${unread.length} more point${unread.length === 1 ? "s" : ""} into a zone whose records were not read, so ${unread.length === 1 ? "it was" : "they were"} not checked.` : "";
 	// A target in a zone that was not read was not seen: never a pass (CF-B1, invariant 5).
 	const internalCheck =
 		inside.length > 0
-			? check("dangling-internal", "dns", "Records pointing at names that do not exist in your zones", "failed", "medium", `${inside.length} CNAME record${inside.length === 1 ? " points" : "s point"} at a name in your zones that has no record.${unreadNote}`, insideWhy, {
+			? danglingInternalRule.failed("medium", `${inside.length} CNAME record${inside.length === 1 ? " points" : "s point"} at a name in your zones that has no record.${unreadNote}`, {
 					fix: ["Delete these records in Cloudflare → DNS → Records, or create the names they point at."],
 					items: [...inside, ...unread],
 				})
 			: unread.length > 0
-				? check("dangling-internal", "dns", "Records pointing at names that do not exist in your zones", "unknown", "medium", `${unread.length} CNAME record${unread.length === 1 ? " points" : "s point"} into a zone of yours whose records were not read, so ${unread.length === 1 ? "it was" : "they were"} not checked.`, insideWhy, { items: unread })
-				: check("dangling-internal", "dns", "Records pointing at names that do not exist in your zones", "passed", "medium", "Every CNAME into your own zones points at a name that has a record.", insideWhy);
+				? danglingInternalRule.unknown("medium", `${unread.length} CNAME record${unread.length === 1 ? " points" : "s point"} into a zone of yours whose records were not read, so ${unread.length === 1 ? "it was" : "they were"} not checked.`, { items: unread })
+				: danglingInternalRule.passed("medium", "Every CNAME into your own zones points at a name that has a record.");
 
 	const outsideWhy = "A CNAME left pointing at a hosting service after the site there was deleted can be claimed by anyone who creates a site with that name: they then serve content, and can obtain certificates, under your domain (subdomain takeover).";
+	const danglingExternalRule = defineRule({ id: "dangling-external", area: "dns", title: "Records pointing at services that may be gone", why: outsideWhy });
 	const lines = outside.map((record) => `${record.name} → ${cnameTarget(record)}${takeoverProne(cnameTarget(record)) ? " (a service where names can be claimed)" : ""}`);
 	const sorted = [...lines].sort((a, b) => Number(b.includes("(a service")) - Number(a.includes("(a service")));
 	let externalCheck: CfCheck;
 	if (outside.length === 0) {
-		externalCheck = check("dangling-external", "dns", "Records pointing at services that may be gone", "passed", "high", "No CNAME points outside your zones.", outsideWhy);
+		externalCheck = danglingExternalRule.passed("high", "No CNAME points outside your zones.");
 	} else if (zone.lookups.state === "done") {
 		const missing = zone.lookups.missing;
 		// Every name not looked up is said; with none looked up at all, nothing was seen (CF-B2).
 		const unseen = zone.lookups.failed.length > 0 || zone.lookups.checked === 0;
 		externalCheck =
 			missing.length === 0
-				? check("dangling-external", "dns", "Records pointing at services that may be gone", unseen ? "unknown" : "passed", "high", unseen ? (zone.lookups.failed.length > 0 ? `${zone.lookups.failed.length} of the names outside your zones could not be looked up, so those were not checked.` : "No name outside your zones was looked up, so none was checked.") : `All ${zone.lookups.checked} names outside your zones still exist.`, outsideWhy, { items: zone.lookups.failed })
-				: check("dangling-external", "dns", "Records pointing at services that may be gone", "failed", "high", `${missing.length} CNAME record${missing.length === 1 ? " points" : "s point"} at a name that no longer exists.`, outsideWhy, {
+				? danglingExternalRule.result(unseen ? "unknown" : "passed", "high", unseen ? (zone.lookups.failed.length > 0 ? `${zone.lookups.failed.length} of the names outside your zones could not be looked up, so those were not checked.` : "No name outside your zones was looked up, so none was checked.") : `All ${zone.lookups.checked} names outside your zones still exist.`, { items: zone.lookups.failed })
+				: danglingExternalRule.failed("high", `${missing.length} CNAME record${missing.length === 1 ? " points" : "s point"} at a name that no longer exists.`, {
 						fix: ["Delete these records in Cloudflare → DNS → Records now, before someone claims the name they point at. Re-create a record only once the service is set up again."],
 						items: missing,
 					});
@@ -630,7 +665,7 @@ function danglingChecks(zone: ZoneData, records: DnsRecord[], context: AccountCo
 			zone.lookups.state === "not-proven"
 				? "Porchlight looks names up only for a zone whose ownership record it has checked (see Proof of ownership below)."
 				: "Looking these names up was turned off for this audit.";
-		externalCheck = check("dangling-external", "dns", "Records pointing at services that may be gone", "unknown", "high", `${outside.length} CNAME record${outside.length === 1 ? " points" : "s point"} outside your zones and ${outside.length === 1 ? "was" : "were"} not looked up. ${reason}`, outsideWhy, {
+		externalCheck = danglingExternalRule.unknown("high", `${outside.length} CNAME record${outside.length === 1 ? " points" : "s point"} outside your zones and ${outside.length === 1 ? "was" : "were"} not looked up. ${reason}`, {
 			fix: ["Check each one still points at a site you run, or delete it in Cloudflare → DNS → Records."],
 			items: sorted.slice(0, 50),
 		});
@@ -644,20 +679,23 @@ function danglingChecks(zone: ZoneData, records: DnsRecord[], context: AccountCo
 
 export function emailChecks(zone: ZoneData): CfCheck[] {
 	const whySpf = "SPF lists the servers allowed to send mail for your domain. Without it, or with a lax one, anyone can send mail that claims to come from you.";
+	const spfRule = defineRule({ id: "spf", area: "email", title: "SPF", why: whySpf });
 	const whyDmarc = "DMARC tells receiving mail servers what to do with mail that fails SPF and DKIM: deliver it, quarantine it or reject it. Without a policy, spoofed mail from your domain is delivered.";
+	const dmarcRule = defineRule({ id: "dmarc", area: "email", title: "DMARC", why: whyDmarc });
 	const whyDkim = "DKIM signs the mail you send, so receivers can tell it really came from you. DMARC relies on it.";
+	const dkimRule = defineRule({ id: "dkim", area: "email", title: "DKIM", why: whyDkim });
 	if (isPartial(zone)) {
 		return [
-			servedElsewhere("spf", "email", "SPF", "medium", whySpf, "its SPF record"),
-			servedElsewhere("dmarc", "email", "DMARC", "medium", whyDmarc, "its DMARC record"),
-			servedElsewhere("dkim", "email", "DKIM", "medium", whyDkim, "its DKIM keys"),
+			spfRule.servedElsewhere("medium", "its SPF record"),
+			dmarcRule.servedElsewhere("medium", "its DMARC record"),
+			dkimRule.servedElsewhere("medium", "its DKIM keys"),
 		];
 	}
 	if (!zone.records.ok) {
 		return [
-			couldNot("spf", "email", "SPF", "medium", whySpf, zone.records, PERMISSIONS.dns),
-			couldNot("dmarc", "email", "DMARC", "medium", whyDmarc, zone.records, PERMISSIONS.dns),
-			couldNot("dkim", "email", "DKIM", "medium", whyDkim, zone.records, PERMISSIONS.dns),
+			spfRule.couldNot("medium", zone.records, PERMISSIONS.dns),
+			dmarcRule.couldNot("medium", zone.records, PERMISSIONS.dns),
+			dkimRule.couldNot("medium", zone.records, PERMISSIONS.dns),
 		];
 	}
 	const records = zone.records.value;
@@ -669,7 +707,7 @@ export function emailChecks(zone: ZoneData): CfCheck[] {
 	const spfApi = 'POST /zones/{zone_id}/dns_records with {"type":"TXT","name":"@","content":"\\"v=spf1 -all\\""}';
 	if (spf.length === 0) {
 		out.push(
-			check("spf", "email", "SPF", "failed", receivesMail ? "medium" : "low", receivesMail ? "No SPF record, though the domain receives mail." : "No SPF record. The domain receives no mail; a record that allows no sender stops others sending as it.", whySpf, {
+			spfRule.failed(receivesMail ? "medium" : "low", receivesMail ? "No SPF record, though the domain receives mail." : "No SPF record. The domain receives no mail; a record that allows no sender stops others sending as it.", {
 				fix: receivesMail
 					? ["Add a TXT record at the zone apex in Cloudflare → DNS → Records listing your mail provider, such as `v=spf1 include:_spf.google.com -all`. Your provider's help names the include."]
 					: ["Add a TXT record at the zone apex in Cloudflare → DNS → Records: `v=spf1 -all`."],
@@ -677,14 +715,14 @@ export function emailChecks(zone: ZoneData): CfCheck[] {
 			}),
 		);
 	} else if (spf.length > 1) {
-		out.push(check("spf", "email", "SPF", "failed", "medium", `${spf.length} SPF records: receivers treat that as an error and ignore them all.`, whySpf, { fix: ["Merge them into one TXT record in Cloudflare → DNS → Records."], items: spf }));
+		out.push(spfRule.failed("medium", `${spf.length} SPF records: receivers treat that as an error and ignore them all.`, { fix: ["Merge them into one TXT record in Cloudflare → DNS → Records."], items: spf }));
 	} else {
 		const value = spf[0] ?? "";
 		const all = /(^|\s)([-~?+]?)all(\s|$)/i.exec(value)?.[2];
-		if (all === "+" || (all === "" && /\sall(\s|$)/i.test(value))) out.push(check("spf", "email", "SPF", "failed", "high", "The SPF record ends in +all: it allows every server on the internet to send as you.", whySpf, { fix: ["Change `+all` to `-all` (or `~all` while you check) in Cloudflare → DNS → Records."], items: [value] }));
-		else if (all === "?") out.push(check("spf", "email", "SPF", "failed", "medium", "The SPF record ends in ?all, which tells receivers nothing.", whySpf, { fix: ["Change `?all` to `~all`, then `-all` once mail flows as it should."], items: [value] }));
-		else if (all === undefined) out.push(check("spf", "email", "SPF", "failed", "low", "The SPF record has no `all` at the end, so mail from other servers is not marked.", whySpf, { fix: ["End the record with `-all` or `~all`."], items: [value] }));
-		else out.push(check("spf", "email", "SPF", "passed", "medium", `One SPF record, ending in ${all}all.`, whySpf, { items: [value] }));
+		if (all === "+" || (all === "" && /\sall(\s|$)/i.test(value))) out.push(spfRule.failed("high", "The SPF record ends in +all: it allows every server on the internet to send as you.", { fix: ["Change `+all` to `-all` (or `~all` while you check) in Cloudflare → DNS → Records."], items: [value] }));
+		else if (all === "?") out.push(spfRule.failed("medium", "The SPF record ends in ?all, which tells receivers nothing.", { fix: ["Change `?all` to `~all`, then `-all` once mail flows as it should."], items: [value] }));
+		else if (all === undefined) out.push(spfRule.failed("low", "The SPF record has no `all` at the end, so mail from other servers is not marked.", { fix: ["End the record with `-all` or `~all`."], items: [value] }));
+		else out.push(spfRule.passed("medium", `One SPF record, ending in ${all}all.`, { items: [value] }));
 	}
 
 	const dmarc = txt(`_dmarc.${apex(zone)}`).filter((value) => /^v=DMARC1/i.test(value));
@@ -694,14 +732,14 @@ export function emailChecks(zone: ZoneData): CfCheck[] {
 	const delegated = records.find((record) => record.type === "CNAME" && sameName(record.name, `_dmarc.${apex(zone)}`));
 	if (dmarc.length === 0 && delegated) {
 		out.push(
-			check("dmarc", "email", "DMARC", "unknown", "medium", `_dmarc is a CNAME to ${cnameTarget(delegated).slice(0, 120)}: the policy is published there, and Porchlight does not look it up.`, whyDmarc, {
+			dmarcRule.unknown("medium", `_dmarc is a CNAME to ${cnameTarget(delegated).slice(0, 120)}: the policy is published there, and Porchlight does not look it up.`, {
 				fix: ["Check the policy at the service the CNAME names: it should reach `p=quarantine` or `p=reject`."],
 				items: [`${delegated.name} → ${cnameTarget(delegated)}`],
 			}),
 		);
 	} else if (dmarc.length === 0) {
 		out.push(
-			check("dmarc", "email", "DMARC", "failed", "medium", "No DMARC record at _dmarc.", whyDmarc, {
+			dmarcRule.failed("medium", "No DMARC record at _dmarc.", {
 				fix: [
 					receivesMail
 						? "Add a TXT record named _dmarc in Cloudflare → DNS → Records, starting with `v=DMARC1; p=none; rua=mailto:you@yourdomain` to see reports, then move to `p=quarantine` and `p=reject`."
@@ -715,10 +753,10 @@ export function emailChecks(zone: ZoneData): CfCheck[] {
 	} else {
 		const value = dmarc[0] ?? "";
 		const policy = /(?:^|;)\s*p\s*=\s*(\w+)/i.exec(value)?.[1]?.toLowerCase();
-		if (policy === "reject" || policy === "quarantine") out.push(check("dmarc", "email", "DMARC", "passed", "medium", `Policy ${policy}.`, whyDmarc, { items: [value] }));
+		if (policy === "reject" || policy === "quarantine") out.push(dmarcRule.passed("medium", `Policy ${policy}.`, { items: [value] }));
 		else
 			out.push(
-				check("dmarc", "email", "DMARC", "failed", "low", policy === "none" ? "Policy none: reports only, spoofed mail is still delivered." : "The DMARC record has no policy (p=).", whyDmarc, {
+				dmarcRule.failed("low", policy === "none" ? "Policy none: reports only, spoofed mail is still delivered." : "The DMARC record has no policy (p=).", {
 					fix: ["Once the reports show your own mail passing, change the policy to `p=quarantine`, then `p=reject`, in Cloudflare → DNS → Records."],
 					items: [value],
 				}),
@@ -726,14 +764,14 @@ export function emailChecks(zone: ZoneData): CfCheck[] {
 	}
 
 	const dkim = records.filter((record) => record.name.toLowerCase().endsWith(`._domainkey.${apex(zone)}`) && (record.type === "TXT" || record.type === "CNAME"));
-	if (dkim.length > 0) out.push(check("dkim", "email", "DKIM", "passed", "medium", `${dkim.length} DKIM key${dkim.length === 1 ? "" : "s"} published.`, whyDkim, { items: dkim.slice(0, 10).map((record) => record.name) }));
+	if (dkim.length > 0) out.push(dkimRule.passed("medium", `${dkim.length} DKIM key${dkim.length === 1 ? "" : "s"} published.`, { items: dkim.slice(0, 10).map((record) => record.name) }));
 	else if (receivesMail)
 		out.push(
-			check("dkim", "email", "DKIM", "failed", "medium", "The domain receives mail but publishes no DKIM key under _domainkey.", whyDkim, {
+			dkimRule.failed("medium", "The domain receives mail but publishes no DKIM key under _domainkey.", {
 				fix: ["Turn on DKIM signing at your mail provider and add the record it gives you in Cloudflare → DNS → Records."],
 			}),
 		);
-	else out.push(check("dkim", "email", "DKIM", "passed", "low", "No MX record and no DKIM key: if the domain sends no mail, the SPF and DMARC records above are what stop spoofing.", whyDkim));
+	else out.push(dkimRule.passed("low", "No MX record and no DKIM key: if the domain sends no mail, the SPF and DMARC records above are what stop spoofing."));
 	// How strong the keys are, from the same records (FT-5).
 	const strength = dkimStrengthCheck(dkim.map((record) => ({ name: record.name, type: record.type, value: record.type === "TXT" ? txtValue(record.content) : record.content })));
 	if (strength) out.push(strength);
@@ -747,66 +785,70 @@ export function emailChecks(zone: ZoneData): CfCheck[] {
 export function firewallChecks(zone: ZoneData): CfCheck[] {
 	const out: CfCheck[] = [];
 	const wafWhy = "Managed rules block common attacks (SQL injection, cross-site scripting, exploits of known vulnerabilities) before they reach your server. Cloudflare updates them every week.";
+	const wafManagedRule = defineRule({ id: "waf-managed", area: "firewall", title: "WAF managed rules", why: wafWhy });
 	const executes = (id: string, rules: RulesetRule[]) => rules.find((rule) => rule.action === "execute" && rule.action_parameters?.id === id);
 	if (!zone.waf.ok) {
-		out.push(couldNot("waf-managed", "firewall", "WAF managed rules", "high", wafWhy, zone.waf, PERMISSIONS.waf));
+		out.push(wafManagedRule.couldNot("high", zone.waf, PERMISSIONS.waf));
 	} else if (zone.plan === "free") {
 		const free = executes(MANAGED_RULESETS.free, zone.waf.value);
-		if (free && free.enabled !== false) out.push(check("waf-managed", "firewall", "WAF managed rules", "passed", "high", "The Cloudflare Free Managed Ruleset is deployed.", wafWhy));
+		if (free && free.enabled !== false) out.push(wafManagedRule.passed("high", "The Cloudflare Free Managed Ruleset is deployed."));
 		else if (free)
 			out.push(
-				check("waf-managed", "firewall", "WAF managed rules", "failed", "high", "The Cloudflare Free Managed Ruleset is deployed but turned off.", wafWhy, {
+				wafManagedRule.failed("high", "The Cloudflare Free Managed Ruleset is deployed but turned off.", {
 					fix: ["Turn the Free Managed Ruleset back on in Cloudflare → Security → Settings, under Web application exploits."],
 				}),
 			);
 		else
 			out.push(
-				check("waf-managed", "firewall", "WAF managed rules", "unknown", "high", "The Cloudflare Free Managed Ruleset is not listed among this zone's managed rules. Cloudflare may run it by default on Free zones; check that it is on.", wafWhy, {
+				wafManagedRule.unknown("high", "The Cloudflare Free Managed Ruleset is not listed among this zone's managed rules. Cloudflare may run it by default on Free zones; check that it is on.", {
 					fix: ["Open Cloudflare → Security → Settings, filter by Web application exploits, and check that the Free Managed Ruleset is on."],
 				}),
 			);
 	} else if (zone.plan === "unknown") {
-		out.push(check("waf-managed", "firewall", "WAF managed rules", "unknown", "high", "The zone's plan could not be read, so Porchlight cannot say which managed rules it should have.", wafWhy));
+		out.push(wafManagedRule.unknown("high", "The zone's plan could not be read, so Porchlight cannot say which managed rules it should have."));
 	} else {
 		const managed = executes(MANAGED_RULESETS.cloudflare, zone.waf.value);
-		if (managed && managed.enabled !== false) out.push(check("waf-managed", "firewall", "WAF managed rules", "passed", "high", "The Cloudflare Managed Ruleset is deployed.", wafWhy));
+		if (managed && managed.enabled !== false) out.push(wafManagedRule.passed("high", "The Cloudflare Managed Ruleset is deployed."));
 		else
 			out.push(
-				check("waf-managed", "firewall", "WAF managed rules", "failed", "high", managed ? "The Cloudflare Managed Ruleset is deployed but turned off." : `The Cloudflare Managed Ruleset is not deployed, though the ${zone.plan} plan includes it.`, wafWhy, {
+				wafManagedRule.failed("high", managed ? "The Cloudflare Managed Ruleset is deployed but turned off." : `The Cloudflare Managed Ruleset is not deployed, though the ${zone.plan} plan includes it.`, {
 					fix: ["Turn on Cloudflare managed ruleset in Cloudflare → Security → Settings, under Web application exploits. Start with its default rules; they are chosen to block few legitimate requests."],
 					api: 'PUT /zones/{zone_id}/rulesets/phases/http_request_firewall_managed/entrypoint with an execute rule for efb7b8c949ac4650a09736fc376e9aee',
 				}),
 			);
 		const owaspWhy = "The OWASP Core Ruleset scores each request against many generic attack patterns. It catches more than the managed ruleset alone, and blocks more legitimate requests too, so run it in log mode first.";
+		const wafOwaspRule = defineRule({ id: "waf-owasp", area: "firewall", title: "OWASP Core Ruleset", why: owaspWhy });
 		const owasp = executes(MANAGED_RULESETS.owasp, zone.waf.value);
 		out.push(
 			owasp && owasp.enabled !== false
-				? check("waf-owasp", "firewall", "OWASP Core Ruleset", "passed", "low", "Deployed.", owaspWhy)
-				: check("waf-owasp", "firewall", "OWASP Core Ruleset", "failed", "low", "Not deployed.", owaspWhy, {
+				? wafOwaspRule.passed("low", "Deployed.")
+				: wafOwaspRule.failed("low", "Not deployed.", {
 						fix: ["Turn on OWASP Core in Cloudflare → Security → Settings with the action set to Log, read the security events for a week, then set it to Block."],
 					}),
 		);
 	}
-	if (zone.plan === "free") out.push(check("waf-owasp", "firewall", "OWASP Core Ruleset", "unavailable", "low", "Not on the Free plan: it comes with Pro and above.", "The OWASP Core Ruleset scores each request against many generic attack patterns."));
+	if (zone.plan === "free") out.push(defineRule({ id: "waf-owasp", area: "firewall", title: "OWASP Core Ruleset", why: "The OWASP Core Ruleset scores each request against many generic attack patterns." }).unavailable("low", "Not on the Free plan: it comes with Pro and above."));
 
 	const level = setting(zone, "security_level");
 	const levelWhy = "Cloudflare no longer scores visitors by threat, so the security level now only switches Under Attack mode, which shows a challenge page to every visitor. That is right during an attack and wrong otherwise: it blocks APIs, apps and search engines.";
-	if (!level.ok) out.push(couldNot("security-level", "firewall", "Security level (Under Attack mode)", "low", levelWhy, level, PERMISSIONS.settings));
+	const securityLevelRule = defineRule({ id: "security-level", area: "firewall", title: "Security level (Under Attack mode)", why: levelWhy });
+	if (!level.ok) out.push(securityLevelRule.couldNot("low", level, PERMISSIONS.settings));
 	else if (level.value === "under_attack")
 		out.push(
-			check("security-level", "firewall", "Security level (Under Attack mode)", "failed", "low", "Under Attack mode is on: every visitor gets a challenge page.", levelWhy, {
+			securityLevelRule.failed("low", "Under Attack mode is on: every visitor gets a challenge page.", {
 				fix: ["If the attack is over, turn Under Attack mode off in Cloudflare → Security → Settings. To keep it for some paths only, use a configuration rule."],
 				api: 'PATCH /zones/{zone_id}/settings/security_level with {"value":"medium"}',
 			}),
 		);
-	else out.push(check("security-level", "firewall", "Security level (Under Attack mode)", "passed", "low", "Under Attack mode is off.", levelWhy));
+	else out.push(securityLevelRule.passed("low", "Under Attack mode is off."));
 
 	const bic = setting(zone, "browser_check");
 	const bicWhy = "Browser Integrity Check turns away requests with headers that spam bots and attack tools commonly send, or leave out. It is on every plan and rarely blocks a real browser.";
-	if (!bic.ok) out.push(couldNot("browser-check", "firewall", "Browser Integrity Check", "low", bicWhy, bic, PERMISSIONS.settings));
+	const browserCheckRule = defineRule({ id: "browser-check", area: "firewall", title: "Browser Integrity Check", why: bicWhy });
+	if (!bic.ok) out.push(browserCheckRule.couldNot("low", bic, PERMISSIONS.settings));
 	else
 		out.push(
-			check("browser-check", "firewall", "Browser Integrity Check", bic.value === "on" ? "passed" : "failed", "low", bic.value === "on" ? "On." : "Off.", bicWhy, {
+			browserCheckRule.result(bic.value === "on" ? "passed" : "failed", "low", bic.value === "on" ? "On." : "Off.", {
 				fix: ["Turn on Browser integrity check in Cloudflare → Security → Settings. If an API client of yours is refused, skip it for that path with a configuration rule."],
 				api: 'PATCH /zones/{zone_id}/settings/browser_check with {"value":"on"}',
 				change: "browser-check",
@@ -819,20 +861,21 @@ export function firewallChecks(zone: ZoneData): CfCheck[] {
 
 function botCheck(zone: ZoneData): CfCheck {
 	const why = "Bot Fight Mode (Free) and Super Bot Fight Mode (Pro and above) challenge traffic that matches known bots: scrapers, credential stuffers and vulnerability scanners. Both can also challenge your own scripts and monitoring, so check them after turning it on.";
-	if (zone.plan === "enterprise") return check("bot-fight-mode", "firewall", "Bot protection", "unavailable", "low", "Enterprise zones use Bot Management, which Porchlight does not judge.", why);
-	if (!zone.bots.ok) return couldNot("bot-fight-mode", "firewall", "Bot protection", "low", why, zone.bots, PERMISSIONS.bots);
+	const botFightModeRule = defineRule({ id: "bot-fight-mode", area: "firewall", title: "Bot protection", why: why });
+	if (zone.plan === "enterprise") return botFightModeRule.unavailable("low", "Enterprise zones use Bot Management, which Porchlight does not judge.");
+	if (!zone.bots.ok) return botFightModeRule.couldNot("low", zone.bots, PERMISSIONS.bots);
 	if (zone.plan === "free") {
 		const on = zone.bots.value.fight_mode === true;
-		return check("bot-fight-mode", "firewall", "Bot protection", on ? "passed" : "failed", "low", on ? "Bot Fight Mode is on." : "Bot Fight Mode is off.", why, {
+		return botFightModeRule.result(on ? "passed" : "failed", "low", on ? "Bot Fight Mode is on." : "Bot Fight Mode is off.", {
 			fix: ["Turn on Bot fight mode in Cloudflare → Security → Settings, filtered by Bot traffic. It cannot be skipped for a path, so leave it off if it challenges an API client of yours."],
 			api: 'PUT /zones/{zone_id}/bot_management with {"fight_mode":true}',
 			// Not offered as a change: a real account answered this request with HTTP 400 (docs/CLOUDFLARE-AUDIT.md).
 		});
 	}
-	if (zone.plan === "unknown") return check("bot-fight-mode", "firewall", "Bot protection", "unknown", "low", "The zone's plan could not be read.", why);
+	if (zone.plan === "unknown") return botFightModeRule.unknown("low", "The zone's plan could not be read.");
 	const action = zone.bots.value.sbfm_definitely_automated;
 	const on = typeof action === "string" && action !== "allow";
-	return check("bot-fight-mode", "firewall", "Bot protection", on ? "passed" : "failed", "low", on ? `Super Bot Fight Mode: definitely automated traffic is set to ${action}.` : "Super Bot Fight Mode lets definitely automated traffic through.", why, {
+	return botFightModeRule.result(on ? "passed" : "failed", "low", on ? `Super Bot Fight Mode: definitely automated traffic is set to ${action}.` : "Super Bot Fight Mode lets definitely automated traffic through.", {
 		fix: ["In Cloudflare → Security → Settings, filtered by Bot traffic, set Definitely automated to Managed Challenge, then Block once the security events show no traffic of yours. Keep it at Allow if the zone serves a Cloudflare Tunnel."],
 		api: 'PUT /zones/{zone_id}/bot_management with {"sbfm_definitely_automated":"managed_challenge"}',
 	});
@@ -844,19 +887,20 @@ function botCheck(zone: ZoneData): CfCheck {
 
 export function ownershipCheck(zone: ZoneData): CfCheck {
 	const why = "Porchlight looks a domain up on the network (where its records point, its HTTPS) only once the domain's _porchlight-challenge TXT record proves it is yours. The record changes nothing else and can be deleted at any time.";
-	if (isPartial(zone)) return servedElsewhere("ownership-record", "ownership", "Porchlight ownership record", "low", why, "Porchlight's _porchlight-challenge record");
-	if (!zone.records.ok) return couldNot("ownership-record", "ownership", "Porchlight ownership record", "low", why, zone.records, PERMISSIONS.dns);
+	const ownershipRecordRule = defineRule({ id: "ownership-record", area: "ownership", title: "Porchlight ownership record", why: why });
+	if (isPartial(zone)) return ownershipRecordRule.servedElsewhere("low", "Porchlight's _porchlight-challenge record");
+	if (!zone.records.ok) return ownershipRecordRule.couldNot("low", zone.records, PERMISSIONS.dns);
 	const names = [`_porchlight-challenge.${apex(zone)}`, `_securityx-challenge.${apex(zone)}`];
 	const values = zone.records.value.filter((record) => record.type === "TXT" && names.some((name) => sameName(record.name, name))).map((record) => txtValue(record.content));
 	const token = zone.ownershipToken;
 	if (token && values.some((value) => value === `porchlight-verify=${token}` || value === `securityx-verify=${token}`)) {
-		return check("ownership-record", "ownership", "Porchlight ownership record", "passed", "low", "Published, and it holds the token this computer keeps for the zone.", why);
+		return ownershipRecordRule.passed("low", "Published, and it holds the token this computer keeps for the zone.");
 	}
 	const detail =
 		values.length > 0
 			? "A challenge record is published, but it does not hold the token this computer keeps. Porchlight can add one that does."
 			: "Not published. With DNS edit permission Porchlight can add it, once you approve the exact request.";
-	return check("ownership-record", "ownership", "Porchlight ownership record", "failed", "low", detail, why, {
+	return ownershipRecordRule.failed("low", detail, {
 		fix: [`Add a TXT record named _porchlight-challenge in Cloudflare → DNS → Records holding the value Porchlight shows, or let Porchlight add it (the token needs "DNS Write").`],
 		api: 'POST /zones/{zone_id}/dns_records with {"type":"TXT","name":"_porchlight-challenge","content":"\\"porchlight-verify=…\\""}',
 		change: "ownership-record",
@@ -900,11 +944,13 @@ function roleNames(member: Member): string[] {
 
 export function memberChecks(members: Read<Member[]>): CfCheck[] {
 	const twoFactorWhy = "An account member without two-factor authentication can be taken over with a password alone, from a phishing page or another site's leak, and with them your domains.";
+	const member2faRule = defineRule({ id: "member-2fa", area: "account", title: "Two-factor authentication for members", why: twoFactorWhy });
 	const adminWhy = "Super Administrators can do anything, including removing everyone else. Each one is a way in; keep two, so one can recover the other.";
+	const superAdminsRule = defineRule({ id: "super-admins", area: "account", title: "Super Administrators", why: adminWhy });
 	if (!members.ok) {
 		return [
-			couldNot("member-2fa", "account", "Two-factor authentication for members", "high", twoFactorWhy, members, PERMISSIONS.members),
-			couldNot("super-admins", "account", "Super Administrators", "low", adminWhy, members, PERMISSIONS.members),
+			member2faRule.couldNot("high", members, PERMISSIONS.members),
+			superAdminsRule.couldNot("low", members, PERMISSIONS.members),
 		];
 	}
 	const accepted = members.value.filter((member) => member.status !== "pending" && member.status !== "rejected");
@@ -913,15 +959,15 @@ export function memberChecks(members: Read<Member[]>): CfCheck[] {
 	const out: CfCheck[] = [];
 	if (without.length > 0) {
 		out.push(
-			check("member-2fa", "account", "Two-factor authentication for members", "failed", "high", `${without.length} of ${accepted.length} members ${without.length === 1 ? "has" : "have"} no two-factor authentication.`, twoFactorWhy, {
+			member2faRule.failed("high", `${without.length} of ${accepted.length} members ${without.length === 1 ? "has" : "have"} no two-factor authentication.`, {
 				fix: ["Ask each one to turn on two-factor authentication in their own Cloudflare profile, or remove them in Cloudflare → Manage Account → Members.", "Super Administrators can require it for every member from the same page."],
 				items: without.map((member) => maskEmail(member.user?.email)),
 			}),
 		);
 	} else if (unknown.length > 0) {
-		out.push(check("member-2fa", "account", "Two-factor authentication for members", "unknown", "high", `Cloudflare did not say whether ${unknown.length} of ${accepted.length} members use it.`, twoFactorWhy, { items: unknown.map((member) => maskEmail(member.user?.email)) }));
+		out.push(member2faRule.unknown("high", `Cloudflare did not say whether ${unknown.length} of ${accepted.length} members use it.`, { items: unknown.map((member) => maskEmail(member.user?.email)) }));
 	} else {
-		out.push(check("member-2fa", "account", "Two-factor authentication for members", "passed", "high", `All ${accepted.length} members use it.`, twoFactorWhy));
+		out.push(member2faRule.passed("high", `All ${accepted.length} members use it.`));
 	}
 	const admins = accepted.filter((member) => roleNames(member).some((name) => /super administrator/i.test(name)));
 	const pending = members.value.filter((member) => member.status === "pending");
@@ -929,13 +975,13 @@ export function memberChecks(members: Read<Member[]>): CfCheck[] {
 	if (admins.length > 2 || pending.length > 0) {
 		const parts = [admins.length > 2 ? `${admins.length} Super Administrators` : null, pending.length > 0 ? `${pending.length} invitation${pending.length === 1 ? "" : "s"} not yet accepted` : null].filter(Boolean);
 		out.push(
-			check("super-admins", "account", "Super Administrators", "failed", "low", `${parts.join(" and ")}.`, adminWhy, {
+			superAdminsRule.failed("low", `${parts.join(" and ")}.`, {
 				fix: ["In Cloudflare → Manage Account → Members, give people the narrowest role that does their job, and revoke invitations nobody will accept."],
 				items: [...roleItems, ...pending.map((member) => `${maskEmail(member.user?.email)}: invited, not accepted`)],
 			}),
 		);
 	} else {
-		out.push(check("super-admins", "account", "Super Administrators", "passed", "low", `${admins.length} Super Administrator${admins.length === 1 ? "" : "s"}, no open invitations.`, adminWhy, { items: roleItems }));
+		out.push(superAdminsRule.passed("low", `${admins.length} Super Administrator${admins.length === 1 ? "" : "s"}, no open invitations.`, { items: roleItems }));
 	}
 	return out;
 }
@@ -959,7 +1005,8 @@ export function tokenBreadth(token: ApiToken): { writes: string[]; everywhere: b
 
 export function tokenChecks(id: string, title: string, tokens: Read<ApiToken[]>, permission: string, path: string, now: Date, selfId?: string): CfCheck {
 	const why = "An API token that can change every zone, with no address limit and no end date, is as good as your password to whoever finds it in a repository, a CI log or an old laptop. Unused tokens are risk with no benefit.";
-	if (!tokens.ok) return couldNot(id, "account", title, "medium", why, tokens, permission);
+	const rule = defineRule({ id, area: "account", title, why });
+	if (!tokens.ok) return rule.couldNot("medium", tokens, permission);
 	const items: string[] = [];
 	let worst: Severity | null = null;
 	const raise = (severity: Severity) => {
@@ -984,8 +1031,8 @@ export function tokenChecks(id: string, title: string, tokens: Read<ApiToken[]>,
 		}
 	}
 	const count = tokens.value.length;
-	if (worst === null) return check(id, "account", title, "passed", "medium", `${count} token${count === 1 ? "" : "s"}, none with broad rights left open, none unused for six months.`, why);
-	return check(id, "account", title, "failed", worst, `${items.length} token${items.length === 1 ? " needs" : "s need"} attention.`, why, {
+	if (worst === null) return rule.passed("medium", `${count} token${count === 1 ? "" : "s"}, none with broad rights left open, none unused for six months.`);
+	return rule.failed(worst, `${items.length} token${items.length === 1 ? " needs" : "s need"} attention.`, {
 		fix: [`In ${path}, delete tokens nobody uses, and give the rest only the zones and permissions they need, a client IP address filter and an end date.`],
 		items,
 	});

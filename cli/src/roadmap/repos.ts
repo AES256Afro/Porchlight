@@ -5,6 +5,9 @@ import { severityRank, type Finding, type ScanReport, type Severity } from "../r
 import { assemble, emptyCounts, type Action, type FindingRow, type FindingsList, type PhaseKey, type Planned, type Roadmap } from "./types.ts";
 import { bumpKind, compareVersions, highestVersion, mayBreak } from "./versions.ts";
 import { PLACES } from "../repos/private.ts";
+import { scanKindOf } from "./style.ts";
+
+const REPOSITORIES: [string, string] = ["repository", "repositories"];
 
 const SUMMARIES: Record<PhaseKey, string> = {
 	now: "Credentials that look live, and critical vulnerabilities.",
@@ -35,6 +38,8 @@ export function buildRepoRoadmap(report: ScanReport, filter: FindingFilter = noF
 			scannedAt: report.scannedAt,
 			scope: describeFilter(filter),
 			caveats: coverageNotes(report),
+			scanKind: scanKindOf(report),
+			places: REPOSITORIES,
 		},
 		SUMMARIES,
 		plan(report).filter(({ group, findings }) => findings.some((finding) => matchesFilter(finding, group, filter))),
@@ -81,6 +86,8 @@ export function listRepoFindings(report: ScanReport, filter: FindingFilter = noF
 		scannedAt: report.scannedAt,
 		scope: describeFilter(filter),
 		caveats: coverageNotes(report),
+		scanKind: scanKindOf(report),
+		places: REPOSITORIES,
 		rows,
 	};
 }

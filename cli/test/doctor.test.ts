@@ -130,3 +130,20 @@ test("doctor says a kept scan it cannot read, rather than that none is kept (B62
 		assert.match(checks["Last scan"]!.detail, /repo-scan\.json cannot be read/);
 	});
 });
+
+test("help and doctor fit the terminal: no line over its width, descriptions under their own column (R6V-3)", async () => {
+	const { fitWidth } = await import("../src/columns.ts");
+	const { renderDoctor } = await import("../src/doctor.ts");
+	for (const command of ["repos scan", "repos export", "repos history", "domains", "host check", "cloudflare audit", "ui", "doctor", "forget", "status", "hook", "schedule print"]) {
+		const text = helpFor(command.split(" "))!;
+		for (const width of [60, 80]) {
+			const fitted = fitWidth(text, width);
+			assert.deepEqual(fitted.split("\n").filter((line) => line.length > width), [], `${command} at ${width}`);
+			assert.equal(fitted.replace(/\s+/g, " "), text.replace(/\s+/g, " "), `${command} keeps every word, in order`);
+		}
+		assert.equal(fitWidth(text, 200), text, "text that fits is left as it is");
+	}
+	const doctor = renderDoctor([{ name: "gitleaks", status: "problem", detail: "Not installed. It finds secrets committed to a repository and is needed for every scan of one.", fix: "brew install gitleaks, or a binary from its releases page on GitHub" }], 60);
+	assert.deepEqual(doctor.split("\n").filter((line) => line.length > 60), []);
+	assert.match(doctor, /^FIX {4}gitleaks {2}Not installed/);
+});

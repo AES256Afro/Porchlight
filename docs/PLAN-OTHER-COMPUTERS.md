@@ -1,5 +1,7 @@
 # Checking other computers: plan (2026-11-19)
 
+**Status, 2026-11-21: not built.** A proposal; nothing in it is true of Porchlight yet.
+
 Goal: from Porchlight, pick which computer to check. That can be the computer Porchlight runs on, the BoxPilot server, or another device on your network, such as your MacBook or your Windows PC. Today **This Mac** checks only the machine Porchlight runs on, and under BoxPilot it does not run at all, because a container cannot see its host. Nothing here is built yet. The owner decides what is marked **Decide**.
 
 ## What it would look like

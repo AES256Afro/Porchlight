@@ -16,7 +16,7 @@ interface Topic {
 const TOPICS: Topic[] = [
 	{
 		command: "repos scan",
-		summary: "Scan git repositories for committed secrets and vulnerable packages",
+		summary: "Scan git repositories for committed secrets, vulnerable packages and private data",
 		detail: `Usage: porchlight repos scan [path]
 
 Scans every git repository under path (default: the current folder) with gitleaks and
@@ -52,9 +52,12 @@ osv-scanner, and prints one ranked report. Progress goes to the error stream, on
   --again <name>         With --save and no folder: scan one repository of the saved scan again, by
                          the name the report gives it, and say what that fixed. Where a scanner could
                          not look again, what it found before is kept
-  --fail-on <severity>   Exit 2 if any finding is at or above: ${SEVERITIES.join(", ")}
+  --fail-on <severity>   Exit 2 if any finding is at or above: ${SEVERITIES.join(", ")}.
                          Exit 1 if a scanner was missing or failed, or the choices left something
-                         out (a check, history, a repository), as they do for quick`,
+                         out (a check, history, a repository), as they do for quick
+
+Exit codes: without --fail-on, 0 once the scan has run, whatever it found. With it: 2 for a finding
+at or above the severity, else 1 for an incomplete scan, else 0. An error exits 1.`,
 	},
 	{
 		command: "repos history",
@@ -147,11 +150,13 @@ monitor's address) and PORCHLIGHT_ADMIN_TOKEN, which take its place when set.`,
 		detail: `Usage: porchlight host check
 
 Checks this computer: updates, built-in protection, what accepts connections, credentials in
-files, installed packages. It only reads.
+files, installed packages. It changes nothing. It contacts two services unless --offline is given:
+Apple's update servers (macOS's own softwareupdate) and OSV.dev, which is sent the names and versions
+of installed npm and Python packages.
 
   --json                 Print the result as JSON
   --offline              Do not ask Apple for updates or look packages up on OSV.dev
-  --fail-on <severity>   Exit 2 if a failed check is at or above: ${SEVERITIES.join(", ")}
+  --fail-on <severity>   Exit 2 if a failed check is at or above: ${SEVERITIES.join(", ")}.
                          Exit 1 if a check could not be made`,
 	},
 	{
@@ -164,7 +169,7 @@ Checks SSL/TLS, DNS, email records, the firewall, members and tokens. It only re
   --json                 Print the result as JSON
   --no-lookups           Do not look up where CNAME records point, even for domains whose
                          Porchlight ownership record proves them
-  --fail-on <severity>   Exit 2 if a failed check is at or above: ${SEVERITIES.join(", ")}
+  --fail-on <severity>   Exit 2 if a failed check is at or above: ${SEVERITIES.join(", ")}.
                          Exit 1 if a check could not be made
 
 Uses the token saved under Settings → Cloudflare in the interface, or

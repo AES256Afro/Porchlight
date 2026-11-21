@@ -1,5 +1,7 @@
 # Projects and discussions: plan (2026-11-19)
 
+**Status, 2026-11-21: built** (Part 1 as option A). This file is the plan as it was written. "Today" describes Porchlight before the build, and the questions under **Decide** were answered by it: invariants 22 and 23 in `CLAUDE.md` and the README's "Discussions" and "Projects" sections say what is true now.
+
 Goal, in the owner's words: choose a **project folder** for an audit or scan, so that exports and logs land there under clear names. **Reply to a model's answer** inside Porchlight with follow-up questions. Keep those conversations in a **Discussions** section that is still there after the app closes. Show answers **beside the page**, not at the bottom of it. **All three parts are built**, Part 1 as option A: discussions with follow-up questions (invariant 22), the answers panel (README "Discussions") and project folders (invariant 23, README "Projects"). Option B, a whole workspace per project, is not. The owner decides what is marked **Decide**.
 
 ## What it would look like
@@ -18,7 +20,7 @@ Goal, in the owner's words: choose a **project folder** for an audit or scan, so
 └──────────────────────────┴─────────────────────────────────┴──────────────────────────────────┘
 ```
 
-## Today
+## Today (before the build; history)
 
 - Explain, Summarise and Ask answers are kept only while the page is open (the `kept` map in `cli/ui/assist.js`). Close the app and they are gone. They open under the button, so a long page means scrolling down to read them.
 - "Send to a model" answers can be copied or saved as text, one at a time, under a fixed name (invariant 18).

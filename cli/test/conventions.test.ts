@@ -34,7 +34,7 @@ test("a kept file is read through readPrivateJson, which tells missing from unre
 		"main.ts": 1, // Porchlight's own package.json
 		"monitor/settings.ts": 1,
 		"projects/projects.ts": 1, // for reading only; changes go through readPrivateJson
-		"ui/server.ts": 5,
+		"ui/kept-files.ts": 5,
 	};
 	const now = count(/JSON\.parse\(await readFile\(/g);
 	for (const [file, matches] of Object.entries(now)) {
@@ -49,4 +49,21 @@ test("every private file is written through private-files.ts: no fixed temporary
 	// github.ts moves a whole clone into place under a random name; projects.ts writes into a project
 	// folder by its own rules (invariant 23). Everything else uses private-files.ts.
 	assert.deepEqual(Object.keys(writers).sort(), ["github/github.ts", "private-files.ts", "projects/projects.ts"]);
+});
+
+test("the CLI and its page have no runtime dependencies: Node's own modules and their own files only (invariant 6)", () => {
+	const manifest = JSON.parse(readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8")) as { dependencies?: Record<string, string> };
+	assert.deepEqual(Object.keys(manifest.dependencies ?? {}), [], "cli/package.json lists no dependencies");
+	const roots = ["../src", "../ui", "../bin"].map((dir) => fileURLToPath(new URL(dir, import.meta.url)));
+	const files = (dir: string): string[] =>
+		readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? files(join(dir, entry.name)) : /\.(ts|js)$/.test(entry.name) ? [join(dir, entry.name)] : []));
+	const outside: string[] = [];
+	for (const file of roots.flatMap(files)) {
+		const text = readFileSync(file, "utf8");
+		for (const [, specifier] of text.matchAll(/^\s*(?:import|export)\b[^;'"]*?\bfrom\s+["']([^"']+)["']/gm)) {
+			// A module of Node's, or a file of this package named with its extension (.ts runs through type stripping).
+			if (!specifier!.startsWith("node:") && !(/^\.\.?\//.test(specifier!) && /\.(ts|js)$/.test(specifier!))) outside.push(`${relative(SRC, file)}: ${specifier}`);
+		}
+	}
+	assert.deepEqual(outside, []);
 });

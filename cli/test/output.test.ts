@@ -103,3 +103,18 @@ test("writes reports and exports readable only by their owner", async () => {
 		await rm(dir, { recursive: true, force: true });
 	}
 });
+
+test("in a terminal, a scan is plain text: no Markdown escapes, the type in words, a package's advisories together and in number order (RD-15)", async () => {
+	const { renderText } = await import("../src/repos/report.ts");
+	const finding = (ruleId: string, severity: "high" | "medium", kind: "vulnerability" | "private-data" = "vulnerability") => ({ tool: "osv-scanner" as const, kind, ruleId, severity, title: `Advisory ${ruleId}`, location: "package-lock.json", detail: "axios@1.6.0" });
+	const report = {
+		root: "/work",
+		scannedAt: "2026-11-20T15:00:00.000Z",
+		tools: [],
+		repos: [{ path: "/work/shop", errors: [], findings: [finding("GHSA-bi610", "high"), finding("GHSA-bi62", "medium"), { ...finding("private-email", "medium", "private-data"), tool: "gitleaks" as const, location: "data/users.csv:4", detail: "25 email addresses" }] }],
+	};
+	const text = renderText(report as never);
+	assert.doesNotMatch(text, /\\[@()_*]|`/, "no Markdown escape or code mark");
+	assert.match(text, /vulnerable package axios@1\.6\.0 in package-lock\.json: 2 advisories\n {6}GHSA-bi62 \(medium\)[^\n]*\n {6}GHSA-bi610 \(high\)/);
+	assert.match(text, /private data private-email in data\/users\.csv:4/);
+});

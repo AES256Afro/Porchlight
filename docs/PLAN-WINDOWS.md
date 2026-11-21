@@ -1,5 +1,7 @@
 # Porchlight on Windows: plan (2026-11-19)
 
+**Status, 2026-11-21: not built.** A proposal; nothing in it is true of Porchlight yet.
+
 Goal: Porchlight runs on a Windows 10 or 11 PC the way it runs on a Mac. You download it, open it, and get the same pages, including **This PC** (the Windows version of This Mac). Nothing here is built yet. The owner decides what is marked **Decide**.
 
 ## What already works, and what does not

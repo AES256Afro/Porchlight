@@ -21,7 +21,7 @@ import { saveAnalysis, unitKey, type Judgement } from "../cli/src/analysis/analy
 import { run } from "../cli/src/repos/exec.ts";
 import { FULL_HISTORY, scanSecrets } from "../cli/src/repos/gitleaks.ts";
 import { repoName } from "../cli/src/repos/report.ts";
-import { SCRIPTS, startUiServer } from "../cli/src/ui/server.ts";
+import { SCRIPTS, STYLES, startUiServer } from "../cli/src/ui/server.ts";
 import { bigReport } from "../cli/test/big-report.ts";
 
 const KB = 1024;
@@ -164,11 +164,11 @@ async function measure(): Promise<void> {
 	await withServer(1, async ({ server }) => {
 		let raw = 0;
 		let zipped = 0;
-		for (const path of ["/", "/styles.css", ...SCRIPTS.map((name) => `/${name}.js`)]) {
+		for (const path of ["/", ...STYLES.map((name) => `/${name}.css`), ...SCRIPTS.map((name) => `/${name}.js`)]) {
 			raw += (await get(server, path, false, false)).bytes;
 			zipped += (await get(server, path, true, false)).bytes;
 		}
-		say(`OP-7  the page's ${SCRIPTS.length + 2} files: ${(raw / KB).toFixed(0)} KB plain, ${(zipped / KB).toFixed(0)} KB gzipped; unchanged ones answered 304 afterwards`);
+		say(`OP-7  the page's ${SCRIPTS.length + STYLES.length + 1} files: ${(raw / KB).toFixed(0)} KB plain, ${(zipped / KB).toFixed(0)} KB gzipped; unchanged ones answered 304 afterwards`);
 	});
 
 	await measureHistoryReuse(say);

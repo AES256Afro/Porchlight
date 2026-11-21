@@ -402,3 +402,23 @@ test("every click path the page, the host check or the Cloudflare audit writes i
 		}
 	}
 });
+
+test("the findings trend draws a scan with another preset or folder apart, never as a change (VS-12), and the severity bar adds up", async () => {
+	const { barSegments, trendColumns } = await import("../ui/chart-layout.js");
+	const scan = (scannedAt: string, findings: number, preset?: string, root = "/work") => ({ scannedAt, root, findings, counts: { critical: 1, high: findings - 1, medium: 0, low: 0 }, ...(preset ? { preset } : {}) });
+	// Newest first, as the server lists them; one kept before presets were recorded (Standard).
+	const columns = trendColumns([scan("2026-11-20T09:00:00Z", 40, "standard"), scan("2026-11-19T09:00:00Z", 10, "quick"), scan("2026-11-18T09:00:00Z", 30, undefined, "/other"), scan("2026-11-17T09:00:00Z", 50)]);
+	assert.deepEqual(
+		columns.map((column) => [column.at.slice(8, 10), column.total, column.apart]),
+		[
+			["17", 50, null],
+			["18", 30, "Another folder"],
+			["19", 10, "Quick scan"],
+			["20", 40, null],
+		],
+	);
+	const segments = barSegments({ critical: 1, high: 0, medium: 3, low: 4 }, 100);
+	assert.deepEqual(segments.map((segment) => segment.severity), ["critical", "medium", "low"], "a severity with nothing in it gets no segment");
+	assert.equal(Math.round(segments.reduce((sum, segment) => sum + segment.width, 0)), 100);
+	assert.deepEqual(barSegments({ critical: 0, high: 0, medium: 0, low: 0 }, 100), []);
+});

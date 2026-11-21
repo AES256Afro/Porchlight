@@ -6,6 +6,7 @@ import { exportButton, openExportDialog } from "./export.js";
 import { openSendDialog, sendButton } from "./send.js";
 import { clearFiltersButton, newChip, noScanYet, repoChoices, scanAgainButton, severityChips, viewLink } from "./finding-parts.js";
 import { matchesFilter } from "./filter.js";
+import { phaseChart } from "./charts.js";
 import { debounce, filterFromParams, paginate, paramsFromFilter } from "./list.js";
 import { findingRows, load, newFindingKeys, store, subscribe } from "./store.js";
 
@@ -171,6 +172,8 @@ export async function renderRoadmap(view, route) {
 		}
 		replace(
 			body,
+			// What each phase clears (VS-15): the tabs below carry the same figures in words.
+			phaseChart(roadmap.phases.map((candidate) => ({ title: candidate.title, findings: candidate.groups.flatMap((group) => group.actions).reduce((sum, action) => sum + action.counts.critical + action.counts.high + action.counts.medium + action.counts.low, 0) }))),
 			h(
 				"div",
 				{ class: "phases", role: "tablist", "aria-label": "Phases", onkeydown: moveBetweenTabs },

@@ -2,11 +2,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { LOOKS } from "../ui/looks.js";
+import { STYLES } from "../src/ui/server.ts";
 
 // The page's colours are tokens on :root, redefined for dark mode and by some looks. Every look is
 // read in both light and dark appearances and checked against WCAG AA: text 4.5:1, and 3:1 for what
 // is not text but must be seen (a severity mark, a field's edge, the focus ring).
-const css = readFileSync(new URL("../ui/styles.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+// Every stylesheet the page loads, in order (STYLES in cli/src/ui/server.ts); the HTML exports read tokens.css too.
+const css = STYLES.map((name) => readFileSync(new URL(`../ui/${name}.css`, import.meta.url), "utf8"))
+	.join("\n")
+	.replace(/\/\*[\s\S]*?\*\//g, "");
 
 interface Rule {
 	selectors: string[];
@@ -126,11 +130,39 @@ test("type, corners and spacing stay on their scales", () => {
 	assert.deepEqual([...new Set(sizes)].length <= 6, true);
 	const corners = [...css.matchAll(/border-radius:\s*([^;]+);/g)].map((match) => match[1]!.trim());
 	assert.deepEqual(corners.filter((corner) => !/^(var\(--radius-(sm|md|lg|pill)\)|0|50%)$/.test(corner)), []);
-	// Spacing is plain pixels, on the scale written in styles.css.
+	// Spacing is plain pixels, on the scale written in tokens.css.
 	const scale = new Set([0, 1, 2, 4, 6, 8, 12, 16, 20, 24, 32, 48, 64]);
 	const off: string[] = [];
 	for (const match of css.matchAll(/(?:^|[;{\s])((?:padding|margin|gap|row-gap|column-gap)(?:-[a-z-]+)?):\s*([^;{}]+);/g)) {
 		for (const px of match[2]!.matchAll(/-?(\d+(?:\.\d+)?)px/g)) if (!scale.has(Number(px[1]))) off.push(`${match[1]}: ${match[2]}`);
 	}
 	assert.deepEqual(off, []);
+});
+
+test("the HTML exports use the page's colour list, so its contrast rules hold there too, and print light (VS-11, R6V-1)", async () => {
+	const { renderFindings, renderRoadmap } = await import("../src/roadmap/render.ts");
+	const { EXPORT_TOKENS } = await import("../src/roadmap/style.ts");
+	const empty = { title: "Repair roadmap", source: "work", scannedAt: "2026-11-20T15:00:00.000Z", scope: null, caveats: [] };
+	const pages = [
+		renderRoadmap({ ...empty, phases: [], totals: { actions: 0, findings: 0, groups: 0 } }, "html").body,
+		renderFindings({ ...empty, rows: [] }, "html").body,
+	];
+	const cloudflare = readFileSync(new URL("../src/cloudflare/export.ts", import.meta.url), "utf8");
+	for (const body of pages) {
+		const style = /<style>([\s\S]*?)<\/style>/.exec(body)?.[1] ?? "";
+		assert.ok(style.includes(EXPORT_TOKENS), "the export carries tokens.css as it is");
+		// Past the tokens, every colour is a token: the export adds none of its own.
+		assert.deepEqual(style.replace(EXPORT_TOKENS, "").match(/#[0-9a-f]{3,8}\b|rgba?\(/gi) ?? [], []);
+		// Marks use the tones made for marks (at least 3:1), as on the page.
+		assert.match(style, /\.mark\.high \{ border-left-color: var\(--serious-mark\); \}/);
+		assert.match(style, /\.mark\.medium \{ border-left-color: var\(--warning-mark\); \}/);
+		assert.match(style, /\.notice \{[^}]*var\(--warning-mark\)/);
+	}
+	assert.deepEqual(cloudflare.slice(cloudflare.indexOf("const STYLE")).split("function htmlDoc")[0]!.match(/#[0-9a-f]{3,8}\b|rgba?\(/gi) ?? [], []);
+	// Printed, the light tokens come back after the dark ones, whatever the browser's appearance.
+	const print = /@media print \{ :root \{ ([^}]*) \} \}/.exec(EXPORT_TOKENS)?.[1] ?? "";
+	const light = tokens("today", false);
+	for (const name of ["--ink", "--ink-2", "--muted", "--hairline", "--critical", "--serious-mark", "--warning-mark"]) {
+		assert.ok(print.includes(`${name}: ${light[name]};`), `${name} is set to its light value for print`);
+	}
 });

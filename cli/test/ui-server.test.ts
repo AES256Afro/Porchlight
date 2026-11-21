@@ -10,7 +10,7 @@ import { monitorConfig } from "../src/monitor/client.ts";
 import { CancelledError, type Runner } from "../src/repos/exec.ts";
 import type { ScanOptions } from "../src/repos/scan.ts";
 import type { ScanReport } from "../src/repos/types.ts";
-import { hostAllowed, MIN_KEY_LENGTH, originAllowed, SCRIPTS, startUiServer, type UiOptions, type UiServer } from "../src/ui/server.ts";
+import { hostAllowed, MIN_KEY_LENGTH, originAllowed, SCRIPTS, STYLES, startUiServer, type UiOptions, type UiServer } from "../src/ui/server.ts";
 import { makeTree, tempDir } from "./helpers.ts";
 
 const ADMIN_TOKEN = "admin-token-that-must-never-reach-the-browser";
@@ -110,7 +110,7 @@ test("serves the page with headers that confine it to this server", async (t) =>
 	assert.equal(page.headers["cache-control"], "no-cache");
 	assert.ok(!page.text.includes(server.sessionKey), "the page itself must not contain the session key");
 	const scripts = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "overview", "findings", "roadmap", "repos", "domains"];
-	for (const asset of ["/styles.css", "/favicon.svg", ...scripts.map((name) => `/${name}.js`)]) {
+	for (const asset of [...STYLES.map((name) => `/${name}.css`), "/favicon.svg", ...scripts.map((name) => `/${name}.js`)]) {
 		assert.equal((await send(server, "GET", asset, { key: null })).status, 200, asset);
 	}
 });
@@ -119,6 +119,14 @@ test("serves every script in ui/, so a new one cannot be left out", async () => 
 	const { readdir } = await import("node:fs/promises");
 	const files = (await readdir(new URL("../ui/", import.meta.url))).filter((name) => name.endsWith(".js")).map((name) => name.slice(0, -3));
 	assert.deepEqual([...SCRIPTS].sort(), files.sort());
+});
+
+test("serves every stylesheet in ui/, and the page loads each in the order STYLES gives (RD-6)", async () => {
+	const { readdir, readFile } = await import("node:fs/promises");
+	const files = (await readdir(new URL("../ui/", import.meta.url))).filter((name) => name.endsWith(".css")).map((name) => name.slice(0, -4));
+	assert.deepEqual([...STYLES].sort(), files.sort());
+	const page = await readFile(new URL("../ui/index.html", import.meta.url), "utf8");
+	assert.deepEqual([...page.matchAll(/<link rel="stylesheet" href="\/([\w-]+)\.css" \/>/g)].map((match) => match[1]), [...STYLES]);
 });
 
 test("serves only its own files", async (t) => {
@@ -540,7 +548,7 @@ test("a scheduled scan tells the owner what is new and fixed, and a scan they st
 	assert.match(text, /1 new and 0 fixed since the last scan/);
 	assert.match(text, /New:\n {2}\[high\] group\/worst: A fresh problem \(package-lock\.json\)/);
 	assert.match(text, /1 finding of the last scan could not be checked again, so it is not counted as fixed/);
-	assert.match(text, /Not covered, so this is not a clean bill of health/);
+	assert.match(text, /Not covered, so this scan is incomplete/);
 
 	// One started from the page is not announced.
 	await makeTree(server.dir, { "projects/": "" });
@@ -697,7 +705,7 @@ test("exports the scan as a roadmap or a findings list, in each format, as a fil
 	const expected: [string, string, RegExp][] = [
 		["", "porchlight-roadmap-2026-11-17.md", /^# Repair roadmap/],
 		["?format=html", "porchlight-roadmap-2026-11-17.html", /^<!doctype html>/],
-		["?format=csv", "porchlight-roadmap-2026-11-17.csv", /^Phase,Priority,Place,Action/],
+		["?format=csv", "porchlight-roadmap-2026-11-17.csv", /^No\.,Phase,Priority,Place,Action/],
 		["?format=json", "porchlight-roadmap-2026-11-17.json", /^\{\n\t"title": "Repair roadmap"/],
 		["?content=findings", "porchlight-findings-2026-11-17.md", /^# Findings and suggested fixes/],
 		["?content=findings&format=csv", "porchlight-findings-2026-11-17.csv", /^Severity,Type,Place,ID,Finding/],
@@ -713,7 +721,7 @@ test("exports the scan as a roadmap or a findings list, in each format, as a fil
 	const partial = await send(server, "GET", "/api/repos/export?severity=critical&kind=vulnerability&repo=group%2Fworst&q=pkg");
 	assert.equal(partial.headers["content-disposition"], 'attachment; filename="porchlight-roadmap-partial-2026-11-17.md"');
 	assert.match(partial.text, /\*\*Partial roadmap\.\*\* It covers only: critical severity only; vulnerabilities only; in group\/worst; matching "pkg"\./);
-	assert.match(partial.text, /1 action clears 1 finding across 1 place/);
+	assert.match(partial.text, /1 action clears 1 finding across 1 repository/);
 
 	const roadmap = (await send(server, "GET", "/api/repos/roadmap?severity=critical")).json.roadmap;
 	assert.deepEqual([roadmap.totals.actions, roadmap.scope], [1, "critical severity only"]);
@@ -1500,12 +1508,12 @@ test("serves every module the page imports", async (t) => {
 	for (const name of imported) assert.equal((await send(server, "GET", `/${name}`, { key: null })).status, 200, name);
 });
 
-test("serves every look's script, and offers twelve looks", async (t) => {
+test("serves every look's script, and offers thirteen looks", async (t) => {
 	const server = await start(t);
 	for (const path of ["/looks.js", "/appearance.js", "/settings.js"]) assert.equal((await send(server, "GET", path, { key: null })).status, 200);
 	const { LOOKS } = await import("../ui/looks.js");
-	assert.equal(LOOKS.length, 12);
-	assert.equal(new Set(LOOKS.map((look) => look.id)).size, 12);
+	assert.equal(LOOKS.length, 13);
+	assert.equal(new Set(LOOKS.map((look) => look.id)).size, 13);
 });
 
 /** Records every request a model setting makes: where it went and what authorised it. */

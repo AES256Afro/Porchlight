@@ -16,10 +16,6 @@ time with "Porchlight Not Opened". To open it:
 2. Open System Settings → Privacy & Security, scroll down to "Porchlight was blocked", and choose
    Open Anyway. Confirm with your password or Touch ID.
 
-Or, in Terminal:
-
-    xattr -dr com.apple.quarantine /Applications/Porchlight.app
-
 After that it opens like any other app.
 
 

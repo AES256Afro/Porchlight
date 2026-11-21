@@ -589,7 +589,7 @@ export async function renderCloudflare(view, route) {
 			h(
 				"div",
 				{ class: "actions" },
-				h("button", { type: "button", class: "button primary", onclick: () => void copy() }, icon("copy"), "Copy all as a brief for a model"),
+				h("button", { type: "button", class: "button", onclick: () => void copy() }, icon("copy"), "Copy all as a brief for a model"),
 				h("span", { class: "hint" }, "Plain text: each problem, its domains and its fix. No token, member or record value. Paste it where your model can reach Cloudflare."),
 			),
 			h(

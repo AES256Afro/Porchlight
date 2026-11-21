@@ -1,0 +1,85 @@
+/* Tokens: the colour roles, type sizes, corners and fonts, for every page and look, in light and dark.
+   The HTML exports read this file too (cli/src/roadmap/style.ts), so the page and a saved report share one
+   colour list, and cli/test/contrast.test.ts checks both. Loaded first. */
+
+/* Colour roles. Status colours mark state only and always sit beside a shape and a word. A look's preview
+   (Settings → Appearance) starts from the same set, so it shows its own look, not the one in use. */
+:root,
+[data-preview] {
+	color-scheme: light;
+	--page: #f9f9f7;
+	--surface: #fcfcfb;
+	--ink: #0b0b0b;
+	--ink-2: #52514e;
+	/* Text: ink, ink-2, muted, link and critical-ink are at least 4.5:1 on page and surface (WCAG AA). */
+	--muted: #706f6a;
+	--hairline: #e1e0d9;
+	--border: rgba(11, 11, 11, 0.16);
+	/* The edge of a box to type in or choose from: at least 3:1, so the field can be seen (WCAG 1.4.11). */
+	--field-border: #8b8b87;
+	/* The accent is the brand's steel blue, its cool side (VS-2). The brand's warm colours, the door's red
+	   and the lantern's ochre, are kept to the mark and the wordmark: never an accent, a link or a chart
+	   fill, so they are never mistaken for Critical or Medium (VS-1). */
+	--accent: #3f6080;
+	--accent-hover: #2f4a64;
+	/* Text on an accent-coloured button. */
+	--on-accent: #fff;
+	--link: #33506b;
+	/* Fills (banners, tints) use the status colours; marks (severity and status icons) use the -mark
+	   tones, at least 3:1 on page and surface. cli/test/contrast.test.ts checks every theme and look. */
+	--good: #0ca30c;
+	--warning: #fab219;
+	--warning-mark: #b78212;
+	--serious: #ec835a;
+	--serious-mark: #cd724e;
+	--critical: #d03b3b;
+	--critical-ink: #b42f2f;
+	--on-warning: #0b0b0b;
+	--shadow: 0 8px 28px rgba(11, 11, 11, 0.16);
+	/* Type: six sizes. Labels and table heads, secondary text, body, section headings, page titles, big numbers. */
+	--text-xs: 12px;
+	--text-sm: 13px;
+	--text-md: 14px;
+	--text-lg: 16px;
+	--text-xl: 22px;
+	--text-2xl: 28px;
+	/* Corners: small marks, controls and inner boxes, cards and panels, pills. */
+	--radius-sm: 4px;
+	--radius-md: 6px;
+	--radius-lg: 12px;
+	--radius-pill: 999px;
+	/* Spacing is not tokenised, but every padding, margin and gap is on one scale:
+	   2, 4, 6, 8, 12, 16, 20, 24, 32, 48, 64 (and 1px for a hairline). cli/test/contrast.test.ts checks it. */
+	--sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+	--mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+	/* Condensed capitals for the wordmark and page titles (VS-4), from fonts already installed: the page's
+	   security policy loads no web font. Each system falls back to the next it has. */
+	--display: "Futura Condensed ExtraBold", "Avenir Next Condensed", "Bahnschrift Condensed", "Arial Narrow", system-ui, sans-serif;
+	/* The brand, for the mark and the wordmark only: "PORCH" in ink, "LIGHT" lit (the door's red on a light
+	   page, the lantern's ochre on a dark one), as in docs/brand/logo.png and logo-dark.png. */
+	--brand-lit: #d8412a;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root,
+	[data-preview] {
+		color-scheme: dark;
+		/* The brand's blacks (VS-3). */
+		--page: #0c0e12;
+		--surface: #131a23;
+		--ink: #f0efec;
+		--ink-2: #c3c2b7;
+		--muted: #898781;
+		--hairline: #243140;
+		--border: rgba(255, 255, 255, 0.18);
+		--field-border: #696968;
+		--accent: #3f6080;
+		--accent-hover: #8aa7c0;
+		--link: #8aa7c0;
+		--warning-mark: #fab219;
+		--serious-mark: #ec835a;
+		--critical-ink: #e66767;
+		--shadow: 0 8px 28px rgba(0, 0, 0, 0.6);
+		--brand-lit: #dca63f;
+	}
+}

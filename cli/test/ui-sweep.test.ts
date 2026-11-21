@@ -3,12 +3,14 @@
 import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
 import { test } from "node:test";
+import { STYLES } from "../src/ui/server.ts";
 
 const UI = new URL("../ui/", import.meta.url);
 const names = (await readdir(UI)).filter((name) => name.endsWith(".js")).sort();
 const files = await Promise.all(names.map(async (name) => ({ name, text: await readFile(new URL(name, UI), "utf8") })));
 const html = await readFile(new URL("index.html", UI), "utf8");
-const css = await readFile(new URL("styles.css", UI), "utf8");
+// Every stylesheet, in the order the page loads them (STYLES in cli/src/ui/server.ts).
+const css = (await Promise.all(STYLES.map((name) => readFile(new URL(`${name}.css`, UI), "utf8")))).join("\n");
 
 /** Every line of every module that matches, as "file:line: text". */
 function find(pattern: RegExp, skip: (name: string, line: string) => boolean = () => false): string[] {

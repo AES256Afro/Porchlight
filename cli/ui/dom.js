@@ -234,6 +234,42 @@ export function icon(name, className = "") {
 	return svg;
 }
 
+/** The SVG elements a chart is drawn with (charts.js). Nothing that links, loads, animates or runs. */
+const SVG_TAGS = new Set(["svg", "g", "rect", "line", "polyline", "circle", "text", "title"]);
+
+/**
+ * Builds an SVG element, as `h()` builds an HTML one (VS-12): attributes only, text set as text, and no
+ * inline style, handler or address, which the page's security policy and invariant 8 forbid. Colour comes
+ * from a class.
+ *
+ * @param {string} tag
+ * @param {Record<string, string | number | boolean | null | undefined> | null} [attributes]
+ * @param {...(Node | string | number | null | undefined | false)} children
+ * @returns {SVGElement}
+ */
+export function svg(tag, attributes, ...children) {
+	if (!SVG_TAGS.has(tag)) throw new Error(`svg() does not build <${tag}>`);
+	const element = /** @type {SVGElement} */ (document.createElementNS(SVG_NS, tag));
+	for (const [key, value] of Object.entries(attributes ?? {})) {
+		if (REFUSED_PROPS.includes(key) || key.toLowerCase().startsWith("on") || /href|src/i.test(key)) throw new Error(`svg() does not set ${key}`);
+		if (value === null || value === undefined || value === false) continue;
+		element.setAttribute(key, value === true ? "" : String(value));
+	}
+	append(element, children);
+	return element;
+}
+
+/**
+ * A host name as code that breaks only after a dot when it must (VS-10): "staging.acme.<wbr>example", never
+ * "staging.acme.exam|ple". A label too long for the line still breaks, as a last resort.
+ *
+ * @param {string} name
+ */
+export function hostName(name) {
+	const parts = String(name).split(".");
+	return h("code", { class: "host-name" }, ...parts.flatMap((part, index) => (index < parts.length - 1 ? [`${part}.`, h("wbr")] : [part])));
+}
+
 const SEVERITY_LABELS = { critical: "Critical", high: "High", medium: "Medium", low: "Low" };
 
 /**
@@ -575,7 +611,7 @@ export function emptyState(title, text, action = null) {
 }
 
 /**
- * A row of stat tiles. Its columns follow its own width and how many tiles it holds (styles.css), so
+ * A row of stat tiles. Its columns follow its own width and how many tiles it holds (components.css), so
  * no tile is left alone on a line: six go three by two, five put the total on a line of its own.
  *
  * @param {...(HTMLElement | null)} tiles

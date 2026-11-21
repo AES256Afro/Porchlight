@@ -6,7 +6,7 @@ import { assistantConfig, isHosted } from "./assist/ollama.ts";
 import { callMonitor, monitorConfig } from "./monitor/client.ts";
 import { describeDomain, describeHistory } from "./monitor/describe.ts";
 import { notifySetting } from "./notify/format.ts";
-import { exitCode, parseScanReport, renderMarkdown, renderSummary } from "./repos/report.ts";
+import { exitCode, parseScanReport, renderMarkdown, renderSummary, renderText } from "./repos/report.ts";
 import { History } from "./repos/history.ts";
 import { renderSarif } from "./repos/sarif.ts";
 import { baselineGaps, baselineSummary, beyondBaseline } from "./repos/baseline.ts";
@@ -29,6 +29,7 @@ import { sweepStaleTemp } from "./repos/temp.ts";
 import { adoptOldSettings, dataFolder } from "./legacy.ts";
 import { renderDoctor, runDoctor, runSelfCheck, type DoctorOptions } from "./doctor.ts";
 import { asksForHelp, helpFor, usage } from "./help.ts";
+import { fitWidth, terminalWidth } from "./columns.ts";
 import { startUiServer } from "./ui/server.ts";
 import { auditCloudflare } from "./cloudflare/audit.ts";
 import { tokenShapeProblem } from "./cloudflare/client.ts";
@@ -67,7 +68,7 @@ export async function main(argv: string[]): Promise<number> {
 	}
 	// Help for the command that was typed, before it is run: `porchlight repos scan --help`, or `porchlight help repos scan`.
 	if (asksForHelp(argv)) {
-		say((helpFor(group === "help" ? argv.slice(1) : argv) ?? usage()).trimEnd());
+		say(fitWidth((helpFor(group === "help" ? argv.slice(1) : argv) ?? usage()).trimEnd(), terminalWidth()));
 		return 0;
 	}
 	try {
@@ -98,7 +99,7 @@ export async function main(argv: string[]): Promise<number> {
 	}
 	// Not a command: say so, then show the commands of the group that was meant, or all of them.
 	warn(`porchlight: unknown command: ${argv.join(" ")}\n`);
-	warn((helpFor(argv) ?? usage()).trimEnd());
+	warn(fitWidth((helpFor(argv) ?? usage()).trimEnd(), terminalWidth(process.stderr)));
 	return 1;
 }
 
@@ -125,7 +126,7 @@ export async function doctor(args: string[], deps: Partial<DoctorOptions> & { wr
 		nodeVersion: deps.nodeVersion ?? process.versions.node,
 		...(values.offline ? {} : { fetchFn: deps.fetchFn ?? fetch }),
 	});
-	(deps.write ?? print)(values.json ? jsonText({ checks }) : renderDoctor(checks));
+	(deps.write ?? print)(values.json ? jsonText({ checks }) : renderDoctor(checks, terminalWidth()));
 	return checks.some((check) => check.status === "problem") ? 1 : 0;
 }
 
@@ -197,7 +198,7 @@ export function choicesFromFlags(values: { preset?: string; checks?: string; his
 }
 
 /** `deps` lets tests pass a scripted runner and their own folder. */
-export async function reposScan(args: string[], deps: { run?: Runner; dataDir?: string } = {}): Promise<number> {
+export async function reposScan(args: string[], deps: { run?: Runner; dataDir?: string; terminal?: boolean } = {}): Promise<number> {
 	const { values, positionals } = parseArgs({
 		args,
 		allowPositionals: true,
@@ -252,7 +253,9 @@ export async function reposScan(args: string[], deps: { run?: Runner; dataDir?: 
 		throw new Error(`No scanner is installed. Install one: ${report.tools.map((tool) => tool.installHint).join("; ")}`);
 	}
 
-	const rendered = format === "sarif" ? renderSarif(report, await installedVersion()) : format === "json" ? jsonText(report) : renderMarkdown(report);
+	// Markdown for a file or a pipe; plain text for a person at a terminal (RD-15).
+	const toTerminal = !values.out && format === "md" && (deps.terminal ?? process.stdout.isTTY === true);
+	const rendered = format === "sarif" ? renderSarif(report, await installedVersion()) : format === "json" ? jsonText(report) : toTerminal ? renderText(report) : renderMarkdown(report);
 	if (values.out) {
 		await writePrivate(values.out, rendered);
 		say(renderSummary(report));

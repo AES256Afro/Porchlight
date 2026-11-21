@@ -9,6 +9,7 @@ import { callMonitor, monitorConfig } from "./monitor/client.ts";
 import { readSavedMonitor } from "./monitor/settings.ts";
 import { safePath, ToolMissingError, type Runner } from "./repos/exec.ts";
 import { STALE_AFTER_MS } from "./repos/temp.ts";
+import { wrapWords } from "./columns.ts";
 
 // `porchlight doctor`: whether Porchlight has what it needs, and what to do about what it lacks.
 // It only reads: programs are asked their version, files are looked at, and (unless --offline) the
@@ -224,13 +225,23 @@ async function cloudflareCheck({ env, dataDir }: DoctorOptions): Promise<Check> 
 
 const WORDS: Record<CheckStatus, string> = { ok: "ok", note: "note", warning: "check", problem: "FIX" };
 
-/** One line a check, each led by a word, with what to do beneath it. */
-export function renderDoctor(checks: Check[]): string {
+/**
+ * One line a check, each led by a word, with what to do beneath it. `columns`: the terminal's width, to
+ * which each detail is wrapped under its own column (R6V-3); unlimited when not given.
+ */
+export function renderDoctor(checks: Check[], columns = Number.POSITIVE_INFINITY): string {
 	const width = Math.max(...checks.map((check) => check.name.length));
-	const lines = checks.flatMap((check) => [
-		`${WORDS[check.status].padEnd(5)}  ${check.name.padEnd(width)}  ${check.detail}`,
-		...(check.fix ? [`${" ".repeat(7 + width + 2)}→ ${check.fix}`] : []),
-	]);
+	const hang = " ".repeat(7 + width + 2);
+	// A detail column too narrow to read is moved under the name instead.
+	const under = columns - hang.length < 30;
+	const fit = (first: string, rest: string, text: string) => (Number.isFinite(columns) ? wrapWords(text, columns, first, rest) : [first + text]);
+	const lines = checks.flatMap((check) => {
+		const head = `${WORDS[check.status].padEnd(5)}  ${check.name.padEnd(width)}  `;
+		return [
+			...(under ? [head.trimEnd(), ...fit("       ", "       ", check.detail)] : fit(head, hang, check.detail)),
+			...(check.fix ? fit(under ? "       → " : `${hang}→ `, under ? "         " : `${hang}  `, check.fix) : []),
+		];
+	});
 	const problems = checks.filter((check) => check.status === "problem").length;
 	const warnings = checks.filter((check) => check.status === "warning").length;
 	const summary =
@@ -239,7 +250,7 @@ export function renderDoctor(checks: Check[]): string {
 			: warnings > 0
 				? `Porchlight works. ${warnings === 1 ? "1 thing is" : `${warnings} things are`} worth a look.`
 				: "Porchlight has what it needs.";
-	return `${lines.join("\n")}\n\n${summary}\n`;
+	return `${lines.join("\n")}\n\n${fit("", "", summary).join("\n")}\n`;
 }
 
 // `porchlight doctor --self` (R6F-1): a read-only check of what Porchlight promises on this computer,

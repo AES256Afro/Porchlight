@@ -1,10 +1,11 @@
 // @ts-check
 import { api, ApiError } from "./api.js";
 import { assistAction } from "./assist.js";
-import { banner, copyButton, formatNumber, formatWhen, h, icon, isOff, pager, plural, replace, setOff, severityBadge, shownText, statTile, stepNodes, tileRow, toast } from "./dom.js";
+import { banner, copyButton, formatNumber, formatWhen, h, hostName, icon, isOff, pager, plural, replace, setOff, severityBadge, shownText, statTile, stepNodes, tileRow, toast } from "./dom.js";
 import { exportButton, openExportDialog } from "./export.js";
 import { domainFromInput, monitorSetupSteps, monitorStatusWords, overdueDomains } from "./hints.js";
 import { paginate } from "./list.js";
+import { trendChart } from "./charts.js";
 
 const WATCHES = "Watches the domains you own for new subdomains, DNS changes, expiring certificates and missing security headers. It only looks at what is public.";
 
@@ -70,7 +71,7 @@ export async function renderDomains(view, route) {
 				h(
 					"form",
 					{ class: "add-domain", onsubmit: addDomain },
-					h("div", { class: "inline-form" }, h("div", { class: "field grow" }, input), h("button", { type: "submit", class: "button primary" }, "Add a domain")),
+					h("div", { class: "inline-form" }, h("div", { class: "field grow" }, input), h("button", { type: "submit", class: "button" }, "Add a domain")),
 					addProblem,
 				),
 			),
@@ -400,6 +401,14 @@ function historyView(history, page, go) {
 		"section",
 		{ class: "domain-history", "aria-labelledby": "domain-history-title" },
 		h("h3", { id: "domain-history-title" }, `History (${plural(history.length, "scan", "scans")} kept)`),
+		// Open findings after each kept scan, oldest first (VS-13); the list below has the same figures.
+		trendChart(
+			history
+				.slice(0, 12)
+				.reverse()
+				.map((entry) => ({ at: entry.takenAt, counts: { critical: 0, high: entry.openFindings.high, medium: entry.openFindings.medium, low: entry.openFindings.low }, total: entry.openFindings.high + entry.openFindings.medium + entry.openFindings.low, apart: null })),
+			"Open findings after each kept scan, oldest first, by severity.",
+		),
 		h(
 			"ol",
 			{ class: "timeline" },
@@ -431,7 +440,7 @@ function timelineDetail(entry) {
 	/** @param {string} label @param {MonitorFinding[]} findings */
 	const list = (label, findings) =>
 		findings.length > 0
-			? h("div", null, h("p", { class: "hint" }, label), h("ul", { class: "timeline-findings" }, ...findings.map((finding) => h("li", null, severityBadge(finding.severity), h("code", null, finding.host), ` ${finding.title}`))))
+			? h("div", null, h("p", { class: "hint" }, label), h("ul", { class: "timeline-findings" }, ...findings.map((finding) => h("li", null, severityBadge(finding.severity), hostName(finding.host), ` ${finding.title}`))))
 			: null;
 	return /** @type {HTMLElement[]} */ (
 		[
@@ -578,7 +587,7 @@ function findingsTable(rows, fresh, withFix) {
 						"tr",
 						null,
 						h("td", null, severityBadge(row.severity)),
-						h("td", { class: "mono wrap col-where" }, row.host),
+						h("td", { class: "mono wrap col-where" }, hostName(row.host)),
 						h(
 							"td",
 							{ class: "wrap col-what" },
@@ -618,18 +627,18 @@ function changeItem(change) {
 	const values = (/** @type {string[]} */ list) => (list.length > 0 ? list.join(", ") : "none");
 	switch (change.kind) {
 		case "host_added":
-			return h("li", null, icon("plus", "change-added"), h("span", null, "New host ", h("code", null, change.host)));
+			return h("li", null, icon("plus", "change-added"), h("span", null, "New host ", hostName(change.host)));
 		case "host_removed":
-			return h("li", null, icon("minus", "change-removed"), h("span", null, "Host gone ", h("code", null, change.host)));
+			return h("li", null, icon("minus", "change-removed"), h("span", null, "Host gone ", hostName(change.host)));
 		case "dns_changed":
 			return h(
 				"li",
 				null,
 				icon("change"),
-				h("span", null, `${change.record} record for `, h("code", null, change.host), " changed from ", h("code", null, values(change.before)), " to ", h("code", null, values(change.after))),
+				h("span", null, `${change.record} record for `, hostName(change.host), " changed from ", h("code", null, values(change.before)), " to ", h("code", null, values(change.after))),
 			);
 		case "https_changed":
-			return h("li", null, icon("change"), h("span", null, "HTTPS on ", h("code", null, change.host), ` went from ${change.before} to ${change.after}`));
+			return h("li", null, icon("change"), h("span", null, "HTTPS on ", hostName(change.host), ` went from ${change.before} to ${change.after}`));
 	}
 }
 

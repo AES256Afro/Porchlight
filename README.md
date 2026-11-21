@@ -25,6 +25,8 @@ Findings are ranked by severity and grouped into an ordered repair plan. A langu
 
 ## Contents
 
+Specification:
+
 1. [Quick start](#1-quick-start)
 2. [System overview](#2-system-overview)
 3. [Subsystems](#3-subsystems)
@@ -34,8 +36,30 @@ Findings are ranked by severity and grouped into an ordered repair plan. A langu
 7. [Failure behaviour](#7-failure-behaviour)
 8. [Limits](#8-limits)
 9. [Interface](#9-interface)
+10. [Commands](#10-commands)
+11. [Environment variables](#11-environment-variables)
 
-Reference: [Setup](#setup) · [Web interface](#web-interface) · [Mac app](#mac-app) · [Verify a download](#verify-a-download) · [Open it from other devices](#open-it-from-other-devices) · [Run on BoxPilot](#run-on-boxpilot) · [Model](#model) · [Scan repositories](#scan-repositories) · [Deeper analysis](#deeper-analysis-with-a-model) · [Fetch from GitHub](#fetch-repositories-from-github) · [Export](#export-a-repair-roadmap) · [Send to a model](#send-to-a-model) · [Discussions](#discussions) · [Projects](#projects) · [History](#history-status-and-notes) · [Investigate](#investigate-with-a-model) · [Check the computer](#check-the-computer) · [Cloudflare audit](#audit-your-cloudflare-account) · [Monitor domains](#monitor-domains) · [Development](#development)
+Reference:
+
+- [Setup](#setup)
+- [Web interface](#web-interface)
+- [Mac app](#mac-app): [Download it](#download-it) · [Verify a download](#verify-a-download) · [Build it from a checkout](#or-build-it-from-a-checkout) · [Settings](#settings)
+- [Open it from other devices](#open-it-from-other-devices)
+- [Run on BoxPilot](#run-on-boxpilot): [Container](#container)
+- [Model](#model): [Choose it in Settings](#choose-it-in-settings) · [Download a local model](#download-a-local-model) · [Set it at start-up](#or-set-it-when-porchlight-starts) · [What a model is sent](#what-a-model-is-sent)
+- [Scan repositories](#scan-repositories): [Before a commit](#before-a-commit) · [On a schedule](#on-a-schedule) · [Private data](#private-data) · [How deep a scan goes](#how-deep-a-scan-goes) · [A software bill of materials](#a-software-bill-of-materials)
+- [Deeper analysis with a model](#deeper-analysis-with-a-model)
+- [Fetch repositories from GitHub](#fetch-repositories-from-github)
+- [Export a repair roadmap](#export-a-repair-roadmap): [A mural for the export](#a-mural-for-the-export)
+- [Send to a model](#send-to-a-model)
+- [Discussions](#discussions)
+- [Projects](#projects)
+- [History, status and notes](#history-status-and-notes)
+- [Investigate with a model](#investigate-with-a-model)
+- [Check the computer](#check-the-computer)
+- [Audit your Cloudflare account](#audit-your-cloudflare-account)
+- [Monitor domains](#monitor-domains): [How it works](#how-it-works) · [Run locally](#run-locally) · [Deploy](#deploy) · [Use it](#use-it) · [Settings](#settings-1) · [Limits](#limits)
+- [Development](#development)
 
 ## 1. Quick start
 
@@ -93,12 +117,12 @@ Porchlight is one Node.js process. The browser page and the Mac app are clients 
 | Repair roadmap | A scan | Findings grouped into actions: one per package to upgrade, credential to rotate, or batch of doubtful matches. The upgrade target is the lowest version that clears every advisory against the package | Four phases: Fix now, Fix next, Schedule, When convenient | `cli/src/roadmap/` |
 | Scan history | Each finished scan | Findings matched across scans by repository, rule or advisory, file and detail | New, fixed, and "could not be checked again" | `cli/src/repos/history.ts` |
 | Domain monitor | Domains whose `_porchlight-challenge` TXT record holds their token | Certificate Transparency logs, DNS over HTTPS, one `GET /` per host without following redirects | Changes since the previous scan, findings, webhook alerts | `monitor/` |
-| Cloudflare audit | Every zone in the account | Fixed rules, no model. A feature the zone's plan lacks is reported as unavailable, not as a fault | Problems per zone; 11 fixed change templates, sent only after approval | `cli/src/cloudflare/` |
+| Cloudflare audit | Every zone in the account | Fixed rules, no model. A feature the zone's plan lacks is reported as unavailable, not as a fault | Findings per zone; 10 fixed change templates offered (the ownership record, five settings that cannot break a site, four that need a look), each sent only after approval | `cli/src/cloudflare/` |
 | Host check | The computer Porchlight runs on | The operating system's own tools, read-only, each with a time limit. macOS: five areas. Linux: credentials in files and installed packages | Results by area, and the repair commands that need no decision gathered into one block | `cli/src/host/` |
 | Investigation | One proven domain and its subdomains | A model proposes one action per turn from three tools (DNS lookup, one HTTP request, one TCP connect); code checks each action and asks for approval | Findings that cite evidence captured in the same run | `cli/src/investigate/` |
 | Model assistance | What the page shows | Explain, Summarise, Ask, Deeper analysis, Send to a model, an export mural | Labelled text beside findings, kept as discussions | `cli/src/assist/`, `cli/src/analysis/`, `cli/src/discussions/` |
-| Exports | A scan, an audit or an investigation | Markdown, HTML (no script), CSV, JSON; every value escaped for its format | Files under fixed names; optionally a project folder | `cli/src/roadmap/escape.ts`, `cli/src/projects/` |
-| Web interface | The above | 10 pages, 12 looks, a status and note per finding; filters, order and page number kept in the address | | `cli/ui/` |
+| Exports | A scan, an audit or an investigation | Markdown, HTML (no script, the page's own colours, light when printed), CSV, JSON; every value escaped for its format; actions numbered "phase.action"; a foot line with the version, the kind of scan and its time in UTC | Files under fixed names; optionally a project folder | `cli/src/roadmap/escape.ts`, `cli/src/projects/` |
+| Web interface | The above | 10 pages, 13 looks, a status and note per finding; filters, order and page number kept in the address; a findings trend, one severity bar and a phase chart, each beside its table | | `cli/ui/` |
 
 ## 4. Operating modes
 
@@ -133,26 +157,33 @@ Never sent anywhere: secret values (reports do not hold them), commit author nam
 
 ## 6. Design constraints and their verification
 
-These hold for every release. `CLAUDE.md` lists all of them with the implementation details; the table names the test that checks each one. `npm test` runs both packages' tests, and CI runs them on every push.
+These hold for every release. They are numbered as the invariants in `CLAUDE.md`, which gives each one's implementation details and, under it, the same tests. `npm test` runs both packages' tests, and CI runs them on every push. Tests that need the real gitleaks skip without it (13 tests); CI sets `PORCHLIGHT_REQUIRE_SCANNERS=1`, so there a missing scanner fails them.
 
 | # | Constraint | Verified by |
 | --- | --- | --- |
-| C1 | No request is made about a domain (certificate log, DNS other than the challenge record, HTTPS) until its ownership record has been confirmed in the same scan. | `monitor/test/scan.test.ts`, "ownership gate": asserts the exact list of requests |
-| C2 | The monitor only looks: one `GET /` per host, no redirects followed, no port scanning, no guessing of subdomains or paths. | `monitor/test/scan.test.ts`, "probes at most MAX_HOSTS hosts, lists the rest, and stays within its request budget" |
-| C3 | Secret values never leave the scanner. gitleaks always runs with `--redact`; reports carry no secret values, matches, author names or emails. | `cli/test/scan.test.ts`, "end to end: the real gitleaks finds a secret in history and the report never contains it" |
-| C4 | A scanned repository is untrusted input: its `.gitleaks.toml` cannot change the rules, its `.git` cannot run a program or hide history, and no file is skipped by its name. | `cli/test/hostile-history.test.ts`, "end to end: no hostile repository runs a program, hides history or skips a file by name"; `cli/test/scan.test.ts`, "end to end: a hostile repository can neither run a program nor switch gitleaks' rules off"; step 4 of `scripts/container-smoke.sh` |
-| C5 | An incomplete scan is never a clean result: a missing scanner, or one that could not read a repository, is reported as not covered. | `cli/test/scan.test.ts`, "an unreachable vulnerability database is a failure, not a clean result" and "gitleaks reporting nothing because git could not read the history is a failure, not a clean result" |
-| C6 | A failed lookup is not an empty answer. It is never reported as a change and never clears a finding. | `monitor/test/findings.test.ts`, "stays silent about anything a failed lookup could not observe" |
-| C7 | The monitor's API fails closed: without an `ADMIN_TOKEN` of 32 characters or more, every `/domains` route answers 503. | `monitor/test/api.test.ts`, "refuses to run with no token, or a weak one, configured" |
-| C8 | The web interface answers only its own page: another Host name, a cross-site Origin, or a request without the session key is refused. | `cli/test/ui-server.test.ts`, "refuses requests addressed to any other host name" and "requires the session key on every API call and refuses cross-site origins" |
-| C9 | No HTML is built from scanned data. The page builds every element with `h()` (`cli/ui/dom.js`), never with `innerHTML`, and its Content-Security-Policy allows no inline script or style. | Test: `cli/test/ui-server.test.ts`, "serves the page with headers that confine it to this server". Inspection: no `innerHTML` in `cli/ui/` |
-| C10 | Exports are escaped for their format: HTML entities, a leading apostrophe before spreadsheet formula characters in CSV, escaped text in Markdown. | `cli/test/roadmap.test.ts`, "hostile text in a scan cannot become markup, a link or a formula in any format" |
-| C11 | Triage re-ranks secrets and never drops one. | `cli/test/triage.test.ts`, "each signal lowers the rank one step and says why" |
-| C12 | A model sees only what the page shows, framed as data. Its answer is shown as text, labelled with the model's name, and never acted on. An answer that is not the requested JSON becomes "unclear". | `cli/test/assist.test.ts`, "explains one finding from what the page shows, framed as data"; `cli/test/analysis.test.ts`, "turns the model's answer into a judgement, and anything else into 'unclear'" |
-| C13 | An investigation stays inside the proven domain and its subdomains, re-checks ownership before every action, refuses private, loopback, link-local and CGNAT addresses, and keeps a finding only if it cites evidence from the same run. | `cli/test/investigate.test.ts`, "scope: the verified domain and its subdomains, nothing else", "ownership lost mid-run stops the run before the next action", "a host that resolves to a private address is refused after approval, before connecting", "findings are kept only with evidence this run captured" |
-| C14 | The Cloudflare token is sent only to `api.cloudflare.com`, as a header. A change is one of the fixed templates, offered only for a problem the latest audit found, and sent once after approval. | `cli/test/cloudflare.test.ts`, "every request goes to Cloudflare's API with the token as a header only, and only reads"; `cli/test/cloudflare-server.test.ts`, "a change is sent only after the owner approves the exact request, once, and is recorded" |
-| C15 | The host check only reads. A check that could not run, or whose answer is not recognised, is "Could not check", never passed. | `cli/test/host.test.ts`, "an answer that is not understood, a failure or a missing tool is never a pass" |
-| C16 | The GitHub token reaches only GitHub, as a header or through git's environment; never an argument, an address, a report or the page. | `cli/test/github.test.ts`, "clones with git settings that run nothing a repository carries, and keeps the token out of every argument" |
+| 1 | No request is made about a domain (certificate log, DNS other than the challenge record, HTTPS) until its ownership record has been confirmed in the same scan. | `monitor/test/scan.test.ts`, "ownership gate": asserts the exact list of requests; `monitor/test/waiting.test.ts` |
+| 2 | The monitor only looks: one `GET /` per host, no redirects followed, no port scanning, no guessing of subdomains or paths. The one exception is an investigation the operator approves (20). | `monitor/test/scan.test.ts`, "probes at most MAX_HOSTS hosts, lists the rest, and stays within its request budget" |
+| 3 | Secret values never leave the scanner. gitleaks always runs with `--redact`; reports carry no secret values, matches, author names or emails. Private data is reported by kind, file, line and count, never a value. | `cli/test/scan.test.ts`, "end to end: the real gitleaks finds a secret in history and the report never contains it"; `cli/test/private.test.ts`; `cli/test/host.test.ts`, "credential files are reported by path, kind and permissions, never by what they hold" |
+| 4 | The monitor's API fails closed: without an `ADMIN_TOKEN` of 32 characters or more, every `/domains` route answers 503. | `monitor/test/api.test.ts`, "refuses to run with no token, or a weak one, configured" |
+| 5 | A failed lookup is not an empty answer. It is never reported as a change and never clears a finding. A kept file that cannot be read is said, never taken for an empty one. | `monitor/test/findings.test.ts`, "stays silent about anything a failed lookup could not observe"; `monitor/test/scan.test.ts`, "a failed read changes nothing (invariant 5)"; `cli/test/conventions.test.ts`, "a kept file is read through readPrivateJson…" |
+| 6 | The CLI and its page have no runtime dependencies: Node's own modules and their own files only, TypeScript run through type stripping, the page with no build step. | `cli/test/conventions.test.ts`, "the CLI and its page have no runtime dependencies…"; `npm run typecheck` |
+| 7 | The web interface answers only its own page: another Host name, a cross-site Origin, or a request without the session key is refused. The monitor's admin token is never sent to the browser. | `cli/test/ui-server.test.ts`, "refuses requests addressed to any other host name", "requires the session key on every API call and refuses cross-site origins", "listens beyond loopback only with a fixed key long enough to guard it", "other devices get in only on the tailnet address, only with the access key, and cannot change access" |
+| 8 | No HTML is built from scanned data. The page builds every element with `h()` (`cli/ui/dom.js`), never with `innerHTML`, and its Content-Security-Policy allows no inline script or style. | `cli/test/ui-sweep.test.ts`, "no HTML is built from strings, and no inline script or style (invariant 8, S46)" and "h() refuses markup, inline style and addresses in a scheme the page never uses (S46)" |
+| 9 | The BoxPilot manifest matches the image: tailnet exposure, a read-only repositories mount, a generated key. The image is published only from a `v*` tag, after the container smoke test passes. | `npm run check:boxpilot` (`scripts/check-boxpilot-manifest.mjs`); `scripts/container-smoke.sh` |
+| 10 | Triage re-ranks secrets and private data and never drops a finding. | `cli/test/triage.test.ts`, "each signal lowers the rank one step and says why" |
+| 11 | Exports are escaped for their format: HTML entities, a leading apostrophe before spreadsheet formula characters in CSV, escaped text in Markdown. The HTML export has no script and loads nothing. | `cli/test/roadmap.test.ts`, "hostile text in a scan cannot become markup, a link or a formula in any format" and "renders a self-contained page with no script" |
+| 12 | A suggested fix is the complete repair, planned from the whole repository whatever a filter shows. A partial export says so. | `cli/test/roadmap.test.ts`, "a filter never shrinks a fix: the upgrade shown clears the advisories the filter hides too" and "a filtered findings list still names the complete repair" |
+| 13 | A model sees only what the page shows, framed as data. Its answer is shown as text, labelled with the model's name, and never acted on. A key reaches only the provider it was saved for. | `cli/test/assist.test.ts`, "explains one finding from what the page shows, framed as data"; `cli/test/ui-server.test.ts`, "a key goes only to the provider or the server address it was saved for" |
+| 14 | A scanned repository is untrusted input: its `.gitleaks.toml` cannot change the rules, its `.git` cannot run a program or hide history, and no file is skipped by its name. | `cli/test/hostile-history.test.ts`, "end to end: no hostile repository runs a program, hides history or skips a file by name"; `cli/test/scan.test.ts`, "end to end: a hostile repository can neither run a program nor switch gitleaks' rules off"; step 4 of `scripts/container-smoke.sh` |
+| 15 | The GitHub token reaches only GitHub, as a header or through git's environment; never an argument, an address, a report or the page. | `cli/test/github.test.ts`, "clones with git settings that run nothing a repository carries, and keeps the token out of every argument" |
+| 16 | A model's analysis is advice beside a finding: it never changes a severity, a count, the roadmap or an export. An answer that is not the requested JSON becomes "unclear". | `cli/test/analysis.test.ts`, "turns the model's answer into a judgement, and anything else into 'unclear'"; `cli/test/mural.test.ts`, "the mural prompt is data in a frame, and carries no reasons, evidence or secret details" |
+| 17 | History and the operator's notes sit beside findings, never in them. A finding counts as fixed only where the later scan looked again. | `cli/test/history.test.ts`, "a scanner that was missing or failed never makes a finding look fixed or new"; `cli/test/ui-server.test.ts`, "keeps the owner's status and note for a finding of the latest scan, privately, without changing it" |
+| 18 | "Send to a model" names a model by Porchlight's own id and builds what is sent from the server's own report. | `cli/test/ui-server.test.ts`, "sends the roadmap or the findings to the model the owner picks, from the stored report only"; `cli/test/send.test.ts` |
+| 19 | The host check only reads. A check that could not run, or whose answer is not recognised, is "Could not check", never passed. | `cli/test/host.test.ts`, "an answer that is not understood, a failure or a missing tool is never a pass" |
+| 20 | An investigation stays inside the proven domain and its subdomains, re-checks ownership before every action, refuses private, loopback, link-local and CGNAT addresses, and keeps a finding only if it cites evidence from the same run. | `cli/test/investigate.test.ts`, "scope: the verified domain and its subdomains, nothing else", "ownership lost mid-run stops the run before the next action", "a host that resolves to a private address is refused after approval, before connecting", "findings are kept only with evidence this run captured" |
+| 21 | The Cloudflare token is sent only to `api.cloudflare.com`, as a header. A change is one of the fixed templates, offered only for a problem the latest audit found, and sent once after approval. | `cli/test/cloudflare.test.ts`, "every request goes to Cloudflare's API with the token as a header only, and only reads"; `cli/test/cloudflare-server.test.ts`, "a change is sent only after the owner approves the exact request, once, and is recorded" |
+| 22 | A discussion keeps a model's answers beside the findings; a follow-up goes only to the model it began with and adds nothing but the operator's question. | `cli/test/discussions.test.ts`, "a follow-up sends the first prompt, the answers so far and the question, dropping the oldest answers when they do not fit"; `cli/test/ui-server.test.ts`, "keeps each answer as a discussion, and answers follow-up questions from the same data" |
+| 23 | Porchlight writes into a project folder only inside its `Porchlight` subfolder, under its own file names, never over an existing file. | `cli/test/projects.test.ts`, "saved files are new files, readable only by the owner, inside Porchlight's own folder"; `cli/test/ui-server.test.ts`, "a project folder gets saved exports, discussions and a log, under Porchlight's own names and nowhere else" |
 
 ## 7. Failure behaviour
 
@@ -181,7 +212,7 @@ These hold for every release. `CLAUDE.md` lists all of them with the implementat
 | Scans kept in history | 50 | `cli/src/repos/history.ts` |
 | Discussions kept | 200, each up to 20 answers | `cli/src/discussions/discussions.ts` |
 | Earlier answers sent to a local model in a follow-up | 6,000 characters, oldest dropped first | `cli/src/discussions/discussions.ts` |
-| Wait for a model's answer | 5 minutes | `cli/src/assist/ollama.ts` |
+| Wait for a model's answer | 5 minutes (Explain, Summarise, Ask, Deeper analysis, an investigation's turn); 20 for Send to a model and its follow-ups; 15 for a mural | `cli/src/assist/ollama.ts`, `cli/src/ui/server.ts` |
 | Deeper analysis per run | 25 items by default, at most 500 | Overview page |
 | Investigation turns | 25 by default, at most 60 | Investigate page |
 | Gap between investigation actions on one host | 1 second | `cli/src/investigate/engine.ts` |
@@ -223,6 +254,54 @@ The figures show made-up repositories checked by the real gitleaks and osv-scann
 | ![Settings → Model: a model on this computer, on another computer, or through an API](docs/screenshots/settings-model.png) | ![Settings → Appearance: twelve looks with previews](docs/screenshots/settings-appearance.png) |
 | *Figure 12. Settings → Model* | *Figure 13. Settings → Appearance* |
 
+## 10. Commands
+
+`porchlight <command> --help` prints one command's options (`cli/src/help.ts`); `porchlight --version` prints the version.
+
+| Command | What it does |
+| --- | --- |
+| `porchlight repos scan` | Scan git repositories for committed secrets, vulnerable packages and private data |
+| `porchlight repos history` | List the kept scans, with what was new and fixed in each |
+| `porchlight repos export` | Turn a JSON report into a repair roadmap or a list of findings |
+| `porchlight repos sbom` | List every package the repositories use, as a CycloneDX SBOM |
+| `porchlight findings note` | Set a finding's status and note, as on the Findings page |
+| `porchlight findings notes` | List your statuses and notes |
+| `porchlight domains` | Register, verify and scan the domains your monitor watches |
+| `porchlight host check` | Check this computer: updates, protection, open services, credentials in files |
+| `porchlight cloudflare audit` | Check every domain in your Cloudflare account against built-in rules |
+| `porchlight ui` | Open the local web interface |
+| `porchlight doctor` | Check that Porchlight has what it needs, and say what to fix |
+| `porchlight forget` | List, then remove, everything Porchlight keeps on this computer |
+| `porchlight status` | What Porchlight last found, from the files it keeps; contacts nothing |
+| `porchlight hook` | Check the staged files for secrets and private data before a commit |
+| `porchlight schedule print` | Print a launchd or systemd unit that scans a folder on a schedule |
+
+Exit codes: an error (an unknown option, a file that cannot be read, a service that refused) exits 1. A scan, check or audit that ran exits 0 whatever it found, unless `--fail-on <severity>` is given (`repos scan`, `host check`, `cloudflare audit`): then it exits 2 when a finding is at or above that severity, otherwise 1 when something could not be scanned or checked, otherwise 0. `doctor` exits 1 when something Porchlight cannot work without is missing.
+
+## 11. Environment variables
+
+Read when Porchlight starts. A choice saved in the interface's Settings comes first where one exists.
+
+| Variable | Meaning | Read by |
+| --- | --- | --- |
+| `PORCHLIGHT_UI_KEY` | A fixed key of at least 32 characters. Needed to listen on any address but loopback (the container) | `ui` |
+| `PORCHLIGHT_MONITOR_URL`, `PORCHLIGHT_ADMIN_TOKEN` | The monitor's address and admin token, when none is saved under Settings → Monitor | `ui`, `domains`, `doctor` |
+| `PORCHLIGHT_LLM_PROVIDER` | `ollama` (default), `compatible`, `anthropic`, `openai`, `gemini` or `deepseek`; see [Deeper analysis](#deeper-analysis-with-a-model) | `ui`, `doctor` |
+| `PORCHLIGHT_LLM_URL`, `PORCHLIGHT_LLM_MODEL` | A model server's address and the model's name | `ui`, `doctor` |
+| `PORCHLIGHT_LLM_API_KEY` | A hosted provider's key, or a key for the operator's own server | `ui` |
+| `PORCHLIGHT_GITHUB_TOKEN` | A GitHub token for fetching private repositories | `ui`, `doctor` |
+| `PORCHLIGHT_CLOUDFLARE_TOKEN` | A Cloudflare API token, when none is saved under Settings → Cloudflare | `ui`, `cloudflare audit`, `doctor` |
+| `PORCHLIGHT_SCAN_DEPTH` | Folder levels a scan looks through, 0 to 6 (default 3) | `ui` |
+| `PORCHLIGHT_SCAN_EVERY_HOURS` | Scan `--root` again this often while the server runs, 1 to 720 | `ui` |
+| `PORCHLIGHT_OSV_OFFLINE` | `true`: keep OSV's databases in the data folder and compare against them | `ui` |
+| `PORCHLIGHT_NOTIFY_URL`, `PORCHLIGHT_NOTIFY_FORMAT` | Where a scheduled scan's outcome is sent, and as `json`, `slack`, `discord` or `ntfy` | `ui` |
+| `PORCHLIGHT_GIT_SAFE_DIRECTORY` | Folders git may read though another user owns them, separated as in PATH (the container sets `/repos` and `/repos/*`) | every scan |
+| `PORCHLIGHT_REQUIRE_SCANNERS` | `1`: a test that needs gitleaks fails instead of skipping (CI) | `npm test` |
+| `PORCHLIGHT_ROOT` | The folder the Mac app offers, in `~/.porchlight/app.env` | Mac app |
+| `PORCHLIGHT_STOP_WITH_STDIN` | `1`: the server stops when its standard input closes (set by the Mac app) | `ui` |
+
+Variables named `SECURITYX_…`, from before the rename, are still read when the `PORCHLIGHT_…` one is not set.
+
 ## Setup
 
 The [quick start](#1-quick-start) is all a scan needs. To work on Porchlight itself, `npm run setup` installs both packages' development tools and enables the pre-commit hook that blocks commits containing secrets.
@@ -261,12 +340,15 @@ It prints a link. Open it to get both tools in the browser:
 
 - **Overview**: the two jobs, "Scan your code" and "Scan your domains". Before a scan it names the repositories it found in the folder, and whether git and each scanner is ready, with the command that installs one that is not; when it finds none, or the monitor is not set up, it says what to do next in numbered steps. The home folder itself is looked through only when you ask, as it holds Desktop, Documents and Downloads. After a scan, **At a glance** gives one line for your code, your domains, Cloudflare and this computer: how old each is, what is new and fixed since the time before, and the worst finding. **Check everything** scans your code with the last scan's options (without a model), audits Cloudflare and checks this computer, each only reading. Below it are where things stand, what needs doing first, and, with a schedule, when it last ran and how, when it runs next, whether the last notice was delivered and a token that ends within two weeks. A scan that is running can be stopped; nothing is saved, and the last scan stays as it was.
 - **Findings**: every finding in one list, most severe first, each with the repair that clears it, with a copy button beside each command. Switch to **By repository** to see them grouped. Filter by severity, type, repository, text, or **New since the last scan**; the filters are kept in the address, so a reload or a shared link shows the same view. After a fix, open a repository under By repository and choose **Scan this repository again** to check it alone. Where a scanner is missing or fails that time, what it found before is kept.
-- **Roadmap**: what to repair, in order. One action, such as upgrading a package, can clear many findings.
+- **Roadmap**: what to repair, in order. One action, such as upgrading a package, can clear many findings. A chart above the phases shows how many findings each clears.
+- **Domains**: add a domain by its name, prove it is yours with one DNS record, scan, and read what changed, with a suggested fix for each finding. Until the monitor is connected the page walks through setting it up, with each command to copy. Connect it under **Settings → Monitor**: paste the monitor's address and admin token, Porchlight asks the monitor whether they work, and the page becomes your list of domains with no restart. **Check connections**, there and in Settings, asks the monitor and a local model whether they answer now, so "connected" means working. The page says when domains are overdue: the monitor scans 144 a day. The two can also be given at start-up as `PORCHLIGHT_MONITOR_URL` and `PORCHLIGHT_ADMIN_TOKEN` (see [Monitor domains](#monitor-domains)); a connection saved in Settings comes first.
+- **Cloudflare**: audit every zone in your Cloudflare account and approve fixed changes; see [Audit your Cloudflare account](#audit-your-cloudflare-account).
+- **Investigate**: a model plans an investigation of a domain you have proven is yours, one approved request at a time; see [Investigate with a model](#investigate-with-a-model).
 - **This Mac** (**This computer** on Linux): check the computer Porchlight runs on; see [Check the computer](#check-the-computer).
 - **Discussions**: every answer a model gave on these pages, with your follow-up questions; see [Discussions](#discussions).
+- **Activity**: what Porchlight is doing as it happens, the last 400 lines, kept in memory only.
 - **Project** (above the sections): which project folder saved exports, discussions and the log go to; see [Projects](#projects).
-- **Domains**: add a domain by its name, prove it is yours with one DNS record, scan, and read what changed, with a suggested fix for each finding. Until the monitor is connected the page walks through setting it up, with each command to copy. Connect it under **Settings → Monitor**: paste the monitor's address and admin token, Porchlight asks the monitor whether they work, and the page becomes your list of domains with no restart. **Check connections**, there and in Settings, asks the monitor and a local model whether they answer now, so "connected" means working. The page says when domains are overdue: the monitor scans 144 a day. The two can also be given at start-up as `PORCHLIGHT_MONITOR_URL` and `PORCHLIGHT_ADMIN_TOKEN` (see [Monitor domains](#monitor-domains)); a connection saved in Settings comes first.
-- **Settings**: add project folders under **Projects** (see [Projects](#projects)), pick one of twelve looks under **Appearance** (Standard, Light, Severity dashboard, Top tabs, Split view, Roadmap first, Terminal, Native Mac, Repository cards, Model plan view, High contrast, Compact), and where a model's answers appear: in a panel on the right (the default), below what you asked about, or in a drawer at the bottom. Both are saved in the data folder (`ui-settings.json`) and used every time Porchlight opens. It also lists what Porchlight is connected to, its version, and under **Data** the notes that match no kept finding. **Help** and the version are at the foot of the sidebar on every page. While an investigation waits for your approval, the Investigate section says so and the tab's title starts "(Waiting)", from any page.
+- **Settings**: add project folders under **Projects** (see [Projects](#projects)), pick one of thirteen looks under **Appearance** (Standard, Light, Severity dashboard, Top tabs, Split view, Roadmap first, Terminal, Native Mac, Repository cards, Model plan view, High contrast, Compact, Poster moderne), each previewed in its own colours, and where a model's answers appear: in a panel on the right (the default), below what you asked about, or in a drawer at the bottom. Both are saved in the data folder (`ui-settings.json`) and used every time Porchlight opens. It also lists what Porchlight is connected to, its version, and under **Data** the notes that match no kept finding. **Help** and the version are at the foot of the sidebar on every page. While an investigation waits for your approval, the Investigate section says so and the tab's title starts "(Waiting)", from any page.
 
 Every page with findings has an **Export** button; see [Export a repair roadmap](#export-a-repair-roadmap). Beside it, **Send to model** sends the roadmap or the findings to a model you choose; see [Send to a model](#send-to-a-model).
 
@@ -348,7 +430,7 @@ Porchlight can also be opened from your other devices, such as a Windows PC or a
 
 1. On the computer that runs Porchlight, open **Settings → Access from other devices** and choose **Turn on**.
 2. Copy the link it shows. It looks like `http://your-computer.your-tailnet.ts.net:4747/#k=…` and carries the access key.
-3. Open that link on the other device. Bookmark it to skip pasting the key in each new tab.
+3. Open that link on the other device. The page takes the key from the link and removes it from the address bar. To open the page again later, keep the access key in a password manager and paste it when the page asks for it. Do not bookmark the link: a bookmark holds the key, and bookmarks sync to a browser account.
 
 How it is protected:
 
@@ -374,12 +456,14 @@ Porchlight is in the [BoxPilot](https://github.com/AES256Afro/BoxPilot) catalog:
 - It starts on the tailnet only, because a report names the files and commits where secrets were found.
 - Each line of the Activity page is also printed to the container's output, with its time, so `docker logs porchlight` shows when scans ran, how they ended and whether a notice was delivered. Like the Activity page, these lines never hold a key, a token, a secret's value or a model's text.
 
-Outside BoxPilot:
+### Container
+
+Outside BoxPilot, run the image directly. Replace `<version>` with a release's version, such as `0.10.0`:
 
 ```bash
 export PORCHLIGHT_UI_KEY="$(openssl rand -hex 32)"   # keep it: the page asks for it
 docker run -d --name porchlight -p 127.0.0.1:4747:4747 -e PORCHLIGHT_UI_KEY \
-  -v "$HOME/Projects:/repos:ro" -v porchlight-data:/data ghcr.io/aes256afro/porchlight:0.10.0
+  -v "$HOME/Projects:/repos:ro" -v porchlight-data:/data ghcr.io/aes256afro/porchlight:<version>
 ```
 
 In the container, `porchlight ui --host 0.0.0.0` changes what protects it:
@@ -458,19 +542,22 @@ On BoxPilot:
 
 Running the image some other way, give the container a route to the host and both settings: `--add-host host.docker.internal:host-gateway -e PORCHLIGHT_LLM_URL=http://host.docker.internal:11434 -e PORCHLIGHT_LLM_MODEL=<model>`.
 
-What the model is sent:
+### What a model is sent
+
+This is the one description of what any model receives, local or hosted; the other sections link here.
 
 - Only what the page already shows: for a finding, its scanner, type, severity, rule or advisory ID, title, location, commit or package, ranking note and suggested fix; repository names; the roadmap's actions; a domain report's hosts, DNS changes, findings and notes.
 - Never a secret value (reports have none), an author name or email, the monitor's admin token, or a domain's verification record.
 - Scan data can be written by an attacker (a file name, a package name, a DNS TXT record), so it is sent as one marked block, and the model is told that everything in it is data, not instructions.
 - A large scan is cut to fit what the model can read, most severe first, and the answer says so.
-- One request at a time, to Ollama only. Plain http is allowed, because Ollama runs locally and nothing secret is sent to it.
+- To the model chosen in Settings → Model, or given at start-up: Ollama, a server of yours that speaks OpenAI's format, or a hosted provider at an address fixed in the code. Plain http is allowed only for a model server of your own, since nothing secret is sent to it. Before anything goes to a hosted provider, the page names it and says that what is sent leaves your machines. A model on a small server is asked one question at a time.
+- Deeper analysis also sends, for a vulnerable package, how it is declared and the lines of your code that import it; for a secret or private data, no file content at all.
 
 What comes back:
 
 - Each answer is labelled with the model that wrote it. It is generated and can be wrong: check it against the findings before acting on it.
 - It is shown as plain text, never as HTML, and Porchlight never acts on it.
-- Without a graphics card, a 9B model takes tens of seconds per answer. Porchlight waits up to five minutes.
+- Without a graphics card, a 9B model takes tens of seconds per answer. Porchlight waits up to 5 minutes for an answer, 20 for Send to a model and 15 for a mural (see [Limits](#8-limits)).
 
 ## Scan repositories
 
@@ -598,7 +685,7 @@ Which model, chosen in Settings → Model or with `PORCHLIGHT_LLM_PROVIDER` at s
 | `gemini` | `PORCHLIGHT_LLM_API_KEY`, `PORCHLIGHT_LLM_MODEL` | Google (its OpenAI-compatible endpoint) |
 | `deepseek` | `PORCHLIGHT_LLM_API_KEY`, `PORCHLIGHT_LLM_MODEL` | DeepSeek |
 
-A hosted provider is sent what the pages show, plus the import lines above, and bills each request to your key. Its address is fixed in the code, so the key cannot be sent anywhere else. A local model on a processor takes about a minute an item; a hosted one, seconds.
+A hosted provider is sent what the pages show, plus the import lines above ([What a model is sent](#what-a-model-is-sent)), and bills each request to your key. Its address is fixed in the code, so the key cannot be sent anywhere else. A local model on a processor takes about a minute an item; a hosted one, seconds.
 
 ## Fetch repositories from GitHub
 
@@ -650,6 +737,8 @@ Formats (`--format`):
 
 `--severity`, `--kind` (`secret`, `vulnerability` or `private-data`), `--match` and `--repo` narrow a repository export to part of the scan. A narrowed export says at the top that it is partial, and one made from an incomplete scan says what the scan did not cover.
 
+Each action has a number, phase and place in the phase (`2.3`), the same in every format, so a ticket can cite it. Steps that three or more actions of a phase share word for word, such as rotating a credential, are printed once at the top of the phase as shared steps A, B and so on, and each action refers to them. Markdown and HTML end with a foot line naming the Porchlight version, the kind of scan (Quick, Standard, Deep, Custom or Monitor) and the scan's time in UTC; the HTML page's title carries the source and the day, so a PDF printed from it is named apart from the others. The HTML page uses the interface's own colour list and prints in light colours whatever the browser's appearance.
+
 Text from repositories and DNS records is escaped for each format, so a hostile file name or package name cannot become markup in the page, a link in the Markdown or a formula in the spreadsheet.
 
 ### A mural for the export
@@ -674,7 +763,7 @@ It is written when you press Export, after any Deeper analysis has finished, and
 - **Deeper analysis**: overall risk, patterns across repositories, what looks real and what looks like noise, and what to do first.
 - **Repair plan**: for each repair, the file, the command or the edit, what could break and how to check it. Copy it into a coding assistant such as Claude Code to carry it out, or work through it by hand.
 
-Every model you have set up under Settings → Model is offered, so you can send to your own model one time and to Claude the next; the dialog says for each whether what is sent leaves your computer. A hosted model is sent far more of the scan than a small local one, and either is told when part had to be left out. The answer is shown as generated text with **Copy** and **Save as text**, and is kept as a discussion you can ask follow-up questions in; see [Discussions](#discussions). As everywhere else, the model sees only what the pages show, never secret values, and Porchlight never acts on what it writes.
+Every model you have set up under Settings → Model is offered, so you can send to your own model one time and to Claude the next; the dialog says for each whether what is sent leaves your computer. A hosted model is sent far more of the scan than a small local one, and either is told when part had to be left out. The answer is shown as generated text with **Copy** and **Save as text**, and is kept as a discussion you can ask follow-up questions in; see [Discussions](#discussions). As everywhere else, the model sees only what the pages show ([What a model is sent](#what-a-model-is-sent)), never secret values, and Porchlight never acts on what it writes.
 
 ## Discussions
 
@@ -993,14 +1082,13 @@ The default `MAX_HOSTS` keeps a worst-case scan under 50 outbound requests, the 
 ## Development
 
 ```bash
-npm run check   # types, lint and formatting
+npm run check   # monitor: types, lint and formatting; cli and its page: types (tsc); the BoxPilot manifest
 npm test        # both packages
 ```
 
 - `monitor/src/scan.ts` is the scan pipeline; `snapshot.ts` observes, `findings.ts` and `diff.ts` interpret, `api.ts` is the HTTP API.
 - `cli/src/repos/` is the scanner; `cli/src/monitor/client.ts` is the API client. The CLI has no runtime dependencies and runs its TypeScript directly.
 - `cli/src/roadmap/` turns findings into repairs and renders the exports.
-- `cli/src/assist/` asks the local model: `ollama.ts` is the client, `prompts.ts` builds what it is sent. `cli/ui/assist.js` shows its answers.
-- `cli/src/ui/server.ts` serves the web interface in `cli/ui/`, which is plain JavaScript modules and CSS, type-checked through JSDoc. `store.js` holds what the pages share; `filter.js` and `list.js` are pure logic shared with the server and covered by tests.
-- `.claude/launch.json` starts the interface and a local monitor for previewing in Claude Code.
-- Tests do not touch the network: the monitor's use a scripted internet (`monitor/test/fake-net.ts`), the CLI's a scripted process runner. One CLI test runs the real gitleaks on a throwaway repository.
+- `cli/src/assist/` asks a model, local or hosted: `ollama.ts` is the client for every provider, `prompts.ts` builds what it is sent, `settings.ts` keeps the choice. `cli/ui/assist.js` shows its answers.
+- `cli/src/ui/server.ts` serves the web interface in `cli/ui/` and holds the route table; the route areas with state of their own (Cloudflare, Investigate, access from other devices, the monitor, model downloads, the host check) are in `cli/src/ui/routes/`, and the HTTP, gate and report helpers beside it. The page is plain JavaScript modules and CSS, type-checked through JSDoc. Its stylesheets are split by layer (`tokens.css`, `base.css`, `components.css`, `pages.css`, `looks.css`, loaded in that order); `tokens.css` is the one colour list, which the HTML exports inline too. `store.js` holds what the pages share; `filter.js` and `list.js` are pure logic shared with the server and covered by tests; `charts.js` draws the charts with `svg()`.
+- Tests do not touch the network: the monitor's use a scripted internet (`monitor/test/fake-net.ts`), the CLI's a scripted process runner. 13 CLI tests run the real gitleaks on throwaway repositories and skip without it, except under `PORCHLIGHT_REQUIRE_SCANNERS=1` (CI). Each invariant in `CLAUDE.md` names the tests that check it.

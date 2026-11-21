@@ -55,7 +55,7 @@ echo "Compiling…"
 swiftc -O -module-cache-path "$cache" -file-prefix-map "$here=mac" -o "$app/Contents/MacOS/Porchlight" "$here/Porchlight.swift"
 swiftc -O -module-cache-path "$cache" -o "$build/icon" "$here/icon.swift"
 rm -rf "$build/Porchlight.iconset"
-"$build/icon" "$here/icon.png" "$build/Porchlight.iconset"
+"$build/icon" "$here/icon.png" "$build/Porchlight.iconset" "$here/../cli/ui/favicon.svg"
 iconutil -c icns -o "$resources/Porchlight.icns" "$build/Porchlight.iconset"
 
 # Reads ~/.porchlight/app.env: plain KEY=value lines only, nothing in the file is run. Settings

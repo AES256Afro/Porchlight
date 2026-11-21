@@ -6,16 +6,20 @@
 		<meta name="color-scheme" content="light dark" />
 		<title>Porchlight</title>
 		<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-		<link rel="stylesheet" href="/styles.css" />
+		<link rel="stylesheet" href="/tokens.css" />
+		<link rel="stylesheet" href="/base.css" />
+		<link rel="stylesheet" href="/components.css" />
+		<link rel="stylesheet" href="/pages.css" />
+		<link rel="stylesheet" href="/looks.css" />
 		<script type="module" src="/app.js"></script>
 	</head>
 	<body>
 		<a class="skip-link" href="#view">Skip to content</a>
 		<div class="shell">
 			<aside class="sidebar">
-				<a class="brand" href="#/overview">
-					<img src="/favicon.svg" alt="" width="20" height="20" />
-					Porchlight
+				<a class="brand" href="#/overview" aria-label="Porchlight">
+					<img src="/favicon.svg" alt="" width="24" height="24" />
+					<span class="wordmark" aria-hidden="true">Porch<span class="lit">light</span></span>
 				</a>
 				<nav id="nav" class="nav" aria-label="Sections"></nav>
 				<div id="scan-status" class="scan-status"></div>

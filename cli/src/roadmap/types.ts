@@ -45,6 +45,10 @@ export interface Roadmap {
 	scope: string | null;
 	/** What the scan could not check. A roadmap with caveats is not the whole job. */
 	caveats: string[];
+	/** What kind of scan it came from, for the export's foot line: "Standard scan", "Monitor scan" (R6V-2). */
+	scanKind?: string;
+	/** What a group is, one and many: a repository, or a host (RD-16). */
+	places?: [string, string];
 	/** Always all four phases, in order; a phase with nothing to do has no groups. */
 	phases: Phase[];
 	totals: { actions: number; findings: number; groups: number };
@@ -77,6 +81,10 @@ export interface FindingsList {
 	scannedAt: string;
 	scope: string | null;
 	caveats: string[];
+	/** What kind of scan it came from, for the export's foot line (R6V-2). */
+	scanKind?: string;
+	/** What a place is, one and many: a repository, or a host. */
+	places?: [string, string];
 	rows: FindingRow[];
 }
 
@@ -109,7 +117,7 @@ export function totalOf(counts: Counts): number {
 
 /** Puts actions into phases and orders everything most pressing first. */
 export function assemble(
-	base: Pick<Roadmap, "title" | "source" | "scannedAt" | "scope" | "caveats">,
+	base: Pick<Roadmap, "title" | "source" | "scannedAt" | "scope" | "caveats" | "scanKind" | "places">,
 	summaries: Record<PhaseKey, string>,
 	entries: { group: string; phase: PhaseKey; action: Action }[],
 ): Roadmap {

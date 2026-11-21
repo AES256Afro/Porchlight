@@ -173,7 +173,7 @@ test("renders a Markdown checklist", () => {
 
 	assert.deepEqual([contentType, extension], ["text/markdown; charset=utf-8", "md"]);
 	// The folder by its name, never its path (S35).
-	assert.ok(body.startsWith("# Repair roadmap\n\nSource: `work`, scanned 2026-11-17.\n\n7 actions clear 11 findings across 1 place."));
+	assert.ok(body.startsWith("# Repair roadmap\n\nSource: `work`, scanned 2026-11-17.\n\n7 actions clear 11 findings across 1 repository."));
 	assert.ok(body.includes("| 1. Fix now | 2 | 2 |\n| 2. Fix next | 2 | 5 |\n| 3. Schedule | 1 | 2 |\n| 4. When convenient | 2 | 2 |"));
 	assert.ok(
 		body.includes(
@@ -184,7 +184,7 @@ test("renders a Markdown checklist", () => {
 				"",
 				"### shop",
 				"",
-				"- [ ] **Upgrade lodash from 4.17.20 to 4.18.0 or later**",
+				"- [ ] **2.1 Upgrade lodash from 4.17.20 to 4.18.0 or later**",
 				"  - Where: `package-lock.json`",
 				"  - Clears 3 findings (2 high, 1 medium): GHSA-a, GHSA-b, GHSA-c",
 				"  - Run `npm update lodash`. If it stays below 4.18.0, it is pulled in by another package: `npm ls lodash` shows which one to upgrade.",
@@ -197,11 +197,12 @@ test("renders one CSV row per action, with a column to tick off", () => {
 	const { body } = renderRoadmap(buildRepoRoadmap(sampleReport()), "csv");
 	const rows = body.trimEnd().split("\r\n");
 
-	assert.equal(rows[0], "Phase,Priority,Place,Action,Where,Findings cleared,Critical,High,Medium,Low,Clears,How,Done");
+	// Each action carries its number, "phase.action", so a ticket can cite it (R6V-2).
+	assert.equal(rows[0], "No.,Phase,Priority,Place,Action,Where,Findings cleared,Critical,High,Medium,Low,Clears,How,Done");
 	assert.equal(rows.length, 8);
 	assert.equal(
 		rows[3],
-		'2. Fix next,high,shop,Upgrade lodash from 4.17.20 to 4.18.0 or later,package-lock.json,3,0,2,1,0,GHSA-a GHSA-b GHSA-c,"Run npm update lodash. If it stays below 4.18.0, it is pulled in by another package: npm ls lodash shows which one to upgrade.",',
+		'2.1,2. Fix next,high,shop,Upgrade lodash from 4.17.20 to 4.18.0 or later,package-lock.json,3,0,2,1,0,GHSA-a GHSA-b GHSA-c,"Run npm update lodash. If it stays below 4.18.0, it is pulled in by another package: npm ls lodash shows which one to upgrade.",',
 	);
 });
 
@@ -318,7 +319,7 @@ test("renders the findings list in every format", () => {
 	const list = listRepoFindings(sampleReport());
 
 	const markdown = renderFindings(list, "md").body;
-	assert.ok(markdown.startsWith("# Findings and suggested fixes\n\nSource: `work`, scanned 2026-11-17.\n\n11 findings (1 critical, 4 high, 4 medium, 2 low) across 1 place, most severe first."));
+	assert.ok(markdown.startsWith("# Findings and suggested fixes\n\nSource: `work`, scanned 2026-11-17.\n\n11 findings (1 critical, 4 high, 4 medium, 2 low) across 1 repository, most severe first."));
 	assert.ok(markdown.includes("| critical | GHSA-d: Problem GHSA-d \\(next\\@15.2.6\\) | package-lock.json | Upgrade next from 15.2.6 to 16.0.1 or later | Fix now |"));
 
 	const rows = renderFindings(list, "csv").body.trimEnd().split("\r\n");
@@ -407,7 +408,7 @@ test("turns a monitor report into repairs grouped by host", () => {
 	const headers = roadmap.phases[1]!.groups[0]!.actions[0]!;
 	assert.deepEqual(headers.clears, ["content-security-policy", "referrer-policy"]);
 	assert.match(headers.how[0]!, /^`Content-Security-Policy: default-src 'self'`\. Start with `Content-Security-Policy-Report-Only`/);
-	assert.match(renderRoadmap(roadmap, "md").body, /- \[ \] \*\*Remove or repoint the DNS record for shop\.example\.com\*\*/);
+	assert.match(renderRoadmap(roadmap, "md").body, /- \[ \] \*\*1\.1 Remove or repoint the DNS record for shop\.example\.com\*\*/);
 });
 
 test("a key that was never committed is kept out of git, not rotated", () => {

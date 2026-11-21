@@ -21,11 +21,14 @@ A release is a signed version tag. CI builds, checks and publishes the container
    - `cli/package.json` and its lockfile: `npm version <version> --no-git-tag-version` in `cli/`
    - `boxpilot/porchlight.yaml`: `image.version`
    - `boxpilot/porchlight.yaml`: `image.reference`, as `ghcr.io/aes256afro/securityx:<version>` with no digest yet
-3. Commit that as "Release <version>: …".
+
+   The README names no version: its `docker run` example uses `<version>`, so nothing else needs changing.
+3. If the page or the server changed since the last release, record the demo again and redeploy it (`node demo/record.ts`, then `cd demo && npx cf deploy`), from made-up data only, as `CLAUDE.md` describes. If the page looks different, retake the README's figures in `docs/screenshots/` from the same made-up data, never your own.
+4. Commit that as "Release <version>: …".
 
 ## The tag
 
-4. Make a signed, annotated tag and check its signature before pushing it:
+5. Make a signed, annotated tag and check its signature before pushing it:
 
    ```bash
    git tag -s v<version> -m "Porchlight <version>"
@@ -37,7 +40,7 @@ A release is a signed version tag. CI builds, checks and publishes the container
 
 ## What CI does with the tag
 
-5. CI stops if the tag does not match `cli/package.json`. Otherwise it runs, side by side:
+6. CI stops if the tag does not match `cli/package.json`. Otherwise it runs, side by side:
    - the checks (BoxPilot's schema included, never skipped) and the tests, with the real scanners;
    - the container smoke test (`scripts/container-smoke.sh`) once for each platform it publishes, amd64 and arm64, each on a runner of that platform.
 
@@ -45,8 +48,8 @@ A release is a signed version tag. CI builds, checks and publishes the container
    - **publish** pushes the image for amd64 and arm64 with buildx's SBOM and provenance, as `ghcr.io/aes256afro/porchlight:<version>` and under the earlier path `ghcr.io/aes256afro/securityx:<version>`, which BoxPilot's catalog pins, and pushes a GitHub artifact attestation beside each name;
    - **dmg** builds `Porchlight-<version>-arm64.dmg` on an Apple silicon runner with `sh mac/build.sh --dmg`, from the tag, with nodejs.org's Node 24 and the scanners' release builds at the image's pinned versions, each checked against its published checksum. `scripts/check-dmg.sh` searches the mounted DMG for the runner's paths and names, and the DMG is attested;
    - **release** writes `SHA256SUMS`, checks the DMG's attestation with `gh attestation verify` the way the README's "Verify a download" tells a reader to, and drafts the GitHub release for the tag with the DMG and `SHA256SUMS` attached (or adds them to a release for the tag that already exists).
-6. The publish job prints the image's digest in its run summary, and the draft's notes repeat it. Add it to `image.reference` in `boxpilot/porchlight.yaml` (`…:<version>@sha256:…`) and commit that as "Pin the BoxPilot manifest to the <version> image".
-7. Copy the manifest to BoxPilot's `catalog/securityx.yaml` in a BoxPilot pull request. Servers offer the update once a BoxPilot release includes it.
+7. The publish job prints the image's digest in its run summary, and the draft's notes repeat it. Add it to `image.reference` in `boxpilot/porchlight.yaml` (`…:<version>@sha256:…`) and commit that as "Pin the BoxPilot manifest to the <version> image".
+8. Copy the manifest to BoxPilot's `catalog/securityx.yaml` in a BoxPilot pull request. Servers offer the update once a BoxPilot release includes it.
 
 `boxpilot/porchlight.yaml` is the source of truth for BoxPilot's copy. `npm run check` validates it with BoxPilot's own schema when a BoxPilot checkout is at `../BoxPilot` or `BOXPILOT_DIR`; CI checks it against a pinned BoxPilot release and fails without one (`BOXPILOT_REQUIRED=1`).
 
@@ -54,9 +57,9 @@ A package published for the first time starts private on GitHub. Make it public,
 
 ## The draft release
 
-8. Download the DMG and `SHA256SUMS` from the draft and check them as the README's "Verify a download" says (`shasum -a 256 -c SHA256SUMS`, then `gh attestation verify … --source-ref refs/tags/v<version>`).
-9. Search the DMG once more for your own names, which the runner does not know: `sh scripts/check-dmg.sh Porchlight-<version>-arm64.dmg "<your name>" "<your tailnet name>" "<your monitor's host>"`, or the same names one per line in `PORCHLIGHT_DMG_FORBID`. It mounts the DMG read-only, searches every file's contents and name, checks the programs' library search folders, and fails on anything it finds. Do not publish a DMG it fails on.
-10. Write the notes (below) and publish the draft.
+9. Download the DMG and `SHA256SUMS` from the draft and check them as the README's "Verify a download" says (`shasum -a 256 -c SHA256SUMS`, then `gh attestation verify … --source-ref refs/tags/v<version>`).
+10. Search the DMG once more for your own names, which the runner does not know: `sh scripts/check-dmg.sh Porchlight-<version>-arm64.dmg "<your name>" "<your tailnet name>" "<your monitor's host>"`, or the same names one per line in `PORCHLIGHT_DMG_FORBID`. It mounts the DMG read-only, searches every file's contents and name, checks the programs' library search folders, and fails on anything it finds. Do not publish a DMG it fails on.
+11. Write the notes (below) and publish the draft.
 
 ## A DMG built by hand
 
@@ -69,8 +72,8 @@ CI builds the DMG that is published. To build one on your own Mac, to test it:
 
 The monitor is not part of the image: each owner deploys their own. When a release changes `monitor/`:
 
-11. Apply the migrations before deploying, since a new version can add columns the Worker reads: `npx cf d1 migrations apply <DATABASE_ID>` in `monitor/`.
-12. `npx cf deploy --secrets-file .secrets.production`.
+12. Apply the migrations before deploying, since a new version can add columns the Worker reads: `npx cf d1 migrations apply <DATABASE_ID>` in `monitor/`.
+13. `npx cf deploy --secrets-file .secrets.production`.
 
 Say in the release notes when a release needs this, so anyone running their own monitor does it too.
 

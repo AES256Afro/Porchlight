@@ -218,7 +218,7 @@ async function route() {
 	// Each page draws into a slot of its own, put on screen only while it is still the page asked for:
 	// one that finishes after the owner has moved on draws nothing over the page they moved to (B43).
 	const slot = h("div", { class: "view-slot" });
-	// The last page stays on screen, dimmed, until the next one is ready (styles.css delays the dimming, so a quick page does not flicker).
+	// The last page stays on screen, dimmed, until the next one is ready (base.css delays the dimming, so a quick page does not flicker).
 	view.setAttribute("aria-busy", "true");
 	view.classList.add("is-loading");
 	/** @type {import("./finding-parts.js").Route} */

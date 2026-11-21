@@ -1,0 +1,1704 @@
+/* Components: forms, buttons, banners, tiles, marks, filters, tables, cards, dialogs, toasts, the answers
+   panel, and the narrow-window rules for all of them. Loaded third. */
+
+/* Forms and buttons */
+
+.inline-form {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-end;
+	gap: 8px;
+}
+
+.field {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	min-width: 0;
+}
+
+.field > span {
+	color: var(--ink-2);
+	font-size: var(--text-xs);
+}
+
+.grow {
+	flex: 1 1 220px;
+}
+
+input,
+select {
+	height: 34px;
+	padding: 0 12px;
+	border: 1px solid var(--field-border);
+	border-radius: var(--radius-md);
+	background: var(--surface);
+	color: var(--ink);
+	font: inherit;
+}
+
+input:not([type="radio"], [type="checkbox"]) {
+	width: 100%;
+}
+
+input[type="radio"],
+input[type="checkbox"] {
+	width: 16px;
+	height: 16px;
+	margin: 2px 0 0;
+	padding: 0;
+	accent-color: var(--accent-hover);
+}
+
+input.narrow {
+	width: 68px;
+}
+
+select {
+	max-width: 240px;
+	padding-right: 6px;
+}
+
+input::placeholder {
+	color: var(--muted);
+}
+
+.button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	height: 34px;
+	padding: 0 16px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-md);
+	background: var(--surface);
+	color: var(--ink);
+	font: inherit;
+	font-weight: 500;
+	text-decoration: none;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.button:hover {
+	background: var(--page);
+}
+
+.button:disabled,
+.button[aria-disabled="true"] {
+	border-style: dashed;
+	border-color: var(--field-border);
+	background: var(--page);
+	color: var(--ink-2);
+	cursor: default;
+}
+
+.button.primary[aria-disabled="true"],
+.button.primary:disabled {
+	border-color: var(--field-border);
+	background: var(--page);
+	color: var(--ink-2);
+}
+
+.button[aria-disabled="true"]:hover {
+	background: var(--page);
+}
+
+.button.primary {
+	border-color: transparent;
+	background: var(--accent);
+	color: var(--on-accent);
+}
+
+.button.primary:hover:not(:disabled):not([aria-disabled="true"]) {
+	background: var(--accent-hover);
+}
+
+.button.danger {
+	color: var(--critical-ink);
+}
+
+.button.danger.solid {
+	border-color: transparent;
+	background: var(--critical);
+	color: #fff;
+}
+
+.button.quiet {
+	border-color: transparent;
+	background: transparent;
+	color: var(--link);
+}
+
+.button.quiet:hover {
+	background: var(--hairline);
+}
+
+.button.icon-only {
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	color: var(--ink-2);
+}
+
+.actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+}
+
+/* Scan progress */
+
+.progress {
+	margin-top: 16px;
+}
+
+.progress-text {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 12px;
+	margin-bottom: 8px;
+}
+
+.progress-text .path {
+	color: var(--ink-2);
+	font-family: var(--mono);
+	font-size: var(--text-sm);
+	overflow-wrap: anywhere;
+}
+
+progress {
+	display: block;
+	width: 100%;
+	height: 8px;
+	accent-color: var(--accent-hover);
+}
+
+/* Banners */
+
+.banner {
+	display: flex;
+	gap: 12px;
+	margin-bottom: 16px;
+	padding: 12px 16px;
+	border: 1px solid;
+	border-radius: var(--radius-lg);
+}
+
+.card .banner {
+	margin: 16px 0 0;
+}
+
+.banner > .icon {
+	width: 18px;
+	height: 18px;
+	margin-top: 1px;
+}
+
+.banner ul {
+	margin-top: 4px;
+	padding-left: 20px;
+	color: var(--ink-2);
+	overflow-wrap: anywhere;
+}
+
+.banner details {
+	margin-top: 4px;
+	color: var(--ink-2);
+}
+
+.banner summary {
+	cursor: pointer;
+}
+
+.banner-warning {
+	background: color-mix(in srgb, var(--warning) 12%, var(--surface));
+	border-color: color-mix(in srgb, var(--warning) 55%, var(--surface));
+}
+
+.banner-warning > .icon {
+	color: var(--warning-mark);
+}
+
+.banner-error {
+	background: color-mix(in srgb, var(--critical) 10%, var(--surface));
+	border-color: color-mix(in srgb, var(--critical) 50%, var(--surface));
+}
+
+.banner-error > .icon {
+	color: var(--critical);
+	--on-warning: #fff;
+}
+
+/* The Overview's "credentials look live": the most urgent thing on the page, so it comes first. */
+.banner.urgent {
+	display: block;
+	margin-bottom: 20px;
+	padding: 16px 16px;
+	border-left-width: 4px;
+}
+
+.banner-title {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin: 0 0 4px;
+	font-size: var(--text-lg);
+}
+
+.banner-title > .icon {
+	width: 18px;
+	height: 18px;
+	color: var(--critical);
+	--on-warning: #fff;
+}
+
+.urgent-list {
+	margin: 8px 0 0;
+	padding-left: 20px;
+}
+
+/* Each place is a target at least 24px tall, with room between them (R6U-2, WCAG 2.5.8). */
+.urgent-list li + li {
+	margin-top: 4px;
+}
+
+.urgent-list a {
+	display: inline-block;
+	min-height: 24px;
+	padding: 2px 0;
+}
+
+.urgent .card-foot {
+	margin-top: 12px;
+}
+
+/* Stat tiles */
+
+/*
+ * A row lays its tiles out by its own width (a container) and how many it holds, so none is left
+ * alone on a line: a tile needs about 140px. Six go 6, 3 by 2, or 2 by 3; five go 5, 3 and 2, or the
+ * first (the total) across the top and 2 by 2 under it; four go 4 or 2 by 2; three go 3, or the first
+ * across the top.
+ */
+.tiles-wrap {
+	container-type: inline-size;
+	margin-bottom: 20px;
+}
+
+.tiles {
+	display: grid;
+	grid-template-columns: repeat(var(--tile-columns, 3), minmax(0, 1fr));
+	gap: 12px;
+}
+
+.tiles[data-count="6"] {
+	--tile-columns: 6;
+}
+
+.tiles[data-count="5"] {
+	--tile-columns: 5;
+}
+
+.tiles[data-count="4"] {
+	--tile-columns: 4;
+}
+
+.tiles[data-count="2"] {
+	--tile-columns: 2;
+}
+
+.tiles[data-count="1"] {
+	--tile-columns: 1;
+}
+
+@container (max-width: 900px) {
+	.tiles[data-count="6"] {
+		--tile-columns: 3;
+	}
+}
+
+@container (max-width: 748px) {
+	.tiles[data-count="5"] {
+		--tile-columns: 3;
+	}
+}
+
+@container (max-width: 596px) {
+	.tiles[data-count="4"] {
+		--tile-columns: 2;
+	}
+}
+
+@container (max-width: 444px) {
+	.tiles[data-count="6"],
+	.tiles[data-count="5"],
+	.tiles[data-count="3"] {
+		--tile-columns: 2;
+	}
+
+	.tiles[data-count="5"] > :first-child,
+	.tiles[data-count="3"] > :first-child {
+		grid-column: 1 / -1;
+	}
+}
+
+.tile {
+	padding: 16px 16px;
+	background: var(--surface);
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-lg);
+}
+
+/* A tile that opens what it counts. */
+a.tile-link {
+	color: inherit;
+	text-decoration: none;
+}
+
+a.tile-link:hover {
+	border-color: var(--border);
+	background: var(--page);
+}
+
+a.tile-link:hover .tile-label {
+	color: var(--ink);
+	text-decoration: underline;
+}
+
+.tile-label {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+}
+
+.tile-value {
+	margin-top: 2px;
+	font-size: var(--text-2xl);
+	font-weight: 600;
+	line-height: 1.2;
+}
+
+/* Severity and status marks: the shape and the word carry the meaning; colour reinforces it. */
+
+.severity {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	white-space: nowrap;
+}
+
+.severity-critical > .icon,
+.icon.severity-critical {
+	color: var(--critical);
+}
+
+.severity-high > .icon,
+.icon.severity-high {
+	color: var(--serious-mark);
+}
+
+.severity-medium > .icon,
+.icon.severity-medium {
+	color: var(--warning-mark);
+}
+
+.severity-low > .icon,
+.icon.severity-low {
+	color: var(--muted);
+}
+
+.status-good > .icon {
+	color: var(--good);
+}
+
+.status-warning > .icon {
+	color: var(--warning-mark);
+}
+
+.status-pending > .icon {
+	color: var(--muted);
+}
+
+/* Filters */
+
+.filters {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 12px;
+	margin-bottom: 16px;
+}
+
+.filters .field.grow {
+	flex-basis: 200px;
+}
+
+.chip-group {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
+.chip {
+	height: 34px;
+	padding: 0 12px 0 12px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-pill);
+	background: var(--surface);
+	color: var(--ink);
+	font: inherit;
+	cursor: pointer;
+}
+
+.chip[aria-pressed="false"] {
+	border-style: dashed;
+	background: transparent;
+	color: var(--muted);
+}
+
+.chip[aria-pressed="false"] .icon {
+	color: var(--muted);
+}
+
+.segmented {
+	display: inline-flex;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-md);
+	overflow: hidden;
+}
+
+.segmented a {
+	display: flex;
+	align-items: center;
+	height: 32px;
+	padding: 0 16px;
+	background: var(--surface);
+	color: var(--ink-2);
+	font-weight: 500;
+	text-decoration: none;
+}
+
+.segmented a + a {
+	border-left: 1px solid var(--border);
+}
+
+.segmented a[aria-current="page"] {
+	background: var(--ink);
+	color: var(--surface);
+}
+
+/* Tables */
+
+.table-wrap {
+	background: var(--surface);
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-lg);
+	overflow-x: auto;
+}
+
+table.data {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: var(--text-sm);
+}
+
+.data th,
+.data td {
+	padding: 8px 12px;
+	border-bottom: 1px solid var(--hairline);
+	text-align: left;
+	vertical-align: top;
+}
+
+.data thead th {
+	color: var(--ink-2);
+	font-size: var(--text-xs);
+	font-weight: 500;
+	white-space: nowrap;
+}
+
+.data tbody tr:last-child > * {
+	border-bottom: 0;
+}
+
+.data tbody th {
+	font-weight: 500;
+}
+
+.data .num {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+}
+
+.data .zero {
+	color: var(--muted);
+}
+
+/*
+ * Floors that keep a column from collapsing to a few characters before it wraps. They shrink with
+ * the table's box (a container), so at medium widths the columns fit instead of scrolling the last
+ * one out of sight; on a phone the table still scrolls inside its box.
+ */
+.table-wrap {
+	container-type: inline-size;
+}
+
+.col-where {
+	min-width: min(200px, 24cqi);
+}
+
+.col-what {
+	min-width: min(260px, 30cqi);
+}
+
+.sort {
+	display: inline-flex;
+	gap: 4px;
+	padding: 0;
+	border: 0;
+	background: none;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+}
+
+.sort:hover,
+th[aria-sort]:not([aria-sort="none"]) .sort {
+	color: var(--ink);
+}
+
+tr.clickable {
+	cursor: pointer;
+}
+
+tr.clickable:hover,
+tr.open {
+	background: var(--page);
+}
+
+.disclosure {
+	display: inline-flex;
+	align-items: flex-start;
+	gap: 6px;
+	padding: 0;
+	border: 0;
+	background: none;
+	color: inherit;
+	font: inherit;
+	font-weight: 500;
+	text-align: left;
+	cursor: pointer;
+	overflow-wrap: anywhere;
+}
+
+.disclosure.static {
+	padding-left: 20px;
+	cursor: default;
+}
+
+.disclosure .icon {
+	margin-top: 4px;
+	color: var(--ink-2);
+	transition: transform 0.12s;
+}
+
+.disclosure[aria-expanded="true"] .icon {
+	transform: rotate(90deg);
+}
+
+.fix {
+	margin: 4px 0 0 20px;
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+	overflow-wrap: anywhere;
+}
+
+.fix-label {
+	display: inline-block;
+	margin-right: 6px;
+	padding: 0 4px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	font-size: var(--text-xs);
+	font-weight: 600;
+}
+
+td > .hint {
+	margin: 4px 0 0 20px;
+	overflow-wrap: anywhere;
+}
+
+.detail-row > td {
+	padding: 6px 16px 20px 32px;
+	background: var(--page);
+}
+
+.detail-panel {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+	gap: 12px 32px;
+	padding: 16px 16px;
+	background: var(--surface);
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-md);
+}
+
+.facts {
+	display: grid;
+	grid-template-columns: max-content minmax(0, 1fr);
+	gap: 6px 16px;
+	align-content: start;
+}
+
+.facts dt {
+	color: var(--ink-2);
+}
+
+.facts ol,
+.how ol,
+.fix-details ol {
+	margin: 0;
+	padding-left: 20px;
+}
+
+.how h3 {
+	margin: 0 0 6px;
+}
+
+.how li + li,
+.facts li + li,
+.fix-details li + li {
+	margin-top: 4px;
+}
+
+.fix-details summary {
+	cursor: pointer;
+}
+
+.fix-details ol {
+	margin-top: 6px;
+	color: var(--ink-2);
+}
+
+.findings {
+	display: grid;
+	gap: 12px;
+	justify-items: start;
+}
+
+.findings .banner {
+	margin: 0;
+	justify-self: stretch;
+}
+
+table.nested {
+	background: var(--surface);
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-md);
+	border-collapse: separate;
+	border-spacing: 0;
+	font-size: var(--text-sm);
+}
+
+.nested .detail-row > td {
+	padding-left: 16px;
+}
+
+.pager {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	margin-top: 16px;
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+}
+
+.pager-buttons {
+	display: inline-flex;
+	align-items: center;
+	gap: 12px;
+}
+
+/* Empty states and cards */
+
+.empty {
+	padding: 48px 16px;
+	color: var(--ink-2);
+	text-align: center;
+}
+
+.empty h2 {
+	margin-bottom: 4px;
+	color: var(--ink);
+}
+
+.empty p {
+	max-width: 520px;
+	margin: 0 auto;
+}
+
+.empty .button {
+	margin-top: 16px;
+}
+
+/* Every card spans the page, so right edges line up; its text is kept to a readable measure (VS-6). */
+.card {
+	margin-bottom: 20px;
+	padding: 20px 20px;
+	background: var(--surface);
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-lg);
+}
+
+.card > p,
+.card > .sub,
+.card > .hint {
+	max-width: 80ch;
+}
+
+.card h2,
+.card h3 {
+	margin: 0 0 6px;
+}
+
+.card p + p,
+.card p + .inline-form,
+.card .actions {
+	margin-top: 12px;
+}
+
+.card-foot {
+	margin-top: 16px;
+}
+
+.columns {
+	display: grid;
+	/* Never wider than the page: at 320px the columns stack instead of scrolling sideways (R6U-1). */
+	grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
+	gap: 20px;
+	align-items: start;
+}
+
+.columns .card {
+	margin-bottom: 0;
+}
+
+.columns + .card {
+	margin-top: 20px;
+}
+
+.link-list {
+	margin-top: 12px;
+	padding: 0;
+	list-style: none;
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-md);
+}
+
+.link-list li + li {
+	border-top: 1px solid var(--hairline);
+}
+
+.link-list a {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 4px 16px;
+	padding: 8px 12px;
+	color: inherit;
+	text-decoration: none;
+}
+
+.link-list a:hover {
+	background: var(--page);
+}
+
+.link-title {
+	font-weight: 500;
+}
+
+.link-meta {
+	display: inline-flex;
+	gap: 8px;
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+}
+
+.phase-list {
+	counter-reset: phase;
+}
+
+.phase-list .link-title::before {
+	counter-increment: phase;
+	content: counter(phase) ". ";
+}
+
+.callout {
+	margin-top: 16px;
+	padding: 12px 12px;
+	border: 1px solid color-mix(in srgb, var(--critical) 45%, var(--surface));
+	border-left-width: 4px;
+	border-radius: var(--radius-md);
+}
+
+.callout ul {
+	margin-top: 6px;
+	padding-left: 20px;
+	color: var(--ink-2);
+}
+
+/* Text a local model wrote: marked as generated, shown as plain text, kept apart from the findings. */
+
+.assist {
+	display: grid;
+	gap: 12px;
+	justify-items: start;
+	margin-bottom: 16px;
+}
+
+.assist[hidden] {
+	display: none;
+}
+
+.assist .banner,
+.assist .generated {
+	justify-self: stretch;
+	margin: 0;
+}
+
+.assist-block {
+	grid-column: 1 / -1;
+	display: grid;
+	gap: 12px;
+	justify-items: start;
+}
+
+.assist-block .assist,
+.card .assist {
+	justify-self: stretch;
+	margin: 0;
+}
+
+.card .assist {
+	margin-top: 12px;
+}
+
+.assist-wait {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	color: var(--ink-2);
+}
+
+.assist-wait .icon {
+	animation: assist-wait 1.4s ease-in-out infinite;
+}
+
+@keyframes assist-wait {
+	50% {
+		opacity: 0.3;
+	}
+}
+
+.generated {
+	padding: 12px 16px;
+	background: var(--surface);
+	border: 1px dashed var(--border);
+	border-radius: var(--radius-md);
+}
+
+.detail-panel .generated,
+.card .generated {
+	background: var(--page);
+}
+
+.generated-label {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+}
+
+.generated > .hint {
+	margin-top: 2px;
+}
+
+.generated-text {
+	margin-top: 12px;
+	max-width: 80ch;
+}
+
+.generated-text p {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.generated-text p + p {
+	margin-top: 12px;
+}
+
+.ask-form {
+	display: grid;
+	gap: 8px;
+	margin-top: 12px;
+}
+
+.ask-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.ask-form .form-error {
+	color: var(--critical-ink);
+}
+
+/* A discussion: the owner's questions and the model's answers, in order, with a box for the next question. */
+
+.follow-up,
+.turns {
+	display: grid;
+	gap: 12px;
+	justify-self: stretch;
+}
+
+.follow-up {
+	margin-top: 12px;
+}
+
+.turns:empty {
+	display: none;
+}
+
+.turn-question {
+	justify-self: end;
+	max-width: min(80ch, 90%);
+	padding: 8px 12px;
+	background: var(--surface);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-md);
+}
+
+.turn-who {
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+}
+
+.turn-text {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.follow-up-form {
+	margin-top: 0;
+}
+
+.follow-up-status:empty {
+	display: none;
+}
+
+.follow-up-status {
+	display: grid;
+	gap: 12px;
+}
+
+.discussion-thread {
+	display: grid;
+	gap: 12px;
+}
+
+.discussion-list {
+	display: grid;
+	gap: 0;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.discussion-row {
+	display: grid;
+	gap: 2px;
+	padding: 12px 0;
+	border-bottom: 1px solid var(--border);
+}
+
+.discussion-title {
+	font-weight: 600;
+	overflow-wrap: anywhere;
+}
+
+/* The answers panel: a model's answer and its follow-ups beside the page, or in a drawer under it.
+   It sits outside the page, so it stays open while the owner moves between pages, and the page makes
+   room for it rather than going under it. On a narrow screen it covers the page until closed. */
+
+:root {
+	--answers-width: 420px;
+	/* Where the drawer starts: beside the sidebar. */
+	--answers-left: 224px;
+}
+
+:root[data-look="compact"] {
+	--answers-left: 180px;
+}
+
+:root[data-look="tabs"] {
+	--answers-left: 0px;
+}
+
+body.answers-wide {
+	--answers-width: min(680px, 55vw);
+}
+
+.answers-panel {
+	position: fixed;
+	z-index: 8;
+	display: flex;
+	flex-direction: column;
+	background: var(--surface);
+	color: var(--ink);
+	box-shadow: var(--shadow);
+}
+
+.answers-panel[hidden] {
+	display: none;
+}
+
+body[data-answers="right"] .answers-panel {
+	top: 0;
+	right: 0;
+	bottom: 0;
+	width: var(--answers-width);
+	border-left: 1px solid var(--hairline);
+}
+
+body.answers-open[data-answers="right"] .shell {
+	margin-right: var(--answers-width);
+}
+
+body[data-answers="bottom"] .answers-panel {
+	right: 0;
+	bottom: 0;
+	left: var(--answers-left);
+	max-height: 45vh;
+	border-top: 1px solid var(--hairline);
+}
+
+body.answers-open[data-answers="bottom"] main {
+	padding-bottom: 45vh;
+}
+
+.answers-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 12px 16px;
+	border-bottom: 1px solid var(--hairline);
+}
+
+.answers-title {
+	display: flex;
+	align-items: flex-start;
+	gap: 6px;
+	margin: 0;
+	font-size: var(--text-lg);
+	overflow-wrap: anywhere;
+}
+
+.answers-title .icon {
+	flex: none;
+	margin-top: 4px;
+	color: var(--ink-2);
+}
+
+.answers-tools {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
+.answers-tools .button {
+	padding: 4px 12px;
+	font-size: var(--text-sm);
+}
+
+.answers-body {
+	flex: 1;
+	display: grid;
+	align-content: start;
+	gap: 12px;
+	padding: 16px 16px 24px;
+	overflow-y: auto;
+}
+
+.answers-body .assist-content,
+.answers-body .send-result {
+	display: grid;
+	gap: 12px;
+}
+
+.answers-body .generated {
+	background: var(--page);
+}
+
+.assist-content {
+	display: grid;
+	gap: 12px;
+}
+
+.assist-elsewhere {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+	color: var(--ink-2);
+}
+
+.link-button {
+	padding: 0;
+	border: 0;
+	background: none;
+	color: var(--accent);
+	font: inherit;
+	text-decoration: underline;
+	cursor: pointer;
+}
+
+.link-button:hover {
+	color: var(--accent-hover);
+}
+
+@media (max-width: 900px) {
+	body[data-answers] .answers-panel {
+		inset: 0;
+		z-index: 30;
+		width: auto;
+		max-height: none;
+		border: 0;
+	}
+
+	body.answers-open[data-answers="right"] .shell {
+		margin-right: 0;
+	}
+
+	body.answers-open[data-answers="bottom"] main {
+		padding-bottom: 0;
+	}
+
+	/* The panel already fills the screen. */
+	.answers-widen {
+		display: none;
+	}
+}
+
+textarea {
+	width: 100%;
+	min-height: 72px;
+	padding: 8px 12px;
+	border: 1px solid var(--field-border);
+	border-radius: var(--radius-md);
+	background: var(--surface);
+	color: var(--ink);
+	font: inherit;
+	resize: vertical;
+}
+
+textarea::placeholder {
+	color: var(--muted);
+}
+
+/* Dialog and toasts */
+
+.dialog {
+	width: min(440px, calc(100vw - 32px));
+	padding: 20px 24px;
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-lg);
+	background: var(--surface);
+	color: var(--ink);
+	box-shadow: var(--shadow);
+}
+
+.dialog.wide {
+	width: min(560px, calc(100vw - 32px));
+}
+
+.dialog::backdrop {
+	background: rgba(0, 0, 0, 0.45);
+}
+
+.dialog h2 {
+	font-size: var(--text-lg);
+}
+
+.dialog p {
+	margin: 8px 0 20px;
+	color: var(--ink-2);
+}
+
+.dialog .actions {
+	justify-content: flex-end;
+	margin-top: 20px;
+}
+
+fieldset {
+	margin: 16px 0 0;
+	padding: 0;
+	border: 0;
+}
+
+legend {
+	margin-bottom: 6px;
+	padding: 0;
+	color: var(--ink-2);
+	font-size: var(--text-xs);
+	font-weight: 500;
+}
+
+.choice {
+	display: flex;
+	align-items: flex-start;
+	gap: 12px;
+	padding: 8px 12px;
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-md);
+	cursor: pointer;
+}
+
+.choice + .choice {
+	margin-top: 6px;
+}
+
+.choice:has(input:checked) {
+	border-color: var(--accent-hover);
+	background: var(--page);
+}
+
+.choice > span {
+	display: grid;
+	gap: 1px;
+}
+
+.choice strong {
+	font-weight: 500;
+}
+
+.dialog .form-error {
+	margin: 16px 0 0;
+	color: var(--critical-ink);
+}
+
+.toasts {
+	position: fixed;
+	right: 20px;
+	bottom: 20px;
+	z-index: 10;
+	display: grid;
+	gap: 8px;
+	justify-items: end;
+}
+
+.toast {
+	max-width: min(440px, calc(100vw - 40px));
+	padding: 12px 16px;
+	border-radius: var(--radius-md);
+	background: var(--ink);
+	color: var(--surface);
+	box-shadow: var(--shadow);
+	overflow-wrap: anywhere;
+}
+
+.toast-error {
+	background: var(--critical);
+	color: #fff;
+}
+
+/* First steps: what a scan would cover, and numbered setup steps. */
+
+.scan-form {
+	display: grid;
+	gap: 12px;
+	margin-top: 12px;
+}
+
+.scan-form .actions {
+	align-items: center;
+	margin-top: 0;
+}
+
+.options {
+	color: var(--ink-2);
+}
+
+.options summary {
+	cursor: pointer;
+	padding: 6px 4px;
+	font-size: var(--text-sm);
+}
+
+.options .field {
+	margin-top: 6px;
+}
+
+.preview:empty {
+	display: none;
+}
+
+.found,
+.guide {
+	display: grid;
+	gap: 8px;
+	padding: 12px 16px;
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-md);
+	background: var(--page);
+}
+
+.preview .severity {
+	align-items: flex-start;
+	overflow-wrap: anywhere;
+	white-space: normal;
+}
+
+.guide p {
+	max-width: 70ch;
+	color: var(--ink-2);
+}
+
+.chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	padding: 0;
+	list-style: none;
+}
+
+.chips li {
+	max-width: 100%;
+	padding: 2px 8px;
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-pill);
+	background: var(--surface);
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+	overflow-wrap: anywhere;
+}
+
+.chips .more {
+	border-color: transparent;
+	background: none;
+}
+
+/* A repository the scan's choices leave out: struck through and said in words, not by colour. */
+.chips .skipped {
+	border-style: dashed;
+	background: none;
+	color: var(--muted);
+}
+
+/* The scan form's Options: presets, checks and switches, one under another. */
+.scan-options {
+	display: grid;
+	gap: 4px;
+	max-width: 640px;
+	padding: 4px 4px 8px;
+}
+
+.scan-options fieldset {
+	margin-top: 8px;
+}
+
+.scan-options .field {
+	margin-top: 8px;
+}
+
+.scan-options .choice input:disabled + span {
+	opacity: 0.6;
+}
+
+.steps {
+	display: grid;
+	/* Never wider than the card: a long command scrolls inside its own box. */
+	grid-template-columns: minmax(0, 1fr);
+	gap: 12px;
+	max-width: 70ch;
+	margin-top: 4px;
+	padding: 0;
+	list-style: none;
+	counter-reset: step;
+}
+
+.steps li {
+	position: relative;
+	min-height: 24px;
+	padding-left: 32px;
+}
+
+.steps li::before {
+	counter-increment: step;
+	content: counter(step);
+	position: absolute;
+	left: 0;
+	top: -1px;
+	display: grid;
+	place-items: center;
+	width: 24px;
+	height: 24px;
+	border: 1px solid var(--border);
+	border-radius: 50%;
+	color: var(--ink);
+	font-size: var(--text-sm);
+	font-weight: 600;
+}
+
+.card .steps {
+	margin: 16px 0;
+}
+
+/* Setup steps that carry commands: each command on its own line, with a button to copy it. */
+.setup-steps {
+	max-width: 86ch;
+}
+
+.setup-steps li > p {
+	margin: 0;
+}
+
+.command-line {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-top: 6px;
+}
+
+.command-line pre {
+	flex: 1;
+	min-width: 0;
+	margin: 0;
+	padding: 6px 12px;
+	overflow-x: auto;
+	font-size: var(--text-xs);
+	background: var(--page);
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-md);
+}
+
+.model-list li {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 6px 0;
+	border-top: 1px solid var(--hairline);
+	overflow-wrap: anywhere;
+}
+
+.model-list li:first-child {
+	border-top: 0;
+}
+
+.model-search {
+	display: grid;
+	gap: 12px;
+	max-width: 820px;
+}
+
+.model-download h3 {
+	margin-top: 20px;
+}
+
+.monitor-form {
+	display: grid;
+	gap: 12px;
+	max-width: 560px;
+	margin-top: 12px;
+}
+
+/* A host name breaks after a dot (hostName() in dom.js), and mid-label only when a label cannot fit (VS-10). */
+.host-name,
+.wrap .host-name {
+	overflow-wrap: break-word;
+	word-break: normal;
+}
+
+/* Charts (cli/ui/charts.js): coloured by class, never by inline style; each number is in text too. Fills
+   use the severity marks' tones, never the brand's warm colours (VS-1). */
+.chart {
+	margin: 12px 0;
+}
+
+.chart svg {
+	display: block;
+	max-width: 100%;
+	height: auto;
+	overflow: visible;
+}
+
+.chart text {
+	fill: var(--ink-2);
+	font-size: var(--text-xs);
+}
+
+.chart figcaption {
+	margin-top: 4px;
+}
+
+.chart-axis {
+	stroke: var(--hairline);
+}
+
+.bar-critical {
+	fill: var(--critical);
+}
+
+.bar-high {
+	fill: var(--serious-mark);
+}
+
+.bar-medium {
+	fill: var(--warning-mark);
+}
+
+.bar-low {
+	fill: var(--muted);
+}
+
+.bar-phase {
+	fill: var(--accent);
+}
+
+/* A scan that looked at another folder, or with another preset: hollow, so it is not read as a change. */
+.bar-apart {
+	fill: none;
+	stroke: var(--ink-2);
+	stroke-dasharray: 3 2;
+}
+
+/* One severity bar (VS-14): the proportions, then each severity as shape, word and number. */
+.severity-bar {
+	display: grid;
+	gap: 8px;
+	margin: 12px 0;
+}
+
+.severity-bar-track {
+	display: block;
+	width: 100%;
+	height: 8px;
+	border-radius: var(--radius-sm);
+	background: var(--hairline);
+}
+
+.severity-bar-legend {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px 24px;
+	padding: 0;
+	list-style: none;
+}
+
+.severity-bar-legend a,
+.severity-bar-legend span {
+	color: var(--ink);
+	text-decoration: none;
+}
+
+.severity-bar-legend strong {
+	font-variant-numeric: tabular-nums;
+}
+
+/* Narrow windows: navigation moves to the top and everything stacks. */
+
+@media (max-width: 900px) {
+	.shell {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	/*
+	 * On a narrow screen the sidebar becomes a header: the name and the project on one line, the
+	 * sections on a line of their own below. When they do not all fit, that line scrolls sideways
+	 * and a shadow at each edge shows there is more (the shadows move with the scroll position).
+	 */
+	.sidebar {
+		position: sticky;
+		z-index: 5;
+		flex-direction: row;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 4px 8px;
+		height: auto;
+		padding: 8px 12px 0;
+		border-right: 0;
+		border-bottom: 1px solid var(--hairline);
+	}
+
+	.nav {
+		flex: 1 0 100%;
+		order: 3;
+		flex-direction: row;
+		margin: 0 -12px;
+		padding: 0 12px;
+		overflow-x: auto;
+		scrollbar-width: none;
+		background:
+			linear-gradient(to right, var(--surface) 40%, transparent) left / 28px 100% no-repeat local,
+			linear-gradient(to left, var(--surface) 40%, transparent) right / 28px 100% no-repeat local,
+			radial-gradient(farthest-side at 0 50%, rgba(0, 0, 0, 0.22), transparent) left / 12px 100% no-repeat scroll,
+			radial-gradient(farthest-side at 100% 50%, rgba(0, 0, 0, 0.22), transparent) right / 12px 100% no-repeat scroll;
+	}
+
+	.nav::-webkit-scrollbar {
+		display: none;
+	}
+
+	.nav a {
+		padding: 8px 12px;
+		white-space: nowrap;
+	}
+
+	.nav a[aria-current="page"] {
+		box-shadow: inset 0 -2px 0 var(--accent-hover);
+	}
+
+	.nav .icon,
+	.nav .count,
+	.nav-group,
+	.scan-status {
+		display: none;
+	}
+
+	.page {
+		padding: 16px 16px 48px;
+	}
+
+	.split,
+	.detail-panel {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	select {
+		max-width: 100%;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.disclosure .icon {
+		transition: none;
+	}
+
+	.assist-wait .icon {
+		animation: none;
+	}
+}

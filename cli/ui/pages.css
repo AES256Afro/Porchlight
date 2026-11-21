@@ -1,0 +1,1601 @@
+/* Pages: rules that belong to one page (Roadmap, Domains, Activity, Settings, This computer, Investigate,
+   Projects, Cloudflare) and the later additions to them. Loaded fourth. */
+
+/* Roadmap */
+
+.phases {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+	gap: 12px;
+	margin-bottom: 12px;
+}
+
+.phase-tab {
+	display: grid;
+	gap: 2px;
+	padding: 12px 16px;
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-lg);
+	background: var(--surface);
+	color: var(--ink);
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+
+.phase-tab:hover:not(:disabled):not([aria-disabled="true"]) {
+	border-color: var(--border);
+}
+
+.phase-tab[aria-selected="true"] {
+	border-color: var(--accent-hover);
+	box-shadow: inset 0 -3px 0 var(--accent-hover);
+}
+
+.phase-tab:disabled,
+.phase-tab[aria-disabled="true"] {
+	color: var(--muted);
+	cursor: default;
+}
+
+.phase-name {
+	font-size: var(--text-sm);
+	font-weight: 500;
+	color: var(--ink-2);
+}
+
+.phase-count {
+	font-size: var(--text-2xl);
+	font-weight: 600;
+	line-height: 1.2;
+}
+
+.phase-summary {
+	margin: 0 0 20px;
+}
+
+.action-group h2 {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px 12px;
+	margin: 24px 0 8px;
+	overflow-wrap: anywhere;
+}
+
+.action-group .count {
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+	font-weight: 400;
+}
+
+.action-list {
+	display: grid;
+	gap: 12px;
+	padding: 0;
+	list-style: none;
+}
+
+.action-card {
+	padding: 16px 16px;
+	background: var(--surface);
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-lg);
+}
+
+.action-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 6px 12px;
+	margin-bottom: 12px;
+}
+
+.action-head h3 {
+	margin: 0;
+	font-size: var(--text-md);
+	overflow-wrap: anywhere;
+}
+
+/* Domains */
+
+.split {
+	display: grid;
+	grid-template-columns: 290px minmax(0, 1fr);
+	gap: 24px;
+	align-items: start;
+}
+
+.domain-list {
+	padding: 0;
+	list-style: none;
+	background: var(--surface);
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-lg);
+	overflow: hidden;
+}
+
+.domain-list:empty {
+	display: none;
+}
+
+.domain-list li + li {
+	border-top: 1px solid var(--hairline);
+}
+
+.domain-list a {
+	display: grid;
+	gap: 4px;
+	padding: 12px 16px;
+	color: inherit;
+	text-decoration: none;
+}
+
+.domain-list a:hover {
+	background: var(--page);
+}
+
+.domain-list a[aria-current="page"] {
+	background: var(--page);
+	box-shadow: inset 3px 0 0 var(--accent-hover);
+}
+
+.domain-name {
+	font-weight: 600;
+	overflow-wrap: anywhere;
+}
+
+.domain-list .severity,
+.domain-meta {
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+}
+
+/* "Add a website" sits at the right of the page head, its box and button on one line, a problem under them. */
+.add-domain {
+	flex: 0 1 420px;
+	align-self: flex-start;
+	min-width: min(100%, 280px);
+}
+
+.add-domain .inline-form {
+	flex-wrap: nowrap;
+}
+
+.add-domain .form-error {
+	margin: 6px 0 0;
+	font-weight: 400;
+}
+
+/* What the last DNS check or scan said, beside the domain it was about. */
+.outcome {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	margin: 0 0 16px;
+}
+
+.outcome .icon {
+	flex: none;
+	width: 16px;
+	height: 16px;
+	margin-top: 2px;
+}
+
+.outcome-good .icon {
+	color: var(--good);
+}
+
+.detail-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 12px;
+	margin-bottom: 16px;
+}
+
+.detail-head h2 {
+	margin-bottom: 4px;
+	font-size: var(--text-lg);
+	overflow-wrap: anywhere;
+}
+
+.report > .sub {
+	margin: 0 0 16px;
+}
+
+.record {
+	display: grid;
+	grid-template-columns: max-content minmax(0, 1fr);
+	gap: 8px 16px;
+	margin: 16px 0 4px;
+}
+
+.record dt {
+	color: var(--ink-2);
+}
+
+.record dd {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+}
+
+.changes {
+	padding: 0;
+	list-style: none;
+	background: var(--surface);
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-lg);
+}
+
+.changes li {
+	display: flex;
+	align-items: flex-start;
+	gap: 12px;
+	padding: 8px 12px;
+}
+
+.changes li + li {
+	border-top: 1px solid var(--hairline);
+}
+
+.changes .icon {
+	margin-top: 4px;
+	color: var(--ink-2);
+}
+
+/* Activity: a log read by the clock, newest last. */
+.activity {
+	max-height: 60vh;
+	overflow-y: auto;
+}
+
+.cf-batch .activity {
+	max-height: 320px;
+	margin-top: 12px;
+	padding: 8px 12px;
+	background: var(--page);
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-md);
+}
+
+.activity-list {
+	display: grid;
+	gap: 4px;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	font-size: var(--text-sm);
+}
+
+.activity-line {
+	display: grid;
+	grid-template-columns: auto auto 1fr;
+	align-items: baseline;
+	gap: 8px;
+	overflow-wrap: anywhere;
+}
+
+.activity-line time {
+	color: var(--ink-2);
+	font-family: var(--mono, ui-monospace, monospace);
+	font-size: var(--text-xs);
+}
+
+.activity-line > .icon {
+	align-self: center;
+	color: var(--ink-2);
+}
+
+.activity-good > .icon {
+	color: var(--good, currentColor);
+}
+
+.activity-warning > .icon {
+	color: var(--warning-mark);
+}
+
+.cf-batch-list {
+	display: grid;
+	gap: 8px;
+	max-height: 50vh;
+	margin: 12px 0;
+	padding: 0;
+	overflow-y: auto;
+	list-style: none;
+}
+
+.cf-care {
+	color: var(--ink);
+}
+
+.cf-care > .icon {
+	color: var(--warning-mark);
+	vertical-align: -2px;
+}
+
+.cf-batch-list code {
+	overflow-wrap: anywhere;
+}
+
+.cf-zone-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin-left: auto;
+}
+
+.steps.left {
+	margin: 20px auto 0;
+	text-align: left;
+}
+
+.journey .status-done {
+	color: var(--good);
+}
+
+.steps pre {
+	margin-top: 8px;
+}
+
+.github {
+	display: grid;
+	gap: 12px;
+	margin-top: 20px;
+	padding-top: 16px;
+	border-top: 1px solid var(--hairline);
+}
+
+.github h3 {
+	margin: 0;
+}
+
+.github .inline-form {
+	max-width: 520px;
+}
+
+.pick {
+	display: grid;
+	gap: 8px;
+}
+
+.pick .actions,
+.fetched .actions {
+	align-items: center;
+	margin-top: 0;
+}
+
+.repo-pick {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-md);
+}
+
+.repo-pick.scroll {
+	max-height: 320px;
+	overflow-y: auto;
+}
+
+.repo-pick li {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 6px 12px;
+}
+
+.repo-pick li + li {
+	border-top: 1px solid var(--hairline);
+}
+
+.repo-pick label {
+	display: flex;
+	flex: 1;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 12px;
+	min-height: 28px;
+	cursor: pointer;
+}
+
+.fetched .repo-pick {
+	margin-top: 12px;
+}
+
+.verdict {
+	margin-top: 4px;
+	font-size: var(--text-sm);
+}
+
+.judgement {
+	display: grid;
+	gap: 8px;
+}
+
+.judgement ol {
+	margin-top: 4px;
+	padding-left: 20px;
+}
+
+.uses {
+	display: grid;
+	gap: 6px;
+	margin-top: 8px;
+	padding: 0;
+	list-style: none;
+}
+
+.uses li {
+	display: grid;
+	gap: 2px;
+}
+
+.field.inline {
+	flex-direction: row;
+	align-items: center;
+	gap: 8px;
+}
+
+.check {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.nav-group {
+	margin: 12px 0 2px;
+	padding: 0 12px;
+	color: var(--muted);
+	font-size: var(--text-xs);
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
+.nav .count {
+	margin-left: auto;
+	color: var(--ink-2);
+	font-size: var(--text-xs);
+	font-variant-numeric: tabular-nums;
+}
+
+.journey {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px 20px;
+	margin: 0 0 16px;
+	padding: 0;
+	list-style: none;
+	counter-reset: step;
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+}
+
+.journey li {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.journey li[aria-current="step"] {
+	color: var(--ink);
+	font-weight: 600;
+}
+
+/* Settings */
+
+.plain-list {
+	display: grid;
+	gap: 6px;
+	margin: 12px 0;
+	padding: 0;
+	list-style: none;
+}
+
+fieldset.looks {
+	min-width: 0;
+}
+
+fieldset.looks legend {
+	padding: 0;
+	float: left;
+	width: 100%;
+}
+
+.look-grid {
+	clear: both;
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+	gap: 16px;
+	margin-top: 16px;
+}
+
+.look-option {
+	display: grid;
+	gap: 6px;
+	padding: 12px;
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-lg);
+	cursor: pointer;
+}
+
+.look-option:has(input:checked) {
+	border-color: var(--accent);
+	box-shadow: 0 0 0 1px var(--accent);
+}
+
+.look-option:has(input:focus-visible) {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
+.look-name {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-weight: 600;
+}
+
+.look-text {
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+}
+
+/* Settings → Model */
+
+.visually-hidden {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
+}
+
+.model-settings > * + * {
+	margin-top: 12px;
+}
+
+.model-now {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px;
+}
+
+.model-choices {
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+.model-group h3 {
+	margin: 16px 0 6px;
+}
+
+.choice-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+	gap: 8px;
+}
+
+.choice-option {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 8px 12px;
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-md);
+	cursor: pointer;
+}
+
+.choice-option:has(input:checked) {
+	border-color: var(--accent);
+	box-shadow: 0 0 0 1px var(--accent);
+}
+
+.choice-option:has(input:focus-visible) {
+	outline: 2px solid var(--accent);
+	outline-offset: 2px;
+}
+
+.chip-note {
+	color: var(--ink-2);
+	font-size: var(--text-xs);
+}
+
+.model-help {
+	color: var(--ink-2);
+}
+
+.model-fields {
+	display: grid;
+	gap: 12px;
+	max-width: 640px;
+}
+
+.model-fields .field {
+	display: grid;
+	gap: 4px;
+}
+
+.model-fields .inline-form input {
+	flex: 1;
+	min-width: 0;
+}
+
+.check-line {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: var(--text-sm);
+}
+
+.model-result {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+}
+
+.model-result.error {
+	color: var(--critical-ink);
+}
+
+/* Settings → Access from other devices */
+
+.access-settings > * + *,
+.access-controls > * + * {
+	margin-top: 12px;
+}
+
+.access-controls .field {
+	display: grid;
+	gap: 4px;
+	max-width: 760px;
+}
+
+.access-controls .inline-form input {
+	flex: 1;
+	min-width: 0;
+}
+
+/* Send to a model */
+
+.dialog.send {
+	max-height: calc(100dvh - 32px);
+	overflow-y: auto;
+}
+
+.dialog .actions .push-left {
+	margin-right: auto;
+}
+
+.dialog .send-result {
+	margin-top: 16px;
+	max-height: 50vh;
+	overflow: auto;
+}
+
+.dialog .send-result .actions {
+	margin-top: 12px;
+}
+
+/* The owner's tracking: new since the last scan, status and note */
+
+.tags {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	margin-top: 4px;
+}
+
+.tag {
+	display: inline-flex;
+	align-items: center;
+	padding: 1px 8px;
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-pill);
+	color: var(--ink-2);
+	font-size: var(--text-xs);
+	font-weight: 500;
+}
+
+.tag-new {
+	border-color: var(--accent-hover);
+	color: var(--ink);
+}
+
+.tag-status.status-fixed,
+.tag-status.status-rotated,
+.tag-status.status-false-positive,
+.tag-status.status-accepted {
+	border-style: dashed;
+}
+
+/* An accepted risk whose end date has passed: it wants looking at again. */
+.tag-status.status-ended {
+	border-color: var(--critical-ink);
+	color: var(--critical-ink);
+}
+
+.note-editor {
+	margin-top: 16px;
+	padding-top: 12px;
+	border-top: 1px solid var(--hairline);
+}
+
+.note-editor h3 {
+	margin-bottom: 8px;
+}
+
+.note-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-end;
+	gap: 12px;
+	margin-bottom: 8px;
+}
+
+.note-row .field {
+	display: grid;
+	gap: 2px;
+}
+
+.note-editor textarea {
+	width: 100%;
+	box-sizing: border-box;
+}
+
+.history-table td,
+.history-table th {
+	padding: 6px 8px;
+	text-align: left;
+}
+
+.history-table td.num,
+.history-table th.num {
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+}
+
+/* This Mac: the check of the computer Porchlight runs on */
+
+.host-progress {
+	display: grid;
+	gap: 6px;
+	margin-top: 12px;
+}
+
+.host-list {
+	display: grid;
+}
+
+.host-check {
+	padding: 12px 0;
+	border-top: 1px solid var(--hairline);
+}
+
+.host-list > .host-check:first-child {
+	border-top: 0;
+}
+
+.host-check-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 12px;
+}
+
+.host-detail {
+	margin: 4px 0 0;
+	color: var(--ink-2);
+	overflow-wrap: anywhere;
+}
+
+.host-fix {
+	margin: 6px 0 0;
+	padding-left: 20px;
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+	overflow-wrap: anywhere;
+}
+
+.host-fix li + li {
+	margin-top: 4px;
+}
+
+.host-check .fix-details ul {
+	margin: 4px 0 0;
+	padding-left: 20px;
+	font-size: var(--text-sm);
+	overflow-wrap: anywhere;
+}
+
+.host-passed {
+	margin-top: 12px;
+}
+
+.host-passed summary {
+	cursor: pointer;
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+}
+
+.host-not-covered {
+	margin: 6px 0 0;
+	padding-left: 20px;
+	color: var(--ink-2);
+}
+
+.host-commands-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.host-commands {
+	margin: 12px 0 0;
+	padding: 12px 16px;
+	overflow-x: auto;
+	background: var(--page);
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-md);
+	font-family: var(--mono);
+	font-size: var(--text-sm);
+	line-height: 1.6;
+	white-space: pre;
+}
+
+
+/* Click paths as breadcrumbs (cli/ui/paths.js): each step with a place of its own is a link. */
+.crumbs .crumb {
+	font-weight: 600;
+}
+
+.crumbs a.crumb {
+	text-decoration: underline;
+	text-decoration-thickness: 1px;
+	text-underline-offset: 3px;
+}
+
+.crumbs a.crumb:hover {
+	text-decoration-thickness: 2px;
+}
+
+.crumbs .crumb-sep {
+	color: var(--muted);
+}
+
+/* A Settings section an address jumped to takes focus without a ring around the whole card. */
+#settings-model:focus,
+#settings-access:focus,
+#settings-appearance:focus {
+	outline: none;
+}
+
+/* Investigate with a model: the run, what waits for approval, the steps and their evidence. */
+.investigate-run-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.investigate-domain + .investigate-domain {
+	margin-top: 16px;
+	padding-top: 16px;
+	border-top: 1px solid var(--hairline);
+}
+
+.investigate-domain h3 {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+}
+
+/* Stays in view while the steps below it are read, so a request that waits is never missed. */
+.investigate-approval {
+	position: sticky;
+	top: 12px;
+	z-index: 3;
+	margin: 12px 0;
+	box-shadow: 0 6px 18px rgb(0 0 0 / 18%);
+}
+
+.investigate-rest {
+	margin-top: 8px;
+}
+
+.investigate-may-send {
+	margin-top: 16px;
+}
+
+.investigate-limits {
+	display: grid;
+	gap: 4px;
+	margin: 6px 0 0;
+	padding-left: 20px;
+	color: var(--ink-2);
+}
+
+.investigate-pre {
+	max-height: 320px;
+	margin: 6px 0;
+	padding: 8px 12px;
+	overflow: auto;
+	font-size: var(--text-xs);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	background: var(--page);
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-md);
+}
+
+.investigate-steps,
+.investigate-findings {
+	display: grid;
+	gap: 12px;
+	margin: 8px 0;
+	padding-left: 0;
+	list-style: none;
+}
+
+.investigate-step,
+.investigate-finding {
+	padding: 8px 12px;
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-md);
+	min-width: 0;
+}
+
+.investigate-step code {
+	margin-left: 6px;
+	overflow-wrap: anywhere;
+}
+
+.investigate-step.outcome-refused,
+.investigate-step.outcome-denied,
+.investigate-step.outcome-stopped {
+	border-style: dashed;
+}
+
+.investigate-run h3 {
+	margin-top: 20px;
+}
+
+/* Projects: the switcher above the sections, Settings → Projects, and where a file was kept. */
+
+.project-switcher {
+	display: grid;
+	gap: 4px;
+	padding: 0 8px;
+}
+
+.project-switcher label {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--muted);
+	font-size: var(--text-xs);
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+}
+
+.project-switcher .icon {
+	width: 13px;
+	height: 13px;
+}
+
+.project-switcher select {
+	width: 100%;
+	max-width: none;
+	height: 30px;
+	font-size: var(--text-sm);
+}
+
+[data-look="tabs"] .project-switcher {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 0;
+}
+
+[data-look="tabs"] .project-switcher label span {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	white-space: nowrap;
+}
+
+[data-look="tabs"] .project-switcher select {
+	width: auto;
+	max-width: 180px;
+}
+
+.toast {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px 12px;
+}
+
+.toast-message {
+	flex: 1 1 auto;
+}
+
+.toast-close {
+	margin: -4px -6px -4px 0;
+	padding: 2px 8px;
+	border: 0;
+	border-radius: var(--radius-sm);
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: var(--text-lg);
+	line-height: 1;
+	cursor: pointer;
+}
+
+.toast-close:hover,
+.toast-action:hover {
+	background: rgba(255, 255, 255, 0.16);
+}
+
+.toast-action {
+	padding: 2px 8px;
+	border: 1px solid currentColor;
+	border-radius: var(--radius-sm);
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: var(--text-sm);
+	cursor: pointer;
+}
+
+.project-list {
+	display: grid;
+	gap: 8px;
+	margin: 12px 0;
+	padding: 0;
+	list-style: none;
+}
+
+.project-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px 16px;
+	padding: 12px 12px;
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-md);
+}
+
+.project-row.current {
+	border-color: var(--accent-hover);
+}
+
+.project-what {
+	display: grid;
+	gap: 2px;
+	min-width: 0;
+}
+
+.project-what code {
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+	overflow-wrap: anywhere;
+}
+
+.project-row .actions {
+	margin: 0;
+}
+
+.project-in-use {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--ink);
+	font-weight: 600;
+}
+
+.project-in-use .icon {
+	color: var(--good);
+}
+
+.project-form {
+	display: grid;
+	gap: 12px;
+	max-width: 760px;
+	margin-top: 20px;
+	padding-top: 16px;
+	border-top: 1px solid var(--hairline);
+}
+
+.project-form h3 {
+	margin: 0;
+	font-size: var(--text-md);
+}
+
+.project-folder-row {
+	display: flex;
+	gap: 8px;
+}
+
+.project-folder-row .button {
+	flex: none;
+}
+
+.project-preview:empty {
+	display: none;
+}
+
+.project-preview p {
+	margin: 0;
+}
+
+.project-paths code {
+	overflow-wrap: anywhere;
+}
+
+.project-form .form-error,
+.project-preview .form-error {
+	margin: 0;
+	color: var(--critical-ink);
+}
+
+.kept-in {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px;
+	margin: 0 0 12px;
+}
+
+.kept-in:empty {
+	display: none;
+}
+
+.kept-in p {
+	margin: 0;
+}
+
+.kept-in p > .icon {
+	width: 14px;
+	height: 14px;
+	vertical-align: -2px;
+}
+
+.kept-in p > .button {
+	margin-left: 4px;
+	vertical-align: middle;
+}
+
+@media (max-width: 900px) {
+	.project-switcher {
+		display: flex;
+		align-items: center;
+		padding: 0;
+	}
+
+	.project-switcher label span {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		overflow: hidden;
+		clip: rect(0 0 0 0);
+		white-space: nowrap;
+	}
+
+	.project-switcher select {
+		width: auto;
+		max-width: 150px;
+	}
+}
+
+/* Cloudflare: the audit of the owner's Cloudflare account */
+
+.cf-zone-head,
+.cf-severities {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 12px;
+	margin: 0 0 8px;
+}
+
+.cf-severities {
+	margin: 12px 0;
+}
+
+.cf-severity-count {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.cf-plan {
+	padding: 1px 8px;
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-pill);
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+}
+
+.cf-approval {
+	margin-top: 12px;
+	padding: 12px 12px;
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-md);
+}
+
+.cf-request {
+	margin: 8px 0;
+	padding: 12px 12px;
+	overflow-x: auto;
+	background: var(--page);
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-md);
+	font-family: var(--mono);
+	font-size: var(--text-sm);
+	line-height: 1.5;
+	white-space: pre;
+}
+
+.cloudflare-permissions li + li {
+	margin-top: 4px;
+}
+
+/* A long request or value scrolls inside its own box instead of widening the card. */
+.host-list > .host-check {
+	min-width: 0;
+}
+
+.host-check code {
+	overflow-wrap: anywhere;
+}
+
+/* Stopping work in progress: a scan, or a model's answer. */
+.progress > .button,
+.assist-content > .assist-wait + .button {
+	margin-top: 12px;
+}
+
+/* "Scan this repository again", above a repository's findings. */
+.repo-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px 12px;
+	margin: 0;
+}
+
+/* Stop sits under the waiting line at its own width, not stretched across the panel. */
+.assist-content > .assist-wait + .button {
+	display: flex;
+	width: fit-content;
+}
+
+/* Domains: open findings in the list, and the history of kept scans under a domain's report. */
+.domain-open {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 6px;
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+}
+
+.domain-history {
+	margin-top: 24px;
+}
+
+.timeline {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	background: var(--surface);
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-lg);
+}
+
+.timeline > li + li {
+	border-top: 1px solid var(--hairline);
+}
+
+.timeline summary,
+.timeline-line {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px 12px;
+	padding: 8px 12px;
+}
+
+.timeline summary {
+	cursor: pointer;
+}
+
+.timeline-when {
+	flex: 0 0 176px;
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+	font-variant-numeric: tabular-nums;
+}
+
+.timeline-what {
+	flex: 1 1 200px;
+	font-weight: 500;
+}
+
+.timeline-quiet .timeline-what {
+	color: var(--ink-2);
+	font-weight: 400;
+}
+
+.timeline details > :not(summary) {
+	margin: 0 12px 12px;
+}
+
+.timeline-findings {
+	display: grid;
+	gap: 4px;
+	margin: 4px 0 0;
+	padding: 0;
+	list-style: none;
+	overflow-wrap: anywhere;
+}
+
+.timeline-findings li {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px 8px;
+}
+
+/* M14: a steadier, quieter page. */
+
+/* Focus is never left under the sticky header or the answers drawer (R6U-3, WCAG 2.4.11). */
+html {
+	scroll-padding-top: 16px;
+	scroll-padding-bottom: 16px;
+}
+
+html:has(body.answers-open[data-answers="bottom"]) {
+	scroll-padding-bottom: 46vh;
+}
+
+/* Radios and checkboxes keep their size beside long labels (R6U-2). */
+.choice input,
+.check-line input {
+	flex: none;
+}
+
+.monitor-status {
+	margin-bottom: 16px;
+}
+
+.plain-list.tight {
+	gap: 2px;
+	margin: 0;
+}
+
+.tag-new + .wrap,
+td > .tag-new {
+	margin-right: 6px;
+}
+
+.settings-jump {
+	margin-top: 8px;
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+}
+
+.cf-not-covered > summary h2 {
+	display: inline;
+}
+
+.cf-zones {
+	margin-top: 24px;
+}
+
+.cf-zones > h2 {
+	margin-bottom: 12px;
+}
+
+/* Once there is a scan, the scan card is a bar above the results (A-D1). */
+.scan-card.compact > .sub {
+	display: none;
+}
+
+.scan-card.compact > h2 {
+	font-size: var(--text-md);
+}
+
+.github-box {
+	margin-top: 16px;
+}
+
+/* A toggle for the filters, shown only on a narrow screen (W8). */
+.filters-toggle {
+	display: none;
+}
+
+.findings-line {
+	display: none;
+}
+
+@media (max-width: 900px) {
+	html {
+		scroll-padding-top: 112px;
+	}
+
+	.sidebar {
+		overflow: visible;
+	}
+
+	/* A running or failed scan still shows in the header (A-U4, I-U3). */
+	.scan-status.is-live {
+		display: flex;
+		flex: 1 0 100%;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 4px 12px;
+		order: 4;
+		margin: 0 -12px;
+		padding: 6px 12px;
+	}
+
+	.scan-status.is-live progress {
+		flex: 1 1 120px;
+	}
+}
+
+@media (max-width: 600px) {
+	.filters-toggle {
+		display: inline-flex;
+	}
+
+	.filters.foldable:not(.open) > :not(.grow):not(.filters-toggle) {
+		display: none;
+	}
+
+	/* The severity tiles repeat the chips; one line says the same (W8). */
+	.findings-tiles {
+		display: none;
+	}
+
+	.findings-line {
+		display: block;
+		margin-bottom: 12px;
+		color: var(--ink-2);
+		font-size: var(--text-sm);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	html {
+		scroll-behavior: auto;
+	}
+
+	#view.is-loading > .view-slot > *,
+	#view.is-loading > .page {
+		transition: none;
+	}
+}
+
+/* Daily use (M15): the glance strip, ticked findings, the waiting count, copy buttons, grouped "Fix these". */
+
+.about-line {
+	margin: 0;
+	padding: 8px 12px 12px;
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+}
+
+.nav .count-waiting:not(:empty) {
+	color: var(--ink);
+	font-weight: 600;
+}
+
+.glance-head {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px;
+	align-items: baseline;
+	justify-content: space-between;
+}
+
+.glance-rows {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+	gap: 12px;
+	margin: 12px 0;
+	padding: 0;
+	list-style: none;
+}
+
+.glance-row {
+	padding: 12px;
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-md);
+}
+
+.glance-row > a {
+	display: grid;
+	gap: 4px;
+	color: var(--ink);
+	text-decoration: none;
+}
+
+.bulk-bar {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	align-items: center;
+	margin: 12px 0;
+	padding: 8px 12px;
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-md);
+	background: var(--surface);
+}
+
+.col-tick {
+	width: 2.5em;
+}
+
+.copy-button {
+	margin-left: 4px;
+	vertical-align: middle;
+}
+
+.action-foot {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	align-items: center;
+}
+
+.cf-batch-zones {
+	display: grid;
+	gap: 12px;
+	max-height: 50vh;
+	margin: 12px 0;
+	padding: 0;
+	overflow-y: auto;
+	list-style: none;
+}
+
+.cf-batch-zones .cf-batch-list {
+	max-height: none;
+	margin: 8px 0 0 24px;
+	overflow-y: visible;
+}
+
+.coverage-groups {
+	display: grid;
+	gap: 8px;
+	margin: 8px 0 0;
+	padding-left: 20px;
+}
+
+.connections-check {
+	display: grid;
+	gap: 8px;
+	justify-items: start;
+}
