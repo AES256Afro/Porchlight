@@ -98,3 +98,38 @@ export interface MonitorStatus {
 	/** The scheduled run's last failure, while it lasts; null when the record could not be read. */
 	schedule: { lastError: MonitorProblem | null } | null;
 }
+
+/**
+ * One name in a domain's inventory (`GET /domains/:name/hosts`, R6F-5): what the latest scan holds
+ * about it, learnt passively from the certificate log and DNS. Nothing is looked up to answer.
+ */
+export interface HostView {
+	name: string;
+	/** False when the host waited its turn (beyond MAX_HOSTS) in the latest scan, so nothing below was observed then. */
+	probed: boolean;
+	/** When it was last probed; null when never, or not known. */
+	checkedAt: string | null;
+	/** null: the lookup failed or the host was not probed ("not observed", never "no records"). */
+	dns: { a: string[]; aaaa: string[]; cname: string[] } | null;
+	/** The latest certificate the log showed for it; null when none. */
+	cert: { notBefore: string; notAfter: string } | null;
+	/** What its one `GET /` answered; null when it was not made (no address, or not probed). */
+	https: { ok: true; status: number } | { ok: false; error: string } | null;
+	/** Open findings of the latest scan about this host. */
+	findings: number;
+}
+
+/** A page of a domain's inventory. */
+export interface HostsPage {
+	domain: string;
+	/** When the scan the inventory comes from was taken. */
+	takenAt: string;
+	/** Names in the inventory, across every page. */
+	total: number;
+	/** 1-based. */
+	page: number;
+	pageSize: number;
+	hosts: HostView[];
+	/** Names the certificate log still lists that DNS showed gone, with when that was seen. On the first page only. */
+	gone: { name: string; since: string }[];
+}

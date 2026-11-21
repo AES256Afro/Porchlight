@@ -51,7 +51,7 @@ export interface DiscussionAbout {
 	/** "Send to a model": what was sent, what was asked for, and the page's filter. */
 	content?: string;
 	purpose?: string;
-	filter?: { severity?: string; kind?: string; q?: string; repo?: string };
+	filter?: { severity?: string; kind?: string; q?: string; repo?: string; new?: string };
 	/** The filter in words, when only part of the scan was sent. */
 	partial?: string;
 	/** The Cloudflare audit the analysis read, and how many zones it covered. A follow-up needs the same audit. */
@@ -110,6 +110,8 @@ export interface DiscussionSummary {
 	domain?: string;
 	/** The project its transcript is kept in. */
 	project?: string;
+	/** For a finding's explanation: which finding and which scan, so the page can offer it where it was asked (H-Q1). */
+	finding?: { ruleId: string; location: string; detail: string; stamp?: string; scannedAt?: string };
 }
 
 const DISCUSSION_ID = /^dsc_[0-9a-f]{16}$/;
@@ -208,6 +210,17 @@ export function summaryOf(discussion: Discussion): DiscussionSummary {
 		...(discussion.about.repo ? { repo: discussion.about.repo } : {}),
 		...(discussion.about.domain ? { domain: discussion.about.domain } : {}),
 		...(discussion.saved ? { project: discussion.saved.project } : {}),
+		...(discussion.kind === "finding" && discussion.about.ruleId !== undefined && discussion.about.location !== undefined
+			? {
+					finding: {
+						ruleId: discussion.about.ruleId,
+						location: discussion.about.location,
+						detail: discussion.about.detail ?? "",
+						...(discussion.about.stamp ? { stamp: discussion.about.stamp } : {}),
+						...(discussion.about.scannedAt ? { scannedAt: discussion.about.scannedAt } : {}),
+					},
+				}
+			: {}),
 	};
 }
 

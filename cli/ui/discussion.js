@@ -3,6 +3,7 @@
 // answer where it was asked (Explain, Summarise, Ask, Send to a model) and on the Discussions page.
 // The page sends only the discussion's id and the owner's question; the server rebuilds the data the
 // model reads (invariant 13). Every answer is generated text, built with h(), and never acted on.
+import { OUTSIDE } from "./hints.js";
 import { api, ApiError } from "./api.js";
 import { generatedText } from "./assist.js";
 import { banner, h, icon, replace, setOff, stepNodes } from "./dom.js";
@@ -60,7 +61,7 @@ export function followUpBox(discussion, options = {}) {
 	const error = h("p", { class: "form-error", role: "alert", hidden: true });
 	const button = /** @type {HTMLButtonElement} */ (h("button", { type: "submit", class: "button" }, icon("spark"), "Ask"));
 	const where = discussion.hosted
-		? `Your question and this discussion go to ${discussion.host}, outside your machines.`
+		? `Your question and this discussion go to ${discussion.host}, ${OUTSIDE}.`
 		: `Answered by ${discussion.model} at ${discussion.host}, from the same data as the first answer.`;
 	const form = /** @type {HTMLFormElement} */ (
 		h(

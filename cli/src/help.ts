@@ -40,18 +40,39 @@ osv-scanner, and prints one ranked report. Progress goes to the error stream, on
                          names with commas
   --out <file>           Write the report to a file instead of printing it
   --json                 Write the report as JSON, the form \`repos export\` and the interface read
+  --format <form>        md (default), json (as --json) or sarif: SARIF 2.1.0 for code-scanning
+                         tools, with what the scan did not cover in the run's properties
+  --baseline <file>      A JSON report of an earlier scan: --fail-on then counts only findings it
+                         does not hold. One it did not look for counts as not held
   --osv-db <folder>      Keep OSV's vulnerability databases in this folder and compare against them,
                          so package names are not sent to api.osv.dev (the first scan downloads them)
   --save                 Also keep the scan where the interface reads it (~/.porchlight), in its
-                         history too, so \`porchlight ui\` shows it. Replaces the scan shown there
+                         history too, so \`porchlight ui\` shows it. Replaces the scan shown there,
+                         and says what is new and fixed since the scan of the same folders before it
+  --again <name>         With --save and no folder: scan one repository of the saved scan again, by
+                         the name the report gives it, and say what that fixed. Where a scanner could
+                         not look again, what it found before is kept
   --fail-on <severity>   Exit 2 if any finding is at or above: ${SEVERITIES.join(", ")}
                          Exit 1 if a scanner was missing or failed, or the choices left something
                          out (a check, history, a repository), as they do for quick`,
 	},
 	{
+		command: "repos history",
+		summary: "List the kept scans, with what was new and fixed in each",
+		detail: `Usage: porchlight repos history
+
+Lists the scans kept with the saved scan (the last 50), newest first: when, how many repositories and
+findings, and how many were new and fixed against the scan of the same folders before it.
+
+  --json                 Print them as JSON`,
+	},
+	{
 		command: "repos export",
 		summary: "Turn a JSON report into a repair roadmap or a list of findings",
-		detail: `Usage: porchlight repos export <report.json>
+		detail: `Usage: porchlight repos export [report.json]
+
+Without a path, exports the scan the interface shows (repo-scan.json in the data folder, kept by
+\`repos scan --save\` and by the interface).
 
   --content <what>       roadmap: repairs in order (default); findings: every finding with its fix
   --format <format>      ${FORMATS.join(", ")} (default: md)
@@ -76,6 +97,29 @@ command then exits 1.
   --out <file>           Write it to a file (readable only by you) instead of printing it`,
 	},
 	{
+		command: "findings note",
+		summary: "Set a finding's status and note, as on the Findings page",
+		detail: `Usage: porchlight findings note --repo <name> --rule <id> --location <place> --status <status>
+
+Sets your status and note for one finding of the saved scan. It never changes the finding, its
+severity, the counts, the roadmap or an export.
+
+  --status <status>      open, in-progress, fixed, rotated (a secret only), accepted, false-positive
+  --detail <text>        Which one, when several findings share the place
+  --until <day>          For accepted: the last day, such as 2027-06-30
+  --note <text>          Your note (a ticket, who is on it, why the risk is accepted)`,
+	},
+	{
+		command: "findings notes",
+		summary: "List your statuses and notes",
+		detail: `Usage: porchlight findings notes
+
+Lists every status and note you set, with where it was set from, and marks the ones that match no
+finding of any kept scan.
+
+  --json                 Print them as JSON`,
+	},
+	{
 		command: "domains",
 		summary: "Register, verify and scan the domains your monitor watches",
 		detail: `Usage: porchlight domains <command> [domain]
@@ -86,10 +130,16 @@ command then exits 1.
   scan <domain>          Scan now and print what changed
   show <domain>          Latest report
   history <domain>       Each kept scan, newest first, with what changed in it
-  remove <domain>        Stop watching it and delete its scan history
+  hosts <domain>         Every name the monitor knows under it, from the certificate log and DNS
+                         (never guessed), with its addresses, HTTPS answer and open findings; takes
+                         --format text, csv, md or json
+  remove <domain> --yes  Stop watching it and delete its scan history
   export <domain>        Repair roadmap for a domain; takes --content, --format and --out
 
-Needs PORCHLIGHT_MONITOR_URL (the monitor's address) and PORCHLIGHT_ADMIN_TOKEN.`,
+  --json                 Print the monitor's answer as JSON
+
+Uses the monitor saved under Settings → Monitor in the interface, or PORCHLIGHT_MONITOR_URL (the
+monitor's address) and PORCHLIGHT_ADMIN_TOKEN, which take its place when set.`,
 	},
 	{
 		command: "host check",
@@ -100,7 +150,9 @@ Checks this computer: updates, built-in protection, what accepts connections, cr
 files, installed packages. It only reads.
 
   --json                 Print the result as JSON
-  --offline              Do not ask Apple for updates or look packages up on OSV.dev`,
+  --offline              Do not ask Apple for updates or look packages up on OSV.dev
+  --fail-on <severity>   Exit 2 if a failed check is at or above: ${SEVERITIES.join(", ")}
+                         Exit 1 if a check could not be made`,
 	},
 	{
 		command: "cloudflare audit",
@@ -112,6 +164,8 @@ Checks SSL/TLS, DNS, email records, the firewall, members and tokens. It only re
   --json                 Print the result as JSON
   --no-lookups           Do not look up where CNAME records point, even for domains whose
                          Porchlight ownership record proves them
+  --fail-on <severity>   Exit 2 if a failed check is at or above: ${SEVERITIES.join(", ")}
+                         Exit 1 if a check could not be made
 
 Uses the token saved under Settings → Cloudflare in the interface, or
 PORCHLIGHT_CLOUDFLARE_TOKEN. It is sent only to Cloudflare's API.`,
@@ -157,8 +211,70 @@ for the monitor, the model, GitHub and Cloudflare. It only reads, and prints no 
 
   --json                 Print the result as JSON
   --offline              Do not contact the monitor or the model to see whether they answer
+  --self                 Check what Porchlight promises on this computer instead: file and folder
+                         modes, the addresses it listens on, which keys are saved and where, which
+                         gitleaks and osv-scanner run, and files a crash left behind
 
 Exits 1 when something Porchlight cannot work without is missing.`,
+	},
+	{
+		command: "forget",
+		summary: "List, then remove, everything Porchlight keeps on this computer",
+		detail: `Usage: porchlight forget
+
+Lists what Porchlight keeps in its data folder (~/.porchlight): the scan and its history, your notes,
+keys and tokens, fetched repositories, audits, investigations and discussions. With --yes it removes
+them. It removes only those, by name: anything else there, a link, a project folder or a git repository
+is left alone. It also says what lives elsewhere: the monitor's domains, DNS records, changes made to
+Cloudflare and keys to revoke with each provider.
+
+  --yes                  Remove what is listed. Without it nothing is removed
+  --data <dir>           The data folder, when not ~/.porchlight
+  --report <file>        Also remove a report kept elsewhere, and its history, notes and judgements`,
+	},
+	{
+		command: "status",
+		summary: "What Porchlight last found, from the files it keeps; contacts nothing",
+		detail: `Usage: porchlight status
+
+Counts, times and gaps of the latest repository scan, host check and Cloudflare audit, read from the
+files Porchlight keeps, and whether a monitor is set. It contacts nothing and changes nothing, and
+prints no finding's place, value, key or token.
+
+  --json                 Print it as JSON, for a script or a status bar
+  --data <dir>           The data folder, when not ~/.porchlight
+  --report <file>        The scan report, when not repo-scan.json in the data folder
+
+Exits 1 when a kept file is there but cannot be read.`,
+	},
+	{
+		command: "hook",
+		summary: "Check the staged files for secrets and private data before a commit",
+		detail: `Usage: porchlight hook [print]
+
+  (none)                 Check what is staged in the repository here, with Porchlight's own rules
+                         (gitleaks' built-in ones and the private-data ones). Prints kind, rule, file
+                         and line, never a value. Exits 1 when it finds something, or could not check
+  print                  Print a pre-commit hook that runs this check, for you to install:
+                           porchlight hook print > .git/hooks/pre-commit
+                           chmod +x .git/hooks/pre-commit
+                         Porchlight never writes into a repository itself
+
+Needs gitleaks. To commit without the check once: git commit --no-verify`,
+	},
+	{
+		command: "schedule print",
+		summary: "Print a launchd or systemd unit that scans a folder on a schedule",
+		detail: `Usage: porchlight schedule print
+
+Prints a launchd agent (macOS) or a systemd user service and timer (Linux) that runs a Standard
+\`repos scan --save\` of one folder, so the interface shows the latest. It installs nothing: the
+comment at its top says how. The scan's progress lines go to scheduled-scan.log in ~/.porchlight.
+
+  --root <folder>        Folder to scan (default: the current folder)
+  --every <hours>        How often, 1 to 720 (default: 24)
+  --depth <n>            Folder levels to search for repositories, 0 to 6 (default: 3)
+  --launchd, --systemd   Which to print (default: launchd on macOS, systemd elsewhere)`,
 	},
 ];
 

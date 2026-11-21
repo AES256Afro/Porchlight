@@ -8,7 +8,12 @@ const LOCAL_D1_ID = "00000000-0000-4000-8000-000000000000";
 // The ID printed by `cf d1 create --name porchlight-monitor`. Set it before
 // the first deploy; remote migrations address the database by this ID. The
 // database keeps its data whatever the Worker is called: it is found by ID.
-const D1_DATABASE_ID = "dea67a7e-c591-440b-a178-b6e1bb468736";
+// scripts/setup-monitor.sh passes the one it made in PORCHLIGHT_D1_DATABASE_ID, so a new owner's deploy
+// needs no edit here.
+const D1_DATABASE_ID =
+	(
+		globalThis as { process?: { env: Record<string, string | undefined> } }
+	).process?.env.PORCHLIGHT_D1_DATABASE_ID?.trim() || "dea67a7e-c591-440b-a178-b6e1bb468736";
 
 // The Worker's name is part of its address. A monitor deployed before the
 // rename runs under its earlier name until it is deployed again; that deploy

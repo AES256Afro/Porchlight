@@ -6,8 +6,8 @@
 // steps, the evidence and what the model judged. Everything here comes from the target or the
 // model, so every element is built with h() and shown as text.
 import { api, ApiError, download } from "./api.js";
-import { announce, banner, emptyState, formatWhen, h, icon, isOff, pager, pageVisibility, plural, replace, setOff, shownText, stepNodes, toast } from "./dom.js";
-import { approvalLine, ownershipSteps, runLimits, runStatusWord } from "./hints.js";
+import { announce, banner, copyButton, emptyState, formatWhen, h, icon, isOff, pager, pageVisibility, plural, replace, setOff, shownText, stepNodes, toast } from "./dom.js";
+import { approvalLine, OUTSIDE, ownershipSteps, runLimits, runStatusWord } from "./hints.js";
 import { paginate } from "./list.js";
 import { poller } from "./poller.js";
 import { announceSaved } from "./projects.js";
@@ -46,6 +46,14 @@ const OUTCOME_WORDS = /** @type {Record<Step["outcome"], string>} */ ({
 	invalid: "Reply not understood",
 	"no action": "No action",
 });
+
+/**
+ * "Run again" (E-Q2): the domain, goal and turns of an earlier run, put into the form once. Never an
+ * approval: a new run asks before each request unless the owner says otherwise there (invariant 20).
+ *
+ * @type {{ domain: string, goal: string, maxTurns?: number } | null}
+ */
+let runAgain = null;
 
 /**
  * @param {HTMLElement} view
@@ -89,7 +97,7 @@ export async function renderInvestigate(view, route) {
 					h(
 						"p",
 						{ class: "sub" },
-						"A model plans an investigation of a website you have proven you own, one step at a time. Porchlight runs each step with a few fixed tools: DNS lookups on their own, HTTP requests and TCP connections only with your approval, given one at a time or once for the whole run. Nothing outside the domain and its subdomains is touched.",
+						"A model plans an investigation of a domain you have proven you own, one step at a time. Porchlight runs each step with a few fixed tools: DNS lookups on their own, HTTP requests and TCP connections only with your approval, given one at a time or once for the whole run. Nothing outside the domain and its subdomains is touched.",
 					),
 				),
 			),
@@ -172,6 +180,8 @@ export async function renderInvestigate(view, route) {
 									"li",
 									null,
 									h("a", { href: `#/investigate/${summary.id}` }, `${summary.domain}: ${summary.goal}`),
+									" ",
+									runAgainButton(summary),
 									h(
 										"span",
 										{ class: "hint" },
@@ -185,6 +195,29 @@ export async function renderInvestigate(view, route) {
 							drawHistory();
 						}),
 					),
+		);
+	}
+
+	/**
+	 * Fills the form with an earlier run's domain, goal and turns, and goes to it. Approvals are never carried over.
+	 *
+	 * @param {{ domain: string, goal: string, maxTurns?: number }} run
+	 */
+	function runAgainButton(run) {
+		return h(
+			"button",
+			{
+				type: "button",
+				class: "button quiet",
+				title: "Start a new run with this domain, goal and number of turns. It asks before each request, as every run does.",
+				onclick: () => {
+					runAgain = { domain: run.domain, goal: run.goal, ...(typeof run.maxTurns === "number" ? { maxTurns: run.maxTurns } : {}) };
+					const address = location.hash;
+					if (address === "#/investigate") drawSetup();
+					else location.hash = "#/investigate";
+				},
+			},
+			"Run again",
 		);
 	}
 
@@ -305,10 +338,15 @@ export async function renderInvestigate(view, route) {
 		if (!assistant.configured) {
 			return h("div", { class: "card" }, h("h2", null, "Start an investigation"), h("p", null, ...stepNodes("Choose a model in Settings → Model first. The model plans each step; Porchlight checks and runs it.")));
 		}
-		const domainSelect = /** @type {HTMLSelectElement} */ (h("select", { name: "domain", "aria-label": "Domain" }, ...state.domains.map((domain) => h("option", { value: domain.name }, domain.name))));
+		// The domain the address names (from Cloudflare or Domains), else the last run's, else the first (E-Q2).
+		const again = runAgain;
+		runAgain = null;
+		const known = (/** @type {string | null | undefined} */ name) => (name && state.domains.some((domain) => domain.name === name) ? name : null);
+		const chosenDomain = known(again?.domain) ?? known(route.params.get("domain")) ?? known(state.runs[0]?.domain) ?? state.domains[0]?.name ?? "";
+		const domainSelect = /** @type {HTMLSelectElement} */ (h("select", { name: "domain", "aria-label": "Domain" }, ...state.domains.map((domain) => h("option", { value: domain.name, selected: domain.name === chosenDomain }, domain.name))));
 		const goal = /** @type {HTMLTextAreaElement} */ (h("textarea", { name: "goal", rows: 3, maxLength: state.defaults.maxGoal, "aria-label": "Goal" }));
-		goal.value = state.defaults.goal;
-		const turns = /** @type {HTMLInputElement} */ (h("input", { type: "number", name: "turns", min: 1, max: state.defaults.maxTurnsLimit, value: String(state.defaults.maxTurns), "aria-label": "Turns" }));
+		goal.value = again?.goal ?? state.defaults.goal;
+		const turns = /** @type {HTMLInputElement} */ (h("input", { type: "number", name: "turns", min: 1, max: state.defaults.maxTurnsLimit, value: String(Math.min(again?.maxTurns ?? state.defaults.maxTurns, state.defaults.maxTurnsLimit)), "aria-label": "Turns" }));
 		// With a hosted model the page says above what is sent, and the button says where it goes: pressing it is the yes.
 		const startButton = /** @type {HTMLButtonElement} */ (
 			h(
@@ -398,7 +436,7 @@ export async function renderInvestigate(view, route) {
 			),
 			h("div", { class: "investigate-may-send" }, h("h3", null, "What this run may send"), limits),
 			assistant.hosted
-				? h("p", { class: "hint" }, `Starting sends what the box above describes to ${assistant.model}, outside your machines. Every step it takes is listed here and on the Activity page as it happens. To keep everything on your machines, choose a local model in Settings.`)
+				? h("p", { class: "hint" }, `Starting sends what the box above describes to ${assistant.model}, ${OUTSIDE}. Every step it takes is listed here and on the Activity page as it happens. To keep everything on your machines, choose a local model in Settings.`)
 				: null,
 			h("div", { class: "actions" }, startButton),
 			startProblem,
@@ -478,6 +516,7 @@ export async function renderInvestigate(view, route) {
 						saveToProjectButton(run),
 						exportButton(run, "md", "Export as Markdown"),
 						exportButton(run, "json", "Export as JSON"),
+						runAgainButton(run),
 					),
 		);
 	}
@@ -685,24 +724,3 @@ export async function renderInvestigate(view, route) {
 	return () => follow.stop();
 }
 
-/** @param {string} text @param {string} what */
-function copyButton(text, what) {
-	return h(
-		"button",
-		{
-			type: "button",
-			class: "button quiet icon-only",
-			"aria-label": `Copy ${what}`,
-			title: `Copy ${what}`,
-			onclick: async () => {
-				try {
-					await navigator.clipboard.writeText(shownText(text));
-					toast(`Copied the record ${what}`);
-				} catch {
-					toast("Could not copy. Select the text and copy it by hand.", "error");
-				}
-			},
-		},
-		icon("copy"),
-	);
-}

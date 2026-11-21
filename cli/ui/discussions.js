@@ -4,6 +4,7 @@
 // sits beside the findings and changes none of them. Every element is built with h(): titles hold
 // finding titles and file paths from scans, and answers are a model's words.
 import { api, ApiError, apiText, download } from "./api.js";
+import { setAskAgain } from "./assist.js";
 import { aboutLink, filterDiscussions, KIND_LABELS, kindLabel } from "./discussion-links.js";
 import { followUpBox, turnNodes } from "./discussion.js";
 import { emptyState, formatWhen, h, icon, pager, plural, replace, select, toast } from "./dom.js";
@@ -156,7 +157,7 @@ async function renderList(view, context) {
  * @param {string} id
  */
 async function renderOne(view, id) {
-	/** @type {{ discussion: DiscussionView, followUp: { ok: boolean, reason?: string } }} */
+	/** @type {{ discussion: DiscussionView, followUp: { ok: boolean, reason?: string, stale?: boolean } }} */
 	let data;
 	try {
 		data = /** @type {any} */ (await api("GET", `/discussions/one?id=${encodeURIComponent(id)}`));
@@ -248,7 +249,22 @@ async function renderOne(view, id) {
 			h(
 				"div",
 				{ class: "actions" },
-				about ? h("a", { class: "button", href: about.href }, about.label) : null,
+				// A newer scan froze this discussion: a new one about the same thing starts where it was asked (H-Q3).
+				followUp.stale && about
+					? h(
+							"a",
+							{
+								class: "button primary",
+								href: about.href,
+								onclick: () => {
+									if (discussion.kind === "ask") setAskAgain(discussion.turns[0]?.question ?? "");
+								},
+							},
+							discussion.kind === "cloudflare" ? "Ask again about the latest audit" : "Ask again about the latest scan",
+						)
+					: about
+						? h("a", { class: "button", href: about.href }, about.label)
+						: null,
 				h("button", { type: "button", class: "button", onclick: () => void copyText(discussion.id) }, icon("copy"), "Copy as text"),
 				h("button", { type: "button", class: "button", onclick: () => void save(discussion.id) }, icon("download"), "Export"),
 				remove,

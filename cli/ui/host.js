@@ -5,6 +5,7 @@
 import { announce, formatWhen, h, icon, plural, replace, setOff, severityBadge, shownText, statTile, stepNodes, tileRow, toast } from "./dom.js";
 import { AREA_TITLES, combinedCommands, hostName as nameFor, splitChecks } from "./host-areas.js";
 import { load, loadHost, startHostCheck, store, subscribe } from "./store.js";
+import { checkChangeWords } from "./hints.js";
 
 /** @typedef {import("../src/host/types.ts").HostCheck} HostCheck */
 
@@ -162,6 +163,27 @@ export async function renderHost(view) {
 }
 
 /**
+ * What a check or an audit fixed and found new since the one before (G-Q1, F-Q3), with the checks named.
+ *
+ * @param {import("../src/kept-checks.ts").CheckComparison | null} change
+ * @param {"check" | "audit"} what
+ */
+export function changeCard(change, what) {
+	const words = checkChangeWords(change, what);
+	if (!change || !words) return null;
+	/** @param {import("../src/kept-checks.ts").ComparedCheck} check */
+	const item = (check) => h("li", null, severityBadge(/** @type {import("./filter.js").Severity} */ (check.severity)), ` ${check.title}`, check.place ? h("span", { class: "hint" }, ` · ${check.place}`) : null);
+	return h(
+		"div",
+		{ class: "card full" },
+		h("h2", null, `Since the ${what} before`),
+		h("p", { class: "sub" }, words, ` That ${what} was ${formatWhen(change.previousAt)}.`),
+		change.fixed.length > 0 ? h("details", null, h("summary", null, `Fixed (${change.fixedCount.toLocaleString("en-GB")})`), h("ul", { class: "plain-list" }, ...change.fixed.map(item))) : null,
+		change.new.length > 0 ? h("details", { open: true }, h("summary", null, `New (${change.newCount.toLocaleString("en-GB")})`), h("ul", { class: "plain-list" }, ...change.new.map(item))) : null,
+	);
+}
+
+/**
  * @param {import("../src/host/types.ts").HostReport} report
  * @returns {Node[]}
  */
@@ -173,8 +195,10 @@ function drawReport(report) {
 	const commands = combinedCommands(report.checks);
 	return [
 		h("p", { class: "sub scan-line" }, `Last checked ${formatWhen(report.checkedAt)}${os ? ` · ${os}` : ""}.`),
+		// What the check after a fix fixed (G-Q1).
+		changeCard(store.host.change, "check"),
 		tileRow(
-			statTile("Problems", failed.length),
+			statTile("Findings", failed.length),
 			statTile("Could not check", unknown.length, unknown.length > 0 ? icon("pending") : null),
 			statTile("Passed", passed.length, icon("good")),
 		),
@@ -224,7 +248,7 @@ function commandsCard(commands) {
 			const selection = window.getSelection();
 			selection?.removeAllRanges();
 			selection?.addRange(range);
-			toast("Copy the selected commands with ⌘C");
+			toast(`Copy the selected commands with ${/Mac/.test(navigator.platform) ? "⌘C" : "Ctrl+C"}`);
 		}
 	};
 	return h(
@@ -257,7 +281,7 @@ function checkRow(check) {
 		items.length > 0
 			? h("details", { class: "fix-details" }, h("summary", null, plural(items.length, ...itemNoun(check))), h("ul", null, ...items.map((item) => h("li", null, item))))
 			: null,
-		check.status !== "passed" && check.fix?.length ? h("ol", { class: "host-fix" }, ...check.fix.map((step) => h("li", null, ...stepNodes(step)))) : null,
+		check.status !== "passed" && check.fix?.length ? h("ol", { class: "host-fix" }, ...check.fix.map((step) => h("li", null, ...stepNodes(step, { copy: true })))) : null,
 	);
 }
 

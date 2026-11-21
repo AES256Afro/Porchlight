@@ -131,7 +131,7 @@ test("no progress slot is a live region: progress is said with announce() at a c
 
 test("text put on the page outside h() is fixed words, or passes through shownText (S38)", () => {
 	// Elements whose text is set directly hold Porchlight's own words or a count.
-	const fixed = new Set(["hostLabel", "findingCount", "button", "submit", "scanButton", "scanHeading", "scanIntro", "intro", "optionsSummary", "fetchButton", "lastChild", "region"]);
+	const fixed = new Set(["hostLabel", "findingCount", "waitingCount", "sendButton", "button", "submit", "scanButton", "scanHeading", "scanIntro", "intro", "optionsSummary", "fetchButton", "lastChild", "region"]);
 	const found = find(/\.(textContent|innerText|nodeValue)\s*=(?!=)/, (_, line) => {
 		if (comment(line) || /shownText\(/.test(line)) return true;
 		const target = /(\w+)\.(textContent|innerText|nodeValue)\s*=/.exec(line)?.[1] ?? "";

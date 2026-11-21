@@ -10,6 +10,8 @@ export interface CertWindow {
 export interface CtCert extends CertWindow {
 	/** Names on the certificate that fall under the monitored domain. May include `*.` wildcards. */
 	names: string[];
+	/** The issuing organisation, from the log's issuer name (its O=, else its CN). Absent: not given. */
+	issuer?: string;
 }
 
 /** What the certificate log gave for a domain, and whether the bare-domain query was read too. */
@@ -99,7 +101,7 @@ export function parseCtRows(rows: unknown[], domain: string): CtCert[] {
 	const certs: CtCert[] = [];
 	for (const row of rows) {
 		if (typeof row !== "object" || row === null) continue;
-		const { name_value, not_before, not_after } = row as Record<string, unknown>;
+		const { name_value, not_before, not_after, issuer_name } = row as Record<string, unknown>;
 		if (typeof name_value !== "string") continue;
 		const notBefore = toIso(not_before);
 		const notAfter = toIso(not_after);
@@ -109,9 +111,31 @@ export function parseCtRows(rows: unknown[], domain: string): CtCert[] {
 			const name = cleanCertName(raw);
 			if (name && isWithin(name.replace(/^\*\./, ""), domain)) names.add(name);
 		}
-		if (names.size > 0) certs.push({ names: [...names], notBefore, notAfter });
+		if (names.size === 0) continue;
+		const issuer = issuerOrganisation(issuer_name);
+		certs.push({ names: [...names], notBefore, notAfter, ...(issuer ? { issuer } : {}) });
 	}
 	return certs;
+}
+
+/** The most of an issuer's name kept. */
+const MAX_ISSUER = 80;
+
+/**
+ * "C=US, O=Let's Encrypt, CN=R11" as "Let's Encrypt": the organisation, or the common name when the
+ * name gives none, reduced to printable characters. null when there is neither.
+ */
+export function issuerOrganisation(value: unknown): string | null {
+	if (typeof value !== "string") return null;
+	const field = (key: string) =>
+		new RegExp(`(?:^|,\\s*)${key}=("(?:[^"\\\\]|\\\\.)*"|[^,]*)`, "i")
+			.exec(value)?.[1]
+			?.replace(/^"|"$/g, "");
+	const name = (field("O") ?? field("CN") ?? "")
+		.replace(/[^\x20-\x7e]/g, "")
+		.trim()
+		.slice(0, MAX_ISSUER);
+	return name === "" ? null : name;
 }
 
 function cleanCertName(raw: string): string | null {

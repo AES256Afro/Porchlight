@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { describeFilter, isFiltering, matchesFilter, noFilter } from "../ui/filter.js";
 import { generatedLabel, localModelSetup, MAX_QUESTION, paragraphs, questionProblem, SUGGESTED_MODEL, waitingLabel } from "../ui/generated.js";
@@ -204,21 +205,20 @@ test("setting up website checks gives every command to paste, and ends where the
 	assert.match(service.at(-1)?.text ?? "", /Apps → Porchlight → Settings.*"Monitor address".*"Monitor admin token"/);
 	assert.match(local.at(-1)?.text ?? "", /Settings → Monitor.*No restart/);
 	assert.doesNotMatch(local.at(-1)?.text ?? "", /BoxPilot/);
-	// Every step before the last carries what to type, in the order the README gives it, so nobody is sent off to read it.
+	// Every step before the last carries what to type, so nobody is sent off to read it: one script (US-5).
 	const commands = local.flatMap((step) => step.commands ?? []);
 	assert.ok(local.slice(0, -1).every((step) => (step.commands?.length ?? 0) > 0));
-	assert.deepEqual(
-		commands.filter((command) => command.startsWith("npx cf ")),
-		["npx cf auth login", "npx cf d1 create --name porchlight-monitor", "npx cf d1 migrations apply <DATABASE_ID>", "npx cf deploy --secrets-file .secrets.production"],
-	);
-	assert.ok(commands.includes(`printf 'ADMIN_TOKEN=%s\\n' "$(openssl rand -hex 32)" > .secrets.production`));
-	// The monitor's own packages (cf among them) are installed in monitor/: an install at the
-	// repository's root never reaches them (B48). Nothing installs before the move into monitor/.
-	const intoMonitor = commands.indexOf("cd monitor");
-	assert.ok(intoMonitor >= 0);
-	assert.equal(commands.indexOf("npm install"), intoMonitor + 1);
-	assert.ok(commands.slice(0, intoMonitor).every((command) => !/npm (install|ci)/.test(command)));
-	assert.ok(commands.indexOf("npm install") < commands.indexOf("npx cf auth login"));
+	assert.ok(commands.includes("sh scripts/setup-monitor.sh"));
+	// The script runs the same commands in the same order: the monitor's packages are installed in monitor/
+	// (an install at the root never reaches them, B48), and nothing in a tracked file is edited.
+	const script = readFileSync(new URL("../../scripts/setup-monitor.sh", import.meta.url), "utf8");
+	const order = ['cd "$here/monitor"', "npm install", "npx cf auth login", "npx cf d1 create --name porchlight-monitor", 'npx cf d1 migrations apply "$id"', "openssl rand -hex 32", 'npx cf deploy --secrets-file "$secrets"'];
+	const at = order.map((command) => script.indexOf(command));
+	assert.ok(at.every((index) => index >= 0), `the script runs ${order.join(", ")}`);
+	assert.deepEqual([...at].sort((a, b) => a - b), at, "in this order");
+	// It writes only to the two files git ignores, and tells where an ID must go rather than changing the config.
+	assert.deepEqual([...script.matchAll(/>>? "?\$?([\w.-]+)"?/g)].map((match) => match[1]).sort(), ["id_file", "secrets"]);
+	assert.doesNotMatch(script, /sed -i|> *cloudflare\.config\.ts/);
 	// Without a webhook alerts reach only the Worker's log, and the page says so before the deploy.
 	assert.ok(local.some((step) => /ALERT_WEBHOOK_URL/.test(step.text) && /Worker's log/.test(step.text)));
 	// A step never says to read instructions somewhere else, and no command changes anything but the monitor's own folder.

@@ -6,8 +6,9 @@
  * with it, as the Authorization header, and only over https (or to this computer).
  */
 import { readFile, rm } from "node:fs/promises";
+import { join } from "node:path";
 import { writePrivate } from "../investigate/ownership.ts";
-import { callMonitor, type MonitorConfig } from "./client.ts";
+import { callMonitor, monitorConfig, type MonitorConfig } from "./client.ts";
 
 /** The monitor refuses a shorter ADMIN_TOKEN (`MIN_TOKEN_LENGTH` in monitor/src/api.ts). */
 export const MIN_ADMIN_TOKEN = 32;
@@ -85,4 +86,15 @@ export async function saveMonitor(path: string, config: MonitorConfig): Promise<
 
 export async function forgetMonitor(path: string): Promise<void> {
 	await rm(path, { force: true });
+}
+
+/**
+ * The monitor for the command line and doctor (J-Q2, D-Q1): the one given in the environment, else the
+ * one saved under Settings → Monitor. The token still goes only to its own address (invariant 7).
+ */
+export async function monitorForCli(env: Record<string, string | undefined>, dataDir: string): Promise<MonitorConfig> {
+	if (env.PORCHLIGHT_MONITOR_URL || env.PORCHLIGHT_ADMIN_TOKEN) return monitorConfig(env);
+	const saved = await readSavedMonitor(join(dataDir, "monitor-settings.json"));
+	if (saved) return saved.config;
+	throw new Error("No monitor is connected. Connect it under Settings → Monitor in the interface, or set PORCHLIGHT_MONITOR_URL and PORCHLIGHT_ADMIN_TOKEN.");
 }

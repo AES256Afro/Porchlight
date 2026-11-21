@@ -165,7 +165,7 @@ export function analysisCard() {
 			(status.state === "done" || status.state === "stopped") && status.failed > 0
 				? banner(
 						"warning",
-						status.gaveUp ? `Stopped after ${status.failed.toLocaleString("en-GB")} ${status.failed === 1 ? "item" : "items"} could not be analysed in a row` : `${status.failed.toLocaleString("en-GB")} of ${status.total.toLocaleString("en-GB")} could not be analysed`,
+						status.gaveUp ? `Stopped after ${status.failed.toLocaleString("en-GB")} ${status.failed === 1 ? "finding" : "findings"} could not be analysed in a row` : `${status.failed.toLocaleString("en-GB")} of ${status.total.toLocaleString("en-GB")} could not be analysed`,
 						[...(status.lastError ? [status.lastError] : []), ...(status.gaveUp ? ["The rest were not sent. Check the model under Settings → Model, then analyse again."] : [])],
 					)
 				: null,

@@ -1,5 +1,12 @@
+import { parseCaa, unlistedIssuers } from "./caa.ts";
 import { resolves } from "./collect/dns.ts";
-import type { HttpProbe, SecurityHeader } from "./collect/http.ts";
+import {
+	TLS_FAILURE_STATUS,
+	tlsFailure,
+	type HttpProbe,
+	type SecurityHeader,
+} from "./collect/http.ts";
+import { isWithin } from "./domain.ts";
 import type { Settings } from "./env.ts";
 import type { HostState, Snapshot } from "./snapshot.ts";
 import type { Finding, Severity } from "./types.ts";
@@ -41,8 +48,15 @@ export function deriveFindings(
 			const finding = certFinding(host, state.cert, settings, now);
 			if (finding) add(finding);
 		}
+		const broken = live ? httpsFailedFinding(host, state.http) : null;
+		if (broken) add(broken);
 		if (state.http?.ok && !pageUnavailable(state.http.status)) {
-			for (const finding of [hstsFinding(host, state.http), ...cookieFindings(host, state.http)]) {
+			for (const finding of [
+				hstsFinding(host, state.http),
+				...cookieFindings(host, state.http),
+				redirectFinding(host, snapshot.domain, state.http),
+				revealingFinding(host, state.http),
+			]) {
 				if (finding) add(finding);
 			}
 			for (const header of missingHeaders(state.http)) {
@@ -92,6 +106,7 @@ export function deriveFindings(
 	}
 	const spf = spfFinding(snapshot.domain, snapshot.apex.TXT);
 	if (spf) add(spf);
+	for (const finding of issuerFindings(snapshot)) add(finding);
 
 	for (const finding of previous) {
 		if (!found.has(finding.id) && !reobserved(snapshot, finding)) add(finding);
@@ -255,6 +270,91 @@ function spfFinding(domain: string, txt: string[] | undefined): Finding | null {
 	return null;
 }
 
+/**
+ * HTTPS that fails at the certificate or the handshake, on a host that resolves (R6F-7). Only a
+ * definite failure counts: Cloudflare's 525 or 526, or an error naming the certificate or TLS. A
+ * timeout or a refused connection is not observed, and raises nothing (invariant 5).
+ */
+function httpsFailedFinding(host: string, probe: HttpProbe | null): Finding | null {
+	if (!probe) return null;
+	let why: string | null = null;
+	if (probe.ok) why = TLS_FAILURE_STATUS[probe.status] ?? null;
+	else if (tlsFailure(probe.error)) why = "the certificate or the TLS handshake was refused";
+	if (why === null) return null;
+	return {
+		id: `https-failed:${host}`,
+		severity: "medium",
+		host,
+		basis: "http",
+		title: `HTTPS fails on this host: ${why}${probe.ok ? ` (HTTP ${probe.status})` : ""}. Visitors see a warning or no page`,
+	};
+}
+
+/**
+ * Where the front page's redirect points, read from the one `GET /` already made and never followed
+ * (R6F-6, invariant 2): to plain HTTP, or to a host outside the domain.
+ */
+function redirectFinding(
+	host: string,
+	domain: string,
+	probe: Extract<HttpProbe, { ok: true }>,
+): Finding | null {
+	const target = probe.redirect;
+	if (!target) return null;
+	if (target.scheme === "http") {
+		return {
+			id: `redirect-insecure:${host}`,
+			severity: "medium",
+			host,
+			basis: "http",
+			title: `The front page redirects to plain HTTP${target.host ? ` (http://${target.host})` : ""}, which anyone on the network can read and change`,
+		};
+	}
+	if (target.scheme === "https" && target.host !== "" && !isWithin(target.host, domain)) {
+		return {
+			id: `redirect-offsite:${host}`,
+			severity: "low",
+			host,
+			basis: "http",
+			title: `The front page redirects outside ${domain}, to ${target.host}; Porchlight does not follow it, so check that the site is yours`,
+		};
+	}
+	return null;
+}
+
+/** Headers that name the server's software and version (R6F-6), from the response already read. */
+function revealingFinding(host: string, probe: Extract<HttpProbe, { ok: true }>): Finding | null {
+	const revealing = probe.revealing ?? [];
+	if (revealing.length === 0) return null;
+	const named = revealing.map(({ header, value }) => `${header}: ${value}`).join("; ");
+	return {
+		id: `version-header:${host}`,
+		severity: "low",
+		host,
+		basis: "http",
+		title: `Response headers name the software and its version (${named}), which tells anyone which advisories apply`,
+	};
+}
+
+/**
+ * Certificates in the log from an authority the domain's CAA record does not allow (FT-3), read from
+ * the CAA lookup and the log rows every scan already makes: no request is added. An authority checks
+ * CAA when it issues, so such a certificate was issued before the record changed, or mis-issued.
+ */
+function issuerFindings(snapshot: Snapshot): Finding[] {
+	const records = snapshot.apex.CAA;
+	if (!records || !snapshot.issuers) return [];
+	const policy = parseCaa(records);
+	if (!policy) return [];
+	return unlistedIssuers(policy, snapshot.issuers).map(({ seen, identifier }) => ({
+		id: `caa-unlisted-issuer:${snapshot.domain}:${identifier}`,
+		severity: "medium",
+		host: snapshot.domain,
+		basis: "apex",
+		title: `The certificate log lists a certificate from ${seen.issuer} (for ${seen.names.join(", ")}), which this domain's CAA record does not allow. If you use this authority, add it to the record; if not, and it was not issued before the record changed or allowed by a CAA record on that name or where its CNAME points, it may be mis-issued`,
+	}));
+}
+
 /** Which headers a response should carry depends on what kind of response it is. */
 function missingHeaders(probe: Extract<HttpProbe, { ok: true }>): SecurityHeader[] {
 	const success = probe.status >= 200 && probe.status < 300;
@@ -298,6 +398,9 @@ function reobserved(snapshot: Snapshot, finding: Finding): boolean {
 		const kind = finding.id.slice(0, finding.id.indexOf(":"));
 		if (kind === "no-dnssec") return snapshot.dnssec !== undefined;
 		if (kind === "no-spf" || kind === "weak-spf") return snapshot.apex.TXT !== undefined;
+		// Both the CAA lookup and a whole reading of the certificate log decide this one.
+		if (kind === "caa-unlisted-issuer")
+			return snapshot.apex.CAA !== undefined && snapshot.issuers !== undefined;
 		return snapshot.apex.CAA !== undefined;
 	}
 	const state = snapshot.hosts[finding.host];
@@ -306,6 +409,9 @@ function reobserved(snapshot: Snapshot, finding: Finding): boolean {
 	if (!resolves(state.dns)) return true;
 	if (finding.basis === "cert") return certObserved(snapshot, finding.host);
 	if (finding.basis === "http") {
+		// Any answer over HTTPS other than Cloudflare's 525 or 526 means the connection was made; a
+		// timeout or a refused connection says nothing about the certificate, so the finding is carried.
+		if (finding.id.startsWith("https-failed:")) return state.http?.ok === true;
 		if (state.http?.ok !== true || pageUnavailable(state.http.status)) return false;
 		// Many sites set cookies only on some responses (a first visit, an A/B test, bot checks), so a
 		// response that set none says nothing about the cookies, and would make these findings flap.

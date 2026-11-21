@@ -13,9 +13,9 @@ import { mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { oneAtATime, readPrivateGzipJson, readPrivateJson, UnreadableFileError, updatePrivateJson, writePrivateGzipJson, writePrivateJson } from "../private-files.ts";
 import { looksFor } from "../../ui/scan-choices.js";
-import { findingKey, isDay, isStatus, MAX_NOTE, type FindingNote } from "../../ui/tracking.js";
+import { findingKey, isDay, isNoteSource, isStatus, MAX_NOTE, type FindingNote, type NoteSource } from "../../ui/tracking.js";
 import { countBySeverity, rank, repoName } from "./report.ts";
-import type { Finding, ScanReport, Severity } from "./types.ts";
+import type { Finding, RepoResult, ScanChoices, ScanReport, Severity, ToolName, ToolStatus } from "./types.ts";
 
 /** How many past scans are kept. */
 export const HISTORY_KEEP = 50;
@@ -255,6 +255,48 @@ export class History {
 	}
 }
 
+/** What scanning one repository again changed: found again, gone, new, and kept because not looked at again. */
+export interface RescanChange {
+	repo: string;
+	fixedCount: number;
+	newCount: number;
+	/** Findings kept from before because their scanner did not look this time (invariant 5): never counted as fixed. */
+	uncheckedCount: number;
+}
+
+/**
+ * One repository scanned again, put together with what it had before (US-4, R6Q-6). Where a scanner did
+ * not look this time (not chosen, not installed any more, or failed on the repository), what it found
+ * before is kept: not looking again never clears a finding (invariant 5). Shared by "Scan again" on the
+ * page and `repos scan --again`, so both count fixed and new the same way, by `findingKey`.
+ */
+export function mergeRescan(name: string, before: RepoResult, now: { repo: RepoResult; tools: ToolStatus[] }, choices: ScanChoices, at: Date = new Date()): { merged: RepoResult; change: RescanChange } {
+	const { repo, tools } = now;
+	const chosen = (tool: ToolName) => (tool === "gitleaks" ? choices.secrets || choices.privateData === true : choices.dependencies);
+	const looked = (tool: ToolName) => chosen(tool) && tools.some((entry) => entry.tool === tool && entry.status === "ok") && !repo.errors.some((error) => error.tool === tool);
+	const kept = before.findings.filter((finding) => !looked(finding.tool));
+	const found = repo.findings.filter((finding) => looked(finding.tool));
+	const merged: RepoResult = {
+		...repo,
+		findings: [...kept, ...found],
+		// A scanner that failed before and did not run now is still a gap.
+		errors: [...repo.errors, ...before.errors.filter((error) => !tools.some((entry) => entry.tool === error.tool && entry.status === "ok"))],
+		rescannedAt: at.toISOString(),
+	};
+	const key = (finding: Finding) => findingKey(name, finding);
+	const earlier = new Set(before.findings.map(key));
+	const later = new Set(found.map(key));
+	return {
+		merged,
+		change: {
+			repo: name,
+			fixedCount: before.findings.filter((finding) => looked(finding.tool) && !later.has(key(finding))).length,
+			newCount: found.filter((finding) => !earlier.has(key(finding))).length,
+			uncheckedCount: kept.length,
+		},
+	};
+}
+
 export type NotesFile = Record<string, FindingNote>;
 
 const NOTES = "Your finding notes";
@@ -265,7 +307,15 @@ function notesOf(parsed: unknown): NotesFile {
 	const notes: NotesFile = {};
 	for (const [key, value] of Object.entries(parsed as Record<string, Partial<FindingNote>>)) {
 		if (isStatus(value?.status) && typeof value.note === "string") {
-			notes[key] = { status: value.status, note: value.note.slice(0, MAX_NOTE), updatedAt: String(value.updatedAt ?? ""), ...(value.status === "accepted" && isDay(value.until) ? { until: value.until } : {}) };
+			const previous = value.previous;
+			notes[key] = {
+				status: value.status,
+				note: value.note.slice(0, MAX_NOTE),
+				updatedAt: String(value.updatedAt ?? ""),
+				...(value.status === "accepted" && isDay(value.until) ? { until: value.until } : {}),
+				...(isNoteSource(value.by) ? { by: value.by } : {}),
+				...(previous && isStatus(previous.status) ? { previous: { status: previous.status, updatedAt: String(previous.updatedAt ?? ""), ...(isNoteSource(previous.by) ? { by: previous.by } : {}) } } : {}),
+			};
 		}
 	}
 	return notes;
@@ -332,20 +382,71 @@ export async function carryNotes(path: string, report: ScanReport): Promise<numb
  * Sets one finding's status and note. Back to "open" with no note removes the entry, so the file
  * holds only what the owner said.
  */
-export async function setNote(path: string, key: string, status: FindingNote["status"], note: string, now: Date = new Date(), until?: string): Promise<FindingNote | null> {
+export async function setNote(path: string, key: string, status: FindingNote["status"], note: string, now: Date = new Date(), until?: string, by?: NoteSource): Promise<FindingNote | null> {
+	const saved = await setNotes(path, [key], status, note, now, until, by);
+	return saved[0] ?? null;
+}
+
+/**
+ * Sets the same status and note on several findings at once (B-Q2), in one change to the file. Each
+ * keeps the status it replaced and where the change came from (R6U-7).
+ */
+export async function setNotes(path: string, keys: string[], status: FindingNote["status"], note: string, now: Date = new Date(), until?: string, by?: NoteSource): Promise<(FindingNote | null)[]> {
 	const trimmed = note.trim();
-	let saved: FindingNote | null = null;
+	const saved: (FindingNote | null)[] = [];
 	// One change at a time, on the file as it is: every other entry is kept as written, including any
 	// an older or newer Porchlight wrote that this one does not understand (B21, B26).
 	await updatePrivateJson(path, NOTES, (current) => {
 		const all = typeof current === "object" && current !== null && !Array.isArray(current) ? { ...(current as Record<string, unknown>) } : {};
-		if (status === "open" && trimmed === "") delete all[key];
-		// An end date belongs to an accepted risk alone; any other status drops it.
-		else {
-			saved = { status, note: trimmed, updatedAt: now.toISOString(), ...(status === "accepted" && until ? { until } : {}) };
-			all[key] = saved;
+		const known = notesOf(all);
+		for (const key of keys) {
+			const before = known[key];
+			if (status === "open" && trimmed === "") {
+				delete all[key];
+				saved.push(null);
+				continue;
+			}
+			// An end date belongs to an accepted risk alone; any other status drops it.
+			const next: FindingNote = {
+				status,
+				note: trimmed,
+				updatedAt: now.toISOString(),
+				...(status === "accepted" && until ? { until } : {}),
+				...(by ? { by } : {}),
+				// The status this one replaced, when it was another: a change from elsewhere is never silent.
+				...(before && before.status !== status ? { previous: { status: before.status, updatedAt: before.updatedAt, ...(before.by ? { by: before.by } : {}) } } : before?.previous ? { previous: before.previous } : {}),
+			};
+			all[key] = next;
+			saved.push(next);
 		}
 		return all;
 	});
 	return saved;
+}
+
+/** The notes that name no finding of any kept scan, nor of the latest report (R6Q-12). */
+export async function orphanNotes(notes: NotesFile, history: History, latest: ScanReport | null): Promise<string[]> {
+	const known = new Set(latest ? keyed(latest).keys() : []);
+	for (const entry of await history.list()) {
+		const report = await history.read(entry.file);
+		if (report) for (const key of keyed(report).keys()) known.add(key);
+	}
+	return Object.keys(notes).filter((key) => !known.has(key));
+}
+
+/** Removes the named notes, and only those (R6Q-12). Returns how many went. */
+export async function removeNotes(path: string, keys: string[]): Promise<number> {
+	let removed = 0;
+	await updatePrivateJson(path, NOTES, (current) => {
+		if (typeof current !== "object" || current === null || Array.isArray(current)) return undefined;
+		const all = { ...(current as Record<string, unknown>) };
+		for (const key of keys) {
+			if (Object.hasOwn(all, key)) {
+				delete all[key];
+				removed++;
+			}
+		}
+		return removed > 0 ? all : undefined;
+	});
+	return removed;
 }

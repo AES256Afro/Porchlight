@@ -210,7 +210,15 @@ test("previews what a scan would cover without running anything", async (t) => {
 	});
 	await makeTree(server.dir, { "projects/shop/.git/HEAD": "ref", "projects/blog/.git/HEAD": "ref", "projects/notes/readme.md": "x", "projects/deep/a/b/c/site/.git/HEAD": "ref" });
 	const root = join(server.dir, "projects");
-	const preview = async (query: string) => (await send(server, "GET", `/api/repos/preview?${query}`)).json.preview;
+	const preview = async (query: string) => {
+		const { tools, ...rest } = (await send(server, "GET", `/api/repos/preview?${query}`)).json.preview;
+		// Whether git and each scanner is ready is said before a first scan finds out by failing (US-2).
+		assert.deepEqual(
+			tools.map((tool: { tool: string }) => tool.tool),
+			["git", "gitleaks", "osv-scanner"],
+		);
+		return rest;
+	};
 
 	assert.deepEqual(await preview(`root=${encodeURIComponent(root)}`), { root, exists: true, total: 2, repos: ["blog", "shop"], fetched: 0, depth: 3 });
 	assert.deepEqual((await preview(`root=${encodeURIComponent(root)}&depth=6`)).repos, ["blog", "deep/a/b/c/site", "shop"]);
@@ -1971,7 +1979,7 @@ test("this computer is checked in the background, kept readable only by its owne
 			return new Promise((resolve) => (finish = resolve));
 		},
 	});
-	assert.deepEqual((await send(server, "GET", "/api/host")).json, { status: { state: "idle" }, report: null, service: false });
+	assert.deepEqual((await send(server, "GET", "/api/host")).json, { status: { state: "idle" }, report: null, service: false, change: null, kept: 0 });
 	assert.equal((await send(server, "POST", "/api/host/check", { body: { askApple: "yes" } })).status, 400);
 
 	const started = await send(server, "POST", "/api/host/check", { body: { askApple: false } });

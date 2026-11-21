@@ -53,6 +53,8 @@ export function openExportDialog(target, initialContent = "roadmap") {
 	const assistant = store.settings?.assistant;
 	const muralOffered = !forDomain && assistant?.configured === true;
 	const muralBox = /** @type {HTMLInputElement} */ (h("input", { type: "checkbox", name: "mural" }));
+	// A mural already written for this scan and these filters is used again, unless asked for anew (C-Q1).
+	const againBox = /** @type {HTMLInputElement} */ (h("input", { type: "checkbox", name: "mural-again" }));
 	// With a project in use, the file goes into its folder; downloading stays a choice.
 	const project = currentProject();
 	// Not a live region: its clock moves every two seconds. That the mural is being written is said once.
@@ -103,6 +105,12 @@ export function openExportDialog(target, initialContent = "roadmap") {
 									? h("span", { class: "hint" }, `It sends the roadmap's actions, the counts and the findings the model judged real to ${assistant.host}. Never secret values, authors or emails.`)
 									: null,
 							),
+						),
+						h(
+							"label",
+							{ class: "choice" },
+							againBox,
+							h("span", null, h("strong", null, "Write the mural again"), h("span", { class: "hint" }, "Otherwise a mural already written for this scan and these filters is used, without asking the model again.")),
 						),
 					)
 				: null,
@@ -224,6 +232,11 @@ export function openExportDialog(target, initialContent = "roadmap") {
 		const query = new URLSearchParams(settings);
 		query.delete("content");
 		query.delete("format");
+		// One already written for this scan and these filters is used as it is (C-Q1).
+		if (!againBox.checked) {
+			const kept = await api("GET", `/repos/mural?${query}`, undefined, { signal: cancel.signal });
+			if (kept.state === "done" && kept.current) return;
+		}
 		const started = Date.now();
 		await api("POST", `/repos/mural?${query}`, modelFields(assistant), { signal: cancel.signal });
 		writing = true;

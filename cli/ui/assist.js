@@ -7,6 +7,7 @@ import { followUpBox } from "./discussion.js";
 import { announce, banner, h, icon, replace, stepNodes } from "./dom.js";
 import { generatedLabel, localModelSetup, MAX_QUESTION, modelFields, paragraphs, questionProblem, waitingLabel } from "./generated.js";
 import { answersPlace, retitle, showAnswer } from "./panel.js";
+import { discussionsChanged } from "./store.js";
 
 /** @typedef {import("./generated.js").AssistantSettings} AssistantSettings */
 /** @typedef {{ start: string, busy: string, again: string, note?: string }} Labels */
@@ -107,6 +108,7 @@ function createAssist(path, assistant, labels, body, submit) {
 			const answer = await api("POST", path, { .../** @type {object} */ (body() ?? {}), ...modelFields(assistant) }, { signal: stop.signal });
 			const model = typeof answer.model === "string" ? answer.model : modelName(assistant);
 			const discussion = typeof answer.discussion === "string" ? answer.discussion : null;
+			if (discussion) discussionsChanged();
 			state = {
 				state: "done",
 				text: typeof answer.text === "string" ? answer.text : "",
@@ -192,6 +194,20 @@ export function generatedText(text, model, notes = []) {
 	);
 }
 
+/** A question to put in the Ask box once, from "Ask again about the latest scan" (H-Q3). */
+let askAgain = "";
+
+/** @param {string} question */
+export function setAskAgain(question) {
+	askAgain = question;
+}
+
+function takeAskAgain() {
+	const question = askAgain;
+	askAgain = "";
+	return question;
+}
+
 /**
  * The Overview's "Ask about this scan" card. One per report: a new scan starts a fresh card, and
  * coming back to the page shows the last question and its answer.
@@ -201,10 +217,17 @@ export function generatedText(text, model, notes = []) {
  */
 export function askCard(key, assistant) {
 	const existing = askCards.get(key);
-	if (existing) return existing;
-	let question = "";
+	// A question asked about an earlier scan, to ask again about this one (H-Q3): put in the box, never sent by itself.
+	const again = takeAskAgain();
+	if (existing) {
+		const box = existing.querySelector("textarea");
+		if (again && box) box.value = again;
+		return existing;
+	}
+	let question = again;
 	const input = /** @type {HTMLTextAreaElement} */ (
 		h("textarea", {
+			value: again,
 			name: "question",
 			rows: 3,
 			maxLength: MAX_QUESTION,

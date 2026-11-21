@@ -8,7 +8,8 @@ import { activityList } from "./activity.js";
 import { api, ApiError, download } from "./api.js";
 import { assistAction } from "./assist.js";
 import { announce, banner, formatNumber, formatWhen, h, icon, pager, plural, replace, scrollMotion, select, setOff, severityBadge, shownText, statTile, stepNodes, tileRow, toast } from "./dom.js";
-import { fixBrief, fixGroups, tokenFixSteps } from "./hints.js";
+import { fixBrief, fixGroups, OUTSIDE, tokenFixSteps } from "./hints.js";
+import { changeCard } from "./host.js";
 import { debounce, paginate } from "./list.js";
 import { announceSaved } from "./projects.js";
 import { currentProject, load, loadCloudflare, startCloudflareAudit, store, subscribe, updateCloudflare } from "./store.js";
@@ -53,7 +54,7 @@ export async function renderCloudflare(view, route) {
 	await load();
 	await loadCloudflare();
 	const lookups = /** @type {HTMLInputElement} */ (h("input", { type: "checkbox", name: "lookups", checked: true }));
-	const button = /** @type {HTMLButtonElement} */ (h("button", { type: "submit", class: "button primary" }, "Audit my account"));
+	const button = /** @type {HTMLButtonElement} */ (h("button", { type: "submit", class: "button primary" }, "Audit your account"));
 	// Not a live region: the bar moves every second. A screen reader hears the start, then where it is twice a minute, then the end.
 	const statusSlot = h("div");
 	const intro = h("div");
@@ -229,6 +230,18 @@ export async function renderCloudflare(view, route) {
 			const waiting = batch;
 			const chosen = waiting.changes.length - waiting.left.size;
 			const permissions = [...new Set(waiting.changes.map((change) => change.permission))];
+			const sendButton = /** @type {HTMLButtonElement} */ (
+				h(
+					"button",
+					{
+						type: "button",
+						class: "button primary",
+						"aria-disabled": chosen === 0 || batchBusy ? "true" : null,
+						onclick: () => waiting.changes.length - waiting.left.size > 0 && !batchBusy && void answerBatch(true),
+					},
+					`Approve and send ${chosen}`,
+				)
+			);
 			replace(
 				batchSlot,
 				h(
@@ -282,35 +295,17 @@ export async function renderCloudflare(view, route) {
 								),
 							)
 						: null,
-					h(
-						"ul",
-						{ class: "cf-batch-list" },
-						...waiting.changes.map((change) => {
-							const box = /** @type {HTMLInputElement} */ (h("input", { type: "checkbox", checked: !waiting.left.has(change.id) }));
-							box.addEventListener("change", () => {
-								if (box.checked) waiting.left.delete(change.id);
-								else waiting.left.add(change.id);
-								drawBatch();
-							});
-							return h(
-								"li",
-								null,
-								h("label", { class: "check-line" }, box, h(
-									"span",
-									null,
-									h("strong", null, change.title),
-									change.care ? h("span", { class: "hint block cf-care" }, icon("warning"), " ", change.care) : null,
-									h("code", { class: "hint block" }, `${change.request.method} ${change.request.url}  ${JSON.stringify(change.request.body)}`),
-								),
-							),
-							);
-						}),
-					),
+					batchList(waiting, () => {
+						// A tick changes the count on the button and nothing else: the list keeps its scroll (F-Q1).
+						const now = waiting.changes.length - waiting.left.size;
+						sendButton.textContent = `Approve and send ${now}`;
+						setOff(sendButton, now === 0 || batchBusy);
+					}),
 					h("p", { class: "hint" }, "Every request carries the header Authorization: Bearer (your saved token, not shown)."),
 					h(
 						"div",
 						{ class: "actions" },
-						h("button", { type: "button", class: "button primary", "aria-disabled": chosen === 0 || batchBusy ? "true" : null, onclick: () => chosen > 0 && void answerBatch(true) }, `Approve and send ${chosen}`),
+						sendButton,
 						h("button", { type: "button", class: "button", "aria-disabled": batchBusy ? "true" : null, onclick: () => void answerBatch(false) }, "Cancel"),
 						h("span", { class: "hint" }, `You can approve them until ${formatWhen(waiting.expiresAt)}.`),
 					),
@@ -367,7 +362,7 @@ export async function renderCloudflare(view, route) {
 		const state = store.cloudflare;
 		const running = state.status.state === "running";
 		setOff(button, running || !state.token.configured);
-		button.textContent = running ? "Auditing…" : state.report ? "Audit again" : "Audit my account";
+		button.textContent = running ? "Auditing…" : state.report ? "Audit again" : "Audit your account";
 		if (state.status.state === "running") {
 			const status = state.status;
 			const known = status.total > 0;
@@ -392,7 +387,7 @@ export async function renderCloudflare(view, route) {
 			if (said === "running" && state.status.state === "done") announce("The audit finished");
 		}
 		said = state.status.state;
-		const from = [state.report?.checkedAt ?? "", state.changes.length, state.token.configured, state.canChange, state.lacking.join(","), state.batch.state].join("|");
+		const from = [state.report?.checkedAt ?? "", state.changes.length, state.changedSince.size, state.token.configured, state.canChange, state.lacking.join(","), state.batch.state].join("|");
 		if (from === drawnFrom) return;
 		drawnFrom = from;
 		replace(intro, state.token.configured ? form : connectCard(state.service));
@@ -491,15 +486,17 @@ export async function renderCloudflare(view, route) {
 				`Last audited ${formatWhen(report.checkedAt)} · ${plural(report.zones.length, "domain", "domains")} · ${token.kind === "account" ? "account token" : "user token"}${token.expiresOn ? `, expiring ${formatWhen(token.expiresOn)}` : ""}.`,
 			),
 			tileRow(
-				statTile("Problems", failed.length),
+				statTile("Findings", failed.length),
 				statTile("Could not check", unknown.length, unknown.length > 0 ? icon("pending") : null),
 				statTile("Passed", passed.length, icon("good")),
 				statTile("Domains", report.zones.length, icon("cloudflare")),
 			),
+			// What this audit fixed and found new against the one before (F-Q3).
+			changeCard(store.cloudflare.change, "audit"),
 			failed.length > 0
 				? h(
 						"div",
-						{ class: "cf-severities", "aria-label": "Problems by severity" },
+						{ class: "cf-severities", "aria-label": "Findings by severity" },
 						...SEVERITIES.map((severity) => h("span", { class: "cf-severity-count" }, severityBadge(severity), h("strong", null, failed.filter((item) => item.severity === severity).length.toLocaleString("en-GB")))),
 					)
 				: null,
@@ -536,7 +533,7 @@ export async function renderCloudflare(view, route) {
 						h(
 							"p",
 							{ class: "sub" },
-							`${plural(fixable(report.zones), "problem has", "problems have")} a change Porchlight can make for you, across ${plural(report.zones.filter((zone) => fixable([zone]) > 0).length, "domain", "domains")}. You see every request first and approve them once; each domain below also has its own Fix these.`,
+							`${plural(fixable(report.zones), "finding has", "findings have")} a change Porchlight can make for you, across ${plural(report.zones.filter((zone) => fixable([zone]) > 0).length, "domain", "domains")}. You see every request first and approve them once; each domain below also has its own Fix these.`,
 						),
 						h("button", { type: "button", class: "button primary", onclick: () => void previewBatch(null) }, icon("change"), "Fix these…"),
 						store.cloudflare.batch.state === "idle" ? permissionHelp("The last change was refused because of the token's permissions") : null,
@@ -586,8 +583,8 @@ export async function renderCloudflare(view, route) {
 				"p",
 				{ class: "sub" },
 				mine > 0
-					? `${plural(groups.length, "kind of problem", "kinds of problem")}. Porchlight can make ${plural(mine, "of these changes", "of these changes")} itself: use Fix these above. The rest need a decision from you or work on your server.`
-					: `${plural(groups.length, "kind of problem", "kinds of problem")}.${applied > 0 ? ` Porchlight has made every change it can make itself (${applied} so far), so there is no Fix these button now.` : ""} What is left needs a decision from you or work on your server, so Porchlight does not do it for you.`,
+					? `${plural(groups.length, "kind of finding", "kinds of finding")}. Porchlight can make ${plural(mine, "of these changes", "of these changes")} itself: use Fix these above. The rest need a decision from you or work on your server.`
+					: `${plural(groups.length, "kind of finding", "kinds of finding")}.${applied > 0 ? ` Porchlight has made every change it can make itself (${applied} so far), so there is no Fix these button now.` : ""} What is left needs a decision from you or work on your server, so Porchlight does not do it for you.`,
 			),
 			h(
 				"div",
@@ -648,7 +645,7 @@ export async function renderCloudflare(view, route) {
 		const investigate = async () => {
 			try {
 				await api("POST", "/investigate/domains", { domain: zone.name });
-				location.hash = "#/investigate";
+				if (route.isCurrent()) location.hash = `#/investigate?domain=${encodeURIComponent(zone.name)}`;
 			} catch (err) {
 				toast(err instanceof Error ? err.message : String(err), "error");
 			}
@@ -660,7 +657,7 @@ export async function renderCloudflare(view, route) {
 				? h("button", { type: "button", class: "button quiet", title: `See every change Porchlight can make for ${zone.name}, and approve them once`, onclick: () => void previewBatch(zone) }, icon("change"), `Fix these (${fixable([zone])})…`)
 				: null,
 			watched
-				? h("button", { type: "button", class: "button quiet", title: `Add ${zone.name} to the websites the monitor watches`, onclick: () => void watch() }, icon("domains"), "Watch in Domains")
+				? h("button", { type: "button", class: "button quiet", title: `Add ${zone.name} to the domains the monitor watches`, onclick: () => void watch() }, icon("domains"), "Watch in Domains")
 				: h("a", { class: "button quiet", href: "#/domains", title: "Set up the monitor first" }, icon("domains"), "Set up watching"),
 			store.cloudflare.canChange ? h("button", { type: "button", class: "button quiet", title: `Add ${zone.name} to the domains a model can investigate`, onclick: () => void investigate() }, icon("investigate"), "Investigate") : null,
 		);
@@ -706,13 +703,21 @@ export async function renderCloudflare(view, route) {
 		return h(
 			"div",
 			{ class: `host-check host-${check.status === "unavailable" ? "passed" : check.status}` },
-			h("div", { class: "host-check-head" }, mark, h("strong", null, check.title), h("span", { class: "hint" }, AREA_TITLES[check.area])),
+			h(
+				"div",
+				{ class: "host-check-head" },
+				mark,
+				h("strong", null, check.title),
+				h("span", { class: "hint" }, AREA_TITLES[check.area]),
+				// A change Cloudflare accepted after the audit: the next audit says how it stands now (F-Q2).
+				zone && check.change && store.cloudflare.changedSince.has(`${zone.id}\n${check.change}`) ? h("span", { class: "tag", title: "Porchlight changed this after the audit. Audit again to see it checked." }, "Changed since the audit") : null,
+			),
 			h("p", { class: "host-detail" }, check.detail),
 			check.status !== "passed" ? h("p", { class: "hint" }, check.why) : null,
 			items.length > 0 ? h("details", { class: "fix-details" }, h("summary", null, plural(items.length, "item", "items")), h("ul", null, ...items.map((item) => h("li", null, h("code", null, item))))) : null,
-			check.fix?.length ? h("ol", { class: "host-fix" }, ...check.fix.map((step) => h("li", null, ...stepNodes(step)))) : null,
+			check.fix?.length ? h("ol", { class: "host-fix" }, ...check.fix.map((step) => h("li", null, ...stepNodes(step, { copy: true })))) : null,
 			check.api ? h("p", { class: "hint" }, "API: ", h("code", null, check.api)) : null,
-			check.change && zone ? changeBlock(zone, check) : null,
+			check.change && zone && !store.cloudflare.changedSince.has(`${zone.id}\n${check.change}`) ? changeBlock(zone, check) : null,
 		);
 	}
 
@@ -837,7 +842,7 @@ export async function renderCloudflare(view, route) {
 		if (!assistant?.configured) {
 			return h("div", { class: "card full" }, h("h2", null, "Analysis by a model"), h("p", { class: "sub" }, ...stepNodes("Optional. Choose a model in Settings → Model to have it read this audit and suggest what to fix first. The rules above need none.")));
 		}
-		const where = assistant.hosted ? `${assistant.model}, through its provider's API (${assistant.host}): what this page shows leaves your machines` : `${assistant.model} at ${assistant.host}`;
+		const where = assistant.hosted ? `${assistant.model}, through its provider's API (${assistant.host}): what this page shows goes ${OUTSIDE}` : `${assistant.model} at ${assistant.host}`;
 		const action = assistAction(`cloudflare ${report.checkedAt}`, "/assist/cloudflare", assistant, { start: "Analyse with the model", busy: "Analysing…", again: "Analyse again", note: "Advice only: it changes no check, severity or fix above." }, () => ({}));
 		return h(
 			"div",
@@ -892,6 +897,85 @@ export async function renderCloudflare(view, route) {
 }
 
 /**
+ * The requests of "Fix these", grouped by domain (F-Q1), each domain with a tick for all of its changes.
+ * A tick changes the box and the count, never the list, so its scroll stays where the owner left it.
+ *
+ * @param {{ changes: PendingChange[], left: Set<string> }} waiting
+ * @param {() => void} onChange
+ */
+function batchList(waiting, onChange) {
+	/** @type {Map<string, PendingChange[]>} */
+	const byZone = new Map();
+	for (const change of waiting.changes) byZone.set(change.zone, [...(byZone.get(change.zone) ?? []), change]);
+	/** @type {Map<string, HTMLInputElement>} */
+	const boxes = new Map();
+	/** @type {Map<string, HTMLInputElement>} */
+	const zoneBoxes = new Map();
+	const sync = (/** @type {string} */ zone) => {
+		const changes = byZone.get(zone) ?? [];
+		const ticked = changes.filter((change) => !waiting.left.has(change.id)).length;
+		const box = zoneBoxes.get(zone);
+		if (box) {
+			box.checked = ticked === changes.length;
+			box.indeterminate = ticked > 0 && ticked < changes.length;
+		}
+	};
+	const groups = [...byZone].map(([zone, changes]) => {
+		const zoneBox = /** @type {HTMLInputElement} */ (h("input", { type: "checkbox", "aria-label": `Every change for ${zone}` }));
+		zoneBoxes.set(zone, zoneBox);
+		zoneBox.addEventListener("change", () => {
+			for (const change of changes) {
+				// A change with a warning is ticked only by its own box: a domain's tick leaves it as it is (F-U4).
+				if (zoneBox.checked && change.care) continue;
+				if (zoneBox.checked) waiting.left.delete(change.id);
+				else waiting.left.add(change.id);
+				const box = boxes.get(change.id);
+				if (box) box.checked = !waiting.left.has(change.id);
+			}
+			sync(zone);
+			onChange();
+		});
+		return h(
+			"li",
+			{ class: "cf-batch-zone" },
+			h("label", { class: "check-line" }, zoneBox, h("strong", null, `${zone} (${changes.length})`)),
+			h(
+				"ul",
+				{ class: "cf-batch-list" },
+				...changes.map((change) => {
+					const box = /** @type {HTMLInputElement} */ (h("input", { type: "checkbox", checked: !waiting.left.has(change.id) }));
+					boxes.set(change.id, box);
+					box.addEventListener("change", () => {
+						if (box.checked) waiting.left.delete(change.id);
+						else waiting.left.add(change.id);
+						sync(zone);
+						onChange();
+					});
+					return h(
+						"li",
+						null,
+						h(
+							"label",
+							{ class: "check-line" },
+							box,
+							h(
+								"span",
+								null,
+								h("strong", null, change.title),
+								change.care ? h("span", { class: "hint block cf-care" }, icon("warning"), " ", change.care) : null,
+								h("code", { class: "hint block" }, `${change.request.method} ${change.request.url}  ${JSON.stringify(change.request.body)}`),
+							),
+						),
+					);
+				}),
+			),
+		);
+	});
+	for (const zone of byZone.keys()) sync(zone);
+	return h("ul", { class: "cf-batch-zones" }, ...groups);
+}
+
+/**
  * "Tick all" in Fix these: ticks every change without a warning and leaves each one with a warning as
  * the owner set it. Those are the owner's to choose one by one, never Porchlight's (invariant 21, F-U4).
  *
@@ -917,9 +1001,10 @@ export function isOptional(permission) {
  * How many problems in these zones come with a change Porchlight can make.
  *
  * @param {readonly CfZoneReport[]} zones
+ * @param {ReadonlySet<string>} [changedSince] checks changed since the audit (F-Q2), left out until the next audit
  */
-export function fixable(zones) {
-	return zones.reduce((count, zone) => count + zone.checks.filter((check) => check.status === "failed" && check.change).length, 0);
+export function fixable(zones, changedSince = store.cloudflare.changedSince) {
+	return zones.reduce((count, zone) => count + zone.checks.filter((check) => check.status === "failed" && check.change && !changedSince.has(`${zone.id}\n${check.change}`)).length, 0);
 }
 
 /**

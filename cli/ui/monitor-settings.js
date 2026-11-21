@@ -1,5 +1,5 @@
 // @ts-check
-// Settings → Monitor: where the monitor that watches your websites is, and its admin token. Both are
+// Settings → Monitor: where the monitor that watches your domains is, and its admin token. Both are
 // typed here and sent once to Porchlight's own server, which asks the monitor whether they work,
 // keeps them on this computer (0600) and never sends the token back. The page only ever learns the
 // monitor's host name and whether a connection is saved.
@@ -103,7 +103,7 @@ export function monitorSection() {
 							h("button", { type: "submit", class: "button primary", "aria-disabled": busy ? "true" : null }, busy ? "Checking…" : monitor?.configured ? "Check and replace" : "Check and connect"),
 							saved ? h("button", { type: "button", class: "button", "aria-disabled": busy ? "true" : null, onclick: () => void remove() }, "Remove") : null,
 						),
-						h("p", { class: "hint" }, "Porchlight asks the monitor for its list of websites with this token before saving anything, so a mistake never replaces a connection that works. No restart is needed."),
+						h("p", { class: "hint" }, "Porchlight asks the monitor for its list of domains with this token before saving anything, so a mistake never replaces a connection that works. No restart is needed."),
 					)
 				: h(
 						"p",

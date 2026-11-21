@@ -34,12 +34,13 @@ test("Check again starts from the last scan's choices when the address names non
 	assert.equal(startingChoices(new URLSearchParams(""), undefined).preset, "standard");
 });
 
-test("the Overview redraws only what a change shows: a host check or a project switch redraws nothing (B41)", () => {
-	assert.deepEqual(overviewRedraws("host"), []);
+test("the Overview redraws only what a change shows: a host check redraws the glance strip alone, a project switch nothing (B41, QL-1)", () => {
+	assert.deepEqual(overviewRedraws("host"), ["glance"]);
 	assert.deepEqual(overviewRedraws("projects"), []);
-	assert.deepEqual(overviewRedraws("notes"), []);
-	assert.deepEqual(overviewRedraws("scan"), ["scan"]);
-	assert.deepEqual(overviewRedraws("cloudflare"), ["cloudflare"]);
+	assert.deepEqual(overviewRedraws("notes"), ["review"]);
+	assert.deepEqual(overviewRedraws("scan"), ["scan", "glance"]);
+	assert.deepEqual(overviewRedraws("cloudflare"), ["cloudflare", "glance"]);
+	for (const change of ["host", "notes", "scan", "cloudflare"] as const) assert.ok(!overviewRedraws(change).includes("summary"), `${change} leaves the folder box and the summary alone`);
 	assert.ok(overviewRedraws("report").includes("summary"));
 	assert.ok(!overviewRedraws("cloudflare").includes("summary"), "a Cloudflare poll leaves the folder box and the summary alone");
 });

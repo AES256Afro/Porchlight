@@ -8,12 +8,16 @@ export interface FakeNet {
 	hosts?: Record<string, { a?: string[]; aaaa?: string[]; cname?: string[] }>;
 	/** Other apex records by type, e.g. `{ CAA: ['0 issue "letsencrypt.org"'] }`. */
 	apex?: Partial<Record<"NS" | "MX" | "CAA", string[]>>;
-	/** Certificate log rows, or "down" to make crt.sh fail. */
-	ct?: { names: string[]; notBefore: string; notAfter: string }[] | "down";
+	/** Certificate log rows, or "down" to make crt.sh fail. `issuer` is the row's whole issuer_name. */
+	ct?: { names: string[]; notBefore: string; notAfter: string; issuer?: string }[] | "down";
 	/** Make only the bare-domain query fail, as crt.sh's busier query sometimes does alone. */
 	ctBareDown?: boolean;
 	/** HTTPS responses by host. A host absent from here refuses the connection. `cookies` are whole Set-Cookie headers. */
-	https?: Record<string, { status?: number; headers?: Record<string, string>; cookies?: string[] }>;
+	/** `fails`: the error the connection throws instead of answering, such as a certificate error or a timeout. */
+	https?: Record<
+		string,
+		{ status?: number; headers?: Record<string, string>; cookies?: string[]; fails?: string }
+	>;
 	/** Whether the resolver says answers are DNSSEC-validated (the AD flag). Absent: it does not say. */
 	dnssec?: boolean;
 	/** Names whose DNS lookups fail at the transport level. */
@@ -57,6 +61,7 @@ export function fakeDeps(net: FakeNet = {}, start = "2026-11-17T12:00:00.000Z"):
 			if (url.hostname === "crt.sh") return ct(deps.net, url);
 			const site = deps.net.https?.[url.hostname];
 			if (!site) throw new Error("connection refused");
+			if (site.fails) throw new Error(site.fails);
 			const headers = new Headers(site.headers);
 			for (const cookie of site.cookies ?? []) headers.append("set-cookie", cookie);
 			return new Response("<!doctype html>", { status: site.status ?? 200, headers });
@@ -115,6 +120,7 @@ function ct(net: FakeNet, url: URL): Response {
 				name_value: cert.names.join("\n"),
 				not_before: cert.notBefore.replace(/\.\d+Z$|Z$/, ""),
 				not_after: cert.notAfter.replace(/\.\d+Z$|Z$/, ""),
+				...(cert.issuer ? { issuer_name: cert.issuer } : {}),
 			})),
 	);
 }

@@ -4,10 +4,10 @@ import { assistAction } from "./assist.js";
 import { banner, emptyState, h, pager, PHASE_TITLES, plural, replace, select, severityBadge, stepNodes } from "./dom.js";
 import { exportButton, openExportDialog } from "./export.js";
 import { openSendDialog, sendButton } from "./send.js";
-import { clearFiltersButton, noScanYet, repoChoices, severityChips, viewLink } from "./finding-parts.js";
+import { clearFiltersButton, newChip, noScanYet, repoChoices, scanAgainButton, severityChips, viewLink } from "./finding-parts.js";
 import { matchesFilter } from "./filter.js";
 import { debounce, filterFromParams, paginate, paramsFromFilter } from "./list.js";
-import { findingRows, load, store, subscribe } from "./store.js";
+import { findingRows, load, newFindingKeys, store, subscribe } from "./store.js";
 
 /** @typedef {import("../src/roadmap/types.ts").Roadmap} Roadmap */
 /** @typedef {import("../src/roadmap/types.ts").Action} Action */
@@ -29,7 +29,7 @@ const ACTIONS_PAGE = 20;
  */
 export async function renderRoadmap(view, route) {
 	await load();
-	const filter = filterFromParams(route.params);
+	const filter = filterFromParams(route.params, newFindingKeys);
 	let phaseKey = route.params.get("phase") ?? "";
 	/** @type {Roadmap | null} */
 	let roadmap = null;
@@ -129,6 +129,7 @@ export async function renderRoadmap(view, route) {
 						filter.kind,
 						(value) => ((filter.kind = /** @type {typeof filter.kind} */ (value)), refetch()),
 					),
+					newChip(filter, refetch),
 					clear.button,
 				),
 				body,
@@ -274,9 +275,15 @@ function actionCard(action, place, filter) {
 			h("dt", null, "Clears"),
 			h("dd", { class: "wrap" }, `${plural(total, "finding", "findings")} (${breakdown}): `, h("span", { class: "mono" }, ids.join(", "))),
 			h("dt", null, "How"),
-			h("dd", null, h("ol", null, ...action.how.map((step) => h("li", null, ...stepNodes(step))))),
+			h("dd", null, h("ol", null, ...action.how.map((step) => h("li", null, ...stepNodes(step, { copy: true }))))),
 		),
 		// The findings behind the action, on the Findings page, where each has its detail and notes.
-		action.match ? h("p", { class: "hint" }, viewLink(["findings"], { ...filter, query: action.match, repo: place }, {}, `See ${total === 1 ? "this finding" : `these ${total.toLocaleString("en-GB")} findings`}`)) : null,
+		h(
+			"p",
+			{ class: "hint action-foot" },
+			action.match ? viewLink(["findings"], { ...filter, query: action.match, repo: place }, {}, `See ${total === 1 ? "this finding" : `these ${total.toLocaleString("en-GB")} findings`}`) : null,
+			// Repaired? Scan the repository again and see what that fixed (US-4).
+			scanAgainButton(place),
+		),
 	);
 }

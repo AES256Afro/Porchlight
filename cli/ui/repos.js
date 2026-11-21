@@ -4,7 +4,7 @@ import { coverageBanner, filterBar, findingDetail, findingsHeader, noScanYet, se
 import { ALL_SEVERITIES, isFiltering, matchesFilter } from "./filter.js";
 import { filterFromParams, paginate, paramsFromFilter, repoSortFromParams, repoSortParams } from "./list.js";
 import { repoIncomplete as incomplete } from "./scan-choices.js";
-import { findingRows, load, rescanRepo, store, subscribe } from "./store.js";
+import { findingRows, load, newFindingKeys, rescanRepo, store, subscribe } from "./store.js";
 
 /** @typedef {import("./filter.js").Severity} Severity */
 /** @typedef {import("./store.js").Repo} Repo */
@@ -26,7 +26,7 @@ const REPO_PAGE = 50;
  */
 export async function renderByRepo(view, route) {
 	await load();
-	const filter = filterFromParams(route.params);
+	const filter = filterFromParams(route.params, newFindingKeys);
 	// The order is kept in the address, like the filters, so a reload or a shared link keeps it.
 	let sort = repoSortFromParams(route.params);
 	/** @type {Set<string>} */

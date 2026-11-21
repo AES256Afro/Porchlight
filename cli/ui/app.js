@@ -1,7 +1,8 @@
 // @ts-check
 import { renderActivity } from "./activity.js";
 import { adoptSessionKey, api, ApiError, hasSessionKey, setOfflineMessage, setSessionKey } from "./api.js";
-import { announce, emptyState, formatNumber, formatWhen, h, icon, isOff, plural, replace, scrollMotion, severityBadge, stepNodes, toast } from "./dom.js";
+import { announce, emptyState, formatNumber, formatWhen, h, icon, isOff, pageVisibility, plural, replace, scrollMotion, severityBadge, stepNodes, toast } from "./dom.js";
+import { poller } from "./poller.js";
 import { keyRejectedWords, offlineWords } from "./hints.js";
 import { renderCloudflare } from "./cloudflare.js";
 import { renderDiscussions } from "./discussions.js";
@@ -18,10 +19,14 @@ import { renderByRepo } from "./repos.js";
 import { renderRoadmap } from "./roadmap.js";
 import { renderSettings } from "./settings.js";
 import { findingRows, load, reset, store, subscribe } from "./store.js";
+import { changeSummary, rescanWords } from "./tracking.js";
 
 const view = /** @type {HTMLElement} */ (document.getElementById("view"));
 const nav = /** @type {HTMLElement} */ (document.getElementById("nav"));
 const scanStatus = /** @type {HTMLElement} */ (document.getElementById("scan-status"));
+/** Help and the version, at the foot of the sidebar on every page (R6U-6, R6Q-4). */
+const aboutLine = h("p", { class: "about-line" });
+scanStatus.after(aboutLine);
 
 const SECTIONS = /** @type {const} */ ([
 	["overview", "Overview"],
@@ -47,9 +52,14 @@ let firstRoute = true;
 /** The state of the last scan the sidebar announced, so "finished" is said once. */
 let announced = "";
 
+const WAITING_MARK = "(Waiting) ";
+
 /** Says which of the two jobs a section belongs to, above the first section of each. */
-const GROUPS = /** @type {Record<string, string>} */ ({ findings: "Your code", domains: "Your websites", host: "Your computer", discussions: "Porchlight" });
+const GROUPS = /** @type {Record<string, string>} */ ({ findings: "Your code", domains: "Your domains", host: "Your computer", discussions: "Porchlight" });
 const findingCount = h("span", { class: "count" });
+/** "1 waiting" beside Investigate, while a step waits for the owner's approval (E-Q1). */
+const waitingCount = h("span", { class: "count count-waiting" });
+const HELP_URL = "https://github.com/AES256Afro/porchlight#readme";
 /** "This Mac", or "This computer" when Porchlight runs on something else. */
 const hostLabel = h("span", null, "This Mac");
 
@@ -57,7 +67,7 @@ replace(
 	nav,
 	...SECTIONS.flatMap(([key, label]) => [
 		GROUPS[key] ? h("span", { class: "nav-group" }, GROUPS[key]) : null,
-		h("a", { href: `#/${key}`, dataset: { nav: key } }, icon(key), key === "host" ? hostLabel : label, key === "findings" ? findingCount : null),
+		h("a", { href: `#/${key}`, dataset: { nav: key } }, icon(key), key === "host" ? hostLabel : label, key === "findings" ? findingCount : key === "investigate" ? waitingCount : null),
 	]),
 );
 // Which project saved exports, discussions and the log go to, above the sections.
@@ -69,6 +79,11 @@ subscribe((change) => {
 	if (change === "settings" && store.settings) {
 		applyLook(store.settings.appearance);
 		hostLabel.textContent = hostName();
+		replace(
+			aboutLine,
+			h("a", { href: HELP_URL, target: "_blank", rel: "noopener noreferrer", title: "Opens the documentation on github.com" }, "Help"),
+			store.settings.version ? ` · Porchlight ${store.settings.version}` : null,
+		);
 		setOfflineMessage(offlineWords(store.settings.service ? "service" : inMacApp() ? "mac" : "terminal"));
 	}
 	drawScanStatus();
@@ -136,6 +151,42 @@ document.querySelector(".skip-link")?.addEventListener("click", (event) => {
 	view.scrollIntoView({ block: "start" });
 });
 void route();
+followAttention();
+
+/**
+ * Whether an investigation step waits for approval, asked every few seconds from any page (E-Q1): the
+ * Investigate section shows how many, and the tab's title starts "(Waiting)", so a run does not stall
+ * unseen while the owner is elsewhere.
+ */
+function followAttention() {
+	/** @type {string} */
+	let lastTitle = "";
+	poller({
+		every: 4000,
+		visibility: pageVisibility(),
+		run: async () => {
+			if (!hasSessionKey()) return true;
+			/** @type {{ approval: { domain: string, waiting: number } | null }} */
+			let answer;
+			try {
+				answer = /** @type {{ approval: { domain: string, waiting: number } | null }} */ (await api("GET", "/attention"));
+			} catch {
+				// Signed out, or the server away for a moment: asked again later, never given up on.
+				return 30_000;
+			}
+			const { approval } = answer;
+			const waiting = approval ? Number(approval.waiting) || 0 : 0;
+			waitingCount.textContent = waiting > 0 ? `${waiting} waiting` : "";
+			const marked = document.title.startsWith(WAITING_MARK);
+			if (waiting > 0 && !marked) document.title = `${WAITING_MARK}${document.title}`;
+			if (waiting === 0 && marked) document.title = document.title.slice(WAITING_MARK.length);
+			if (approval && waiting > 0 && lastTitle !== approval.domain) announce(`An investigation of ${approval.domain} is waiting for your approval`);
+			lastTitle = approval && waiting > 0 ? approval.domain : "";
+			return true;
+		},
+		onGiveUp: () => {},
+	}).start();
+}
 
 async function route() {
 	// On every navigation, not only the first: pasting the printed link into
@@ -158,7 +209,7 @@ async function route() {
 		const currentLink = /** @type {HTMLElement | null} */ (nav.querySelector('[aria-current="page"]'));
 		if (currentLink) nav.scrollTo({ left: currentLink.offsetLeft - (nav.clientWidth - currentLink.offsetWidth) / 2, behavior: scrollMotion() });
 	}
-	document.title = `${section === "host" ? hostName() : SECTIONS.find(([key]) => key === section)?.[1]} · Porchlight`;
+	document.title = `${waitingCount.textContent ? WAITING_MARK : ""}${section === "host" ? hostName() : SECTIONS.find(([key]) => key === section)?.[1]} · Porchlight`;
 
 	leave();
 	leave = () => {};
@@ -279,10 +330,22 @@ function drawScanStatus() {
 	}
 	const state = scan.state === "done" ? `done ${scan.finishedAt}` : scan.state;
 	if (state !== announced && announced.startsWith("running")) {
-		if (scan.state === "done") toast("Scan finished");
+		// What the scan changed, so "fix, scan again, see it fixed" ends on "fixed" (US-4, A-Q4).
+		if (scan.state === "done") toast(scanDoneWords(scan), "info", { label: "Open Findings", run: () => void (location.hash = scan.change?.newCount ? "#/findings?new=1" : "#/findings") });
 		else if (scan.state === "failed") announce("The scan failed. The Overview says why.");
 	}
 	announced = state;
+}
+
+/**
+ * "Scan finished" with what it changed: one repository's fixed and new, or the whole scan's against the one before.
+ *
+ * @param {Extract<import("./store.js").ScanStatus, { state: "done" }>} scan
+ */
+function scanDoneWords(scan) {
+	if (scan.rescan) return rescanWords(scan.rescan);
+	const change = scan.change ? changeSummary({ previousScannedAt: "", ...scan.change }) : null;
+	return change ? `Scan finished: ${change}` : "Scan finished";
 }
 
 /** Set when a key is pasted, so the page that comes back can say whether it was refused. */

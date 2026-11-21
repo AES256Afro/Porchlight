@@ -4047,3 +4047,104 @@ td > .tag-new {
 		transition: none;
 	}
 }
+
+/* Daily use (M15): the glance strip, ticked findings, the waiting count, copy buttons, grouped "Fix these". */
+
+.about-line {
+	margin: 0;
+	padding: 8px 12px 12px;
+	color: var(--ink-2);
+	font-size: var(--text-sm);
+}
+
+.nav .count-waiting:not(:empty) {
+	color: var(--ink);
+	font-weight: 600;
+}
+
+.glance-head {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px;
+	align-items: baseline;
+	justify-content: space-between;
+}
+
+.glance-rows {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+	gap: 12px;
+	margin: 12px 0;
+	padding: 0;
+	list-style: none;
+}
+
+.glance-row {
+	padding: 12px;
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-md);
+}
+
+.glance-row > a {
+	display: grid;
+	gap: 4px;
+	color: var(--ink);
+	text-decoration: none;
+}
+
+.bulk-bar {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	align-items: center;
+	margin: 12px 0;
+	padding: 8px 12px;
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-md);
+	background: var(--surface);
+}
+
+.col-tick {
+	width: 2.5em;
+}
+
+.copy-button {
+	margin-left: 4px;
+	vertical-align: middle;
+}
+
+.action-foot {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	align-items: center;
+}
+
+.cf-batch-zones {
+	display: grid;
+	gap: 12px;
+	max-height: 50vh;
+	margin: 12px 0;
+	padding: 0;
+	overflow-y: auto;
+	list-style: none;
+}
+
+.cf-batch-zones .cf-batch-list {
+	max-height: none;
+	margin: 8px 0 0 24px;
+	overflow-y: visible;
+}
+
+.coverage-groups {
+	display: grid;
+	gap: 8px;
+	margin: 8px 0 0;
+	padding-left: 20px;
+}
+
+.connections-check {
+	display: grid;
+	gap: 8px;
+	justify-items: start;
+}

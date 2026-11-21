@@ -417,10 +417,45 @@ export function isDuplicateToast(showing, message, kind) {
  * become code, and everything else stays plain text.
  *
  * @param {string} step
+ * @param {{ copy?: boolean }} [options] `copy`: a copy button beside each command (B-Q3)
  * @returns {(Node | string)[]}
  */
-export function stepNodes(step) {
-	return step.split("`").flatMap((part, index) => (index % 2 === 1 ? [h("code", null, part)] : splitPaths(part).map((piece) => (typeof piece === "string" ? piece : crumbs(piece)))));
+export function stepNodes(step, { copy = false } = {}) {
+	return step
+		.split("`")
+		.flatMap((part, index) =>
+			index % 2 === 1 ? (copy ? [h("code", null, part), copyButton(part, "command")] : [h("code", null, part)]) : splitPaths(part).map((piece) => (typeof piece === "string" ? piece : crumbs(piece))),
+		);
+}
+
+/**
+ * A button that copies text exactly as shown (B-Q3): one helper for repair commands, DNS records and
+ * the monitor's setup, so each says the same and fails the same way.
+ *
+ * @param {string} text
+ * @param {string} what what is copied, in a few words ("command", "name", "value")
+ */
+export function copyButton(text, what) {
+	return h(
+		"button",
+		{
+			type: "button",
+			class: "button quiet icon-only copy-button",
+			"aria-label": `Copy ${what}`,
+			title: `Copy ${what}`,
+			onclick: async (/** @type {MouseEvent} */ event) => {
+				// Inside a row that opens on a click, copying is not also a click on the row.
+				event.stopPropagation();
+				try {
+					await navigator.clipboard.writeText(shownText(text));
+					toast(what === "command" ? "Copied the command" : `Copied the ${what}`);
+				} catch {
+					toast("Could not copy. Select the text and copy it by hand.", "error");
+				}
+			},
+		},
+		icon("copy"),
+	);
 }
 
 /**

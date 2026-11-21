@@ -778,6 +778,8 @@ B40–B45, B49, the accessibility and hierarchy items above, S29, S30, S46, UI-B
 
 ### M15: Daily use. Size: L
 
+**Status, 2026-11-21: built, not checked in a browser.** Tests in `cli/test/daily-use.test.ts` and the updated UI tests. "At a glance" with "Check everything" (QL-1); "New since the last scan" as a filter the server applies from its own history (B-Q1); rescans from the roadmap and finding details, several at once from "Not covered", with "2 fixed, 1 new" (US-4, US-9, R6Q-6); statuses set on several findings, recording where and what they replaced (B-Q2, R6U-7); notes matching nothing listed and removable (R6Q-12); copy buttons (B-Q3); murals reused (C-Q1); a schedule line (QL-5); a waiting-approval badge (E-Q1); "Run again" (E-Q2); "Fix these" by domain, leaving out checks changed since the audit (F-Q1, F-Q2); audit and host-check history (F-Q3, G-Q1); "Explained before" and "Ask again about the latest scan" (H-Q1, H-Q3); "Check connections" (US-8); scanners' readiness in the preview (US-2); `scripts/setup-monitor.sh`, with the deploy taking the database it makes (US-5); the quick start without the monitor's packages (US-1, J-Q1); CLI `domains` reading the saved monitor, `--json` and `--fail-on` (J-Q2, J-Q3); one verb and one noun per thing (RD-8 to RD-11); Activity to stdout in a service (R6Q-1); `repos history`, `findings note` (R6Q-5, R6Q-7); `doctor --self` (R6F-1); `forget`, listing first and removing only Porchlight's own files with `--yes` (R6F-4); the Mac launcher's key and `~` (B60). `domains remove` now needs `--yes`. **Not done:** updating fetched copies before a scheduled scan; a per-domain re-audit; the Mac app's start-up time-out; exporting orphan notes; a `doctor` line for moving computers.
+
 QL-1, QL-3, QL-5, QL-8, US-1, US-2, US-4, US-5, US-8, US-9, US-10, B-Q1, B-Q2, B-Q3, C-Q1, C-Q4, E-Q1, E-Q2, F-Q1, F-Q2, F-Q3, G-Q1, H-Q1, H-Q3, J-Q1, J-Q2, J-Q3, RD-8 to RD-11, B60, R6Q-1, R6Q-4 to R6Q-7, R6Q-12, R6U-6, R6U-7, R6F-1 (`doctor --self`) and R6F-4 (`forget`).
 
 - **"At a glance"** on the Overview, with "Check everything".
@@ -825,6 +827,8 @@ VS-1 to VS-15, RD-1 to RD-7, RD-12 to RD-17, R6R-1 to R6R-9, and R6V-1 to R6V-5.
 - **`styles.css` split by layer.**
 
 ### M18: New coverage. Size: L, released in parts
+
+**Status, 2026-11-21: first part built.** Tests in `cli/test/dkim.test.ts`, `ci-mode.test.ts`, `hook.test.ts`, `status-schedule.test.ts`, `monitor/test/coverage.test.ts`; the ownership-gate request lists unchanged. A certificate from an authority the CAA record does not allow (FT-3); DKIM key strength (FT-5); `repos scan --format sarif` and `--baseline` (FT-9); `porchlight hook` for staged files (FT-10); `porchlight status --json` (FT-16); `porchlight schedule print` (FT-18); the subdomain inventory from names already known, `domains hosts` (R6F-5); redirects to http or off the domain and version-naming headers from the one GET (R6F-6); certificate and TLS failures (R6F-7). The monitor needs redeploying; no migration. **Not done:** FT-11 ("Check it now" on the page); the SARIF and hosts views on the page; alerting a new certificate authority; the second part and the rest from Stage 6.
 
 - **First part:** FT-3, FT-5, FT-9, FT-10, FT-11, FT-16 and FT-18 (small, and inside today's invariants).
 - **Then:** FT-1 and FT-2 (a new finding kind and more token permissions), FT-4 (a new destination), FT-13 and FT-15, FT-6 to FT-8, FT-12, FT-14 and FT-17.

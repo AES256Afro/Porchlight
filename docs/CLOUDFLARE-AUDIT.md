@@ -84,6 +84,7 @@ The last rule needs a DNS lookup of each CNAME target outside your account. Porc
 | SPF | none (medium if the domain has MX records, low if not: then `v=spf1 -all`); more than one; `+all`; `?all`; no `all` | medium; medium; high; medium; low |
 | DMARC | none at `_dmarc` (Porchlight can add `v=DMARC1; p=none`, which only reports, with a warning); `p=none` or no policy. A CNAME at `_dmarc` (delegated to a reporting service) is Could not check: the policy is published at its target, which the audit does not read | medium; low |
 | DKIM | the domain receives mail (MX) but publishes no key under `_domainkey` | medium |
+| DKIM key strength | an RSA key shorter than 2048 bits (RFC 8301; high under 1024); a key in test mode (`t=y`); a key that cannot be read. Read from the records already fetched. Keys behind a CNAME are published by the mail provider and are Could not check when there is no other | medium (high under 1024 bits); low; low |
 
 A zone on a CNAME (partial) setup has its DNS served by another provider, so CAA, SPF, DMARC, DKIM, DNSSEC and the ownership record are *not judged* there (shown as not applying, with no change offered): check them at that provider.
 

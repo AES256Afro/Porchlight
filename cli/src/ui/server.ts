@@ -47,7 +47,7 @@ import { forgetMonitor, monitorProblem, MonitorSettingsError, parseMonitorSettin
 import { discoverRepos } from "../repos/discover.ts";
 import type { Runner } from "../repos/exec.ts";
 import { coverageNotes, nameUnder, rank, rankRepos, repoName, reportStamp, settingNotes } from "../repos/report.ts";
-import { carryNotes, History, notesForPage, setNote, type HistoryEntry } from "../repos/history.ts";
+import { carryNotes, History, mergeRescan, notesForPage, orphanNotes, readNotes, removeNotes, setNote, setNotes, type HistoryEntry, type RescanChange } from "../repos/history.ts";
 import { checkHost, type HostCheckOptions } from "../host/check.ts";
 import type { HostReport } from "../host/types.ts";
 import { CancelledError, run as runCommand } from "../repos/exec.ts";
@@ -57,7 +57,7 @@ import { jsonText } from "../roadmap/escape.ts";
 import { noticeRequest, type Notice, type NotifyFormat } from "../notify/format.ts";
 import { failedScanNotice, scanNotice } from "../notify/scan.ts";
 import { ChoiceError, describeChoices, parseChoices, standardChoices } from "../../ui/scan-choices.js";
-import { findingKey, isDay, isStatus, MAX_NOTE } from "../../ui/tracking.js";
+import { findingKey, isDay, isStatus, MAX_NOTE, rescanWords, type NoteSource } from "../../ui/tracking.js";
 import { SEVERITIES, type Finding, type RepoResult, type ScanChoices, type ScanReport, type Severity, type ToolName } from "../repos/types.ts";
 import { domainSuggestions, type MonitorReport } from "../roadmap/domains.ts";
 import { exportDomain, exportRepos, ExportError, parseFilter, type ExportFile } from "../roadmap/export.ts";
@@ -108,7 +108,9 @@ import { APPROVAL_WINDOW_MS, describeChange, isChangeId, planBatch, planChange, 
 import { auditCloudflare, READ_PERMISSIONS, TOKEN_TEMPLATE_URL, WRITE_PERMISSIONS } from "../cloudflare/audit.ts";
 import { CfClient, tokenShapeProblem } from "../cloudflare/client.ts";
 import { CF_FORMATS, exportCloudflare, type CfFormat } from "../cloudflare/export.ts";
+import type { CfReport } from "../cloudflare/types.ts";
 import { forgetToken, readAudit, readChanges, readSavedToken, recordChange, saveAudit, saveToken } from "../cloudflare/store.ts";
+import { auditChecks, changedSinceAudit, compareChecks, KeptRuns } from "../kept-checks.ts";
 import { oneAtATime, readPrivateJson, UnreadableFileError, writePrivateJson } from "../private-files.ts";
 
 export interface UiOptions {
@@ -258,7 +260,15 @@ interface Gate {
 export type ScanStatus =
 	| { state: "idle" }
 	| { state: "running"; root: string; startedAt: string; done: number; total: number; current: string | null }
-	| { state: "done"; root: string; finishedAt: string }
+	| {
+			state: "done";
+			root: string;
+			finishedAt: string;
+			/** After scanning one repository again: what that changed (US-4). */
+			rescan?: RescanChange;
+			/** After a full scan: new and fixed since the scan before it, when there was one to compare with. */
+			change?: { newCount: number; fixedCount: number; uncheckedCount: number };
+	  }
 	| {
 			state: "failed";
 			root: string;
@@ -269,6 +279,28 @@ export type ScanStatus =
 			/** How many folder levels it looked down. */
 			depth?: number;
 	  };
+
+/** What the schedule did last and does next (QL-5). Never the notice's address, only its host. */
+export interface ScheduleState {
+	everyHours: number;
+	root: string;
+	lastRun?: { at: string; ok: boolean; summary: string };
+	nextRun: string;
+	notify: { host: string; last?: { at: string; delivered: boolean; detail: string } } | null;
+}
+
+let versionRead: Promise<string> | null = null;
+/** This copy's version, from its package.json (R6Q-4). */
+export function porchlightVersion(): Promise<string> {
+	versionRead ??= readFile(join(import.meta.dirname, "../../package.json"), "utf8").then(
+		(text) => {
+			const version = (JSON.parse(text) as { version?: unknown }).version;
+			return typeof version === "string" ? version : "unknown";
+		},
+		() => "unknown",
+	);
+	return versionRead;
+}
 
 /** Fetching repositories from GitHub: one batch at a time, each repository's failure kept beside the rest. */
 /** The check of this computer (`cli/src/host/`), run in the background like a scan. */
@@ -299,7 +331,7 @@ export type AnalysisStatus =
 const UI_DIR = join(import.meta.dirname, "../../ui");
 /** The page's own modules. Nothing else in the folder is served. */
 /** Every script the page loads. A test checks it names each file in ui/, so none is left unserved. */
-export const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "finding-parts", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths", "investigate", "discussions", "discussion", "discussion-links", "panel", "projects", "cloudflare", "cloudflare-settings", "monitor-settings", "activity", "model-download", "scan-choices", "scan-options", "poller"];
+export const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "finding-parts", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths", "investigate", "discussions", "discussion", "discussion-links", "panel", "projects", "cloudflare", "cloudflare-settings", "monitor-settings", "activity", "model-download", "scan-choices", "scan-options", "poller", "glance"];
 const STATIC_FILES: Record<string, { file: string; type: string }> = {
 	"/": { file: "index.html", type: "text/html; charset=utf-8" },
 	"/styles.css": { file: "styles.css", type: "text/css; charset=utf-8" },
@@ -414,6 +446,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	let stopMural: AbortController | null = null;
 	// The check of this computer: what it found is kept beside the report, readable only by its owner.
 	const hostPath = join(dataDir, "host-check.json");
+	// Earlier checks, so a check after a fix says what it fixed (G-Q1).
+	const hostRuns = new KeptRuns<HostReport>(join(dataDir, "host-checks"));
 	const runHostCheck = options.hostCheck ?? ((hostOptions) => checkHost({ run: runCommand, ...hostOptions }));
 	let hostStatus: HostStatus = { state: "idle" };
 	const startup: ModelInUse = { config: options.assistant ?? null, error: options.assistantError, unset: options.assistantUnset ?? false, source: "startup" };
@@ -452,7 +486,13 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	 * container it would describe the container, not the computer the owner cares about.
 	 */
 	async function hostRoute(res: ServerResponse, route: string, body: unknown): Promise<void> {
-		if (route === "GET /api/host") return sendJson(res, 200, { status: hostStatus, report: loopbackOnly ? await readHostReport(hostPath) : null, service: !loopbackOnly });
+		if (route === "GET /api/host") {
+			const report = loopbackOnly ? await readHostReport(hostPath) : null;
+			const previous = report ? await hostRuns.before(report.checkedAt) : null;
+			const place = (checks: HostReport["checks"]) => checks.map((check) => ({ ...check, place: "" }));
+			const change = report && previous ? compareChecks({ at: previous.checkedAt, checks: place(previous.checks) }, { checks: place(report.checks) }) : null;
+			return sendJson(res, 200, { status: hostStatus, report, service: !loopbackOnly, change, kept: loopbackOnly ? await hostRuns.count() : 0 });
+		}
 		if (route !== "POST /api/host/check") throw new HttpError(404, "Not found");
 		if (!loopbackOnly) throw new HttpError(409, "Porchlight runs in a container here, so it cannot see the computer it runs on.");
 		if (hostStatus.state === "running") throw new HttpError(409, "This computer is already being checked");
@@ -471,6 +511,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		})
 			.then(async (report) => {
 				await saveHostReport(hostPath, report);
+				await hostRuns.add(report, report.checkedAt).catch((err) => note(`Could not keep this check for comparison: ${err instanceof Error ? err.message : String(err)}`, "warning"));
 				hostStatus = { state: "done", finishedAt: new Date().toISOString() };
 			})
 			.catch((err) => {
@@ -483,7 +524,66 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	 * The owner's status and note for one finding of the latest scan. Kept by the finding's identity,
 	 * so they carry over to later scans; they never change the finding itself.
 	 */
-	async function noteRoute(res: ServerResponse, body: unknown): Promise<void> {
+	/** Where a status is set from, recorded beside it (R6U-7). */
+	function noteSource(gate: Gate): NoteSource {
+		return gate.tailnet ? "device" : gate.loopbackOnly ? "here" : "service";
+	}
+
+	/**
+	 * One status and note for many findings of the latest scan at once (B-Q2): each is found in the
+	 * report as for one, and all are saved in one change, or none when any is not there.
+	 */
+	async function bulkNoteRoute(res: ServerResponse, body: unknown, gate: Gate): Promise<void> {
+		const fields = bodyObject(body);
+		if (!isStatus(fields.status)) throw new HttpError(400, "Choose a status");
+		const note = fields.note ?? "";
+		if (typeof note !== "string" || note.length > MAX_NOTE) throw new HttpError(400, `Keep the note to ${MAX_NOTE} characters`);
+		const items = fields.findings;
+		if (!Array.isArray(items) || items.length === 0 || items.length > MAX_BULK_NOTES) throw new HttpError(400, `Choose from 1 to ${MAX_BULK_NOTES} findings`);
+		const until = fields.until === undefined || fields.until === "" ? undefined : fields.until;
+		if (until !== undefined) {
+			if (fields.status !== "accepted") throw new HttpError(400, "Only an accepted risk has an end date");
+			if (!isDay(until)) throw new HttpError(400, "Give the end date as a day, such as 2027-06-30");
+			if (until < new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)) throw new HttpError(400, "Choose an end date that has not passed");
+		}
+		const report = await storedReport();
+		const keys: string[] = [];
+		for (const item of items) {
+			const one = bodyObject(item);
+			const target = { repo: textField(one, "repo", 1000), ruleId: textField(one, "ruleId", 500), location: textField(one, "location", 2000), detail: textField(one, "detail", 2000) };
+			const found = locateFinding(report, target);
+			if (!found) throw new HttpError(404, "A chosen finding is not in the latest scan. Reload the page to see the current one.");
+			if (fields.status === "rotated" && found.finding.kind !== "secret") throw new HttpError(400, "Only a secret can be marked rotated. Leave out the findings that are not secrets.");
+			keys.push(findingKey(target.repo, target));
+		}
+		const saved = await setNotes(notesPath, keys, fields.status, note, new Date(), until, noteSource(gate));
+		return sendJson(res, 200, { notes: keys.map((key, index) => ({ key, note: saved[index] ?? null })) });
+	}
+
+	/**
+	 * Notes that name no finding of any kept scan (R6Q-12): counted, listed by place and status, and
+	 * removed only when the owner asks, and only those.
+	 */
+	async function orphansRoute(res: ServerResponse, route: string): Promise<void> {
+		const notes = await readNotes(notesPath);
+		const orphans = await orphanNotes(notes, history, await readReport(options.reportPath));
+		if (route === "POST /api/findings/orphans/remove") {
+			const removed = await removeNotes(notesPath, orphans);
+			log(`Removed ${removed === 1 ? "1 note" : `${removed} notes`} that matched no kept finding`);
+			return sendJson(res, 200, { removed });
+		}
+		if (route !== "GET /api/findings/orphans") throw new HttpError(405, "Method not allowed");
+		return sendJson(res, 200, {
+			count: orphans.length,
+			notes: orphans.slice(0, 200).map((key) => {
+				const [repo = "", ruleId = "", location = ""] = key.split("\n");
+				const entry = notes[key]!;
+				return { repo, ruleId, location, status: entry.status, updatedAt: entry.updatedAt, ...(entry.until ? { until: entry.until } : {}) };
+			}),
+		});
+	}
+
+	async function noteRoute(res: ServerResponse, body: unknown, gate: Gate): Promise<void> {
 		const fields = bodyObject(body);
 		const target = {
 			repo: textField(fields, "repo", 1000),
@@ -507,7 +607,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			if (until < new Date(Date.now() - 86_400_000).toISOString().slice(0, 10)) throw new HttpError(400, "Choose an end date that has not passed");
 		}
 		const key = findingKey(target.repo, target);
-		return sendJson(res, 200, { key, note: await setNote(notesPath, key, fields.status, note, new Date(), until) });
+		return sendJson(res, 200, { key, note: await setNote(notesPath, key, fields.status, note, new Date(), until, noteSource(gate)) });
 	}
 
 	function targets() {
@@ -551,7 +651,10 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	let activityCount = 0;
 	function note(text: string, kind: ActivityLine["kind"] = "info"): void {
 		activityCount += 1;
-		activity.push({ n: activityCount, at: new Date().toISOString(), kind, text: oneLine(text).slice(0, 400) });
+		const line = { n: activityCount, at: new Date().toISOString(), kind, text: oneLine(text).slice(0, 400) };
+		activity.push(line);
+		// A service's operator reads `docker logs`: each line goes there too, with its time, and nothing more (R6Q-1).
+		if (!loopbackOnly) process.stdout.write(`${line.at} ${line.text}\n`);
 		if (activity.length > MAX_ACTIVITY) activity.splice(0, activity.length - MAX_ACTIVITY);
 	}
 
@@ -751,7 +854,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		}
 		if (discussion.kind === "roadmap") return roadmapPrompt(report);
 		if (discussion.kind === "ask") return askPrompt(report, discussion.turns[0]?.question ?? "");
-		const filter = parseFilter({ severity: about.filter?.severity, kind: about.filter?.kind, match: about.filter?.q, repo: about.filter?.repo });
+		const filter = parseFilter({ severity: about.filter?.severity, kind: about.filter?.kind, match: about.filter?.q, repo: about.filter?.repo, new: about.filter?.new }, await newKeysOf(report));
 		return sendPrompt(report, {
 			content: about.content === "findings" ? "findings" : "roadmap",
 			purpose: about.purpose === "repair" ? "repair" : "analyse",
@@ -776,7 +879,9 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				return sendDownload(res, exportDiscussion(discussion, format as DiscussionFormat));
 			}
 			const state = await followUpState(discussion);
-			return sendJson(res, 200, { discussion: viewOf(discussion), followUp: state.ok ? { ok: true } : { ok: false, reason: state.reason } });
+			// `stale`: a newer scan or audit replaced what it was about, so the page offers to ask again about the latest (H-Q3).
+			const stale = !state.ok && (state.reason === NEWER_SCAN || state.reason === NEWER_AUDIT || state.reason.startsWith("A newer scan of "));
+			return sendJson(res, 200, { discussion: viewOf(discussion), followUp: state.ok ? { ok: true } : { ok: false, reason: state.reason, ...(stale ? { stale: true } : {}) } });
 		}
 		const fields = bodyObject(body);
 		// A copy of the transcript in the project in use: written again there after each answer from now on.
@@ -864,8 +969,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		if (!(SEND_CONTENTS as readonly unknown[]).includes(fields.content)) throw new HttpError(400, `Choose what to send: ${SEND_CONTENTS.join(" or ")}`);
 		if (!(SEND_PURPOSES as readonly unknown[]).includes(fields.purpose)) throw new HttpError(400, `Choose what to ask for: ${SEND_PURPOSES.join(" or ")}`);
 		const text = (name: string) => (typeof fields[name] === "string" ? (fields[name] as string) : null);
-		const filter = parseFilter({ severity: text("severity"), kind: text("kind"), match: text("q"), repo: text("repo") });
 		const report = await storedReport();
+		const filter = parseFilter({ severity: text("severity"), kind: text("kind"), match: text("q"), repo: text("repo"), new: text("new") }, await newKeysOf(report));
 		const prompt = sendPrompt(report, {
 			content: fields.content as SendContent,
 			purpose: fields.purpose as SendPurpose,
@@ -889,7 +994,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			const partial = describeFilter(filter);
 			// What the page's filter was, in the request's own words, so a follow-up rebuilds the same data.
 			const filterWords = Object.fromEntries(
-				(["severity", "kind", "q", "repo"] as const).flatMap((name) => (text(name) === null ? [] : [[name, text(name) as string]])),
+				(["severity", "kind", "q", "repo", "new"] as const).flatMap((name) => (text(name) === null ? [] : [[name, text(name) as string]])),
 			);
 			const about: DiscussionAbout = {
 				scannedAt: report.scannedAt,
@@ -1604,6 +1709,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	const cloudflareTokenPath = join(dataDir, "cloudflare-settings.json");
 	const cloudflareAuditPath = join(dataDir, "cloudflare-audit.json");
 	const cloudflareChangesPath = join(dataDir, "cloudflare-changes.json");
+	// Earlier audits, so the page can say what was fixed and is new since the last one (F-Q3).
+	const auditRuns = new KeptRuns<CfReport>(join(dataDir, "cloudflare-audits"));
 	let cloudflareStatus: CloudflareStatus = { state: "idle" };
 	/** What Cloudflare last said about the token in use. Never the token. */
 	let cloudflareVerified: { status: string; kind: "user" | "account"; expiresOn?: string; checkedAt: string } | null = null;
@@ -1645,10 +1752,15 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		const here = gate.loopbackOnly && !gate.tailnet;
 		if (route === "GET /api/cloudflare") {
 			const changes = await readChanges(cloudflareChangesPath);
+			const report = await readAudit(cloudflareAuditPath);
+			const previous = report ? await auditRuns.before(report.checkedAt) : null;
 			return sendJson(res, 200, {
 				token: await cloudflareTokenState(),
 				status: cloudflareStatus,
-				report: await readAudit(cloudflareAuditPath),
+				report,
+				// Against the audit before it (F-Q3), and the checks changed since it (F-Q2).
+				change: report && previous ? compareChecks({ at: previous.checkedAt, checks: auditChecks(previous) }, { checks: auditChecks(report) }) : null,
+				changedSince: report ? [...changedSinceAudit(report.checkedAt, changes)] : [],
 				changes: changes.slice(-50).reverse(),
 				batch: batchStatus,
 				lacking: [...lacking],
@@ -1703,13 +1815,14 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			})
 				.then(async (report) => {
 					await saveAudit(cloudflareAuditPath, report);
+					await auditRuns.add(report, report.checkedAt).catch((err) => note(`Could not keep this audit for comparison: ${err instanceof Error ? err.message : String(err)}`, "warning"));
 					// A request shown before this audit was planned from what it replaced: it is asked for again (S28).
 					pendingChanges.clear();
 					pendingBatch = null;
 					cloudflareVerified = { status: report.token.status, kind: report.token.kind, ...(report.token.expiresOn ? { expiresOn: report.token.expiresOn } : {}), checkedAt: report.checkedAt };
 					cloudflareStatus = { state: "done", finishedAt: new Date().toISOString() };
 					const problems = [...report.zones.flatMap((zone) => zone.checks), ...report.accounts.flatMap((account) => account.checks), ...report.userChecks].filter((item) => item.status === "failed").length;
-					log(`Cloudflare audit finished: ${report.zones.length} ${report.zones.length === 1 ? "zone" : "zones"}, ${problems} ${problems === 1 ? "problem" : "problems"}`, project);
+					log(`Cloudflare audit finished: ${report.zones.length} ${report.zones.length === 1 ? "zone" : "zones"}, ${problems} ${problems === 1 ? "finding" : "findings"}`, project);
 				})
 				.catch((err) => {
 					cloudflareStatus = { state: "failed", finishedAt: new Date().toISOString(), error: err instanceof Error ? err.message : String(err) };
@@ -1793,6 +1906,9 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				if (zones.length === 0) throw new HttpError(404, "That zone is not in the latest audit. Run the audit again.");
 			}
 			const domains = (await readDomains(investigateDomainsPath)).domains;
+			// A check changed since the audit is left out until the next audit says how it stands (F-Q2).
+			const changed = changedSinceAudit(report.checkedAt, await readChanges(cloudflareChangesPath));
+			zones = zones.map((zone) => ({ ...zone, checks: zone.checks.filter((check) => !check.change || !changed.has(`${zone.id}\n${check.change}`)) }));
 			const { changes: planned, offered } = planBatch(zones, (name) => domains[name]?.token ?? newToken(), report.checkedAt);
 			if (planned.length === 0) throw new HttpError(409, "The latest audit found nothing here that Porchlight can change");
 			pendingBatch = { id: randomBytes(12).toString("hex"), createdAt: Date.now(), changes: planned };
@@ -2012,8 +2128,12 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			[under("/api/monitor"), ({ res, route, body, gate }) => monitorRoute(res, route, body, gate), "here"],
 			[exact("GET /api/activity"), activityRoute],
 			[exact("GET /api/repos/history"), historyRoute],
-			[exact("POST /api/findings/note"), ({ res, body }) => noteRoute(res, body)],
+			[exact("POST /api/findings/note"), ({ res, body, gate }) => noteRoute(res, body, gate)],
+			[exact("POST /api/findings/notes"), ({ res, body, gate }) => bulkNoteRoute(res, body, gate)],
+			[paths("/api/findings/orphans", "/api/findings/orphans/remove"), ({ res, route }) => orphansRoute(res, route), "owner"],
 			[exact("GET /api/busy"), ({ res }) => sendJson(res, 200, { busy: busyWork() })],
+			[exact("GET /api/attention"), attentionRoute],
+			[exact("GET /api/connections"), connectionsRoute],
 			[exact("POST /api/view"), viewRoute],
 			[exact("POST /api/settings"), settingsRoute],
 			[under("/api/model/local"), ({ res, route, url, body, gate }) => downloadRoute(res, route, url, body, gate), "here"],
@@ -2049,7 +2169,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			[exact("GET /api/repos/sbom"), sbomRoute],
 			[
 				exact("GET /api/repos/preview"),
-				async ({ res, url }) => sendJson(res, 200, { preview: await previewScan(url.searchParams.get("root") ?? options.defaultRoot, url.searchParams.get("depth"), github.dir) }),
+				async ({ res, url }) =>
+					sendJson(res, 200, { preview: { ...(await previewScan(url.searchParams.get("root") ?? options.defaultRoot, url.searchParams.get("depth"), github.dir, url.searchParams.get("home") === "1")), tools: await toolReadiness() } }),
 			],
 			[under("/api/github"), ({ res, route, url, body }) => githubRoute(res, route, url, body)],
 			[
@@ -2060,7 +2181,17 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				},
 			],
 			[exact("POST /api/repos/scan/cancel"), cancelScanRoute],
-			[exact("POST /api/repos/rescan"), async ({ res, body }) => sendJson(res, 202, { scan: await beginRescan(textField(bodyObject(body), "repo", 1000)) })],
+			[
+				exact("POST /api/repos/rescan"),
+				async ({ res, body }) => {
+					// One repository by name, or several at once (US-9, "Scan these again"); names only, never a path.
+					const fields = bodyObject(body);
+					if (fields.repos === undefined) return sendJson(res, 202, { scan: await beginRescan([textField(fields, "repo", 1000)]) });
+					if (!Array.isArray(fields.repos) || fields.repos.length === 0 || fields.repos.length > MAX_RESCAN) throw new HttpError(400, `Name from 1 to ${MAX_RESCAN} repositories`);
+					const names = [...new Set(fields.repos.map((name) => textField({ name }, "name", 1000)))];
+					return sendJson(res, 202, { scan: await beginRescan(names) });
+				},
+			],
 			[(call) => DOMAIN_EXPORT.test(call.url.pathname), domainExportRoute],
 			[
 				under("/api/domains"),
@@ -2070,6 +2201,25 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				},
 			],
 		];
+	}
+
+	/** Whether git and the scanners run, asked at most once a minute (US-2): a first scan should not find out by failing. */
+	let tools: { at: number; value: Promise<{ tool: string; ready: boolean; fix: string }[]> } | null = null;
+	function toolReadiness(): Promise<{ tool: string; ready: boolean; fix: string }[]> {
+		if (tools && Date.now() - tools.at < 60_000) return tools.value;
+		const runner = options.run ?? runCommand;
+		const ask = (tool: string, args: string[], fix: string) =>
+			runner(tool, args, { timeoutMs: 10_000 }).then(
+				() => ({ tool, ready: true, fix }),
+				() => ({ tool, ready: false, fix }),
+			);
+		const value = Promise.all([
+			ask("git", ["--version"], process.platform === "darwin" ? "xcode-select --install" : "Install git with your system's package manager"),
+			ask("gitleaks", ["version"], "brew install gitleaks"),
+			ask("osv-scanner", ["--version"], "brew install osv-scanner"),
+		]);
+		tools = { at: Date.now(), value };
+		return value;
 	}
 
 	/** What the page needs to draw itself: where things are, what is set up, never a secret. */
@@ -2100,6 +2250,47 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			cloudflare: await cloudflareTokenState(),
 			// What "Send to a model" offers. Never a key: only where each one runs and which model.
 			sendTargets: targets().map((target) => ({ id: target.id, label: target.label, model: target.config.model, host: target.config.url.host, hosted: target.hosted, current: target.current })),
+			// Which Porchlight this is (R6Q-4), and what the schedule did and will do (QL-5).
+			version: await porchlightVersion(),
+			schedule: await scheduleState(),
+		});
+	}
+
+	/**
+	 * What needs the owner from any page (E-Q1): an investigation step waiting for approval. The page
+	 * asks this every few seconds and marks the Investigate section and the tab's title.
+	 */
+	function attentionRoute({ res }: Call): void {
+		const waiting = investigation?.run.steps.filter((step) => step.outcome === "waiting").length ?? 0;
+		return sendJson(res, 200, { approval: investigation && waiting > 0 ? { domain: investigation.run.domain, waiting } : null });
+	}
+
+	/**
+	 * "Check connections" (US-8): asks the monitor and the model whether they answer now, as doctor does,
+	 * so "connected" means working rather than configured. The monitor's token goes only to its own address.
+	 */
+	async function connectionsRoute({ res }: Call): Promise<void> {
+		const at = new Date().toISOString();
+		const monitorCheck = monitor
+			? await monitorProblem(monitor, options.fetchFn ?? fetch).then(
+					(problem) => (problem ? { ok: false, detail: problem } : { ok: true, detail: `${monitor!.url.host} answers` }),
+					(err) => ({ ok: false, detail: `${monitor!.url.host} could not be reached: ${err instanceof Error ? err.message : String(err)}` }),
+				)
+			: null;
+		const config = model.config;
+		let modelCheck: { ok: boolean; detail: string } | null = null;
+		// A hosted provider is not asked: asking sends the key and costs a request. Its settings are checked when saved.
+		if (config && !isHosted(config)) {
+			modelCheck = await listModels(config, { fetchFn: options.fetchFn })
+				.then((names) => (names.some((name) => name === config.model || name === `${config.model}:latest`) ? { ok: true, detail: `${config.model} is ready at ${config.url.host}` } : { ok: false, detail: `${config.url.host} answers, but has no model named ${config.model}` }))
+				.catch((err) => ({ ok: false, detail: `${config.url.host} could not be reached: ${err instanceof Error ? err.message : String(err)}` }));
+		} else if (config) modelCheck = { ok: true, detail: `${config.model} at ${config.url.host} is hosted, so it is not asked until you use it` };
+		const cloudflare = await cloudflareTokenState();
+		return sendJson(res, 200, {
+			at,
+			monitor: monitorCheck,
+			model: modelCheck,
+			cloudflare: cloudflare.configured ? { ok: cloudflare.verified?.status === "active", detail: cloudflare.verified ? `The token was ${cloudflare.verified.status} at the last audit, ${cloudflare.verified.checkedAt.slice(0, 10)}${cloudflare.verified.expiresOn ? `; it ends ${cloudflare.verified.expiresOn.slice(0, 10)}` : ""}` : "Saved, not checked yet: run an audit" } : null,
 		});
 	}
 
@@ -2126,6 +2317,16 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			...(problem ? { problem } : {}),
 			...(latest.state === "unreadable" ? { changeProblem: latest.reason } : {}),
 		});
+	}
+
+	/**
+	 * The keys of the findings new in `report` since the kept scan before it, from the server's own
+	 * history (B-Q1): "New since the last scan" exports exactly what the page shows. None when there is
+	 * no earlier scan or it cannot be read, so the filter then matches nothing rather than everything.
+	 */
+	async function newKeysOf(report: ScanReport): Promise<Set<string>> {
+		const latest = await history.compare(report).catch(() => null);
+		return new Set(latest?.state === "compared" ? latest.change.newKeys : []);
 	}
 
 	/** Where the owner is in the page, kept so the app opens there again. */
@@ -2157,7 +2358,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		const report = await readReport(options.reportPath);
 		if (!report) throw new HttpError(404, "There is no scan yet. Scan a folder first.");
 		const query = url.searchParams;
-		const filter = parseFilter({ severity: query.get("severity"), kind: query.get("kind"), match: query.get("q"), repo: query.get("repo") });
+		const filter = parseFilter({ severity: query.get("severity"), kind: query.get("kind"), match: query.get("q"), repo: query.get("repo"), new: query.get("new") }, await newKeysOf(report));
 		if (route === "GET /api/repos/roadmap") return sendJson(res, 200, { roadmap: buildRepoRoadmap(report, filter) });
 		const key = muralKey(report, filter);
 		if (url.pathname === "/api/repos/mural") return muralRoute(res, route, report, filter, key, body);
@@ -2584,10 +2785,12 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				// A secret's finding may name another of its commits than before (B20): its note follows it.
 				const carried = await carryNotes(notesPath, report).catch(() => 0);
 				if (carried > 0) log(`Moved ${carried === 1 ? "1 note" : `${carried} notes`} to the secret ${carried === 1 ? "it was" : "they were"} about`, project);
-				status = { state: "done", root, finishedAt: new Date().toISOString() };
+				const latest = await history.compare(report).catch((err) => ({ state: "unreadable" as const, reason: err instanceof Error ? err.message : String(err) }));
+				const compared = latest.state === "compared" ? { newCount: latest.change.newCount, fixedCount: latest.change.fixedCount, uncheckedCount: latest.change.uncheckedCount } : undefined;
+				status = { state: "done", root, finishedAt: new Date().toISOString(), ...(compared ? { change: compared } : {}) };
 				log(`Scan finished: ${scanCounts(report)}`, project);
 				if (scheduled) {
-					const latest = await history.compare(report);
+					scheduleRecord.lastRun = { at: new Date().toISOString(), ok: true, summary: scanCounts(report) };
 					await tell(scanNotice(report, latest.state === "compared" ? latest.change : null, latest.state === "unreadable" ? latest.reason : undefined), project);
 				}
 				if (choices.analyse) analyseAfterScan(how.sendsToHosted === true, project, how.shown);
@@ -2602,7 +2805,10 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				const error = err instanceof Error ? err.message : String(err);
 				status = { state: "failed", root, finishedAt: new Date().toISOString(), error };
 				log(`Scan failed: ${error}`, project);
-				if (scheduled) void tell(failedScanNotice(root, error), project);
+				if (scheduled) {
+					scheduleRecord.lastRun = { at: new Date().toISOString(), ok: false, summary: error.slice(0, 300) };
+					void tell(failedScanNotice(root, error), project);
+				}
 			})
 			.finally(() => {
 				if (scanCancel === cancel) scanCancel = null;
@@ -2614,13 +2820,37 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	async function tell(notice: Notice, project: Awaited<ReturnType<typeof projects.current>>): Promise<void> {
 		if (!options.notify) return;
 		const { headers, body } = noticeRequest(options.notify.format, notice);
+		const at = new Date().toISOString();
 		try {
 			const response = await (options.fetchFn ?? fetch)(options.notify.url, { method: "POST", headers, body, redirect: "error", signal: AbortSignal.timeout(15_000) });
 			await response.body?.cancel();
+			scheduleRecord.notice = { at, delivered: response.ok, detail: response.ok ? `delivered to ${options.notify.url.host}` : `${options.notify.url.host} refused it (HTTP ${response.status})` };
 			log(response.ok ? `Sent the scan's outcome to ${options.notify.url.host}` : `${options.notify.url.host} refused the scan's outcome (HTTP ${response.status})`, project);
 		} catch (err) {
+			scheduleRecord.notice = { at, delivered: false, detail: `${options.notify.url.host} could not be reached` };
 			log(`Could not send the scan's outcome to ${options.notify.url.host}: ${err instanceof Error ? err.message : String(err)}`, project);
 		}
+	}
+
+	/**
+	 * What the schedule did last and will do next (QL-5), in memory: after a restart the last scan's time
+	 * stands in for the last run. The notice's address is never part of it, only its host.
+	 */
+	const scheduleRecord: { lastRun?: { at: string; ok: boolean; summary: string }; notice?: { at: string; delivered: boolean; detail: string } } = {};
+
+	async function scheduleState(): Promise<ScheduleState | null> {
+		const hours = options.scanEveryHours;
+		if (!hours) return null;
+		const last = (await readReport(options.reportPath).catch(() => null))?.scannedAt;
+		const failedAt = status.state === "failed" ? status.finishedAt : undefined;
+		const latest = [last, failedAt, scheduleRecord.lastRun?.at].filter((at): at is string => typeof at === "string").sort().at(-1);
+		return {
+			everyHours: hours,
+			root: options.defaultRoot,
+			...(scheduleRecord.lastRun ? { lastRun: scheduleRecord.lastRun } : {}),
+			nextRun: latest ? new Date(Date.parse(latest) + hours * 3_600_000).toISOString() : new Date().toISOString(),
+			notify: options.notify ? { host: options.notify.url.host, ...(scheduleRecord.notice ? { last: scheduleRecord.notice } : {}) } : null,
+		};
 	}
 
 	/**
@@ -2630,19 +2860,23 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	 * clears a finding (invariant 5). The report keeps its scan time, so its history and a model's
 	 * judgements still belong to it; the repository records when it was scanned again.
 	 */
-	async function beginRescan(name: string): Promise<ScanStatus> {
+	async function beginRescan(names: string[]): Promise<ScanStatus> {
 		scanMayStart();
-		// Running before the first await (B24); as it was again if the repository cannot be scanned.
+		// Running before the first await (B24); as it was again if a repository cannot be scanned.
 		const earlier = status;
 		const cancel = new AbortController();
 		scanCancel = cancel;
-		status = { state: "running", root: "", startedAt: new Date().toISOString(), done: 0, total: 1, current: name };
+		const label = names.length === 1 ? names[0]! : `${names.length} repositories`;
+		status = { state: "running", root: "", startedAt: new Date().toISOString(), done: 0, total: names.length, current: names[0] ?? null };
 		let report: ScanReport;
-		let before: RepoResult | undefined;
+		let befores: RepoResult[];
 		try {
 			report = await storedReport();
-			before = report.repos.find((repo) => repoName(report, repo) === name);
-			if (!before) throw new HttpError(404, "That repository is not in the latest scan. Reload the page to see the current one.");
+			befores = names.map((name) => {
+				const before = report.repos.find((repo) => repoName(report, repo) === name);
+				if (!before) throw new HttpError(404, "That repository is not in the latest scan. Reload the page to see the current one.");
+				return before;
+			});
 		} catch (err) {
 			status = earlier;
 			scanCancel = null;
@@ -2650,40 +2884,38 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		}
 		status = { ...status, root: report.root };
 		const project = await projects.current();
-		log(`Scanning ${name} again`, project);
+		log(`Scanning ${label} again`, project);
 		// Scanned as the whole report was, so what it covers stays what the report says it covers.
 		const choices = { ...(report.choices ?? standardChoices()), analyse: false };
-		void rescan(before.path, { signal: cancel.signal, choices, scanned: report.repos.map((other) => other.path), ...(osvDatabase ? { osvDatabase } : {}) })
-			.then(async ({ repo, tools }) => {
+		void (async () => {
+			const total: RescanChange = { repo: label, fixedCount: 0, newCount: 0, uncheckedCount: 0 };
+			for (const [index, before] of befores.entries()) {
+				const name = names[index]!;
+				if (status.state === "running") status = { ...status, done: index, current: name };
+				const now = await rescan(before.path, { signal: cancel.signal, choices, scanned: report.repos.map((other) => other.path), ...(osvDatabase ? { osvDatabase } : {}) });
 				if (cancel.signal.aborted) throw new CancelledError();
-				// Scanners that did not look this time: not chosen, not installed any more, or failed on the repository.
-				const chosen = (tool: ToolName) => (tool === "gitleaks" ? choices.secrets || choices.privateData === true : choices.dependencies);
-				const looked = (tool: ToolName) => chosen(tool) && tools.some((now) => now.tool === tool && now.status === "ok") && !repo.errors.some((error) => error.tool === tool);
-				const kept = before.findings.filter((finding) => !looked(finding.tool));
-				const merged: RepoResult = {
-					...repo,
-					findings: [...kept, ...repo.findings.filter((finding) => looked(finding.tool))],
-					// A scanner that failed before and did not run now is still a gap.
-					errors: [...repo.errors, ...before.errors.filter((error) => !tools.some((now) => now.tool === error.tool && now.status === "ok"))],
-					rescannedAt: new Date().toISOString(),
-				};
+				// Scanners that did not look this time keep what they found before (invariant 5); fixed and new are counted by findingKey.
+				const { merged, change } = mergeRescan(name, before, now, choices);
 				// Read again: the report may have been replaced while this ran.
 				const current = await storedReport();
 				if (current.scannedAt !== report.scannedAt) throw new Error("A new scan replaced the report while this repository was being scanned again");
-				const next: ScanReport = { ...current, repos: current.repos.map((entry) => (entry.path === before.path ? merged : entry)) };
-				await saveReport(options.reportPath, next);
-				status = { state: "done", root: report.root, finishedAt: new Date().toISOString() };
-				log(`Scanned ${name} again: ${merged.findings.length === 1 ? "1 finding" : `${merged.findings.length} findings`}`, project);
-			})
+				await saveReport(options.reportPath, { ...current, repos: current.repos.map((entry) => (entry.path === before.path ? merged : entry)) });
+				total.fixedCount += change.fixedCount;
+				total.newCount += change.newCount;
+				total.uncheckedCount += change.uncheckedCount;
+				log(`Scanned ${name} again: ${merged.findings.length === 1 ? "1 finding" : `${merged.findings.length} findings`}. ${rescanWords(change)}`, project);
+			}
+			status = { state: "done", root: report.root, finishedAt: new Date().toISOString(), rescan: total };
+		})()
 			.catch((err) => {
 				if (err instanceof CancelledError || cancel.signal.aborted) {
 					status = { state: "idle" };
-					log(`Stopped scanning ${name} again. The last scan is unchanged`, project);
+					log(`Stopped scanning ${label} again. What was scanned before stopping is kept`, project);
 					return;
 				}
 				const error = err instanceof Error ? err.message : String(err);
 				status = { state: "failed", root: report.root, finishedAt: new Date().toISOString(), error };
-				log(`Scanning ${name} again failed: ${error}`, project);
+				log(`Scanning ${label} again failed: ${error}`, project);
 			})
 			.finally(() => {
 				if (scanCancel === cancel) scanCancel = null;
@@ -3117,6 +3349,10 @@ export interface ActivityLine {
 	text: string;
 }
 const MAX_ACTIVITY = 400;
+/** The most repositories one "Scan these again" scans (US-9). */
+const MAX_RESCAN = 200;
+/** The most findings one "Set status for N" changes at once (B-Q2). */
+const MAX_BULK_NOTES = 500;
 
 /** A set of Cloudflare changes the owner approved at once, as it is sent. */
 export type BatchStatus =
@@ -3204,15 +3440,21 @@ export interface ScanPreview {
 	/** How many of them were fetched from GitHub rather than found in `root`. */
 	fetched: number;
 	depth: number;
+	/** The folder is the home folder itself, which is not looked through unless asked (US-2): it would walk Desktop, Documents and Downloads. */
+	isHome?: boolean;
+	/** Whether git and each scanner is ready, with what to install when it is not (US-2). */
+	tools?: { tool: string; ready: boolean; fix: string }[];
 }
 
-async function previewScan(root: string, depthText: string | null, githubDir: string): Promise<ScanPreview> {
+async function previewScan(root: string, depthText: string | null, githubDir: string, wholeHome = false): Promise<ScanPreview> {
 	const depth = depthText === null ? 3 : Number(depthText);
 	if (!Number.isInteger(depth) || depth < 0 || depth > MAX_DEPTH) throw new HttpError(400, `Depth must be a whole number from 0 to ${MAX_DEPTH}`);
 	if (root.trim() === "") throw new HttpError(400, "Choose a folder to scan");
 	const absolute = resolve(root.trim().replace(/^~(?=$|\/)/, homedir()));
 	const info = await stat(absolute).catch(() => null);
 	if (!info?.isDirectory()) return { root: absolute, exists: false, total: 0, repos: [], fetched: 0, depth };
+	// The whole home folder is looked through only when asked: macOS guards Desktop, Documents and Downloads (US-2).
+	if (absolute === homedir() && !wholeHome) return { root: absolute, exists: true, total: 0, repos: [], fetched: 0, depth, isHome: true };
 	const inFolder = await discoverRepos(absolute, depth);
 	const fromGithub = (await fetchedRepos(githubDir)).map((name) => join(githubDir, ...name.split("/"))).filter((path) => !inFolder.includes(path));
 	const names = [...inFolder, ...fromGithub].slice(0, PREVIEW_NAMES).map((path) => nameUnder(absolute, [githubDir], path));

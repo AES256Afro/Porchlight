@@ -67,11 +67,19 @@ if [ -f "$settings" ]; then
 		case "$line" in
 			PORCHLIGHT_ROOT=*) root=${line#PORCHLIGHT_ROOT=} ;;
 			SECURITYX_ROOT=*) root=${line#SECURITYX_ROOT=} ;;
+			# The app opens its page with a key of its own; a fixed one would keep the window on
+			# "Starting Porchlight…" for ever, as no link is printed for it to open (B60).
+			PORCHLIGHT_UI_KEY=* | SECURITYX_UI_KEY=*) echo "app.env: PORCHLIGHT_UI_KEY is not used by the Mac app, which makes its own key" >&2 ;;
 			PORCHLIGHT_[A-Z_]*=*) export "$line" ;;
 			SECURITYX_[A-Z_]*=*) export "PORCHLIGHT_${line#SECURITYX_}" ;;
 		esac
 	done < "$settings"
 fi
+# A folder written as ~/code means code in the home folder, as in a shell (B60).
+case "$root" in
+	"~") root=$HOME ;;
+	"~/"*) root=$HOME/${root#"~/"} ;;
+esac
 # Set last, so no line in app.env turns it off: the server stops when the app that started it goes away.
 export PORCHLIGHT_STOP_WITH_STDIN=1'
 

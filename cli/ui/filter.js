@@ -1,6 +1,7 @@
 // @ts-check
 // Shared by the page (to show findings) and the server (to export them), so
 // "export what the filters show" exports exactly what the page shows.
+import { findingKey } from "./tracking.js";
 
 /** @typedef {"critical" | "high" | "medium" | "low"} Severity */
 
@@ -10,6 +11,11 @@
  * @property {"all" | "secret" | "vulnerability" | "private-data"} kind
  * @property {string} query text to find in the repository name or any finding field
  * @property {string} [repo] only this repository, by name; empty or absent for all
+ * @property {boolean} [newOnly] only findings new since the last scan (B-Q1). Newness is Porchlight's own
+ *   comparison of two scans by `findingKey`, never the owner's status, so it hides nothing invariant 17 keeps
+ * @property {ReadonlySet<string>} [newKeys] the keys of the findings new since the last scan, filled in by
+ *   whoever holds the comparison (the store on the page, the history on the server). With `newOnly` and
+ *   no keys (a first scan, or one that could not be compared) nothing is new, so nothing matches
  */
 
 /** @type {Severity[]} */
@@ -23,6 +29,7 @@ export function noFilter() {
 /** @param {FindingFilter} filter */
 export function isFiltering(filter) {
 	return (
+		filter.newOnly === true ||
 		filter.query.trim() !== "" ||
 		filter.kind !== "all" ||
 		Boolean(filter.repo) ||
@@ -39,6 +46,7 @@ export function matchesFilter(finding, repoName, filter) {
 	if (!filter.severities.includes(/** @type {Severity} */ (finding.severity))) return false;
 	if (filter.kind !== "all" && finding.kind !== filter.kind) return false;
 	if (filter.repo && repoName !== filter.repo) return false;
+	if (filter.newOnly && !filter.newKeys?.has(findingKey(repoName, finding))) return false;
 	const query = filter.query.trim().toLowerCase();
 	if (query === "") return true;
 	return [repoName, finding.ruleId, finding.location, finding.detail, finding.title].some((text) => text.toLowerCase().includes(query));
@@ -59,6 +67,7 @@ export function describeFilter(filter) {
 	if (filter.kind === "vulnerability") parts.push("vulnerabilities only");
 	if (filter.kind === "private-data") parts.push("private data only");
 	if (filter.repo) parts.push(`in ${filter.repo}`);
+	if (filter.newOnly) parts.push("new since the last scan only");
 	if (filter.query.trim() !== "") parts.push(`matching "${filter.query.trim()}"`);
 	return parts.join("; ");
 }

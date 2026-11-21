@@ -1,10 +1,14 @@
-import { lstat, readdir, readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { constants } from "node:fs";
+import { access, lstat, readdir, readFile, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
 import { assistantConfig, isHosted } from "./assist/ollama.ts";
 import { tokenShapeProblem } from "./cloudflare/client.ts";
 import { tokenProblem } from "./github/github.ts";
 import { callMonitor, monitorConfig } from "./monitor/client.ts";
-import { ToolMissingError, type Runner } from "./repos/exec.ts";
+import { readSavedMonitor } from "./monitor/settings.ts";
+import { safePath, ToolMissingError, type Runner } from "./repos/exec.ts";
+import { STALE_AFTER_MS } from "./repos/temp.ts";
 
 // `porchlight doctor`: whether Porchlight has what it needs, and what to do about what it lacks.
 // It only reads: programs are asked their version, files are looked at, and (unless --offline) the
@@ -133,16 +137,19 @@ async function reportCheck(dir: string): Promise<Check> {
 	}
 }
 
-async function monitorCheck({ env, fetchFn }: DoctorOptions): Promise<Check> {
+async function monitorCheck({ env, fetchFn, dataDir }: DoctorOptions): Promise<Check> {
 	const name = "Monitor";
-	if (!env.PORCHLIGHT_MONITOR_URL && !env.PORCHLIGHT_ADMIN_TOKEN) {
-		return { name, status: "note", detail: "Not set here. The Domains page works once the monitor is connected under Settings → Monitor, or with PORCHLIGHT_MONITOR_URL and PORCHLIGHT_ADMIN_TOKEN." };
-	}
 	let config;
-	try {
-		config = monitorConfig(env);
-	} catch (err) {
-		return { name, status: "warning", detail: err instanceof Error ? err.message : String(err) };
+	if (!env.PORCHLIGHT_MONITOR_URL && !env.PORCHLIGHT_ADMIN_TOKEN) {
+		// The one saved under Settings → Monitor, as the page and the command line use it (J-Q2).
+		config = (await readSavedMonitor(join(dataDir, "monitor-settings.json")))?.config;
+		if (!config) return { name, status: "note", detail: "Not connected. The Domains page works once the monitor is connected under Settings → Monitor, or with PORCHLIGHT_MONITOR_URL and PORCHLIGHT_ADMIN_TOKEN." };
+	} else {
+		try {
+			config = monitorConfig(env);
+		} catch (err) {
+			return { name, status: "warning", detail: err instanceof Error ? err.message : String(err) };
+		}
 	}
 	if (!fetchFn) return { name, status: "ok", detail: `Set to ${config.url.host}. Not contacted.` };
 	try {
@@ -233,4 +240,166 @@ export function renderDoctor(checks: Check[]): string {
 				? `Porchlight works. ${warnings === 1 ? "1 thing is" : `${warnings} things are`} worth a look.`
 				: "Porchlight has what it needs.";
 	return `${lines.join("\n")}\n\n${summary}\n`;
+}
+
+// `porchlight doctor --self` (R6F-1): a read-only check of what Porchlight promises on this computer,
+// the parts that depend on the machine rather than the code. It reads modes and names, never a file's
+// contents beyond the names of the settings it holds, and prints no key.
+
+/** Folders whose own files Porchlight writes one by one, each 0600. */
+const OWN_FOLDERS = ["history", "investigations", "discussions", "host-checks", "cloudflare-audits"];
+/** Folders of others' files (git clones, databases): the folder's own mode keeps them private. */
+const SEALED_FOLDERS = ["github", "osv-db", "history-scans", "projects"];
+
+export async function runSelfCheck(options: DoctorOptions): Promise<Check[]> {
+	return [await modesCheck(options.dataDir), await listeningCheck(options), await keysCheck(options), await cloudflareWriteCheck(options.dataDir), ...(await scannerPaths(options)), await leftoversCheck(options.dataDir)];
+}
+
+async function modesCheck(dir: string): Promise<Check> {
+	const name = "File modes";
+	const top = await stat(dir).catch(() => null);
+	if (!top) return { name, status: "note", detail: `${dir} does not exist yet.` };
+	const loose: string[] = [];
+	const looseFolders: string[] = [];
+	if ((top.mode & 0o077) !== 0) looseFolders.push(dir);
+	const look = async (folder: string, files: boolean) => {
+		for (const entry of await readdir(folder, { withFileTypes: true }).catch(() => [])) {
+			const path = join(folder, entry.name);
+			const info = await lstat(path).catch(() => null);
+			if (!info || info.isSymbolicLink()) continue;
+			if (info.isDirectory()) {
+				if ((info.mode & 0o077) !== 0) looseFolders.push(path);
+				if (folder === dir && OWN_FOLDERS.includes(entry.name)) await look(path, true);
+			} else if (files && info.isFile() && (info.mode & 0o077) !== 0) loose.push(path);
+		}
+	};
+	await look(dir, true);
+	if (loose.length === 0 && looseFolders.length === 0) return { name, status: "ok", detail: `${dir} and every folder in it are 0700, and Porchlight's own files are 0600.` };
+	const listed = [...looseFolders, ...loose];
+	return {
+		name,
+		status: "warning",
+		detail: `${listed.length === 1 ? "1 entry" : `${listed.length} entries`} can be read by other users of this computer: ${listed.slice(0, 5).join(", ")}${listed.length > 5 ? ", …" : ""}. Reports name the files where secrets were found, and these folders hold keys.`,
+		fix: [looseFolders.length > 0 ? `chmod 700 ${looseFolders.slice(0, 5).map(quote).join(" ")}` : "", loose.length > 0 ? `chmod 600 ${loose.slice(0, 5).map(quote).join(" ")}` : ""].filter(Boolean).join("; "),
+	};
+}
+
+function quote(path: string): string {
+	return /^[\w./~-]+$/.test(path) ? path : `'${path.replace(/'/g, "'\\''")}'`;
+}
+
+async function listeningCheck({ run, env, dataDir }: DoctorOptions): Promise<Check> {
+	const name = "Listening";
+	const access = await readFile(join(dataDir, "access.json"), "utf8").then((text) => (JSON.parse(text) as { enabled?: unknown }).enabled === true, () => false);
+	const tailnet = access ? " Access from other devices is on, so a second listener answers on this computer's tailnet address." : "";
+	let output: string;
+	try {
+		output = (await run("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN"], { timeoutMs: 10_000 })).stdout;
+	} catch {
+		return { name, status: "note", detail: `Could not check which addresses Porchlight listens on (lsof did not run).${tailnet}` };
+	}
+	const lines = output.split("\n").filter((line) => /^node\b/i.test(line) && /:47(4[7-9]|5\d)\b/.test(line));
+	const addresses = [...new Set(lines.map((line) => line.trim().split(/\s+/).at(-2) ?? "").filter(Boolean))];
+	if (addresses.length === 0) return { name, status: "ok", detail: `No Porchlight page is listening now.${tailnet}` };
+	const open = addresses.filter((address) => /^(\*|0\.0\.0\.0|\[::\]):/.test(address));
+	if (open.length > 0 && !env.PORCHLIGHT_UI_KEY) return { name, status: "warning", detail: `Listening on every address: ${open.join(", ")}.${tailnet}`, fix: "Start the page on 127.0.0.1 (the default), or use Settings → Access from other devices" };
+	return { name, status: "ok", detail: `Listening on ${addresses.join(", ")}.${tailnet}` };
+}
+
+/** Names of the settings in app.env that hold a token or key, never their values. */
+async function appEnvKeys(dataDir: string): Promise<string[]> {
+	const text = await readFile(join(dataDir, "app.env"), "utf8").catch(() => "");
+	return text
+		.split("\n")
+		.map((line) => /^\s*(?:export\s+)?(PORCHLIGHT_[A-Z_]*(?:TOKEN|KEY))\s*=\s*\S/.exec(line)?.[1])
+		.filter((key): key is string => Boolean(key));
+}
+
+async function keysCheck({ env, dataDir }: DoctorOptions): Promise<Check> {
+	const name = "Saved keys";
+	const where: string[] = [];
+	let unused: string[] = [];
+	const model = await readFile(join(dataDir, "model-settings.json"), "utf8").then((text) => JSON.parse(text) as { choice?: unknown; keys?: Record<string, unknown> }, () => null);
+	if (model?.keys) {
+		const providers = Object.keys(model.keys).filter((key) => key !== "servers");
+		const servers = Object.keys((model.keys.servers as Record<string, unknown> | undefined) ?? {});
+		if (providers.length > 0) where.push(`model keys for ${providers.join(", ")} (model-settings.json)`);
+		if (servers.length > 0) where.push(`${servers.length === 1 ? "a key" : `${servers.length} keys`} for your own model servers (model-settings.json)`);
+		unused = providers.filter((provider) => provider !== model.choice);
+	}
+	for (const [file, what] of [
+		["monitor-settings.json", "the monitor's admin token"],
+		["cloudflare-settings.json", "a Cloudflare token"],
+		["access.json", "the access key for other devices"],
+		["investigate-domains.json", "ownership tokens for investigated domains"],
+	] as const) {
+		if (await stat(join(dataDir, file)).then(() => true, () => false)) where.push(`${what} (${file})`);
+	}
+	const fromAppEnv = await appEnvKeys(dataDir);
+	if (fromAppEnv.length > 0) where.push(`${fromAppEnv.join(", ")} (app.env)`);
+	const fromEnv = Object.keys(env).filter((key) => /^PORCHLIGHT_[A-Z_]*(TOKEN|KEY)$/.test(key) && env[key]?.trim());
+	if (fromEnv.length > 0) where.push(`${fromEnv.join(", ")} (this shell's environment)`);
+	if (where.length === 0) return { name, status: "ok", detail: "No key or token is saved." };
+	const detail = `Saved in ${dataDir}: ${where.join("; ")}.`;
+	if (unused.length > 0) return { name, status: "warning", detail: `${detail} Keys for ${unused.join(", ")} are kept although another model is chosen.`, fix: "Remove a key you no longer use under Settings → Model, and revoke it with its provider" };
+	return { name, status: "ok", detail };
+}
+
+async function cloudflareWriteCheck(dataDir: string): Promise<Check> {
+	const name = "Cloudflare token";
+	if (!(await stat(join(dataDir, "cloudflare-settings.json")).then(() => true, () => false))) return { name, status: "note", detail: "None saved." };
+	const changes = await readFile(join(dataDir, "cloudflare-changes.json"), "utf8").then((text) => JSON.parse(text) as { ok?: unknown }[], () => []);
+	const made = Array.isArray(changes) ? changes.filter((change) => change?.ok === true).length : 0;
+	if (made > 0) return { name, status: "note", detail: `The saved token has made ${made === 1 ? "1 change" : `${made} changes`}, so it can write. An audit needs read permissions only.`, fix: "Once your changes are made, replace it under Settings → Cloudflare with a token that only reads" };
+	return { name, status: "ok", detail: "A token is saved and has made no change. Settings → Cloudflare names the permissions it holds." };
+}
+
+/** Which gitleaks and osv-scanner run: the first in PATH's absolute folders, as Porchlight finds them. */
+async function scannerPaths({ run, env }: DoctorOptions): Promise<Check[]> {
+	const folders = safePath(env.PATH).split(delimiter).filter(Boolean);
+	const checks: Check[] = [];
+	for (const [program, args] of [
+		["gitleaks", ["version"]],
+		["osv-scanner", ["--version"]],
+	] as const) {
+		let found: string | null = null;
+		for (const folder of folders) {
+			const path = join(folder, program);
+			if (await access(path, constants.X_OK).then(() => true, () => false)) {
+				found = path;
+				break;
+			}
+		}
+		if (!found) {
+			checks.push({ name: program, status: "warning", detail: "Not found in PATH.", fix: `brew install ${program}` });
+			continue;
+		}
+		const version = await run(found, [...args], { timeoutMs: 10_000 })
+			.then(({ stdout, stderr }) => `${stdout}\n${stderr}`.match(/\d+\.\d+(?:\.\d+)?/)?.[0] ?? null)
+			.catch(() => null);
+		checks.push({ name: program, status: version ? "ok" : "warning", detail: version ? `${found}, version ${version}.` : `${found} did not say its version.` });
+	}
+	return checks;
+}
+
+async function leftoversCheck(dataDir: string): Promise<Check> {
+	const name = "Leftovers";
+	const tmpFiles: string[] = [];
+	for (const folder of [dataDir, ...OWN_FOLDERS.map((sub) => join(dataDir, sub))]) {
+		for (const entry of await readdir(folder).catch(() => [] as string[])) if (/\.tmp$/.test(entry)) tmpFiles.push(join(folder, entry));
+	}
+	const now = Date.now();
+	const stale: string[] = [];
+	for (const entry of await readdir(tmpdir()).catch(() => [] as string[])) {
+		if (!/^porchlight-[a-z]+-[A-Za-z0-9]{6}$/.test(entry)) continue;
+		const info = await stat(join(tmpdir(), entry)).catch(() => null);
+		if (info && now - info.mtimeMs > STALE_AFTER_MS) stale.push(join(tmpdir(), entry));
+	}
+	if (tmpFiles.length === 0 && stale.length === 0) return { name, status: "ok", detail: "No temporary files or folders were left behind." };
+	return {
+		name,
+		status: "warning",
+		detail: `${tmpFiles.length > 0 ? `${tmpFiles.length === 1 ? "1 temporary file" : `${tmpFiles.length} temporary files`} in ${dataDir}` : ""}${tmpFiles.length > 0 && stale.length > 0 ? " and " : ""}${stale.length > 0 ? `${stale.length === 1 ? "1 temporary folder" : `${stale.length} temporary folders`} older than six hours in ${tmpdir()}` : ""}, left by a crash. They may hold copies of repositories' files.`,
+		fix: stale.length > 0 ? "The next porchlight ui or repos scan removes the folders; remove the files with rm" : `rm ${tmpFiles.slice(0, 5).map(quote).join(" ")}`,
+	};
 }

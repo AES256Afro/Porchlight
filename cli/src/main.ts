@@ -8,6 +8,12 @@ import { describeDomain, describeHistory } from "./monitor/describe.ts";
 import { notifySetting } from "./notify/format.ts";
 import { exitCode, parseScanReport, renderMarkdown, renderSummary } from "./repos/report.ts";
 import { History } from "./repos/history.ts";
+import { renderSarif } from "./repos/sarif.ts";
+import { baselineGaps, baselineSummary, beyondBaseline } from "./repos/baseline.ts";
+import { hookCommand } from "./repos/hook.ts";
+import { domainsHosts } from "./monitor/hosts.ts";
+import { statusCommand } from "./status.ts";
+import { scheduleCommand } from "./schedule.ts";
 import { buildSbom } from "./repos/sbom.ts";
 import { scanRepos, type RepoDone } from "./repos/scan.ts";
 import { SEVERITIES, type ScanChoices, type Severity } from "./repos/types.ts";
@@ -21,7 +27,7 @@ import { renderHostText } from "./host/render.ts";
 import { run, type Runner } from "./repos/exec.ts";
 import { sweepStaleTemp } from "./repos/temp.ts";
 import { adoptOldSettings, dataFolder } from "./legacy.ts";
-import { renderDoctor, runDoctor, type DoctorOptions } from "./doctor.ts";
+import { renderDoctor, runDoctor, runSelfCheck, type DoctorOptions } from "./doctor.ts";
 import { asksForHelp, helpFor, usage } from "./help.ts";
 import { startUiServer } from "./ui/server.ts";
 import { auditCloudflare } from "./cloudflare/audit.ts";
@@ -30,6 +36,8 @@ import { renderCloudflareText } from "./cloudflare/export.ts";
 import { readSavedToken } from "./cloudflare/store.ts";
 import { readDomains, writePrivate } from "./investigate/ownership.ts";
 import { forTerminal, jsonText } from "./roadmap/escape.ts";
+import { changeLine, findingsCommand, forget, reposHistory, scanAgain } from "./daily.ts";
+import { monitorForCli, readSavedMonitor } from "./monitor/settings.ts";
 
 /** Returns the process exit code: 0 ok, 1 error or incomplete scan under --fail-on, 2 findings at or above --fail-on. */
 /**
@@ -69,7 +77,17 @@ export async function main(argv: string[]): Promise<number> {
 		if (group === "repos" && command === "scan") return await reposScan(rest);
 		if (group === "repos" && command === "export") return await reposExport(rest);
 		if (group === "repos" && command === "sbom") return await reposSbom(rest);
+		if (group === "repos" && command === "history") return await reposHistory(rest, await dataFolder(homedir()), { say, warn });
+		if (group === "findings") return await findingsCommand(command, rest, join(await dataFolder(homedir()), "repo-scan.json"), { say, warn });
+		if (group === "forget") return await forget(argv.slice(1), { dataDir: join(homedir(), ".porchlight") }, { say, warn });
 		if (group === "domains" && command === "export") return await domainsExport(rest);
+		if (group === "domains" && command === "hosts") {
+			const config = await monitorForCli(process.env, await dataFolder(homedir()));
+			return await domainsHosts(rest, (path) => callMonitor(config, "GET", path), print);
+		}
+		if (group === "hook") return await hookCommand(command, { print, warn }, { run });
+		if (group === "status") return await statusCommand(argv.slice(1), print, { dataDir: join(homedir(), ".porchlight") });
+		if (group === "schedule") return scheduleCommand(command, rest, { print, warn }, { dataDir: join(homedir(), ".porchlight") });
 		if (group === "domains" && command) return await domains(command, rest);
 		if (group === "host" && command === "check") return await hostCheck(rest);
 		if (group === "cloudflare" && command === "audit") return await cloudflareAudit(rest);
@@ -98,8 +116,8 @@ async function installedVersion(): Promise<string> {
  * Checks that Porchlight has what it needs. `deps` lets tests pass a scripted runner and network.
  */
 export async function doctor(args: string[], deps: Partial<DoctorOptions> & { write?: (text: string) => void } = {}): Promise<number> {
-	const { values } = parseArgs({ args, options: { json: { type: "boolean", default: false }, offline: { type: "boolean", default: false } } });
-	const checks = await runDoctor({
+	const { values } = parseArgs({ args, options: { json: { type: "boolean", default: false }, offline: { type: "boolean", default: false }, self: { type: "boolean", default: false } } });
+	const checks = await (values.self ? runSelfCheck : runDoctor)({
 		run: deps.run ?? run,
 		env: deps.env ?? process.env,
 		// Looked at where it is: doctor moves and makes nothing.
@@ -195,8 +213,17 @@ export async function reposScan(args: string[], deps: { run?: Runner; dataDir?: 
 			history: { type: "string" },
 			"local-files": { type: "boolean", default: false },
 			skip: { type: "string", multiple: true },
+			again: { type: "string" },
+			format: { type: "string" },
+			baseline: { type: "string" },
 		},
 	});
+	// One repository of the saved scan, scanned again in place (R6Q-6).
+	if (values.again !== undefined) {
+		if (!values.save || positionals.length > 0) throw new Error("Use --again <name> with --save and no folder: it scans one repository of the saved scan again");
+		const dir = deps.dataDir ?? (await dataFolder(homedir()));
+		return scanAgain(values.again, join(dir, "repo-scan.json"), { say, warn }, { ...(deps.run ? { run: deps.run } : {}), ...(values["osv-db"] ? { osvDatabase: resolve(values["osv-db"]) } : {}) });
+	}
 	const depth = Number.parseInt(values.depth, 10);
 	if (!Number.isInteger(depth) || depth < 0) throw new Error("--depth must be a whole number");
 	const failOn = values["fail-on"];
@@ -205,6 +232,10 @@ export async function reposScan(args: string[], deps: { run?: Runner; dataDir?: 
 	}
 	if (positionals.length > 1) throw new Error("Give at most one path");
 	const choices = choicesFromFlags(values);
+	// The report's form (FT-9): --json stays as it was, the same as --format json.
+	const format = values.format ?? (values.json ? "json" : "md");
+	if (format !== "md" && format !== "json" && format !== "sarif") throw new Error("--format must be one of: md, json, sarif");
+	const baseline = values.baseline === undefined ? undefined : await readBaseline(values.baseline);
 
 	const scanRoot = resolve(positionals[0] ?? ".");
 	const report = await scanRepos({
@@ -221,7 +252,7 @@ export async function reposScan(args: string[], deps: { run?: Runner; dataDir?: 
 		throw new Error(`No scanner is installed. Install one: ${report.tools.map((tool) => tool.installHint).join("; ")}`);
 	}
 
-	const rendered = values.json ? jsonText(report) : renderMarkdown(report);
+	const rendered = format === "sarif" ? renderSarif(report, await installedVersion()) : format === "json" ? jsonText(report) : renderMarkdown(report);
 	if (values.out) {
 		await writePrivate(values.out, rendered);
 		say(renderSummary(report));
@@ -233,16 +264,38 @@ export async function reposScan(args: string[], deps: { run?: Runner; dataDir?: 
 		// Where the interface reads it, and in its history, so `porchlight ui` shows this scan.
 		const dir = deps.dataDir ?? (await dataFolder(homedir()));
 		await writePrivate(join(dir, "repo-scan.json"), jsonText(report));
-		await new History(dir).add(report);
+		const kept = new History(dir);
+		await kept.add(report);
 		warn(`Saved for the interface: ${join(dir, "repo-scan.json")}`);
+		// What changed since the scan of the same folders before it (R6Q-5).
+		warn(changeLine(await kept.compare(report)));
 	}
-	const code = exitCode(report, failOn as Severity | undefined);
+	// With a baseline, --fail-on judges only the findings it does not hold (FT-9).
+	if (baseline) {
+		const summary = baselineSummary(baseline, report, failOn as Severity | undefined);
+		warn(`Against the baseline: ${summary.newCount} of ${summary.total} findings are not in it${failOn ? `, ${summary.atOrAbove} at ${failOn} or above` : ""}.`);
+		const gaps = baselineGaps(baseline).length;
+		if (gaps > 0) warn(`The baseline did not cover everything (${gaps === 1 ? "1 line" : `${gaps} lines`} under its "Not covered"), so findings it did not look for count as not in it.`);
+	}
+	const code = exitCode(baseline ? beyondBaseline(baseline, report) : report, failOn as Severity | undefined);
 	if (code === 1) warn("porchlight: the scan was incomplete (see \"Not covered\"), so --fail-on cannot pass");
 	return code;
 }
 
+/** A report given to --baseline, read as `repos export` reads one. */
+async function readBaseline(path: string) {
+	let text: string;
+	try {
+		text = await readFile(path, "utf8");
+	} catch {
+		throw new Error(`Cannot read the baseline ${path}. Make one with: porchlight repos scan <folder> --format json --out ${path}`);
+	}
+	return parseScanReport(text, path);
+}
+
 async function hostCheck(args: string[]): Promise<number> {
-	const { values } = parseArgs({ args, options: { json: { type: "boolean", default: false }, offline: { type: "boolean", default: false } } });
+	const { values } = parseArgs({ args, options: { json: { type: "boolean", default: false }, offline: { type: "boolean", default: false }, "fail-on": { type: "string" } } });
+	const failOn = severityFlag(values["fail-on"]);
 	const report = await checkHost({
 		run,
 		askApple: !values.offline,
@@ -252,7 +305,24 @@ async function hostCheck(args: string[]): Promise<number> {
 		},
 	});
 	print(values.json ? jsonText(report) : renderHostText(report));
-	return 0;
+	return failCode(report.checks, failOn);
+}
+
+/** --fail-on for `host check` and `cloudflare audit` (J-Q3): the severity, checked. */
+function severityFlag(value: string | undefined): Severity | undefined {
+	if (value !== undefined && !SEVERITIES.includes(value as Severity)) throw new Error(`--fail-on must be one of: ${SEVERITIES.join(", ")}`);
+	return value as Severity | undefined;
+}
+
+/**
+ * The exit code for a check or an audit under --fail-on, as for a scan: 2 when a failed check is at or
+ * above it, else 1 when a check could not be made (not checked is not passed), else 0.
+ */
+export function failCode(checks: { status: string; severity?: string }[], failOn: Severity | undefined): number {
+	if (failOn === undefined) return 0;
+	const bar = SEVERITIES.indexOf(failOn);
+	if (checks.some((check) => check.status === "failed" && SEVERITIES.indexOf(check.severity as Severity) !== -1 && SEVERITIES.indexOf(check.severity as Severity) <= bar)) return 2;
+	return checks.some((check) => check.status === "unknown") ? 1 : 0;
 }
 
 /**
@@ -261,7 +331,8 @@ async function hostCheck(args: string[]): Promise<number> {
  * `deps` lets tests pass a fake network and their own folder.
  */
 export async function cloudflareAudit(args: string[], deps: { fetchFn?: typeof fetch; env?: NodeJS.ProcessEnv; dataDir?: string; write?: (text: string) => void } = {}): Promise<number> {
-	const { values } = parseArgs({ args, options: { json: { type: "boolean", default: false }, "no-lookups": { type: "boolean", default: false } } });
+	const { values } = parseArgs({ args, options: { json: { type: "boolean", default: false }, "no-lookups": { type: "boolean", default: false }, "fail-on": { type: "string" } } });
+	const failOn = severityFlag(values["fail-on"]);
 	const env = deps.env ?? process.env;
 	const dir = deps.dataDir ?? (await dataFolder(homedir()));
 	// BoxPilot passes an optional setting left empty as an empty variable, so empty counts as not given.
@@ -280,7 +351,7 @@ export async function cloudflareAudit(args: string[], deps: { fetchFn?: typeof f
 		},
 	});
 	(deps.write ?? print)(values.json ? jsonText(report) : renderCloudflareText(report));
-	return 0;
+	return failCode(report.zones.flatMap((zone) => zone.checks), failOn);
 }
 
 const EXPORT_OPTIONS = {
@@ -295,13 +366,15 @@ async function reposExport(args: string[]): Promise<number> {
 		allowPositionals: true,
 		options: { ...EXPORT_OPTIONS, severity: { type: "string" }, kind: { type: "string" }, match: { type: "string" }, repo: { type: "string" } },
 	});
-	const [path, ...extra] = positionals;
-	if (!path || extra.length > 0) throw new Error("Usage: porchlight repos export <report.json> [--content roadmap|findings] [--format md|html|csv|json]");
+	const [given, ...extra] = positionals;
+	if (extra.length > 0) throw new Error("Usage: porchlight repos export [report.json] [--content roadmap|findings] [--format md|html|csv|json]");
+	// Without a path, the scan the interface shows and `repos scan --save` keeps (C-Q4).
+	const path = given ?? join(await dataFolder(homedir()), "repo-scan.json");
 	let text: string;
 	try {
 		text = await readFile(path, "utf8");
 	} catch {
-		throw new Error(`Cannot read ${path}. Make a report with: porchlight repos scan <folder> --json --out ${path}`);
+		throw new Error(given ? `Cannot read ${path}. Make a report with: porchlight repos scan <folder> --json --out ${path}` : `No saved scan at ${path}. Make one with: porchlight repos scan <folder> --save`);
 	}
 	const filter = parseFilter({ severity: values.severity, kind: values.kind, match: values.match, repo: values.repo });
 	return deliver(exportRepos(parseScanReport(text, path), values, filter), values.out);
@@ -311,7 +384,7 @@ async function domainsExport(args: string[]): Promise<number> {
 	const { values, positionals } = parseArgs({ args, allowPositionals: true, options: EXPORT_OPTIONS });
 	const [domain, ...extra] = positionals;
 	if (!domain || extra.length > 0) throw new Error(`Usage: porchlight domains export <domain> [--content ${CONTENTS.join("|")}] [--format ${FORMATS.join("|")}]`);
-	const { status, body } = await callMonitor(monitorConfig(process.env), "GET", `/domains/${encodeURIComponent(domain)}`);
+	const { status, body } = await callMonitor(await monitorForCli(process.env, await dataFolder(homedir())), "GET", `/domains/${encodeURIComponent(domain)}`);
 	if (status >= 400) throw new Error(body.error ?? `HTTP ${status}`);
 	if (!body.report) throw new Error(`${domain} has not been scanned yet, so there is nothing to export`);
 	return deliver(exportDomain(body.report as MonitorReport, values), values.out);
@@ -432,7 +505,9 @@ async function ui(args: string[]): Promise<number> {
 	} else {
 		say(`Porchlight is running. Open this link (it carries this session's key):\n\n  ${server.url}\n`);
 	}
-	say(monitor ? `Monitor: ${monitor.url.host}` : `Monitor: not connected (${monitorError})`);
+	// The page's own state: a monitor saved under Settings → Monitor is used when none is given here (J-Q2).
+	const savedMonitor = monitor ? null : await readSavedMonitor(join(dataDir, "monitor-settings.json"));
+	say(monitor ? `Monitor: ${monitor.url.host}` : savedMonitor ? `Monitor: ${savedMonitor.config.url.host}, saved in Settings → Monitor` : "Monitor: not connected (connect it under Settings → Monitor)");
 	// A model chosen in Settings → Model replaces the one given here.
 	const inUse = server.model();
 	const from = inUse.source === "settings" ? ", chosen in Settings" : "";
@@ -476,8 +551,10 @@ export async function listenOnFirstFree<T>(ports: number[], start: (port: number
 	throw new Error(`${range} in use. Choose another with --port`);
 }
 
-async function domains(command: string, args: string[]): Promise<number> {
-	const config = monitorConfig(process.env);
+async function domains(command: string, rawArgs: string[]): Promise<number> {
+	// The monitor given in the environment, else the one saved under Settings → Monitor (J-Q2).
+	const config = await monitorForCli(process.env, await dataFolder(homedir()));
+	const { values: flags, positionals: args } = parseArgs({ args: rawArgs, allowPositionals: true, options: { json: { type: "boolean", default: false }, yes: { type: "boolean", default: false } } });
 	const domain = args[0];
 	const needsDomain = command !== "list";
 	if (needsDomain && !domain) throw new Error(`Usage: porchlight domains ${command} <domain>`);
@@ -495,11 +572,18 @@ async function domains(command: string, args: string[]): Promise<number> {
 	const request = requests[command];
 	if (!request) throw new Error(`Unknown domains command: ${command}`);
 
+	// Removing deletes the domain's history at the monitor, so it is asked for by name (D-Q4).
+	if (command === "remove" && !flags.yes) throw new Error(`This deletes ${domain} and its scan history at the monitor. Run again with --yes to do it.`);
 	const { status, body } = await request();
 	if (status >= 400) {
 		warn(`porchlight: ${body.error ?? `HTTP ${status}`}`);
 		if (body.challenge) warn(describeChallenge(body.challenge));
 		return 1;
+	}
+	// The monitor's own answer, for a script (J-Q3).
+	if (flags.json) {
+		print(jsonText(body));
+		return 0;
 	}
 
 	switch (command) {

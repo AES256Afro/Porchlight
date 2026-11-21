@@ -5,7 +5,8 @@ import { askCard, localModelCard } from "./assist.js";
 import { banner, formatNumber, formatWhen, h, icon, isOff, PHASE_TITLES, plural, replace, setOff, severityBadge, statTile, stepNodes, tileRow, toast } from "./dom.js";
 import { coverageBanner } from "./finding-parts.js";
 import { githubPanel } from "./github.js";
-import { emptyScanHints, overviewRedraws, previewAdvice, scheduleWords } from "./hints.js";
+import { emptyScanHints, overviewRedraws, previewAdvice, scheduleWords, toolAdvice } from "./hints.js";
+import { connectionsCheck, glanceCard, reviewCard } from "./glance.js";
 import { buildHash } from "./list.js";
 import { choicesToParams, depthOf, describeChoices, PRESETS, startingChoices } from "./scan-choices.js";
 import { scanOptions, sendsToHosted } from "./scan-options.js";
@@ -57,6 +58,10 @@ export async function renderOverview(view, context) {
 	const cloudflareSlot = h("div");
 	const monitorSlot = h("div");
 	const assistantSlot = h("div");
+	const glance = glanceCard(() => left);
+	const reviewSlot = h("div");
+	/** Look through the home folder itself: only when the owner asks (US-2). */
+	let wholeHome = false;
 	/** Credentials that look live, at the top of the page: until they are rotated they can be used. */
 	const urgent = h("div");
 	const intro = h("p", { class: "sub" });
@@ -68,13 +73,14 @@ export async function renderOverview(view, context) {
 	const depthInput = /** @type {HTMLInputElement} */ (
 		h("input", { type: "number", name: "depth", value: String(depthOf(context.params.get("depth"), defaultDepth)), min: "0", max: "6", class: "narrow" })
 	);
-	const scanButton = /** @type {HTMLButtonElement} */ (h("button", { type: "submit", class: "button primary" }, "Check"));
+	const scanButton = /** @type {HTMLButtonElement} */ (h("button", { type: "submit", class: "button primary" }, "Scan"));
 	// Fetching or removing a repository changes what a scan would cover.
 	const github = githubPanel(() => void look());
 	// A half-typed path is not looked into: that would walk folders nobody asked about. What was
 	// shown no longer describes the box, so it is taken away until the folder is settled.
 	rootInput.addEventListener("input", () => {
 		typed = true;
+		wholeHome = false;
 		forget();
 	});
 	rootInput.addEventListener("change", () => void look());
@@ -136,6 +142,7 @@ export async function renderOverview(view, context) {
 	drawScan();
 	drawSummary();
 	drawAnalysis();
+	replace(reviewSlot, reviewCard());
 	drawCards(["cloudflare", "monitor", "assistant"]);
 	void look();
 	const unsubscribe = subscribe((change) => {
@@ -145,6 +152,8 @@ export async function renderOverview(view, context) {
 		if (redraw.includes("scan")) drawScan();
 		if (redraw.includes("summary")) drawSummary();
 		if (redraw.includes("analysis")) drawAnalysis();
+		if (redraw.includes("glance")) glance.refresh();
+		if (redraw.includes("review") || redraw.includes("summary")) replace(reviewSlot, reviewCard());
 		drawCards(redraw);
 	});
 	return () => {
@@ -163,17 +172,17 @@ export async function renderOverview(view, context) {
 		if (hasReport === laidOutForReport) return;
 		laidOutForReport = hasReport;
 		scanCard.classList.toggle("compact", hasReport);
-		scanHeading.textContent = hasReport ? "Check again" : "Check your code";
+		scanHeading.textContent = hasReport ? "Scan again" : "Scan your code";
 		scanIntro.textContent = hasReport
 			? "Scan the folder again, with the same options as last time unless you change them."
 			: "Finds passwords and keys saved in your git repositories, old commits included, and packages with known security holes. Deep also looks for personal data.";
 		// Before the first scan GitHub may be where the repositories come from, so it is open.
 		githubBox.open = !hasReport;
 		intro.textContent = hasReport
-			? "Where your code and your websites stand, and what to do first."
-			: "Porchlight checks two things you own: your code and your websites. Start with either one below.";
+			? "Where your code and your domains stand, and what to do first."
+			: "Porchlight checks two things you own: your code and your domains. Start with either one below.";
 		// With a scan, its results lead and the scan card follows them; before one, the scan card is the start.
-		replace(parts, ...(hasReport ? [summary, analysisSlot, scanCard] : [scanCard, summary, analysisSlot]), cloudflareSlot, monitorSlot, assistantSlot);
+		replace(parts, ...(hasReport ? [glance.node, summary, reviewSlot, analysisSlot, scanCard] : [scanCard, glance.node, summary, analysisSlot]), cloudflareSlot, monitorSlot, assistantSlot);
 	}
 
 	/** "Options: Quick", so the preset is in sight with the panel closed. */
@@ -209,7 +218,7 @@ export async function renderOverview(view, context) {
 		if (root === "") return;
 		replace(previewSlot, h("p", { class: "hint" }, "Looking for repositories…"));
 		try {
-			const answer = await api("GET", `/repos/preview?root=${encodeURIComponent(root)}&depth=${depthOf(depthInput.value, defaultDepth)}`);
+			const answer = await api("GET", `/repos/preview?root=${encodeURIComponent(root)}&depth=${depthOf(depthInput.value, defaultDepth)}${wholeHome ? "&home=1" : ""}`);
 			if (left || current !== asked) return;
 			preview = /** @type {import("./hints.js").ScanPreview} */ (answer.preview);
 			drawPreview();
@@ -227,6 +236,36 @@ export async function renderOverview(view, context) {
 		const advice = previewAdvice(preview, store.settings);
 		const shown = preview.repos.slice(0, CHIPS);
 		const skip = options.choices().skip;
+		// What the scan would lack, and the notes another folder would leave behind (US-2, US-10).
+		const lacking = toolAdvice(preview);
+		const notes = Object.keys(store.findingNotes).length;
+		const elsewhere = store.report && notes > 0 && preview.exists && preview.root !== store.report.root;
+		const extra = h(
+			"div",
+			null,
+			...lacking.map((line) => h("p", { class: "form-error", role: "note" }, ...stepNodes(line, { copy: true }))),
+			elsewhere
+				? h(
+						"p",
+						{ class: "hint", role: "note" },
+						`Your ${plural(notes, "status and note are", "statuses and notes are")} kept by each repository's name under ${store.report?.root}. A scan of ${preview.root} names repositories from there, so ${notes === 1 ? "it" : "they"} may no longer match. Scan the same folder to keep them.`,
+					)
+				: null,
+			preview.isHome
+				? h(
+						"button",
+						{
+							type: "button",
+							class: "button quiet",
+							onclick: () => {
+								wholeHome = true;
+								void look();
+							},
+						},
+						"Look through the home folder anyway",
+					)
+				: null,
+		);
 		replace(
 			previewSlot,
 			advice.found
@@ -248,6 +287,7 @@ export async function renderOverview(view, context) {
 						...advice.lines.map((line) => h("p", null, ...stepNodes(line))),
 						advice.steps.length > 0 ? h("ol", { class: "steps" }, ...advice.steps.map((step) => h("li", null, ...stepNodes(step)))) : null,
 					),
+			extra,
 		);
 	}
 
@@ -258,7 +298,7 @@ export async function renderOverview(view, context) {
 		// Nothing to check is said above the button; pressing it would only say so again.
 		setOff(scanButton, running || (preview !== null && total <= 0));
 		const count = preview && total > 0 ? ` ${plural(total, "repository", "repositories")}` : "";
-		scanButton.textContent = running ? "Checking…" : store.report ? `Check${count} again` : `Check${count}`;
+		scanButton.textContent = running ? "Scanning…" : store.report ? `Scan${count} again` : `Scan${count}`;
 		if (running) {
 			const known = scan.total > 0;
 			replace(
@@ -269,7 +309,7 @@ export async function renderOverview(view, context) {
 					h(
 						"div",
 						{ class: "progress-text" },
-						h("strong", null, known ? `Checking ${Math.min(scan.done + 1, scan.total)} of ${scan.total}` : "Finding repositories"),
+						h("strong", null, known ? `Scanning ${Math.min(scan.done + 1, scan.total)} of ${scan.total}` : "Finding repositories"),
 						known && scan.current ? h("span", { class: "path" }, scan.current) : null,
 					),
 					h("progress", { max: known ? scan.total : null, value: known ? scan.done : null, "aria-label": "Scan progress" }),
@@ -401,7 +441,7 @@ export async function renderOverview(view, context) {
 				phases,
 				h("h2", null, "What to repair first"),
 				roadmap.totals.actions === 0
-					? h("p", { class: "sub" }, "Nothing to repair: the scan found no problems in what it covered.")
+					? h("p", { class: "sub" }, "Nothing to repair: the scan found nothing in what it covered.")
 					: h(
 							"ol",
 							{ class: "link-list phase-list" },
@@ -485,7 +525,7 @@ function historyCard() {
 				)
 			: null,
 		change && change.fixedCount > fixedShown.length ? h("p", { class: "hint" }, `And ${(change.fixedCount - fixedShown.length).toLocaleString("en-GB")} more fixed.`) : null,
-		change && change.newCount > 0 ? h("p", { class: "hint" }, "New findings are marked New on the Findings page.") : null,
+		change && change.newCount > 0 ? h("p", { class: "hint" }, h("a", { href: buildHash(["findings"], { new: "1" }) }, `Show the ${plural(change.newCount, "new finding", "new findings")}`), ". Each is marked New on the Findings page.") : null,
 		scans.length > 1
 			? h(
 					"table",
@@ -539,7 +579,7 @@ function cloudflareCard() {
 			h(
 				"p",
 				null,
-				h("span", { class: `severity ${failed.length === 0 ? "status-good" : "status-warning"}` }, icon(failed.length === 0 ? "good" : "warning"), `${plural(failed.length, "problem", "problems")} across ${plural(report.zones.length, "domain", "domains")}`),
+				h("span", { class: `severity ${failed.length === 0 ? "status-good" : "status-warning"}` }, icon(failed.length === 0 ? "good" : "warning"), `${plural(failed.length, "finding", "findings")} across ${plural(report.zones.length, "domain", "domains")}`),
 				h("span", { class: "hint block" }, `Audited ${formatWhen(report.checkedAt)}.${unknown > 0 ? ` ${plural(unknown, "check", "checks")} could not be made: the Cloudflare page says which permission to add.` : ""}${fixable > 0 ? ` Porchlight can fix ${fixable} of them for you, once you approve the requests.` : ""}`),
 			),
 		);
@@ -548,7 +588,7 @@ function cloudflareCard() {
 	return h(
 		"div",
 		{ class: "card full" },
-		h("h2", null, "Check your Cloudflare account"),
+		h("h2", null, "Audit your Cloudflare account"),
 		h("p", { class: "sub" }, "Checks each domain's settings in your Cloudflare account: HTTPS, certificates, DNS and email records, the firewall, and who can change the account."),
 		...body,
 		h("p", { class: "card-foot" }, next),
@@ -562,16 +602,16 @@ function monitorCard() {
 	return h(
 		"div",
 		{ class: "card full" },
-		h("h2", null, "Check your websites"),
+		h("h2", null, "Scan your domains"),
 		h("p", { class: "sub" }, "Watches the domains you own for new subdomains, DNS changes, expiring certificates and missing security headers. It only looks at what is public."),
 		monitor?.configured
-			? h("p", null, h("span", { class: "severity status-good" }, icon("good"), `Connected to your monitor at ${monitor.host}`))
+			? h("div", null, h("p", null, h("span", { class: "severity status-good" }, icon("good"), `Set up with your monitor at ${monitor.host}`)), connectionsCheck())
 			: h(
 					"p",
 					null,
 					h("span", { class: "severity status-pending" }, icon("pending"), "Not set up yet"),
 					h("span", { class: "hint block" }, why || "It needs the Porchlight monitor, a small service that runs on your Cloudflare account. The Domains page gives each step, with the commands to copy."),
 				),
-		h("p", { class: "card-foot" }, h("a", { class: "button", href: "#/domains" }, monitor?.configured ? "Open your websites" : "Set it up")),
+		h("p", { class: "card-foot" }, h("a", { class: "button", href: "#/domains" }, monitor?.configured ? "Open your domains" : "Set it up")),
 	);
 }

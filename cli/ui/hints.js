@@ -30,6 +30,12 @@ export function emptyScanHints(scan, settings) {
 }
 
 /** @typedef {import("../src/ui/server.ts").ScanPreview} ScanPreview */
+
+/**
+ * The words that say data leaves the owner's machines (RD-11), the same wherever invariants 13 and 20
+ * need them said. A test fails on any other wording of it.
+ */
+export const OUTSIDE = "outside your machines";
 /** @typedef {{ found: boolean, title: string, lines: string[], steps: string[] }} PreviewAdvice */
 
 /**
@@ -42,6 +48,14 @@ export function emptyScanHints(scan, settings) {
  * @returns {PreviewAdvice}
  */
 export function previewAdvice(preview, settings) {
+	if (preview.isHome) {
+		return {
+			found: false,
+			title: `${preview.root} is your whole home folder`,
+			lines: ["Looking through it would go into Desktop, Documents and Downloads, and macOS asks before each. Type the folder that holds your projects, such as `~/Projects`, or look through the home folder anyway."],
+			steps: [],
+		};
+	}
 	if (preview.total > 0) {
 		const count = (/** @type {number} */ n) => `${n.toLocaleString("en-GB")} ${n === 1 ? "repository" : "repositories"}`;
 		const inFolder = preview.total - preview.fetched;
@@ -67,6 +81,23 @@ export function previewAdvice(preview, settings) {
 	const lines = ["A git repository is a project folder with a `.git` folder inside it. Choose the folder that holds your projects, such as `~/Projects`, or fetch repositories from GitHub below."];
 	if (preview.depth < 6) lines.push(`Porchlight looked ${preview.depth} folder ${preview.depth === 1 ? "level" : "levels"} down. Under Options you can make it look further.`);
 	return { found: false, title: `No git repositories in ${preview.root}`, lines, steps: [] };
+}
+
+/**
+ * What a scan would lack before it runs (US-2): git, or a scanner, with the command that installs it.
+ * Empty when all are ready.
+ *
+ * @param {ScanPreview} preview
+ * @returns {string[]}
+ */
+export function toolAdvice(preview) {
+	return (preview.tools ?? [])
+		.filter((tool) => !tool.ready)
+		.map((tool) =>
+			tool.tool === "git"
+				? `git is not ready, so no repository's history can be read. Install it first: \`${tool.fix}\``
+				: `${tool.tool} is not installed, so ${tool.tool === "gitleaks" ? "secrets are not looked for" : "packages are not checked for known holes"}. Install it: \`${tool.fix}\``,
+		);
 }
 
 /**
@@ -110,29 +141,13 @@ export function fetchByDefault(repo) {
 export function monitorSetupSteps(service) {
 	return [
 		{
-			text: "Open Terminal in the Porchlight project folder, install the monitor's tools in its `monitor` folder, and sign in to Cloudflare. A browser window opens for you to allow it. The free plan is enough, and this is done once. If this computer has no copy of the project, get one first with the top command.",
-			commands: ["git clone https://github.com/AES256Afro/Porchlight.git && cd Porchlight", "cd monitor", "npm install", "npx cf auth login"],
-		},
-		{
-			text: "Make the monitor's database. The command prints a database ID: copy it.",
-			commands: ["npx cf d1 create --name porchlight-monitor"],
-		},
-		{
-			text: "Open `monitor/cloudflare.config.ts` in an editor and put that ID in place of the value of `D1_DATABASE_ID`. Then prepare the database, with the same ID in place of `<DATABASE_ID>`.",
-			commands: ["npx cf d1 migrations apply <DATABASE_ID>"],
-		},
-		{
-			text: "Make the monitor's admin token and deploy. The first command writes a new random token into `.secrets.production`. The second prints the monitor's address when it finishes, which looks like `https://porchlight-monitor.your-name.workers.dev`. To be sent alerts, add a line `ALERT_WEBHOOK_URL=` with a Slack or Discord webhook or an ntfy topic to `.secrets.production` before deploying; without it, alerts go only to the Worker's log, where nobody sees them.",
-			commands: ["printf 'ADMIN_TOKEN=%s\\n' \"$(openssl rand -hex 32)\" > .secrets.production", "npx cf deploy --secrets-file .secrets.production"],
-		},
-		{
-			text: "Show the admin token so you can copy it. It is the only secret here: anyone who has it can change which websites your monitor watches.",
-			commands: ["sed -n 's/^ADMIN_TOKEN=//p' .secrets.production"],
+			text: "This needs Node.js and the Porchlight project on this computer (the Mac app alone is not enough). Open Terminal, get the project if you have no copy, and run the setup script from its folder. It installs the monitor's tools in its `monitor` folder, signs you in to Cloudflare (a browser window opens, once; the free plan is enough), makes the monitor's database, prepares it, makes the admin token and deploys. At the end it prints the monitor's address, which looks like `https://porchlight-monitor.your-name.workers.dev`, and the admin token. Anyone who has the token can change which domains your monitor watches. The database's ID and the token stay in two files in `monitor` that git ignores, so running the script again deploys again. To be sent alerts, add a line `ALERT_WEBHOOK_URL=` with a Slack or Discord webhook or an ntfy topic to `monitor/.secrets.production` and run it again; without it, alerts go only to the Worker's log, where nobody sees them.",
+			commands: ["git clone https://github.com/AES256Afro/Porchlight.git && cd Porchlight", "sh scripts/setup-monitor.sh"],
 		},
 		{
 			text: service
-				? 'In BoxPilot, open Apps → Porchlight → Settings. Paste the address into "Monitor address" and the token into "Monitor admin token", then confirm. Porchlight restarts and this page becomes your list of websites.'
-				: "Paste the address and the token in Settings → Monitor. Porchlight checks them with the monitor and this page becomes your list of websites. No restart is needed.",
+				? 'In BoxPilot, open Apps → Porchlight → Settings. Paste the address into "Monitor address" and the token into "Monitor admin token", then confirm. Porchlight restarts and this page becomes your list of domains.'
+				: "Paste the address and the token in Settings → Monitor. Porchlight checks them with the monitor and this page becomes your list of domains. No restart is needed.",
 		},
 	];
 }
@@ -372,18 +387,135 @@ export function scheduleWords(hours) {
 }
 
 /**
+ * The schedule in one line (QL-5): when it last ran and how that went, when it runs next, whether the
+ * last notice was delivered, and a token that ends within two weeks. Empty without a schedule.
+ *
+ * @param {import("../src/ui/server.ts").ScheduleState | null | undefined} schedule
+ * @param {{ cloudflareEnds?: string }} tokens
+ * @param {(iso: string) => string} when how a time is written ("2 hours ago", "in 3 hours")
+ * @param {Date} [now]
+ * @returns {string[]}
+ */
+export function scheduleLines(schedule, tokens, when, now = new Date()) {
+	const lines = [];
+	if (schedule) {
+		const every = schedule.everyHours === 1 ? "every hour" : schedule.everyHours % 24 === 0 ? (schedule.everyHours === 24 ? "every day" : `every ${schedule.everyHours / 24} days`) : `every ${schedule.everyHours} hours`;
+		const last = schedule.lastRun ? ` Last run ${when(schedule.lastRun.at)}: ${schedule.lastRun.ok ? schedule.lastRun.summary : `failed, ${schedule.lastRun.summary}`}.` : " It has not run since Porchlight started.";
+		const next = Date.parse(schedule.nextRun) <= now.getTime() ? " Next run: within a minute." : ` Next run ${when(schedule.nextRun)}.`;
+		lines.push(`Scheduled scan of ${schedule.root} ${every}.${last}${next}`);
+		if (schedule.notify) lines.push(schedule.notify.last ? `The last notice was ${schedule.notify.last.delivered ? "delivered" : "not delivered"}: ${schedule.notify.last.detail}, ${when(schedule.notify.last.at)}.` : `Notices go to ${schedule.notify.host}; none has been sent since Porchlight started.`);
+	}
+	if (tokens.cloudflareEnds) {
+		const days = Math.ceil((Date.parse(tokens.cloudflareEnds) - now.getTime()) / 86_400_000);
+		if (days <= 14) lines.push(days <= 0 ? "Your Cloudflare token has ended. Make a new one under Settings → Cloudflare." : `Your Cloudflare token ends in ${days === 1 ? "1 day" : `${days} days`}. Make a new one under Settings → Cloudflare before then.`);
+	}
+	return lines;
+}
+
+/**
+ * What changed since the check or audit before (G-Q1, F-Q3), in one line. A check that failed before
+ * and could not be made this time is said apart: not checked is not fixed (invariant 5).
+ *
+ * @param {import("../src/kept-checks.ts").CheckComparison | null} change
+ * @param {"check" | "audit"} what
+ * @returns {string | null} null when there is nothing earlier to compare with
+ */
+export function checkChangeWords(change, what) {
+	if (!change) return null;
+	const parts = [];
+	if (change.fixedCount > 0) parts.push(`${change.fixedCount.toLocaleString("en-GB")} fixed`);
+	if (change.newCount > 0) parts.push(`${change.newCount.toLocaleString("en-GB")} new`);
+	const head = parts.length > 0 ? `${parts.join(", ")} since the ${what} before.` : `Nothing fixed and nothing new since the ${what} before.`;
+	const caveat = change.uncheckedCount > 0 ? ` ${change.uncheckedCount.toLocaleString("en-GB")} could not be checked again, so ${change.uncheckedCount === 1 ? "it is" : "they are"} not counted as fixed.` : "";
+	return `${head}${caveat}`;
+}
+
+/**
+ * The "Not covered" lines of one cause together (US-9): a scanner that failed the same way on 120
+ * repositories is one line naming them, with what to do and the repositories to scan again.
+ *
+ * @param {{ repos: { name: string, errors: { tool: string, message: string }[], notCovered?: { tool: string, message: string }[] }[] }} report
+ * @returns {{ title: string, repos: string[], fix: string }[]}
+ */
+export function coverageGroups(report) {
+	/** @type {Map<string, { title: string, repos: string[], fix: string }>} */
+	const groups = new Map();
+	const add = (/** @type {string} */ title, /** @type {string} */ fix, /** @type {string} */ repo) => {
+		const group = groups.get(title) ?? { title, repos: [], fix };
+		if (!group.repos.includes(repo)) group.repos.push(repo);
+		groups.set(title, group);
+	};
+	for (const repo of report.repos) {
+		for (const error of repo.errors) add(`${error.tool} failed: ${error.message.split("\n")[0]?.slice(0, 300) ?? ""}`, "Scan them again. If it fails the same way, run `porchlight doctor`: it says what this computer lacks.", repo.name);
+		for (const note of repo.notCovered ?? []) add(`${note.tool}: ${note.message.slice(0, 300)}`, "This is how the repository is, not a failure: the line says what was left out.", repo.name);
+	}
+	return [...groups.values()].sort((a, b) => b.repos.length - a.repos.length);
+}
+
+/** How many domains the monitor scans in a day: one every 10 minutes. */
+export const MONITOR_SCANS_A_DAY = 144;
+
+/**
+ * Verified domains whose last scan is more than a day and two hours old (QL-8): past 144 domains the
+ * monitor falls behind, and nothing else says so.
+ *
+ * @param {{ verified: boolean, lastScanAt: string | null, verifiedAt?: string | null }[]} domains
+ * @param {Date} [now]
+ * @returns {{ overdue: number, words: string } | null}
+ */
+export function overdueDomains(domains, now = new Date()) {
+	const limit = now.getTime() - 26 * 3_600_000;
+	const overdue = domains.filter((domain) => domain.verified && Date.parse(domain.lastScanAt ?? domain.verifiedAt ?? "") < limit).length;
+	if (overdue === 0) return null;
+	const behind = domains.filter((domain) => domain.verified).length > MONITOR_SCANS_A_DAY;
+	return {
+		overdue,
+		words: `${overdue === 1 ? "1 domain is" : `${overdue.toLocaleString("en-GB")} domains are`} overdue: not scanned for more than a day.${behind ? ` The monitor scans ${MONITOR_SCANS_A_DAY} domains a day, and you have more, so each waits longer than a day.` : " The Domains page says why for each."}`,
+	};
+}
+
+/**
+ * What wants another look (QL-3): accepted risks whose end day has passed, ones that end within two
+ * weeks, and findings you marked Fixed that the latest scan still reports. Counts and the findings
+ * themselves; it hides and recounts nothing (invariant 17).
+ *
+ * @template {{ repo: string, ruleId: string, location: string, detail: string }} F
+ * @param {F[]} rows the latest scan's findings
+ * @param {(row: F) => { status: string, until?: string } | null} noteOf
+ * @param {Date} [now]
+ */
+export function reviewQueue(rows, noteOf, now = new Date()) {
+	const pad = (/** @type {number} */ n) => String(n).padStart(2, "0");
+	const day = (/** @type {Date} */ date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+	const today = day(now);
+	const soon = day(new Date(now.getTime() + 14 * 86_400_000));
+	/** @type {{ ended: F[], ending: F[], stillReported: F[] }} */
+	const queue = { ended: [], ending: [], stillReported: [] };
+	for (const row of rows) {
+		const note = noteOf(row);
+		if (!note) continue;
+		if (note.status === "accepted" && note.until && note.until < today) queue.ended.push(row);
+		else if (note.status === "accepted" && note.until && note.until <= soon) queue.ending.push(row);
+		else if (note.status === "fixed") queue.stillReported.push(row);
+	}
+	return queue;
+}
+
+/**
  * Which parts of the Overview a change in the shared store redraws (B41). Only what shows that data:
- * a host check or a project switch redraws nothing, so the folder being typed and the cards being
- * read stay as they are.
+ * a host check redraws the glance strip alone and a project switch nothing, so the folder being typed
+ * and the cards being read stay as they are.
  *
  * @param {"report" | "scan" | "settings" | "notes" | "host" | "cloudflare" | "projects"} change
- * @returns {("summary" | "scan" | "cloudflare" | "monitor" | "assistant" | "analysis")[]}
+ * @returns {("summary" | "scan" | "cloudflare" | "monitor" | "assistant" | "analysis" | "glance" | "review")[]}
  */
 export function overviewRedraws(change) {
-	if (change === "report") return ["summary", "assistant", "analysis"];
-	if (change === "scan") return ["scan"];
-	if (change === "settings") return ["monitor", "assistant", "analysis", "cloudflare"];
-	if (change === "cloudflare") return ["cloudflare"];
+	if (change === "report") return ["summary", "assistant", "analysis", "glance"];
+	if (change === "scan") return ["scan", "glance"];
+	if (change === "settings") return ["monitor", "assistant", "analysis", "cloudflare", "glance"];
+	if (change === "cloudflare") return ["cloudflare", "glance"];
+	if (change === "host") return ["glance"];
+	if (change === "notes") return ["review"];
 	return [];
 }
 

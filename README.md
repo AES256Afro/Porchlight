@@ -43,11 +43,13 @@ Reference: [Setup](#setup) · [Web interface](#web-interface) · [Mac app](#mac-
 brew install node gitleaks osv-scanner
 git clone https://github.com/AES256Afro/Porchlight.git
 cd Porchlight
-npm run setup
-node cli/bin/porchlight.js ui --root ~/Projects
+npm install -g ./cli
+porchlight ui --root ~/Projects
 ```
 
-Open the link it prints and choose **Check your code**. `node cli/bin/porchlight.js doctor` lists anything missing and the command that installs it.
+Open the link it prints and choose **Scan your code**. `porchlight doctor` lists anything missing and the command that installs it.
+
+`npm install -g ./cli` puts `porchlight` on your PATH. The CLI has no dependencies, so it downloads nothing; `npm uninstall -g porchlight` removes it. Without it, run `node cli/bin/porchlight.js` in its place. A scan and the page need nothing else: `npm run setup` is for working on Porchlight and for deploying the monitor (see [Development](#development) and [Monitor domains](#monitor-domains)), and installs about 450 MB of their packages.
 
 The commands above use Homebrew, which runs on macOS and Linux. Without it, install Node.js 22.18 or later, git, gitleaks and osv-scanner from their own releases or the distribution's packages.
 
@@ -104,7 +106,7 @@ Porchlight is one Node.js process. The browser page and the Mac app are clients 
 | --- | --- | --- | --- |
 | Mac app | `Porchlight.app` from the DMG, or `sh mac/build.sh --install` | 127.0.0.1 | Starts and stops the web interface with its window. Not notarized |
 | Web interface | `porchlight ui` | 127.0.0.1:4747, or the next free port | Session key generated per run, carried in the address fragment |
-| Command line | `porchlight repos scan`, `domains`, `host check`, `cloudflare audit`, `doctor` | | `repos scan --fail-on <severity>` exits 2 on a finding at or above it, and 1 if the scan was incomplete |
+| Command line | `porchlight repos scan`, `domains`, `host check`, `cloudflare audit`, `doctor`, `status`, `hook`, `schedule print` | | `repos scan --fail-on <severity>` exits 2 on a finding at or above it, and 1 if the scan was incomplete |
 | Container | `ghcr.io/aes256afro/porchlight`, or BoxPilot's catalog | 0.0.0.0:4747 inside the container | Refuses to start without `PORCHLIGHT_UI_KEY` of 32 characters or more. The host check is off; Cloudflare changes cannot be approved |
 | Other devices | Settings → Access from other devices | The Tailscale address only (100.64.0.0/10) | A separate 43-character access key. Only the page on the computer itself can turn it on or off |
 | Monitor | `npx cf deploy` in `monitor/` | Cloudflare Workers | Every `/domains` route answers 503 while `ADMIN_TOKEN` is missing or shorter than 32 characters |
@@ -223,11 +225,7 @@ The figures show made-up repositories checked by the real gitleaks and osv-scann
 
 ## Setup
 
-```bash
-npm run setup
-```
-
-This installs both packages and enables the pre-commit hook that blocks commits containing secrets.
+The [quick start](#1-quick-start) is all a scan needs. To work on Porchlight itself, `npm run setup` installs both packages' development tools and enables the pre-commit hook that blocks commits containing secrets.
 
 Requirements:
 
@@ -235,7 +233,7 @@ Requirements:
 - [gitleaks](https://github.com/gitleaks/gitleaks) for secret scanning: `brew install gitleaks`, or a binary from its releases
 - [osv-scanner](https://github.com/google/osv-scanner) for dependency scanning: `brew install osv-scanner`, or a binary from its releases
 
-The examples below assume this alias, run from the project root:
+The examples below assume `porchlight` is on your PATH (`npm install -g ./cli`, from the project root), or this alias:
 
 ```bash
 alias porchlight="node $PWD/cli/bin/porchlight.js"
@@ -247,7 +245,11 @@ porchlight repos scan --help # the options of one command
 porchlight --version
 ```
 
-`porchlight doctor` checks Node, git and the two scanners, the folder Porchlight keeps its files in, and the settings for the monitor, the model, GitHub and Cloudflare. It only reads and prints no secret. It asks the monitor and a local model whether they answer, unless you add `--offline`; a hosted model is never contacted. It exits 1 when something Porchlight cannot work without is missing.
+`porchlight doctor` checks Node, git and the two scanners, the folder Porchlight keeps its files in, and the settings for the monitor (given in the environment or saved under Settings → Monitor), the model, GitHub and Cloudflare. It only reads and prints no secret. It asks the monitor and a local model whether they answer, unless you add `--offline`; a hosted model is never contacted. It exits 1 when something Porchlight cannot work without is missing.
+
+`porchlight doctor --self` checks what Porchlight promises on this computer: that the data folder and every folder in it are 0700 and Porchlight's own files 0600, which addresses it listens on, which keys and tokens are saved and where (by name, never the value, including keys for a model no longer chosen), whether the saved Cloudflare token has made changes and so can write, which gitleaks and osv-scanner run (path and version), and temporary files a crash left behind. It only reads.
+
+`porchlight forget` lists what Porchlight keeps on this computer: the scan and its history, your notes, keys and tokens, fetched repositories, audits, investigations and discussions. With `--yes` it removes them. It removes only those, by name: anything else in the data folder, a link, a project folder or a git repository is left alone. It also lists what lives elsewhere: the monitor's domains, the DNS records you published, changes made to Cloudflare, and keys to revoke with each provider.
 
 ## Web interface
 
@@ -257,14 +259,14 @@ porchlight ui
 
 It prints a link. Open it to get both tools in the browser:
 
-- **Overview**: the two jobs, "Check your code" and "Check your websites". Before a scan it names the repositories it found in the folder; when it finds none, or the monitor is not set up, it says what to do next in numbered steps. After a scan it shows where things stand and what needs doing first. A scan that is running can be stopped; nothing is saved, and the last scan stays as it was.
-- **Findings**: every finding in one list, most severe first, each with the repair that clears it. Switch to **By repository** to see them grouped. Filter by severity, type, repository or text; the filters are kept in the address, so a reload or a shared link shows the same view. After a fix, open a repository under By repository and choose **Scan this repository again** to check it alone. Where a scanner is missing or fails that time, what it found before is kept.
+- **Overview**: the two jobs, "Scan your code" and "Scan your domains". Before a scan it names the repositories it found in the folder, and whether git and each scanner is ready, with the command that installs one that is not; when it finds none, or the monitor is not set up, it says what to do next in numbered steps. The home folder itself is looked through only when you ask, as it holds Desktop, Documents and Downloads. After a scan, **At a glance** gives one line for your code, your domains, Cloudflare and this computer: how old each is, what is new and fixed since the time before, and the worst finding. **Check everything** scans your code with the last scan's options (without a model), audits Cloudflare and checks this computer, each only reading. Below it are where things stand, what needs doing first, and, with a schedule, when it last ran and how, when it runs next, whether the last notice was delivered and a token that ends within two weeks. A scan that is running can be stopped; nothing is saved, and the last scan stays as it was.
+- **Findings**: every finding in one list, most severe first, each with the repair that clears it, with a copy button beside each command. Switch to **By repository** to see them grouped. Filter by severity, type, repository, text, or **New since the last scan**; the filters are kept in the address, so a reload or a shared link shows the same view. After a fix, open a repository under By repository and choose **Scan this repository again** to check it alone. Where a scanner is missing or fails that time, what it found before is kept.
 - **Roadmap**: what to repair, in order. One action, such as upgrading a package, can clear many findings.
 - **This Mac** (**This computer** on Linux): check the computer Porchlight runs on; see [Check the computer](#check-the-computer).
 - **Discussions**: every answer a model gave on these pages, with your follow-up questions; see [Discussions](#discussions).
 - **Project** (above the sections): which project folder saved exports, discussions and the log go to; see [Projects](#projects).
-- **Domains**: add a website by its domain name, prove it is yours with one DNS record, scan, and read what changed, with a suggested fix for each finding. Until the monitor is connected the page walks through setting it up, with each command to copy. Connect it under **Settings → Monitor**: paste the monitor's address and admin token, Porchlight asks the monitor whether they work, and the page becomes your list of websites with no restart. The two can also be given at start-up as `PORCHLIGHT_MONITOR_URL` and `PORCHLIGHT_ADMIN_TOKEN` (see [Monitor domains](#monitor-domains)); a connection saved in Settings comes first.
-- **Settings**: add project folders under **Projects** (see [Projects](#projects)), pick one of twelve looks under **Appearance** (Standard, Light, Severity dashboard, Top tabs, Split view, Roadmap first, Terminal, Native Mac, Repository cards, Model plan view, High contrast, Compact), and where a model's answers appear: in a panel on the right (the default), below what you asked about, or in a drawer at the bottom. Both are saved in the data folder (`ui-settings.json`) and used every time Porchlight opens. It also lists what Porchlight is connected to.
+- **Domains**: add a domain by its name, prove it is yours with one DNS record, scan, and read what changed, with a suggested fix for each finding. Until the monitor is connected the page walks through setting it up, with each command to copy. Connect it under **Settings → Monitor**: paste the monitor's address and admin token, Porchlight asks the monitor whether they work, and the page becomes your list of domains with no restart. **Check connections**, there and in Settings, asks the monitor and a local model whether they answer now, so "connected" means working. The page says when domains are overdue: the monitor scans 144 a day. The two can also be given at start-up as `PORCHLIGHT_MONITOR_URL` and `PORCHLIGHT_ADMIN_TOKEN` (see [Monitor domains](#monitor-domains)); a connection saved in Settings comes first.
+- **Settings**: add project folders under **Projects** (see [Projects](#projects)), pick one of twelve looks under **Appearance** (Standard, Light, Severity dashboard, Top tabs, Split view, Roadmap first, Terminal, Native Mac, Repository cards, Model plan view, High contrast, Compact), and where a model's answers appear: in a panel on the right (the default), below what you asked about, or in a drawer at the bottom. Both are saved in the data folder (`ui-settings.json`) and used every time Porchlight opens. It also lists what Porchlight is connected to, its version, and under **Data** the notes that match no kept finding. **Help** and the version are at the foot of the sidebar on every page. While an investigation waits for your approval, the Investigate section says so and the tab's title starts "(Waiting)", from any page.
 
 Every page with findings has an **Export** button; see [Export a repair roadmap](#export-a-repair-roadmap). Beside it, **Send to model** sends the roadmap or the findings to a model you choose; see [Send to a model](#send-to-a-model).
 
@@ -370,6 +372,7 @@ Porchlight is in the [BoxPilot](https://github.com/AES256Afro/BoxPilot) catalog:
 - **Keep the vulnerability databases on this server**: `PORCHLIGHT_OSV_OFFLINE`. On, OSV's databases are kept on the data volume (`/data/osv-db`) and package names are not sent to api.osv.dev.
 - **Send each scheduled scan's outcome to**: optional, `PORCHLIGHT_NOTIFY_URL`, a Slack or Discord webhook, an ntfy topic, or any address that takes JSON (`PORCHLIGHT_NOTIFY_FORMAT` picks the format when the address does not show it). After a scan the schedule ran, it gets the counts, what is new and what was fixed, by title, repository and file, or that the scan failed. Never a secret's value or a commit's author. A scan you start from the page sends nothing.
 - It starts on the tailnet only, because a report names the files and commits where secrets were found.
+- Each line of the Activity page is also printed to the container's output, with its time, so `docker logs porchlight` shows when scans ran, how they ended and whether a notice was delivered. Like the Activity page, these lines never hold a key, a token, a secret's value or a model's text.
 
 Outside BoxPilot:
 
@@ -485,8 +488,11 @@ porchlight repos scan ~/Projects --out reports/repos.md
 | `--skip <name>` | Leave a repository out, by the name the report gives it. Repeat, or separate names with commas |
 | `--out <file>` | Write the Markdown report to a file and print a summary |
 | `--json` | Emit the report as JSON |
+| `--format <form>` | `md` (default), `json` (as `--json`) or `sarif`: SARIF 2.1.0 for code-scanning tools. Each result carries the finding's rule, place and words as plain text, never a value; the run's properties list what the scan did not cover |
+| `--baseline <file>` | A JSON report of an earlier scan. `--fail-on` then counts only findings it does not hold, matched as the history matches them. A finding the baseline did not look for counts as not held, and an incomplete scan still exits 1 |
 | `--osv-db <folder>` | Keep OSV's databases in this folder and compare against them, so package names are not sent to api.osv.dev. The first scan downloads each ecosystem's database (npm's is about 200 MB); later scans bring them up to date |
-| `--save` | Also keep the scan where the interface reads it (`~/.porchlight`), and in its history, so `porchlight ui` shows it. It replaces the scan shown there |
+| `--save` | Also keep the scan where the interface reads it (`~/.porchlight`), and in its history, so `porchlight ui` shows it. It replaces the scan shown there, and says what is new and fixed since the scan of the same folders before it |
+| `--again <name>` | With `--save` and no folder: scan one repository of the saved scan again, by the name the report gives it, and say what that fixed ("2 fixed, 1 new in shop"). Where a scanner could not look again, what it found before is kept |
 | `--fail-on <severity>` | Exit with code 2 if any finding is at or above `critical`, `high`, `medium` or `low`; exit with code 1 if a scanner was missing or failed, or the choices left something out (a check, history, a repository), so an incomplete scan never passes |
 
 While it runs it prints one line a repository to the error stream, such as `[ 3/17] shop  1.2s  4 findings`, so the report itself can still be piped. A repository's two scanners run together, and several repositories at once, by how many cores the machine has.
@@ -515,6 +521,14 @@ What to know:
 - Dependency scanning needs network access: osv-scanner sends package names and versions to the OSV database (api.osv.dev), and nothing else. It is kept from working out the packages a `requirements.txt` or `pom.xml` pulls in indirectly (that would send their names to deps.dev), from running a language's toolchain in the repository, and from sending hashes of vendored files; a repository with such a manifest says so under "Not covered". Offline, it is reported as not covered. With `--osv-db <folder>` it downloads each ecosystem's whole database there instead (npm's is about 200 MB; later scans only bring it up to date) and sends nothing about your packages.
 - Uncommitted and git-ignored files are not scanned unless `--local-files` (in the interface, Options → "Files git does not track") asks for them.
 - `reports/` is git-ignored: a report names the files and commits where secrets were found.
+
+### Before a commit
+
+`porchlight hook` checks the files staged in the repository it runs in, with the same rules as a scan (gitleaks' built-in ones and the private-data ones, never the repository's own `.gitleaks.toml`). It reads the staged content from git's objects into a private temporary folder, so no filter the repository names runs, and prints each match's kind, rule, file and line, never its value. It exits 1 when it finds something or could not check. Porchlight never writes into a repository: `porchlight hook print` prints the hook, for you to save as `.git/hooks/pre-commit` and mark executable. `git commit --no-verify` skips it once.
+
+### On a schedule
+
+`porchlight schedule print` prints a launchd agent (macOS) or a systemd user service and timer (Linux) that runs a Standard `repos scan --save` of one folder (`--root`, default the current folder) every `--every` hours (default 24), so the interface shows the latest. It installs nothing; the comment at its top says how. It carries no key or token, and never starts a model.
 
 ### Private data
 
@@ -646,7 +660,7 @@ With a model connected, the Export dialog for a repository scan offers **Add a m
 - **What was found**, **What to fix, and in what order**, **What has been done** and **What to do next**;
 - beside them, figures Porchlight counts itself: findings by severity, repositories affected, actions to do now, and how many items the Deeper analysis has judged.
 
-It is written when you press Export, after any Deeper analysis has finished, and describes exactly what the file covers, filters included. A model on a processor takes a few minutes; Unsloth Studio's 4B model on a Mac took about 10 seconds. It goes in HTML (a board that prints well), Markdown (a section) and JSON (a `mural` field), not CSV.
+It is written when you press Export, after any Deeper analysis has finished, and describes exactly what the file covers, filters included. A mural already written for the same scan and filters is used again for the next export, in any format, without asking the model; tick **Write the mural again** for a new one. A model on a processor takes a few minutes; Unsloth Studio's 4B model on a Mac took about 10 seconds. It goes in HTML (a board that prints well), Markdown (a section) and JSON (a `mural` field), not CSV.
 
 - The model reads the counts, the roadmap's actions and the findings it judged real: never a secret value, a reason or evidence it wrote, an author or an email. Like every model answer, it is data to the model, not instructions.
 - The mural is labelled with the model's name as generated text, and escaped like everything else in the export. It never changes the export's findings, counts or roadmap.
@@ -672,6 +686,8 @@ Every answer is also kept as a discussion, so closing Porchlight loses nothing. 
 - **Clear titles**, written by Porchlight from what you asked about, such as "Explain: AWS access key in api/config.ts (acme/api)". Never the model's words.
 - **Long discussions.** Model APIs keep nothing between requests, so each follow-up sends the whole conversation again. A discussion holds up to 20 answers. A model on your own machines is sent only the most recent answers that fit what it can read, and the page says when older ones were left out.
 - **Kept here, not in your Claude account.** Porchlight asks Claude and the other hosted models through their APIs, which keep no conversation, so discussions do not appear in the Claude app. Copy one with **Copy as text** to carry it there.
+
+A finding explained before shows **Explained before** under Explain, linking to that discussion, so the answer is read again rather than asked for again. A new scan freezes discussions about the old one; **Ask again about the latest scan** opens where it was asked (with the question filled in, for Ask), to start a new one.
 
 Discussions are kept beside the report (`discussions/`, the last 200), readable only by you. They hold your questions, the model's answers and what each was about, never a key or a secret's value. Like a model's other answers, they never change a severity, a count, the roadmap or an export.
 
@@ -708,9 +724,17 @@ Each finished scan is kept beside the report (`history/`, the last 50). The Over
 
 Open a finding to give it a status (Open, In progress, Fixed, Accepted risk, False positive, and for a secret, Rotated) and a note. **Rotated** says the credential was replaced with the service that issued it; the old one is still in git history, so the finding stays listed. **Accepted risk** can carry the last day you accept it for: after that day the finding is marked **Acceptance ended**, so it is looked at again rather than forgotten. They are kept in `finding-notes.json` beside the report and stay with the finding in later scans. They never change a severity, a count, the roadmap or an export.
 
+**New since the last scan** is a filter on Findings and the Roadmap, so an export of it holds exactly those. Each roadmap action and each finding has **Scan <repository> again**: it scans that repository with the last scan's options and says what it fixed, such as "2 fixed, 1 new in shop". The "Not covered" banner groups repositories that failed the same way, with what to do and **Scan these again**. Tick findings to give them one status at once. A status records where it was set (this computer, another device, a service's page or the command line) and the status it replaced. The Overview's **Look at these again** lists accepted risks that have ended or end within two weeks, and findings marked Fixed that the latest scan still reports. Settings → Data counts the notes that match no finding of any kept scan, and removes them when you ask.
+
+From the command line: `porchlight repos history` lists the kept scans with new and fixed (`--json` too), `porchlight findings note --repo <name> --rule <id> --location <place> --status <status> [--until <day>] [--note <text>]` sets a status, and `porchlight findings notes` lists them. `porchlight repos export` without a path exports the saved scan.
+
+To move to a new computer, copy the data folder (`~/.porchlight`): notes, history, keys and tokens, and `investigate-domains.json`, without which every domain must prove its ownership again. `access.json`, `app.log`, `host-check.json` and `projects.json` describe this computer and can be left behind. Notes are kept by each repository's name under the scanned folder, so scan the same folder on the new computer; the scan form warns when another folder would leave your notes unmatched.
+
+`porchlight status` (add `--json` for a script or a status bar) prints counts, times and what was not covered for the latest scan, host check and Cloudflare audit, from the files Porchlight keeps, and whether a monitor is set. It contacts nothing, and prints no finding's place, value, key or token. It exits 1 when a kept file is there but cannot be read.
+
 ## Investigate with a model
 
-**Investigate** (under "Your websites" in the sidebar) lets a model plan an investigation of a website you own: give it a goal, such as "can anyone reach an admin page on example.com?", and it chooses one step at a time, reads what came back, and decides the next, until it has an answer or runs out of turns. Unlike the monitor, which only looks, this sends requests the model chose to your site, so it is limited to domains you have proven are yours and every request needs your approval.
+**Investigate** (under "Your domains" in the sidebar) lets a model plan an investigation of a domain you own: give it a goal, such as "can anyone reach an admin page on example.com?", and it chooses one step at a time, reads what came back, and decides the next, until it has an answer or runs out of turns. Unlike the monitor, which only looks, this sends requests the model chose to your site, so it is limited to domains you have proven are yours and every request needs your approval.
 
 **Prove the domain is yours.** Add it on the page. Porchlight makes a random token and shows a DNS record to publish:
 
@@ -750,6 +774,8 @@ How it is kept safe:
 
 Runs, with every step, piece of evidence and finding, are kept in `investigations/` in the data folder (the last 50), readable only by you. **Export as Markdown** or **Export as JSON** saves one; Set-Cookie values are left out of both, and everything taken from your site or the model is escaped for the format.
 
+**Run again**, on an earlier run, fills in its domain, goal and number of turns; it never carries over an approval, so the new run asks before each request as every run does. The form starts with the domain the address names (as **Investigate** on the Cloudflare page does), else the last run's.
+
 Investigations are run from the page on the computer that runs Porchlight. Opened from another device, the page shows them and its **Stop** button works, but nothing can be added, started or approved there, neither one request nor a whole run.
 
 ## Check the computer
@@ -759,6 +785,8 @@ Investigations are run from the page on the computer that runs Porchlight. Opene
 ```bash
 porchlight host check              # add --json for JSON, --offline to skip asking Apple and OSV.dev
 ```
+
+`--fail-on <severity>` makes it exit 2 when a failed check is at or above that severity, and 1 when a check could not be made.
 
 What it looks at:
 
@@ -777,30 +805,32 @@ How it is kept safe:
 - It only reads. It never changes a setting, never runs anything with `sudo` or asks for a password, and never contacts another computer on your network.
 - A credential file is read only to tell whether it holds a credential. The page shows the file, the kind of credential and who can read it, never the value.
 - A check that could not run, or whose answer Porchlight did not recognise, is shown as **Could not check**, never as passed. Each command has a time limit, so one that hangs cannot stop the rest.
-- The result is kept in `host-check.json` beside the report, readable only by you, because it describes where the computer is weak.
+- The result is kept in `host-check.json` beside the report, readable only by you, because it describes where the computer is weak. The last 20 checks are kept in `host-checks/` the same way, so a check after a repair says what it fixed and what is new since the check before. A check that could not be made again is said apart, never counted as fixed.
 - As a service (BoxPilot) it does not run: in a container it would see the container, not the computer.
 
 Not covered: apps in `/Applications` and from the App Store, Ruby gems, Go and Rust tools, other Python environments, and services that use UDP.
 
 ## Audit your Cloudflare account
 
-**Cloudflare** (under "Your websites") checks every domain (zone) in your Cloudflare account. From a terminal:
+**Cloudflare** (under "Your domains") checks every domain (zone) in your Cloudflare account. From a terminal:
 
 ```bash
 porchlight cloudflare audit        # add --json for JSON, --no-lookups to skip DNS lookups of CNAME targets
 ```
 
+`--fail-on <severity>` makes it exit 2 when a failed check is at or above that severity, and 1 when a check could not be made.
+
 1. Make an API token at Cloudflare → My Profile → API Tokens with **Read** permissions only. **Settings → Cloudflare** opens Cloudflare's "Create token" page with most of them ticked, and lists them all: Zone Read, Zone Settings Read, DNS Read, SSL and Certificates Read, Zone WAF Read, Bot Management Read (zone); Account Settings Read, Account API Tokens Read (account); API Tokens Read (user).
 2. Paste it in Settings → Cloudflare. Porchlight checks it with Cloudflare and keeps it in `cloudflare-settings.json` in the data folder, readable only by you. In a terminal or as a service, set `PORCHLIGHT_CLOUDFLARE_TOKEN` instead (in BoxPilot: Apps → Porchlight → Settings → Cloudflare API token). As a service the audit only reads: a change can be approved only on the page of a computer that runs Porchlight itself.
-3. Choose **Audit my account**.
+3. Choose **Audit your account**.
 
-Each domain is listed with its plan and its problems, worst first, each with why it matters, the fix (with links into Cloudflare's dashboard) and the API call that makes it. The rules, their severities and their sources are in [docs/CLOUDFLARE-AUDIT.md](docs/CLOUDFLARE-AUDIT.md). In short:
+Each domain is listed with its plan and its findings, worst first, each with why it matters, the fix (with links into Cloudflare's dashboard) and the API call that makes it. The rules, their severities and their sources are in [docs/CLOUDFLARE-AUDIT.md](docs/CLOUDFLARE-AUDIT.md). In short:
 
 | Area | What it checks |
 | --- | --- |
 | SSL/TLS | Encryption mode (Full (strict)), Always Use HTTPS, minimum TLS 1.2, TLS 1.3, HSTS, Automatic HTTPS Rewrites, Universal SSL, certificate expiry, authenticated origin pulls |
 | DNS | DNSSEC, CAA records, DNS-only records that publish the address of a proxied server, internal addresses in public DNS, CNAME records pointing at names that no longer exist |
-| Email | SPF, DKIM and DMARC |
+| Email | SPF, DKIM and DMARC, and each DKIM key's strength (an RSA key under 2048 bits, test mode `t=y`, a key that cannot be read) from the records already read. Keys behind a CNAME are published by the mail provider and not looked up |
 | Firewall and bots | WAF managed rules, OWASP Core, Under Attack mode, Browser Integrity Check, Bot Fight Mode or Super Bot Fight Mode |
 | Account | Members without two-factor authentication, Super Administrators, API tokens that can change everything from anywhere with no end date, unused tokens |
 
@@ -810,7 +840,7 @@ How it is kept safe:
 - A domain's plan decides what is a problem: a Free domain is never told to turn on a paid feature. Something the token may not read is shown as **Could not check**, with the permission to add, never as passed.
 - Looking up where a CNAME record points (to find one left pointing at a deleted site that someone else could claim) happens only for a domain whose `_porchlight-challenge` record proves it is yours, checked in the same audit. You can turn it off.
 - **Changes that need a look.** Four fixes can affect how a site or its mail behaves: turning on HSTS (for 6 months), setting the encryption mode from Full to Full (strict), DNSSEC, and adding a DMARC record that only reports where there is none. Porchlight can make them too, but each is listed with what could go wrong, starts unticked, and is sent only if you tick it. Bot Fight Mode is checked but not changed: Cloudflare's API refused the change on a real account, so the audit says where to turn it on. Authenticated origin pulls, SPF, CAA and deleting records stay yours to do.
-- **Fix these.** With the write permissions on the token, **Fix these…** on a domain, or **Fix what Porchlight can** above the list, shows every change the audit offers as its exact request. Untick any you do not want and approve once: Porchlight sends them one after another, each once, and shows each answer as it arrives. If the token lacks a permission, the first request that needs it is refused and the rest that need it are not sent; the page then says which permission to add and where on Cloudflare to add it, and since editing a token keeps the token there is nothing to paste again. The same steps appear for a permission the audit could not read with. **Stop** ends it, leaving what was sent in place. The **Activity** page shows the same lines, with everything else Porchlight is doing since it was opened.
+- **Fix these.** With the write permissions on the token, **Fix these…** on a domain, or **Fix what Porchlight can** above the list, shows every change the audit offers as its exact request. Untick any you do not want and approve once: Porchlight sends them one after another, each once, and shows each answer as it arrives. If the token lacks a permission, the first request that needs it is refused and the rest that need it are not sent; the page then says which permission to add and where on Cloudflare to add it, and since editing a token keeps the token there is nothing to paste again. The same steps appear for a permission the audit could not read with. **Stop** ends it, leaving what was sent in place. The **Activity** page shows the same lines, with everything else Porchlight is doing since it was opened. The requests are grouped by domain, each with one tick for all of its changes (a change with a warning is still ticked by itself). A check Porchlight changed after the audit is marked **Changed since the audit** and left out of Fix these until the next audit says how it stands. Each audit is kept (`cloudflare-audits/`, the last 20), and the page says what was fixed and what is new since the audit before.
 - **Changes are yours to approve.** With DNS Write or Zone Settings Write added to the token, Porchlight can add its ownership record, turn on Always Use HTTPS, TLS 1.3, Automatic HTTPS Rewrites or Browser Integrity Check, or set the minimum TLS version to 1.2. It shows the exact request first, and sends it once, only when you choose **Approve and send** on the computer that runs Porchlight. Every change is listed on the page and kept in `cloudflare-changes.json`.
 - Members are shown by a masked email (`a…@example.com`). The audit is kept in `cloudflare-audit.json`, readable only by you. Exports (Markdown, HTML, CSV, JSON) escape everything for their format.
 - **Analysis by a model** is optional. It reads the audit as the page shows it, never the token, members or token names, and changes no check. It is kept as a discussion, so you can ask follow-up questions until a newer audit replaces the one it read.
@@ -834,7 +864,7 @@ A scan reads three sources:
 | --- | --- |
 | Certificate Transparency logs (crt.sh) | Unexpired certificates for the domain and its subdomains: hostnames and expiry dates |
 | DNS over HTTPS (cloudflare-dns.com) | Apex AAAA, NS, MX, TXT and CAA records; A and CNAME records for each host |
-| HTTPS | One `GET /` per host that has an address, without following redirects; only the security headers are kept |
+| HTTPS | One `GET /` per host that has an address, without following redirects; the security headers are kept, with a redirect's scheme and host (never its path) and server headers that name a version |
 
 It reports these changes: host added, host gone, DNS record changed, HTTPS became reachable or unreachable.
 
@@ -855,8 +885,13 @@ It raises these findings:
 | DNSSEC not enabled | low |
 | An SPF record ending in `+all`, which lets any server send mail as the domain | medium |
 | No SPF record, more than one, or one ending in `?all` | low |
+| HTTPS that fails at the certificate or the TLS handshake (Cloudflare's 525 or 526, or a certificate error), from the first scan on | medium |
+| The front page redirects to plain `http://` | medium |
+| The front page redirects to a host outside the domain (named, never followed) | low |
+| `Server`, `X-Powered-By` or a similar header names the software's version | low |
+| A certificate in the logs from an authority the CAA record does not allow | medium |
 
-The checks for HSTS, cookies, DNSSEC and SPF are read from what a scan already fetches: the one `GET /` per host and the apex DNS lookups. They add no request. Of a cookie, only its name and flags are kept, never its value. Each is raised or cleared only by a scan that saw the evidence for it, so a failed lookup or an outage changes nothing.
+The checks for HSTS, cookies, DNSSEC, SPF, redirects, version headers, failed HTTPS and certificate authorities are read from what a scan already fetches: the one `GET /` per host, the certificate log's rows (which name each certificate's issuer) and the apex DNS lookups. They add no request. A timeout or a refused connection is not a failed certificate: it raises nothing and clears nothing. The authority check knows the CAA names of the common authorities (Let's Encrypt, Google, DigiCert, Sectigo, ZeroSSL, Amazon and others); a certificate from one it does not know is not judged, and a CAA record on a subdomain or where its CNAME points is not looked up. Of a cookie, only its name and flags are kept, never its value. Each is raised or cleared only by a scan that saw the evidence for it, so a failed lookup or an outage changes nothing.
 
 The Domains page lists each domain with how many findings it has open, and under a domain's report shows its **History**: every scan the monitor has kept (`SNAPSHOTS_TO_KEEP`, 30 by default), newest first, with what changed in each.
 
@@ -881,6 +916,16 @@ porchlight domains add example.com
 
 ### Deploy
 
+From the project folder, with Node.js:
+
+```bash
+sh scripts/setup-monitor.sh
+```
+
+It installs the monitor's packages in `monitor/`, signs in to Cloudflare, makes the database and keeps its ID in `monitor/.secrets.database-id`, applies the migrations, makes the admin token in `monitor/.secrets.production`, deploys, and prints the address and the token to paste under Settings → Monitor. Both files are git-ignored, and running the script again reuses them, so it is also how to deploy an update. If `monitor/cloudflare.config.ts` names another database, the script stops and says which ID to put there.
+
+The same steps by hand:
+
 ```bash
 cd monitor
 npx cf auth login
@@ -903,7 +948,7 @@ In the interface, paste the URL `cf deploy` prints and the token under **Setting
 
 Each domain on the Cloudflare page has **Watch in Domains**, which adds it to the monitor's list, and **Investigate**, which adds it to the domains a model can investigate. Either only adds the name: proving ownership and starting anything happen on that page.
 
-For the command line, point it at the same URL with the same token:
+The command line and `porchlight doctor` use the monitor saved under Settings → Monitor. To point them elsewhere, set the URL and token; they take its place:
 
 ```bash
 export PORCHLIGHT_MONITOR_URL=https://<your worker URL>
@@ -918,8 +963,9 @@ porchlight domains verify example.com   # once the record resolves
 porchlight domains scan example.com     # scan now; the first scan is the baseline
 porchlight domains show example.com     # latest report
 porchlight domains history example.com  # each kept scan, newest first, with what changed
+porchlight domains hosts example.com    # every name it knows under the domain; --format csv, md or json
 porchlight domains list
-porchlight domains remove example.com   # also deletes its scan history
+porchlight domains remove example.com --yes  # also deletes its scan history
 ```
 
 ### Settings
@@ -939,6 +985,7 @@ The default `MAX_HOSTS` keeps a worst-case scan under 50 outbound requests, the 
 
 - Certificate expiry comes from the certificate logs, not from the certificate a server presents. A Worker cannot read a peer certificate.
 - Hostnames are discovered only through certificates. A host that has never had one is not found. There is no subdomain guessing by design.
+- `domains hosts` (and `GET /domains/<name>/hosts`, behind the admin token, 200 names a page) lists that inventory as the latest scan holds it: each name's addresses or CNAME, its HTTPS answer, its certificate's end date and its open findings, and the names the log still lists that DNS showed gone. It is read from the monitor's database; asking makes no request about the domain.
 - Addresses behind a CNAME are not compared, because they belong to the target's operator and rotate. An apex that sits behind a rotating load balancer will still produce A-record changes.
 - The schedule wakes every ten minutes and scans one domain each time, so up to 144 domains a day at the defaults.
 - Domain names are sent to crt.sh and Cloudflare's DNS resolver.

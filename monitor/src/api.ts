@@ -3,7 +3,16 @@ import { normalizeDomain } from "./domain.ts";
 import { errorMessage, type AppEnv, type Deps } from "./env.ts";
 import { challengeName, challengeValue, checkOwnership, newChallengeToken } from "./ownership.ts";
 import { formatReport } from "./report.ts";
-import type { DomainView, HistoryEntry, MonitorStatus, ScanReport, Severity } from "./types.ts";
+import type {
+	DomainView,
+	HistoryEntry,
+	HostsPage,
+	HostView,
+	MonitorStatus,
+	ScanReport,
+	Severity,
+} from "./types.ts";
+import type { Snapshot } from "./snapshot.ts";
 import { runScan } from "./scan.ts";
 import {
 	addDomain,
@@ -108,6 +117,15 @@ async function route(
 			notes: report.notes,
 		}));
 		return json({ domain: domain.name, history });
+	}
+
+	if (segments[2] === "hosts") {
+		if (request.method !== "GET") return methodNotAllowed("GET");
+		const page = pageNumber(url.searchParams.get("page"));
+		if (page === null) return json({ error: "page must be a whole number from 1" }, 400);
+		const latest = await latestScan(env.DB, domain.id);
+		if (!latest) return json({ error: `${domain.name} has not been scanned yet` }, 404);
+		return json(hostsPage(latest.snapshot, latest.report, page));
 	}
 
 	if (request.method !== "POST") return methodNotAllowed("POST");
@@ -293,6 +311,61 @@ async function monitorStatus(env: AppEnv): Promise<MonitorStatus> {
 		console.error(`Could not read the monitor's status: ${errorMessage(err)}`);
 		return { alerts, schedule: null };
 	}
+}
+
+/** Names in one page of an inventory: a page stays well under a megabyte however long the names. */
+export const HOSTS_PAGE_SIZE = 200;
+
+function pageNumber(value: string | null): number | null {
+	if (value === null) return 1;
+	if (!/^\d{1,6}$/.test(value)) return null;
+	const page = Number(value);
+	return page >= 1 ? page : null;
+}
+
+/**
+ * A page of the inventory the latest scan holds (R6F-5): every name, in order, as the snapshot keeps
+ * it. Read from the database alone: answering makes no request about the domain.
+ */
+function hostsPage(snapshot: Snapshot, report: ScanReport, page: number): HostsPage {
+	const names = Object.keys(snapshot.hosts).sort();
+	const open = new Map<string, number>();
+	for (const finding of report.findings) open.set(finding.host, (open.get(finding.host) ?? 0) + 1);
+	const hosts = names
+		.slice((page - 1) * HOSTS_PAGE_SIZE, page * HOSTS_PAGE_SIZE)
+		.map((name): HostView => {
+			const state = snapshot.hosts[name]!;
+			return {
+				name,
+				probed: state.probed,
+				checkedAt: state.checkedAt ?? null,
+				dns: state.dns,
+				cert: state.cert
+					? { notBefore: state.cert.notBefore, notAfter: state.cert.notAfter }
+					: null,
+				https:
+					state.http === null
+						? null
+						: state.http.ok
+							? { ok: true, status: state.http.status }
+							: { ok: false, error: state.http.error },
+				findings: open.get(name) ?? 0,
+			};
+		});
+	return {
+		domain: snapshot.domain,
+		takenAt: snapshot.takenAt,
+		total: names.length,
+		page,
+		pageSize: HOSTS_PAGE_SIZE,
+		hosts,
+		gone:
+			page === 1
+				? Object.entries(snapshot.gone ?? {})
+						.sort(([a], [b]) => a.localeCompare(b))
+						.map(([name, since]) => ({ name, since }))
+				: [],
+	};
 }
 
 function json(body: unknown, status = 200, headers: Record<string, string> = {}): Response {

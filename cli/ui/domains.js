@@ -1,9 +1,9 @@
 // @ts-check
 import { api, ApiError } from "./api.js";
 import { assistAction } from "./assist.js";
-import { banner, formatNumber, formatWhen, h, icon, isOff, pager, plural, replace, setOff, severityBadge, shownText, statTile, stepNodes, tileRow, toast } from "./dom.js";
+import { banner, copyButton, formatNumber, formatWhen, h, icon, isOff, pager, plural, replace, setOff, severityBadge, shownText, statTile, stepNodes, tileRow, toast } from "./dom.js";
 import { exportButton, openExportDialog } from "./export.js";
-import { domainFromInput, monitorSetupSteps, monitorStatusWords } from "./hints.js";
+import { domainFromInput, monitorSetupSteps, monitorStatusWords, overdueDomains } from "./hints.js";
 import { paginate } from "./list.js";
 
 const WATCHES = "Watches the domains you own for new subdomains, DNS changes, expiring certificates and missing security headers. It only looks at what is public.";
@@ -51,7 +51,7 @@ export async function renderDomains(view, route) {
 			spellcheck: false,
 			autocomplete: "off",
 			required: true,
-			"aria-label": "Website to add, as a domain name such as example.com",
+			"aria-label": "Domain to add, such as example.com",
 			"aria-describedby": "add-domain-problem",
 		})
 	);
@@ -66,11 +66,11 @@ export async function renderDomains(view, route) {
 			h(
 				"div",
 				{ class: "page-head" },
-				h("div", null, h("h1", null, "Domains"), h("p", { class: "sub" }, `The websites you own, checked by your monitor at ${state.monitor.host}.`)),
+				h("div", null, h("h1", null, "Domains"), h("p", { class: "sub" }, `The domains you own, scanned by your monitor at ${state.monitor.host}.`)),
 				h(
 					"form",
 					{ class: "add-domain", onsubmit: addDomain },
-					h("div", { class: "inline-form" }, h("div", { class: "field grow" }, input), h("button", { type: "submit", class: "button primary" }, "Add a website")),
+					h("div", { class: "inline-form" }, h("div", { class: "field grow" }, input), h("button", { type: "submit", class: "button primary" }, "Add a domain")),
 					addProblem,
 				),
 			),
@@ -100,7 +100,9 @@ export async function renderDomains(view, route) {
 		try {
 			const answer = await api("GET", "/domains");
 			domains = answer.domains;
-			replace(monitorSlot, monitorStatusCard(answer.status));
+			// Past 144 domains the monitor falls behind; this says so rather than leave it to each row's date (QL-8).
+			const overdue = overdueDomains(domains);
+			replace(monitorSlot, monitorStatusCard(answer.status), overdue ? banner("warning", "Some domains are overdue", [overdue.words]) : null);
 		} catch (err) {
 			domains = [];
 			replace(list);
@@ -142,8 +144,8 @@ export async function renderDomains(view, route) {
 				h(
 					"div",
 					{ class: "empty" },
-					h("h2", null, "Add your first website"),
-					h("p", null, "Type its domain name above, such as example.com, and choose Add a website."),
+					h("h2", null, "Add your first domain"),
+					h("p", null, "Type its name above, such as example.com, and choose Add a domain."),
 					h(
 						"ol",
 						{ class: "steps left" },
@@ -411,7 +413,7 @@ function historyView(history, page, go) {
 						: [
 								entry.changes.length > 0 ? plural(entry.changes.length, "change", "changes") : null,
 								entry.newFindings.length > 0 ? plural(entry.newFindings.length, "new finding", "new findings") : null,
-								entry.resolvedFindings.length > 0 ? `${entry.resolvedFindings.length.toLocaleString("en-GB")} resolved` : null,
+								entry.resolvedFindings.length > 0 ? `${entry.resolvedFindings.length.toLocaleString("en-GB")} fixed` : null,
 							]
 								.filter(Boolean)
 								.join(", ");
@@ -435,7 +437,7 @@ function timelineDetail(entry) {
 		[
 			entry.changes.length > 0 ? h("ul", { class: "changes" }, ...entry.changes.map(changeItem)) : null,
 			list("New findings", entry.newFindings),
-			list("Resolved", entry.resolvedFindings),
+			list("Fixed", entry.resolvedFindings),
 			entry.notes.length > 0 ? h("p", { class: "hint" }, entry.notes.join(" ")) : null,
 		].filter(Boolean)
 	);
@@ -470,27 +472,6 @@ function challengeCard(domain, verifyButton) {
 	);
 }
 
-/** @param {string} text @param {string} what */
-function copyButton(text, what) {
-	return h(
-		"button",
-		{
-			type: "button",
-			class: "button quiet icon-only",
-			"aria-label": `Copy ${what}`,
-			title: `Copy ${what}`,
-			onclick: async () => {
-				try {
-					await navigator.clipboard.writeText(shownText(text));
-					toast(what === "command" ? "Copied the command" : `Copied the record ${what}`);
-				} catch {
-					toast("Could not copy. Select the text and copy it by hand.", "error");
-				}
-			},
-		},
-		icon("copy"),
-	);
-}
 
 /**
  * A domain's latest report: one table of what is open, each new finding marked New rather than listed
@@ -505,7 +486,7 @@ function reportView(report, suggestions, page, go) {
 	const count = (/** @type {MonitorFinding["severity"]} */ severity) => report.findings.filter((finding) => finding.severity === severity).length;
 	const summary = report.baseline
 		? "First scan: this is the baseline that later scans are compared with."
-		: `${plural(report.changes.length, "change", "changes")}, ${plural(report.newFindings.length, "new finding", "new findings")} and ${formatNumber(report.resolvedFindings.length)} resolved since the previous scan.`;
+		: `${plural(report.changes.length, "change", "changes")}, ${plural(report.newFindings.length, "new finding", "new findings")} and ${formatNumber(report.resolvedFindings.length)} fixed since the previous scan.`;
 	const fresh = new Set(report.baseline ? [] : report.newFindings.map((finding) => finding.id));
 	const rows = groupFindings(report.findings, suggestions);
 	const shown = paginate(rows, page, PAGE_SIZE);
@@ -537,7 +518,7 @@ function reportView(report, suggestions, page, go) {
 			? h(
 					"details",
 					{ class: "options" },
-					h("summary", null, `Resolved since the previous scan (${formatNumber(report.resolvedFindings.length)})`),
+					h("summary", null, `Fixed since the previous scan (${formatNumber(report.resolvedFindings.length)})`),
 					findingsTable(groupFindings(report.resolvedFindings, null), new Set(), false),
 				)
 			: null,
@@ -608,7 +589,7 @@ function findingsTable(rows, fresh, withFix) {
 							? h(
 									"td",
 									{ class: "wrap col-what" },
-									row.fix ? h("details", { class: "fix-details" }, h("summary", null, row.fix.title), h("ol", null, ...row.fix.how.map((step) => h("li", null, ...stepNodes(step))))) : null,
+									row.fix ? h("details", { class: "fix-details" }, h("summary", null, row.fix.title), h("ol", null, ...row.fix.how.map((step) => h("li", null, ...stepNodes(step, { copy: true }))))) : null,
 								)
 							: null,
 					);
@@ -661,7 +642,7 @@ function journey(current) {
 	const steps = ["Added", "Prove it is yours", "First scan"];
 	return h(
 		"ol",
-		{ class: "journey", "aria-label": "Setting up this website" },
+		{ class: "journey", "aria-label": "Setting up this domain" },
 		...steps.map((label, index) => {
 			const number = index + 1;
 			return h("li", { "aria-current": number === current ? "step" : null }, number < current ? icon("good", "status-done") : `${number}.`, label);
@@ -685,11 +666,11 @@ function notConnected(monitor, service) {
 		h(
 			"div",
 			{ class: "card" },
-			h("h2", null, "Set up website checks"),
+			h("h2", null, "Set up domain scans"),
 			h(
 				"p",
 				null,
-				"Websites are checked by the Porchlight monitor: a small service that runs on your own Cloudflare account, not on this ",
+				"Domains are scanned by the Porchlight monitor: a small service that runs on your own Cloudflare account, not on this ",
 				service ? "server" : "computer",
 				". That way it can check every day and keep the history even when this page is closed. This page shows what it finds.",
 			),

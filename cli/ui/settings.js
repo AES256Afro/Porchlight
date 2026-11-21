@@ -13,6 +13,8 @@ import { monitorSection } from "./monitor-settings.js";
 import { modelSection } from "./model-settings.js";
 import { projectsSection } from "./projects.js";
 import { load, store, subscribe } from "./store.js";
+import { connectionsCheck } from "./glance.js";
+import { formatNumber, formatWhen, isOff, plural, setOff } from "./dom.js";
 
 /**
  * @param {HTMLElement} view
@@ -96,6 +98,7 @@ export async function renderSettings(view) {
 				cloudflare,
 				monitor,
 				access,
+				dataSection(),
 				h(
 					"fieldset",
 					{ id: "settings-appearance", tabindex: "-1", class: "card full looks" },
@@ -175,6 +178,8 @@ function connections() {
 	const line = (ok, text, section) => h("li", null, h("span", { class: `severity ${ok ? "status-good" : "status-pending"}` }, icon(ok ? "good" : "pending")), " ", section ? sectionLink(section, text) : text);
 	return [
 		h("h2", { id: "settings-index-title" }, "Connections"),
+		h("p", { class: "hint" }, `Porchlight ${settings.version || "(version unknown)"}. Set up is not the same as working: Check connections asks each one now.`),
+		connectionsCheck(),
 		h(
 			"ul",
 			{ class: "plain-list" },
@@ -198,6 +203,7 @@ function connections() {
 				["cloudflare", "Cloudflare"],
 				["monitor", "Monitor"],
 				["access", "Access from other devices"],
+				["data", "Data"],
 				["appearance", "Appearance"],
 			]
 				// A service sets its model and access where it is managed, so those sections are not here.
@@ -212,4 +218,75 @@ function connections() {
 				: "The model, the monitor and Cloudflare are connected in their sections below. A GitHub token is set when Porchlight starts: in the Mac app, in ~/.porchlight/app.env; in a terminal, with PORCHLIGHT_GITHUB_TOKEN.",
 		),
 	];
+}
+
+/**
+ * Settings → Data: the notes that match no finding of any kept scan (R6Q-12), with Remove, and what to
+ * copy to a new computer (US-10). Only the page on this computer, or a service's own page, may remove.
+ */
+function dataSection() {
+	const body = h("div", null, h("p", { class: "loading" }, "Counting…"));
+	const section = h(
+		"section",
+		{ id: "settings-data", tabindex: "-1", class: "card full", "aria-labelledby": "settings-data-title" },
+		h("h2", { id: "settings-data-title" }, "Data"),
+		h(
+			"p",
+			{ class: "sub" },
+			"To move to a new computer, copy the data folder (~/.porchlight): your notes, the scan history, keys and tokens, and the ownership tokens for investigated domains. Scan the same folder there, so each repository keeps its name and its notes match. porchlight forget lists everything kept here, and removes it when asked.",
+		),
+		body,
+	);
+	void draw();
+	return section;
+
+	async function draw() {
+		try {
+			const answer = await api("GET", "/findings/orphans");
+			if (answer.count === 0) return replace(body, h("p", null, "Every status and note you set matches a finding of a kept scan."));
+			const remove = /** @type {HTMLButtonElement} */ (
+				h(
+					"button",
+					{
+						type: "button",
+						class: "button",
+						"aria-disabled": store.settings?.remote ? "true" : null,
+						title: store.settings?.remote ? "Removed from the page on the computer that runs Porchlight" : null,
+						onclick: async () => {
+							if (isOff(remove) || store.settings?.remote) return;
+							setOff(remove, true);
+							try {
+								const done = await api("POST", "/findings/orphans/remove", {});
+								toast(`Removed ${plural(done.removed, "note", "notes")}`);
+								await draw();
+							} catch (err) {
+								toast(err instanceof Error ? err.message : String(err), "error");
+								setOff(remove, false);
+							}
+						},
+					},
+					`Remove ${plural(answer.count, "note", "notes")}`,
+				)
+			);
+			replace(
+				body,
+				h("p", null, `${plural(answer.count, "note matches", "notes match")} no finding of any kept scan: their repositories were renamed, removed, or scanned from another folder. They change nothing; removing them only tidies the file.`),
+				h(
+					"details",
+					null,
+					h("summary", null, `Show ${answer.notes.length < answer.count ? `the first ${formatNumber(answer.notes.length)}` : "them"}`),
+					h(
+						"ul",
+						{ class: "plain-list" },
+						.../** @type {{ repo: string, ruleId: string, location: string, status: string, updatedAt: string }[]} */ (answer.notes).map((note) =>
+							h("li", null, h("strong", null, note.repo), ` ${note.ruleId} `, h("span", { class: "mono" }, note.location), h("span", { class: "hint" }, ` · ${note.status}, ${formatWhen(note.updatedAt)}`)),
+						),
+					),
+				),
+				h("div", { class: "actions" }, remove),
+			);
+		} catch (err) {
+			replace(body, h("p", { class: "form-error" }, err instanceof Error ? err.message : String(err)));
+		}
+	}
 }

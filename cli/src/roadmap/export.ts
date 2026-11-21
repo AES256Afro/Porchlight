@@ -32,7 +32,7 @@ export function checkFormat(value: string): Format {
  * Builds the filter from what a command line or a query string supplies.
  * An absent part means "do not filter on this".
  */
-export function parseFilter(input: { severity?: string | null; kind?: string | null; match?: string | null; repo?: string | null }): FindingFilter {
+export function parseFilter(input: { severity?: string | null; kind?: string | null; match?: string | null; repo?: string | null; new?: string | null }, newKeys?: ReadonlySet<string>): FindingFilter {
 	const filter = noFilter();
 	// The page writes "none" when every severity is unticked (cli/ui/list.js), so a link to that view exports it too.
 	if (input.severity === "none") {
@@ -49,6 +49,11 @@ export function parseFilter(input: { severity?: string | null; kind?: string | n
 	}
 	if (input.match != null) filter.query = input.match;
 	if (input.repo != null) filter.repo = input.repo;
+	// "New since the last scan" (B-Q1): the keys come from the caller's own comparison of kept scans, never from the request.
+	if (input.new === "1" || input.new === "true") {
+		filter.newOnly = true;
+		filter.newKeys = newKeys ?? new Set();
+	}
 	return filter;
 }
 

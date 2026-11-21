@@ -1,3 +1,4 @@
+import { issuersSeen, type IssuerSeen } from "./caa.ts";
 import { fetchCtCerts, hostsFromCerts, latestCertFor, type CertWindow } from "./collect/ct.ts";
 import { lookupApex, lookupHost, resolves, type ApexRecords, type HostDns } from "./collect/dns.ts";
 import { probeHttps, type HttpProbe } from "./collect/http.ts";
@@ -32,6 +33,12 @@ export interface Snapshot {
 	apex: ApexRecords;
 	/** Whether the domain's DNS answers are signed. Absent: not observed, or an older snapshot. */
 	dnssec?: boolean;
+	/**
+	 * The certificate authorities the log lists for the domain's unexpired certificates, read from the
+	 * rows already fetched (FT-3). Absent: the log, or its query for the bare domain, could not be
+	 * read, or an older snapshot.
+	 */
+	issuers?: IssuerSeen[];
 	hosts: Record<string, HostState>;
 	/**
 	 * Names the certificate log still lists but DNS showed gone, with when that
@@ -156,6 +163,8 @@ export async function collectSnapshot(
 		...(ct && !ct.apexOk ? { ctApexOk: false as const } : {}),
 		apex,
 		...(dnssec !== undefined ? { dnssec } : {}),
+		// Only from a whole reading: without the bare-domain query a certificate naming it alone is missing.
+		...(ct?.apexOk ? { issuers: issuersSeen(ct.certs) } : {}),
 		hosts,
 		...(Object.keys(gone).length > 0 ? { gone } : {}),
 		...(leftOut > 0 ? { leftOut } : {}),

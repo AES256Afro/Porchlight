@@ -1,5 +1,6 @@
 // @ts-check
 // How the page words and shapes what the local model writes. No DOM here, so it is tested directly.
+import { OUTSIDE } from "./hints.js";
 
 /**
  * What `/api/state` says about the local model. `unset`: no model address was given, so the
@@ -140,6 +141,6 @@ export function modelFields(assistant) {
 export function analysisNotice(assistant) {
 	const what = "For each finding it is sent the finding as shown here and, for a vulnerable package, the lines of your code that import it. Secret values are never sent, and no file content is sent for a leaked secret.";
 	return assistant.hosted
-		? `This sends that to ${assistant.host}, outside your own machines, under your API key, and each item is billed to it. ${what}`
+		? `This sends that to ${assistant.host}, ${OUTSIDE}, under your API key, and each item is billed to it. ${what}`
 		: `${what} It goes to your own model at ${assistant.host}.`;
 }

@@ -38,6 +38,7 @@ const LIST = [
 	["Settings → Projects", "page", ["#/settings", "#/settings/projects"]],
 	["Settings → Cloudflare", "page", ["#/settings", "#/settings/cloudflare"]],
 	["Settings → Monitor", "page", ["#/settings", "#/settings/monitor"]],
+	["Settings → Data", "page", ["#/settings", "#/settings/data"]],
 
 	// Cloudflare's dashboard, as the Cloudflare audit's fixes name it.
 	["Cloudflare → SSL/TLS → Overview", "web", [CLOUDFLARE, cloudflare(":zone/ssl-tls"), cloudflare(":zone/ssl-tls")]],
@@ -141,6 +142,6 @@ export function linkAllowed(href) {
  * @param {string[]} path the address's path, as `parseHash` gives it
  */
 export function settingsAnchor(path) {
-	const sections = ["model", "download", "projects", "access", "appearance", "cloudflare", "monitor"];
+	const sections = ["model", "download", "projects", "access", "appearance", "cloudflare", "monitor", "data"];
 	return path[0] === "settings" && sections.includes(path[1] ?? "") ? `settings-${path[1]}` : null;
 }

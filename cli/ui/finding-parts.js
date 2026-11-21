@@ -4,13 +4,14 @@
 import { judgementBlock } from "./analysis.js";
 import { download } from "./api.js";
 import { assistAction } from "./assist.js";
-import { banner, emptyState, formatNumber, formatWhen, h, icon, plural, select, severityBadge, statTile, stepNodes, tileRow, toast } from "./dom.js";
+import { banner, emptyState, formatNumber, formatWhen, h, icon, plural, replace, select, severityBadge, statTile, stepNodes, tileRow, toast } from "./dom.js";
 import { exportButton, openExportDialog } from "./export.js";
 import { openSendDialog, sendButton } from "./send.js";
 import { noteEditor } from "./finding-notes.js";
 import { ALL_SEVERITIES, isFiltering, matchesFilter, noFilter } from "./filter.js";
 import { buildHash, debounce, paramsFromFilter } from "./list.js";
-import { findingRows, store } from "./store.js";
+import { discussionsOnce, findingRows, rescanRepo, rescanRepos, store } from "./store.js";
+import { coverageGroups } from "./hints.js";
 
 /** @typedef {import("./filter.js").FindingFilter} FindingFilter */
 /** @typedef {import("./filter.js").Severity} Severity */
@@ -49,6 +50,36 @@ export function viewLink(path, filter, props, ...children) {
 		)
 	);
 	return link;
+}
+
+/**
+ * "Scan <repository> again", where the owner has just made a repair: on a roadmap action and in a
+ * finding's detail (US-4). It ends with what changed, "2 fixed, 1 new in shop" (app.js). Null for a
+ * place that is not a repository of the latest scan, such as a domain.
+ *
+ * @param {string} repo the repository's name, as the report gives it
+ */
+export function scanAgainButton(repo) {
+	if (!store.report?.repos.some((entry) => entry.name === repo)) return null;
+	const running = store.scan.state === "running";
+	return h(
+		"button",
+		{
+			type: "button",
+			class: "button quiet",
+			"aria-disabled": running ? "true" : null,
+			title: running ? "A scan is running" : `Scans ${repo} again with the same options as the last scan, and says what was fixed`,
+			onclick: async () => {
+				if (store.scan.state === "running") return;
+				try {
+					await rescanRepo(repo);
+				} catch (err) {
+					toast(err instanceof Error ? err.message : String(err), "error");
+				}
+			},
+		},
+		`Scan ${repo} again`,
+	);
 }
 
 /**
@@ -93,15 +124,37 @@ export function findingDetail(finding, repo) {
 					"div",
 					{ class: "how" },
 					h("h3", null, finding.suggestion.title),
-					h("ol", null, ...finding.suggestion.how.map((step) => h("li", null, ...stepNodes(step)))),
+					h("ol", null, ...finding.suggestion.how.map((step) => h("li", null, ...stepNodes(step, { copy: true })))),
 					// The same repair on the Roadmap, where it is ranked among the others.
-					h("p", { class: "hint" }, viewLink(["roadmap"], { ...noFilter(), query: finding.ruleId, repo }, {}, "See this repair on the Roadmap")),
+					h("p", { class: "hint" }, viewLink(["roadmap"], { ...noFilter(), query: finding.ruleId, repo }, {}, "See this repair on the Roadmap"), " ", scanAgainButton(repo)),
 				)
 			: null,
 		judgementBlock(finding),
-		explain ? h("div", { class: "assist-block" }, explain.button, explain.panel) : null,
+		explain ? h("div", { class: "assist-block" }, explain.button, explain.panel, explainedBefore(repo, finding)) : null,
 		noteEditor(repo, finding),
 	);
+}
+
+/**
+ * "Explained before": the kept discussion about this finding, where Explain is, so an answer is read
+ * again rather than asked for again (H-Q1). The newest one about this scan comes first; one about an
+ * earlier scan is said to be.
+ *
+ * @param {string} repo
+ * @param {{ ruleId: string, location: string, detail: string }} finding
+ */
+function explainedBefore(repo, finding) {
+	const slot = h("p", { class: "hint" });
+	void discussionsOnce().then((list) => {
+		const matches = list.filter((item) => item.kind === "finding" && item.repo === repo && item.finding?.ruleId === finding.ruleId && item.finding.location === finding.location && item.finding.detail === finding.detail);
+		if (matches.length === 0) return;
+		const current = store.report?.scannedAt;
+		const best = matches.find((item) => item.finding?.scannedAt === current) ?? matches[0];
+		if (!best) return;
+		const same = best.finding?.scannedAt === current;
+		replace(slot, h("a", { href: `#/discussions/${encodeURIComponent(best.id)}` }, same ? `Explained before, ${formatWhen(best.updatedAt)}` : `Explained about an earlier scan, ${formatWhen(best.updatedAt)}`), ` by ${best.model}.`);
+	});
+	return slot;
 }
 
 /**
@@ -125,7 +178,7 @@ export function findingsHeader(mode, filter) {
 				{ class: "sub" },
 				report
 					? `${plural(report.repos.length, "repository", "repositories")} under ${report.root} · scanned ${formatWhen(report.scannedAt)} · ${tools}`
-					: "The problems found in your code: leaked secrets and vulnerable packages.",
+					: "The findings in your code: leaked secrets and vulnerable packages.",
 			),
 		),
 		h(
@@ -190,11 +243,58 @@ function sbomButton() {
  * @param {string} [shows] what this page will hold once there is a scan
  */
 export function noScanYet(shows = "Every leaked password or key and every vulnerable package appears here, worst first.") {
-	return emptyState("Your code has not been checked yet", shows, h("a", { class: "button primary", href: "#/overview" }, "Check your code"));
+	return emptyState("Your code has not been scanned yet", shows, h("a", { class: "button primary", href: "#/overview" }, "Scan your code"));
 }
 
 export function coverageBanner() {
-	return store.notes.length > 0 ? banner("warning", "This scan is incomplete, so a clean result here is not a clean bill of health", store.notes) : null;
+	if (store.notes.length === 0) return null;
+	const report = store.report;
+	const groups = report ? coverageGroups(report) : [];
+	// Lines of one cause are said once, with the repositories and what to do (US-9); the rest as they are.
+	const others = groups.length > 0 ? store.notes.filter((line) => !/^(gitleaks|osv-scanner) (failed on|on) /.test(line)) : store.notes;
+	const node = banner("warning", "This scan is incomplete, so a clean result here is not a clean bill of health", others);
+	if (groups.length === 0) return node;
+	(node.lastElementChild ?? node).append(
+		h(
+			"ul",
+			{ class: "coverage-groups" },
+			...groups.slice(0, 20).map((group) =>
+				h(
+					"li",
+					null,
+					h("strong", null, `${group.title} (${plural(group.repos.length, "repository", "repositories")})`),
+					h("span", { class: "hint block wrap" }, group.repos.slice(0, 8).join(", "), group.repos.length > 8 ? ` and ${formatNumber(group.repos.length - 8)} more` : ""),
+					h("span", { class: "hint block" }, ...stepNodes(group.fix)),
+					rescanAllButton(group.repos),
+				),
+			),
+		),
+	);
+	return node;
+}
+
+/**
+ * "Scan these again": the repositories of one cause, scanned again as one job, by name (US-9).
+ *
+ * @param {string[]} repos
+ */
+function rescanAllButton(repos) {
+	return h(
+		"button",
+		{
+			type: "button",
+			class: "button quiet",
+			onclick: async () => {
+				if (store.scan.state === "running") return toast("A scan is running. Scan these again when it has finished.");
+				try {
+					await rescanRepos(repos);
+				} catch (err) {
+					toast(err instanceof Error ? err.message : String(err), "error");
+				}
+			},
+		},
+		repos.length === 1 ? `Scan ${repos[0]} again` : `Scan these ${formatNumber(repos.length)} again`,
+	);
 }
 
 /** Ignore files and scanner settings found in repositories: what they hide is not listed here. */
@@ -264,6 +364,8 @@ export function clearFiltersButton(filter, onCleared) {
 				class: "button quiet",
 				onclick: () => {
 					Object.assign(filter, noFilter());
+					// The set of new findings is kept: only the choice to show those alone is cleared.
+					filter.newOnly = false;
 					onCleared();
 					// The button hides itself, so focus goes to the search box at the start of the filters.
 					/** @type {HTMLElement | null} */ (document.querySelector('#view .filters input[type="search"]'))?.focus();
@@ -339,10 +441,37 @@ export function filterBar(filter, onChange, { extras = [], onCleared }) {
 			(value) => ((filter.kind = /** @type {FindingFilter["kind"]} */ (value)), changedNow()),
 		),
 		select("Repository", repoChoices(filter), filter.repo ?? "", (value) => ((filter.repo = value), changedNow())),
+		newChip(filter, changedNow),
 		...extras,
 		clear.button,
 	);
 	return bar;
+}
+
+/**
+ * "New since the last scan" (B-Q1): Porchlight's own comparison of this scan with the one before it,
+ * never a status, so it narrows the list as the other filters do and an export of it matches.
+ *
+ * @param {FindingFilter} filter
+ * @param {() => void} onChange
+ */
+export function newChip(filter, onChange) {
+	const count = store.change?.newCount ?? 0;
+	return h(
+		"button",
+		{
+			type: "button",
+			class: "chip",
+			"aria-pressed": String(filter.newOnly === true),
+			title: store.change ? "Only findings the last scan did not have" : "There is no earlier scan of these folders to compare with",
+			onclick: (/** @type {MouseEvent} */ event) => {
+				filter.newOnly = !filter.newOnly;
+				/** @type {HTMLElement} */ (event.currentTarget).setAttribute("aria-pressed", String(filter.newOnly));
+				onChange();
+			},
+		},
+		store.change ? `New since the last scan (${formatNumber(count)})` : "New since the last scan",
+	);
 }
 
 /**

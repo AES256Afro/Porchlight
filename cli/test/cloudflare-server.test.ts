@@ -481,7 +481,7 @@ test("the Cloudflare analysis is kept as a discussion, and the audit's export an
 	await new Promise((resolve) => setTimeout(resolve, 50));
 	const log = await readFile(join(own, "Log", (await readdir(join(own, "Log")))[0] ?? ""), "utf8");
 	assert.match(log, / {2}Cloudflare audit started$/m);
-	assert.match(log, / {2}Cloudflare audit finished: \d+ zones?, \d+ problems?$/m);
+	assert.match(log, / {2}Cloudflare audit finished: \d+ zones?, \d+ findings?$/m);
 	assert.match(log, / {2}Asked scripted-model at 127\.0\.0\.1:11434: Cloudflare analysis, answered in /m);
 	assert.match(log, / {2}Exported Cloudflare audit \(md\) to Porchlight\/Exports\//m);
 	for (const text of [log, await readFile(join(own, "Discussions", kept.name), "utf8"), await readFile(saved.path, "utf8")]) {

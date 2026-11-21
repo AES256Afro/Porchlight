@@ -66,9 +66,10 @@ function safeDecode(value) {
  * The filter an address describes. Anything unrecognised is ignored, so a stale or hand-edited link still opens.
  *
  * @param {URLSearchParams} params
+ * @param {ReadonlySet<string>} [newKeys] the findings new since the last scan, for `new=1`
  * @returns {FindingFilter}
  */
-export function filterFromParams(params) {
+export function filterFromParams(params, newKeys) {
 	const filter = noFilter();
 	const severity = params.get("severity");
 	if (severity !== null) {
@@ -80,6 +81,8 @@ export function filterFromParams(params) {
 	if (kind === "secret" || kind === "vulnerability" || kind === "private-data") filter.kind = kind;
 	filter.query = params.get("q") ?? "";
 	filter.repo = params.get("repo") ?? "";
+	if (params.get("new") === "1") filter.newOnly = true;
+	if (newKeys) filter.newKeys = newKeys;
 	return filter;
 }
 
@@ -97,6 +100,7 @@ export function paramsFromFilter(filter) {
 	if (filter.kind !== "all") settings.kind = filter.kind;
 	if (filter.query.trim() !== "") settings.q = filter.query.trim();
 	if (filter.repo) settings.repo = filter.repo;
+	if (filter.newOnly) settings.new = "1";
 	return settings;
 }
 

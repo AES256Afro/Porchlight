@@ -138,7 +138,7 @@ export async function accessSection() {
 			const input = /** @type {HTMLInputElement | null} */ (section.querySelector("#access-link"));
 			input?.focus();
 			input?.select();
-			toast("Copy the selected link with ⌘C");
+			toast(`Copy the selected link with ${/Mac/.test(navigator.platform) ? "⌘C" : "Ctrl+C"}`);
 		}
 	}
 }

@@ -479,7 +479,7 @@ async function unseenRows(copy: string, repo: string, run: Runner, reach: "all" 
  * gitleaks over a folder, run from inside it so the files it names are relative to it (and match a
  * repository's .gitleaksignore). It does not follow symbolic links, and skips .git.
  */
-async function folderRows(folder: string, repo: string, run: Runner, config: string): Promise<unknown[]> {
+export async function folderRows(folder: string, repo: string, run: Runner, config: string): Promise<unknown[]> {
 	const { code, stdout, stderr } = await run("gitleaks", ["dir", ...common(repo, config), "."], { cwd: folder });
 	if (code !== 0) throw new Error(errorLine(stderr) || `gitleaks exited with code ${code}`);
 	if (stderr.trim() !== "") throw new Error(errorLine(stderr));
@@ -502,7 +502,7 @@ function fileOf(row: unknown): string {
  * The regular files HEAD's own tree holds, by path, with the id of each: what is committed. Read with
  * `ls-tree`, which converts nothing. A repository with no commit yet has none.
  */
-async function headFiles(repo: string, run: Runner): Promise<Map<string, string>> {
+export async function headFiles(repo: string, run: Runner): Promise<Map<string, string>> {
 	const { code, stdout, stderr } = await run("git", [...GIT_SAFE_ARGS, "-C", repo, "ls-tree", "-r", "-z", "--full-tree", "HEAD"], { env: gitReadEnv() });
 	const files = new Map<string, string>();
 	if (code !== 0) {

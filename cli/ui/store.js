@@ -44,7 +44,7 @@ export const store = {
 	 *
 	 * `cloudflare`: whether a Cloudflare token is saved or given at start-up; never the token.
 	 *
-	 * @type {{ defaultRoot: string, reportPath: string, scanDepth: number, scanEveryHours: number, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean, source?: "settings", savedAt?: string }, github: { token: boolean, error?: string }, assistant: import("./generated.js").AssistantSettings, appearance: string, answers: string, remote: boolean, platform: string, sendTargets: import("./send-text.js").SendTarget[], lastView: string | null, cloudflare: CloudflareToken } | null}
+	 * @type {{ defaultRoot: string, reportPath: string, scanDepth: number, scanEveryHours: number, service: boolean, monitor: { configured: boolean, host?: string, error?: string, unset?: boolean, source?: "settings", savedAt?: string }, github: { token: boolean, error?: string }, assistant: import("./generated.js").AssistantSettings, appearance: string, answers: string, remote: boolean, platform: string, sendTargets: import("./send-text.js").SendTarget[], lastView: string | null, cloudflare: CloudflareToken, version: string, schedule: import("../src/ui/server.ts").ScheduleState | null } | null}
 	 */
 	settings: null,
 	/** @type {ScanReport | null} */
@@ -73,22 +73,33 @@ export const store = {
 	/**
 	 * The check of the computer Porchlight runs on. `service`: it does not run here (a container).
 	 *
-	 * @type {{ status: HostStatus, report: HostReport | null, service: boolean }}
+	 * `change`: against the check before it (G-Q1); null when there is none.
+	 *
+	 * @type {{ status: HostStatus, report: HostReport | null, service: boolean, change: import("../src/kept-checks.ts").CheckComparison | null, loaded: boolean }}
 	 */
-	host: { status: { state: "idle" }, report: null, service: false },
+	host: { status: { state: "idle" }, report: null, service: false, change: null, loaded: false },
 	/** @type {Projects} */
 	projects: { current: null, projects: [], canChange: false },
 	/**
 	 * The audit of the owner's Cloudflare account. `canChange`: this page may save the token and approve
 	 * changes (only the page on the computer Porchlight runs on).
 	 *
-	 * @type {{ loaded: boolean, token: CloudflareToken, status: CloudflareStatus, report: CfReport | null, changes: AppliedChange[], batch: import("../src/ui/server.ts").BatchStatus, lacking: string[], canChange: boolean, service: boolean, guide: CloudflareGuide | null }}
+	 * `change`: against the audit before it (F-Q3). `changedSince`: "<zone id>\n<change>" for each check
+	 * changed after the audit (F-Q2).
+	 *
+	 * @type {{ loaded: boolean, token: CloudflareToken, status: CloudflareStatus, report: CfReport | null, changes: AppliedChange[], batch: import("../src/ui/server.ts").BatchStatus, lacking: string[], canChange: boolean, service: boolean, guide: CloudflareGuide | null, change: import("../src/kept-checks.ts").CheckComparison | null, changedSince: Set<string> }}
 	 */
-	cloudflare: { loaded: false, token: { configured: false, source: null }, status: { state: "idle" }, report: null, changes: [], batch: { state: "idle" }, lacking: [], canChange: false, service: false, guide: null },
+	cloudflare: { loaded: false, token: { configured: false, source: null }, status: { state: "idle" }, report: null, changes: [], batch: { state: "idle" }, lacking: [], canChange: false, service: false, guide: null, change: null, changedSince: new Set() },
 };
 
-/** @type {Set<string>} */
-let newKeys = new Set();
+/**
+ * The keys of the findings new since the last scan. One set, changed in place when a report loads, so
+ * a page's filter can hold it once and always see the latest (B-Q1).
+ *
+ * @type {Set<string>}
+ */
+export const newFindingKeys = new Set();
+const newKeys = newFindingKeys;
 
 /** @type {Set<(change: Change) => void>} */
 const listeners = new Set();
@@ -144,6 +155,8 @@ export function load() {
 			sendTargets: Array.isArray(state.sendTargets) ? state.sendTargets : [],
 			lastView: typeof state.lastView === "string" ? state.lastView : null,
 			cloudflare: state.cloudflare ?? { configured: false, source: null },
+			version: typeof state.version === "string" ? state.version : "",
+			schedule: state.schedule ?? null,
 		};
 		emit("settings");
 		if (state.projects) setProjects(state.projects);
@@ -234,7 +247,8 @@ export async function loadReport() {
 		store.scans = [];
 		store.changeProblem = err instanceof Error ? err.message : String(err);
 	}
-	newKeys = new Set(store.change?.newKeys ?? []);
+	newKeys.clear();
+	for (const key of store.change?.newKeys ?? []) newKeys.add(key);
 	emit("report");
 }
 
@@ -298,6 +312,50 @@ export async function saveFindingNote(repo, finding, status, note, until = "") {
 	emit("notes");
 }
 
+/** @type {Promise<import("../src/discussions/discussions.ts").DiscussionSummary[]> | null} */
+let discussionList = null;
+
+/**
+ * The kept discussions, asked once a page load and again after a new answer (H-Q1). One that cannot be
+ * read is none: the page then simply offers no earlier answer.
+ */
+export function discussionsOnce() {
+	discussionList ??= api("GET", "/discussions").then(
+		(answer) => (Array.isArray(answer.discussions) ? answer.discussions : []),
+		() => [],
+	);
+	return discussionList;
+}
+
+/** A new answer was kept: the next ask reads the list again. */
+export function discussionsChanged() {
+	discussionList = null;
+}
+
+/**
+ * One status and note for several findings at once (B-Q2).
+ *
+ * @param {{ repo: string, ruleId: string, location: string, detail: string }[]} findings
+ * @param {string} status
+ * @param {string} note
+ * @param {string} [until]
+ * @returns {Promise<number>} how many were saved
+ */
+export async function saveFindingNotes(findings, status, note, until = "") {
+	const answer = await api("POST", "/findings/notes", {
+		findings: findings.map((finding) => ({ repo: finding.repo, ruleId: finding.ruleId, location: finding.location, detail: finding.detail })),
+		status,
+		note,
+		...(status === "accepted" && until ? { until } : {}),
+	});
+	for (const item of Array.isArray(answer.notes) ? answer.notes : []) {
+		if (item.note) store.findingNotes[item.key] = item.note;
+		else delete store.findingNotes[item.key];
+	}
+	emit("notes");
+	return Array.isArray(answer.notes) ? answer.notes.length : 0;
+}
+
 /**
  * @param {string} root
  * @param {number} depth
@@ -329,6 +387,17 @@ export async function startScan(root, depth, choices, sendsToHosted = false) {
  */
 export async function rescanRepo(repo) {
 	const { scan } = await api("POST", "/repos/rescan", { repo });
+	setScan(scan);
+	poll();
+}
+
+/**
+ * Scans several repositories of the report again, one after another, as one job (US-9).
+ *
+ * @param {string[]} repos
+ */
+export async function rescanRepos(repos) {
+	const { scan } = await api("POST", "/repos/rescan", { repos: repos.slice(0, 200) });
 	setScan(scan);
 	poll();
 }
@@ -376,7 +445,7 @@ export function findingRows() {
 /** Reads what the last check of this computer found, and follows a check that is running. */
 export async function loadHost() {
 	const data = await api("GET", "/host");
-	store.host = { status: data.status, report: data.report ?? null, service: data.service === true };
+	store.host = { status: data.status, report: data.report ?? null, service: data.service === true, change: data.change ?? null, loaded: true };
 	emit("host");
 	if (store.host.status.state === "running") pollHost();
 }
@@ -406,7 +475,7 @@ function pollHost() {
 		visibility: pageVisibility(),
 		run: async () => {
 			const data = await api("GET", "/host");
-			store.host = { status: data.status, report: data.report ?? null, service: data.service === true };
+			store.host = { status: data.status, report: data.report ?? null, service: data.service === true, change: data.change ?? null, loaded: true };
 			emit("host");
 			return data.status.state === "running";
 		},
@@ -431,6 +500,8 @@ function setCloudflare(data) {
 		canChange: data.canChange === true,
 		service: data.service === true,
 		guide: data.guide ?? null,
+		change: data.change ?? null,
+		changedSince: new Set(Array.isArray(data.changedSince) ? data.changedSince : []),
 	};
 	if (store.settings) store.settings.cloudflare = store.cloudflare.token;
 	emit("cloudflare");
@@ -484,7 +555,12 @@ export function updateCloudflare(update) {
 		store.cloudflare.token = update.token;
 		if (store.settings) store.settings.cloudflare = update.token;
 	}
-	if (update.changes) store.cloudflare.changes = update.changes;
+	if (update.changes) {
+		store.cloudflare.changes = update.changes;
+		// A change Cloudflare accepted after the audit marks its check, as the server does (F-Q2).
+		const checkedAt = store.cloudflare.report?.checkedAt ?? "";
+		for (const change of update.changes) if (change.ok && change.at > checkedAt) store.cloudflare.changedSince.add(`${change.zoneId}\n${change.change}`);
+	}
 	emit("cloudflare");
 }
 

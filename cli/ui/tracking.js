@@ -29,11 +29,26 @@ export const STATUSES = /** @type {const} */ ([
 
 /** @typedef {(typeof STATUSES)[number][0]} FindingStatus */
 /**
- * `until`: for "accepted", the last day (YYYY-MM-DD) the owner accepts the risk for. After it the
- * finding reads as open again, with a mark saying the acceptance has ended.
+ * Where a status was set from (R6U-7): the page on the computer that runs Porchlight, another device over
+ * the tailnet, a service's own page, or the command line.
  *
- * @typedef {{ status: FindingStatus, note: string, updatedAt: string, until?: string }} FindingNote
+ * @typedef {"here" | "device" | "service" | "cli"} NoteSource
  */
+/** @type {Record<NoteSource, string>} */
+export const NOTE_SOURCES = { here: "on this computer", device: "from another device", service: "on the service's page", cli: "from the command line" };
+
+/**
+ * `until`: for "accepted", the last day (YYYY-MM-DD) the owner accepts the risk for. After it the
+ * finding reads as open again, with a mark saying the acceptance has ended. `by`: where it was set
+ * from. `previous`: the status it replaced, so a change made from elsewhere is never silent (R6U-7).
+ *
+ * @typedef {{ status: FindingStatus, note: string, updatedAt: string, until?: string, by?: NoteSource, previous?: { status: FindingStatus, updatedAt: string, by?: NoteSource } }} FindingNote
+ */
+
+/** @param {unknown} value @returns {value is NoteSource} */
+export function isNoteSource(value) {
+	return typeof value === "string" && Object.hasOwn(NOTE_SOURCES, value);
+}
 
 /** The longest note, in characters. */
 export const MAX_NOTE = 2000;
@@ -95,6 +110,21 @@ export function changeSummary(change) {
 	if (change.newCount > 0) parts.push(`${change.newCount.toLocaleString("en")} new`);
 	if (change.fixedCount > 0) parts.push(`${change.fixedCount.toLocaleString("en")} fixed`);
 	return `${parts.join(", ")} since the previous scan.${caveat}`;
+}
+
+/**
+ * What scanning one repository again changed, in one line: "2 fixed, 1 new in shop" (US-4). Findings it
+ * could not look for again are said apart: not found is not fixed (invariant 5).
+ *
+ * @param {{ repo: string, fixedCount: number, newCount: number, uncheckedCount: number }} change
+ */
+export function rescanWords(change) {
+	const parts = [];
+	if (change.fixedCount > 0) parts.push(`${change.fixedCount.toLocaleString("en-GB")} fixed`);
+	if (change.newCount > 0) parts.push(`${change.newCount.toLocaleString("en-GB")} new`);
+	const head = parts.length > 0 ? `${parts.join(", ")} in ${change.repo}` : `Nothing fixed and nothing new in ${change.repo}`;
+	const caveat = change.uncheckedCount > 0 ? `; ${change.uncheckedCount.toLocaleString("en-GB")} could not be checked again, so ${change.uncheckedCount === 1 ? "it stays" : "they stay"} as before` : "";
+	return `${head}${caveat}.`;
 }
 
 /**

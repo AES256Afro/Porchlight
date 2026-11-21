@@ -1,6 +1,7 @@
 // @ts-check
 // Settings → Model: where the model behind Explain, Summarise, Ask and Deeper analysis runs.
 // Keys are typed here and sent to Porchlight's own server once; the server never sends one back.
+import { OUTSIDE } from "./hints.js";
 import { api } from "./api.js";
 import { banner, h, icon, replace, setOff, stepNodes, toast } from "./dom.js";
 import { MODEL_CHOICES, modelChoice } from "./models.js";
@@ -168,7 +169,7 @@ export async function modelSection() {
 					h(
 						"div",
 						{ class: "model-group" },
-						h("h3", null, title, group === "hosted" ? h("span", { class: "hint" }, " · sends data off your machines when you ask") : null),
+						h("h3", null, title, group === "hosted" ? h("span", { class: "hint" }, ` · sends data ${OUTSIDE} when you ask`) : null),
 						h(
 							"div",
 							{ class: "choice-grid" },

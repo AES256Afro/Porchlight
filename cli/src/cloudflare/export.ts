@@ -55,7 +55,7 @@ function planLine(zone: CfZoneReport): string {
 function summary(report: CfReport): string {
 	const counts = cfCounts(allChecks(report));
 	const severities = (["critical", "high", "medium", "low"] as const).map((severity) => `${counts.bySeverity[severity] ?? 0} ${SEVERITY_WORDS[severity].toLowerCase()}`).join(", ");
-	return `${counts.failed} problems (${severities}), ${counts.unknown} could not be checked, ${counts.passed} passed, ${counts.unavailable} not on the zone's plan`;
+	return `${counts.failed} ${counts.failed === 1 ? "finding" : "findings"} (${severities}), ${counts.unknown} could not be checked, ${counts.passed} passed, ${counts.unavailable} not on the zone's plan`;
 }
 
 function markdown(report: CfReport, partial: string | null): string {

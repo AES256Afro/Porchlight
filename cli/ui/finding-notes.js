@@ -3,7 +3,7 @@
 // set. Built with h() like everything else; the note is the owner's text, shown as text.
 import { formatWhen, h, isOff, replace, setOff, toast } from "./dom.js";
 import { isNew, noteFor, saveFindingNote } from "./store.js";
-import { acceptanceEnded, createDrafts, findingKey, localDay, MAX_NOTE, statusesFor, statusLabel } from "./tracking.js";
+import { acceptanceEnded, createDrafts, findingKey, localDay, MAX_NOTE, NOTE_SOURCES, statusesFor, statusLabel } from "./tracking.js";
 
 /** @typedef {{ ruleId: string, location: string, detail: string, kind?: string }} FindingId */
 
@@ -76,7 +76,7 @@ export function noteEditor(repo, finding) {
 		h("textarea", { rows: 2, maxLength: MAX_NOTE, "aria-label": "Note", placeholder: "Your note: a ticket, who is on it, why the risk is accepted…", oninput: () => keep() })
 	);
 	note.value = draft?.note ?? saved?.note ?? "";
-	const when = h("span", { class: "hint" }, draft ? "Not saved yet" : saved?.updatedAt ? `Saved ${formatWhen(saved.updatedAt)}` : "");
+	const when = h("span", { class: "hint" }, draft ? "Not saved yet" : saved?.updatedAt ? savedWords(saved) : "");
 	const button = /** @type {HTMLButtonElement} */ (
 		h(
 			"button",
@@ -119,4 +119,16 @@ export function noteEditor(repo, finding) {
 				: "Kept for this finding in later scans too. It never changes the finding's severity or the counts.",
 		),
 	);
+}
+
+/**
+ * "Saved 2 hours ago from another device; it was Accepted risk before": where a status came from and
+ * what it replaced, so a change made elsewhere is never silent (R6U-7).
+ *
+ * @param {import("./tracking.js").FindingNote} saved
+ */
+export function savedWords(saved) {
+	const from = saved.by ? ` ${NOTE_SOURCES[saved.by]}` : "";
+	const before = saved.previous ? `; it was ${statusLabel(saved.previous.status)} before${saved.previous.by ? `, set ${NOTE_SOURCES[saved.previous.by]}` : ""}` : "";
+	return `Saved ${formatWhen(saved.updatedAt)}${from}${before}`;
 }

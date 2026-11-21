@@ -9,6 +9,7 @@
  */
 import type { Severity } from "../repos/types.ts";
 import type { CfArea, CfChangeId, CfCheck, CfPlan, CfStatus } from "./types.ts";
+import { dkimStrengthCheck } from "./dkim.ts";
 
 /** A value read from Cloudflare, or why it could not be. */
 export type Read<T> = { ok: true; value: T } | { ok: false; denied: boolean; message: string };
@@ -733,6 +734,9 @@ export function emailChecks(zone: ZoneData): CfCheck[] {
 			}),
 		);
 	else out.push(check("dkim", "email", "DKIM", "passed", "low", "No MX record and no DKIM key: if the domain sends no mail, the SPF and DMARC records above are what stop spoofing.", whyDkim));
+	// How strong the keys are, from the same records (FT-5).
+	const strength = dkimStrengthCheck(dkim.map((record) => ({ name: record.name, type: record.type, value: record.type === "TXT" ? txtValue(record.content) : record.content })));
+	if (strength) out.push(strength);
 	return out;
 }
 

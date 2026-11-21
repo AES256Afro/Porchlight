@@ -16,7 +16,7 @@ export function renderHostText(report: HostReport): string {
 	const lines: string[] = [];
 	const os = report.os ? `${report.os.name} ${report.os.version}${report.os.build ? ` (${report.os.build})` : ""}` : report.platform;
 	lines.push(`This computer: ${plain(os)}, checked ${report.checkedAt}`);
-	lines.push(`${counts.failed} problems, ${counts.unknown} could not be checked, ${counts.passed} passed`, "");
+	lines.push(`${counts.failed} ${counts.failed === 1 ? "finding" : "findings"}, ${counts.unknown} could not be checked, ${counts.passed} passed`, "");
 	for (const [area, title] of AREA_TITLES) {
 		const checks = report.checks.filter((check) => check.area === area);
 		if (checks.length === 0) continue;
