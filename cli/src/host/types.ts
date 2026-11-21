@@ -5,7 +5,7 @@
  */
 import type { Severity } from "../repos/types.ts";
 
-export const HOST_AREAS = ["updates", "protection", "network", "credentials", "packages"] as const;
+export const HOST_AREAS = ["updates", "protection", "network", "credentials", "startup", "packages"] as const;
 export type HostArea = (typeof HOST_AREAS)[number];
 
 /** `unknown`: the check could not run or its answer was not understood. Never a pass. */

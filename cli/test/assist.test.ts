@@ -5,6 +5,7 @@ import { AssistantError, assistantConfig, chat, withoutThinking, type ChatMessag
 import { askPrompt, DATA_CAP, DATA_END, DATA_START, domainPrompt, estimateTokens, findingPrompt, locateFinding, roadmapPrompt, type Prompt } from "../src/assist/prompts.ts";
 import type { Finding, ScanReport } from "../src/repos/types.ts";
 import type { MonitorReport } from "../src/roadmap/domains.ts";
+import { fakeFetch } from "./helpers.ts";
 
 const config = assistantConfig({ PORCHLIGHT_LLM_URL: "http://ollama.test:11434", PORCHLIGHT_LLM_MODEL: "qwen-test:9b" });
 /** Stands in for scan data in a prompt: no error message may repeat it. */
@@ -14,15 +15,6 @@ const messages: ChatMessage[] = [
 	{ role: "user", content: `Explain ${PROMPT_MARKER}` },
 ];
 
-/** A scripted Ollama: answers each call with `answer`, and keeps what was sent. */
-function fakeFetch(answer: (url: URL, init: RequestInit) => Response | Promise<Response>) {
-	const calls: { url: string; init: RequestInit }[] = [];
-	const fn = (async (url: URL, init: RequestInit) => {
-		calls.push({ url: url.toString(), init });
-		return answer(url, init);
-	}) as unknown as typeof fetch;
-	return Object.assign(fn, { calls });
-}
 
 const reply = (content: string) => Response.json({ model: "qwen-test:9b", message: { role: "assistant", content }, done: true });
 

@@ -21,6 +21,8 @@ export async function cloudflareSection() {
 	let busy = false;
 	/** @type {Node | null} */
 	let result = null;
+	/** Whether the owner opened or closed the guide; until then it is open only while no token is set. @type {boolean | null} */
+	let guideOpen = null;
 	const input = /** @type {HTMLInputElement} */ (h("input", { type: "password", name: "cloudflare-token", autocomplete: "off", spellcheck: false, "aria-label": "Cloudflare API token", placeholder: "Paste the token Cloudflare showed you" }));
 
 	/**
@@ -89,35 +91,47 @@ export async function cloudflareSection() {
 				"The Cloudflare page checks every domain in your Cloudflare account with an API token you make. The token is sent once to Porchlight on this computer, kept here readable only by you, and sent nowhere but Cloudflare's API. This page never sees it again, and no model ever does.",
 			),
 			status,
-			h("h3", null, "Make a read-only token"),
+			// The guide is folded once a token is in place, so Settings stays short (I-D2).
 			h(
-				"ol",
-				{ class: "steps" },
+				"details",
+				{
+					class: "options settings-fold",
+					open: guideOpen ?? !token.configured,
+					ontoggle: (/** @type {Event} */ event) => {
+						guideOpen = /** @type {HTMLDetailsElement} */ (event.currentTarget).open;
+					},
+				},
+				h("summary", null, "How to make a token, and the permissions it needs"),
+				h("h3", null, "Make a read-only token"),
 				h(
-					"li",
-					null,
-					"Open ",
-					h("a", { href: guide.templateUrl, target: "_blank", rel: "noopener noreferrer", title: "Opens dash.cloudflare.com in your browser" }, "Create token on Cloudflare"),
-					". It opens Cloudflare's token page with most of the read permissions below ticked. Cloudflare leaves out any it does not recognise without saying so, so check the list.",
+					"ol",
+					{ class: "steps" },
+					h(
+						"li",
+						null,
+						"Open ",
+						h("a", { href: guide.templateUrl, target: "_blank", rel: "noopener noreferrer", title: "Opens dash.cloudflare.com in your browser" }, "Create token on Cloudflare"),
+						". It opens Cloudflare's token page with most of the read permissions below ticked. Cloudflare leaves out any it does not recognise without saying so, so check the list.",
+					),
+					h("li", null, "Give it Read for each of these, for all zones and accounts (or only the ones to audit). The audit needs nothing more:"),
 				),
-				h("li", null, "Give it Read for each of these, for all zones and accounts (or only the ones to audit). The audit needs nothing more:"),
+				h(
+					"ul",
+					{ class: "plain-list cloudflare-permissions" },
+					...guide.read.map((permission) => h("li", null, h("strong", null, `${permission.scope} · ${permission.name}`), `: ${permission.purpose}`)),
+				),
+				h(
+					"p",
+					{ class: "hint" },
+					"Optional, and Edit rather than Read: only if you want Porchlight to make changes for you. Each change is shown to you as the exact request first, one at a time or together under Fix these, and sent only when you approve it on this computer. Just before sending, Porchlight reads the current value and sends nothing that is no longer what the audit found:",
+				),
+				h(
+					"ul",
+					{ class: "plain-list cloudflare-permissions" },
+					...guide.write.map((permission) => h("li", null, h("strong", null, `${permission.scope} · ${permission.name}`), `: ${permission.purpose}`)),
+				),
+				h("p", { class: "hint" }, ...stepNodes("A permission the token lacks is shown as Could not check on the Cloudflare page, never as passed. Tokens you made are listed in Cloudflare → My Profile → API Tokens.")),
 			),
-			h(
-				"ul",
-				{ class: "plain-list cloudflare-permissions" },
-				...guide.read.map((permission) => h("li", null, h("strong", null, `${permission.scope} · ${permission.name}`), `: ${permission.purpose}`)),
-			),
-			h(
-				"p",
-				{ class: "hint" },
-				"Optional, and Edit rather than Read: only if you want Porchlight to make changes for you. Each change is shown to you as the exact request first, one at a time or together under Fix these, and sent only when you approve it on this computer. Just before sending, Porchlight reads the current value and sends nothing that is no longer what the audit found:",
-			),
-			h(
-				"ul",
-				{ class: "plain-list cloudflare-permissions" },
-				...guide.write.map((permission) => h("li", null, h("strong", null, `${permission.scope} · ${permission.name}`), `: ${permission.purpose}`)),
-			),
-			h("p", { class: "hint" }, ...stepNodes("A permission the token lacks is shown as Could not check on the Cloudflare page, never as passed. Tokens you made are listed in Cloudflare → My Profile → API Tokens.")),
 			canChange
 				? h(
 						"form",

@@ -2,10 +2,11 @@
 import { api } from "./api.js";
 import { analysisCard } from "./analysis.js";
 import { askCard, localModelCard } from "./assist.js";
-import { banner, formatNumber, formatWhen, h, icon, isOff, PHASE_TITLES, plural, replace, setOff, severityBadge, statTile, stepNodes, tileRow, toast } from "./dom.js";
+import { banner, formatNumber, formatWhen, h, icon, isOff, PHASE_TITLES, plural, replace, setOff, severityBadge, shownText, statTile, stepNodes, tileRow, toast } from "./dom.js";
 import { coverageBanner } from "./finding-parts.js";
 import { githubPanel } from "./github.js";
-import { emptyScanHints, overviewRedraws, previewAdvice, scheduleWords, toolAdvice } from "./hints.js";
+import { severityBar } from "./charts.js";
+import { emptyScanHints, osvAgeWords, overviewRedraws, previewAdvice, scheduleWords, toolAdvice } from "./hints.js";
 import { connectionsCheck, glanceCard, reviewCard } from "./glance.js";
 import { buildHash } from "./list.js";
 import { choicesToParams, depthOf, describeChoices, PRESETS, startingChoices } from "./scan-choices.js";
@@ -18,7 +19,6 @@ import { trendChart, trendColumns } from "./charts.js";
 /** @typedef {import("./filter.js").Severity} Severity */
 
 const SEVERITIES = /** @type {const} */ (["critical", "high", "medium", "low"]);
-const SEVERITY_LABELS = { critical: "Critical", high: "High", medium: "Medium", low: "Low" };
 const TOP = 6;
 /** Repositories named before a scan; the rest are counted. */
 const CHIPS = 14;
@@ -44,6 +44,8 @@ export async function renderOverview(view, context) {
 	let asked = 0;
 	/** @type {import("./hints.js").ScanPreview | null} */
 	let preview = null;
+	/** How old OSV's databases are, where they are kept here; null otherwise. @type {{ old: boolean, words: string } | null} */
+	let osvAge = null;
 	/** @type {ReturnType<typeof analysisCard>} */
 	let analysis = null;
 	/** Whether the owner has typed in the folder box: a new report then leaves it alone (B41). */
@@ -189,7 +191,7 @@ export async function renderOverview(view, context) {
 	/** "Options: Quick", so the preset is in sight with the panel closed. */
 	function nameOptions() {
 		const preset = options.choices().preset;
-		optionsSummary.textContent = `Options: ${PRESETS.find((entry) => entry.key === preset)?.label ?? "Custom"}`;
+		optionsSummary.textContent = shownText(`Options: ${PRESETS.find((entry) => entry.key === preset)?.label ?? "Custom"}`);
 	}
 
 	/** Keeps the choices and the depth in the address, so "Check again" after a reload checks the same. */
@@ -219,8 +221,13 @@ export async function renderOverview(view, context) {
 		if (root === "") return;
 		replace(previewSlot, h("p", { class: "hint" }, "Looking for repositories…"));
 		try {
-			const answer = await api("GET", `/repos/preview?root=${encodeURIComponent(root)}&depth=${depthOf(depthInput.value, defaultDepth)}${wholeHome ? "&home=1" : ""}`);
+			const [answer, database] = await Promise.all([
+				api("GET", `/repos/preview?root=${encodeURIComponent(root)}&depth=${depthOf(depthInput.value, defaultDepth)}${wholeHome ? "&home=1" : ""}`),
+				// The age of OSV's databases, where they are kept here; a server without the answer says nothing.
+				api("GET", "/repos/osv-database").catch(() => null),
+			]);
 			if (left || current !== asked) return;
+			osvAge = database ? osvAgeWords({ offline: database.offline === true, refreshedAt: typeof database.refreshedAt === "string" ? database.refreshedAt : null }, formatWhen) : null;
 			preview = /** @type {import("./hints.js").ScanPreview} */ (answer.preview);
 			drawPreview();
 		} catch (err) {
@@ -245,6 +252,7 @@ export async function renderOverview(view, context) {
 			"div",
 			null,
 			...lacking.map((line) => h("p", { class: "form-error", role: "note" }, ...stepNodes(line, { copy: true }))),
+			osvAge ? h("p", { class: "hint", role: osvAge.old ? "note" : null }, osvAge.words) : null,
 			elsewhere
 				? h(
 						"p",
@@ -299,7 +307,7 @@ export async function renderOverview(view, context) {
 		// Nothing to check is said above the button; pressing it would only say so again.
 		setOff(scanButton, running || (preview !== null && total <= 0));
 		const count = preview && total > 0 ? ` ${plural(total, "repository", "repositories")}` : "";
-		scanButton.textContent = running ? "Scanning…" : store.report ? `Scan${count} again` : `Scan${count}`;
+		scanButton.textContent = shownText(running ? "Scanning…" : store.report ? `Scan${count} again` : `Scan${count}`);
 		if (running) {
 			const known = scan.total > 0;
 			replace(
@@ -387,9 +395,10 @@ export async function renderOverview(view, context) {
 			tileRow(
 				// Each number opens the findings it counts.
 				statTile("Total findings", rows.length, null, "#/findings"),
-				...SEVERITIES.map((severity) => statTile(SEVERITY_LABELS[severity], counts[severity], icon(severity, `severity-${severity}`), buildHash(["findings"], { severity }))),
 				statTile("Repositories affected", `${formatNumber(affected.length)} of ${formatNumber(report.repos.length)}`, null, "#/findings/by-repo"),
 			),
+			// The same severity bar as Findings (VS-14), each count a link to those findings.
+			severityBar(counts, (severity) => buildHash(["findings"], { severity })),
 			h(
 				"div",
 				{ class: "columns" },

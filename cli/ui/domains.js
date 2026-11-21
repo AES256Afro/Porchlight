@@ -5,7 +5,8 @@ import { banner, copyButton, formatNumber, formatWhen, h, hostName, icon, isOff,
 import { exportButton, openExportDialog } from "./export.js";
 import { domainFromInput, monitorSetupSteps, monitorStatusWords, overdueDomains } from "./hints.js";
 import { paginate } from "./list.js";
-import { trendChart } from "./charts.js";
+import { severityBar, trendChart } from "./charts.js";
+import { hostsSection } from "./domain-hosts.js";
 
 const WATCHES = "Watches the domains you own for new subdomains, DNS changes, expiring certificates and missing security headers. It only looks at what is public.";
 
@@ -288,6 +289,7 @@ export async function renderDomains(view, route) {
 						h("h2", null, everVerified ? "Ready for its first scan" : "Not scanned yet"),
 						h("p", null, everVerified ? "Choose Scan now. The first scan records how things are today; later scans show what changed." : "Add the DNS record above, then choose Check DNS record. Scanning starts once it is found."),
 					),
+			report ? hostsSection(domain.name, report.hostCount) : null,
 			historySlot,
 		);
 
@@ -301,7 +303,7 @@ export async function renderDomains(view, route) {
 			if (isOff(button)) return;
 			const label = button.textContent;
 			setOff(button, true);
-			button.textContent = busyLabel;
+			button.textContent = shownText(busyLabel);
 			// The result is said on the page, beside what it is about, until the next check: a DNS record
 			// that is not there yet is the usual answer, and it needs reading, not a toast that leaves.
 			try {
@@ -310,7 +312,7 @@ export async function renderDomains(view, route) {
 			} catch (err) {
 				outcome = { domain: domain.name, ok: false, text: message(err) };
 			}
-			button.textContent = label;
+			button.textContent = shownText(label ?? "");
 			await refreshList();
 			await showDetail();
 		}
@@ -504,13 +506,9 @@ function reportView(report, suggestions, page, go) {
 		{ class: "report" },
 		h("p", { class: "sub" }, `Scanned ${formatWhen(report.takenAt)}. ${summary}`),
 		report.notes.length > 0 ? banner("warning", "This scan could not see everything", report.notes) : null,
-		tileRow(
-			statTile("Hosts", report.hostCount),
-			statTile("Open findings", report.findings.length),
-			statTile("High", count("high"), icon("high", "severity-high")),
-			statTile("Medium", count("medium"), icon("medium", "severity-medium")),
-			statTile("Low", count("low"), icon("low", "severity-low")),
-		),
+		tileRow(statTile("Hosts", report.hostCount), statTile("Open findings", report.findings.length)),
+		// The same severity bar as Findings (VS-14); the monitor's findings are never critical.
+		report.findings.length > 0 ? severityBar({ critical: 0, high: count("high"), medium: count("medium"), low: count("low") }, undefined, ["high", "medium", "low"]) : null,
 		report.changes.length > 0
 			? h("div", null, h("h3", null, "Changes since the previous scan"), h("ul", { class: "changes" }, ...report.changes.map(changeItem)))
 			: null,
@@ -639,6 +637,14 @@ function changeItem(change) {
 			);
 		case "https_changed":
 			return h("li", null, icon("change"), h("span", null, "HTTPS on ", hostName(change.host), ` went from ${change.before} to ${change.after}`));
+		case "issuer_added":
+			// An authority not seen before: expected after changing provider, worth a look otherwise (FT-3).
+			return h(
+				"li",
+				null,
+				icon("plus", "change-added"),
+				h("span", null, "New certificate authority for ", hostName(change.host), ": ", h("strong", null, change.issuer), change.names.length > 0 ? ` (${change.names.join(", ")})` : "", ". Expected if you changed provider; if not, check who asked for it."),
+			);
 	}
 }
 

@@ -1,6 +1,6 @@
 // @ts-check
 // Settings: the model, projects, access from other devices, the look of the interface, and what Porchlight is connected to.
-import { api } from "./api.js";
+import { api, download } from "./api.js";
 import { h, icon, replace, scrollMotion, toast } from "./dom.js";
 import { applyLook, currentLook } from "./appearance.js";
 import { redrawAnswers } from "./assist.js";
@@ -12,6 +12,8 @@ import { modelDownloadSection } from "./model-download.js";
 import { monitorSection } from "./monitor-settings.js";
 import { modelSection } from "./model-settings.js";
 import { projectsSection } from "./projects.js";
+import { dueSection } from "./seen.js";
+import { modelTasksSection } from "./model-tasks.js";
 import { load, store, subscribe } from "./store.js";
 import { connectionsCheck } from "./glance.js";
 import { formatNumber, formatWhen, isOff, plural, setOff } from "./dom.js";
@@ -93,12 +95,14 @@ export async function renderSettings(view) {
 				h("div", { class: "page-head" }, h("div", null, h("h1", null, "Settings"), h("p", { class: "sub" }, "Which model Porchlight uses, where it keeps your files, how it looks, and what it's connected to."))),
 				(replace(index, ...connections()), index),
 				model,
+				store.settings?.service ? null : modelTasksSection(),
 				downloads,
 				projects,
 				cloudflare,
 				monitor,
 				access,
 				dataSection(),
+				dueSection(),
 				h(
 					"fieldset",
 					{ id: "settings-appearance", tabindex: "-1", class: "card full looks" },
@@ -283,7 +287,22 @@ function dataSection() {
 						),
 					),
 				),
-				h("div", { class: "actions" }, remove),
+				h(
+					"div",
+					{ class: "actions" },
+					// Kept as a spreadsheet before they go, or to match them by hand after a move (M15).
+					h(
+						"button",
+						{
+							type: "button",
+							class: "button quiet",
+							onclick: () => void download("/findings/orphans/export").catch((err) => toast(err instanceof Error ? err.message : String(err), "error")),
+						},
+						icon("download"),
+						"Export them (CSV)",
+					),
+					remove,
+				),
 			);
 		} catch (err) {
 			replace(body, h("p", { class: "form-error" }, err instanceof Error ? err.message : String(err)));

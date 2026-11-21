@@ -5,6 +5,7 @@
 import { api } from "./api.js";
 import { h, icon, LOCALE, pageVisibility, replace } from "./dom.js";
 import { poller } from "./poller.js";
+import { egressSection } from "./egress.js";
 
 /** @typedef {import("../src/ui/server.ts").ActivityLine} ActivityLine */
 
@@ -113,6 +114,7 @@ export async function renderActivity(view) {
 				),
 			),
 			h("div", { class: "card full activity-card" }, live.node),
+			egressSection(),
 		),
 	);
 	return () => live.stop();

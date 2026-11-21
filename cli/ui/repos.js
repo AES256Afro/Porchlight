@@ -156,6 +156,9 @@ export async function renderByRepo(view, route) {
 									row.repo.name,
 								)
 							: h("span", { class: "disclosure static" }, row.repo.name),
+						row.repo.historyReusedFrom
+							? h("span", { class: "tag", title: `Its history had not changed since it was read whole ${formatWhen(row.repo.historyReusedFrom)}, so those findings were used again` }, "History reused")
+							: null,
 					),
 					h("td", null, worstBadge(row.counts, incomplete(report, row.repo))),
 					...ALL_SEVERITIES.map((severity) => countCell(row.counts[severity], SEVERITY_LABELS[severity])),
@@ -270,6 +273,10 @@ export async function renderByRepo(view, route) {
 				// After a fix: check this repository alone, without waiting for a scan of them all.
 				rescanButton(repo, running),
 				repo.rescannedAt ? h("span", { class: "hint" }, `Scanned again ${formatWhen(repo.rescannedAt)}, after the scan of them all.`) : null,
+				// Its history was not read again: nothing that decides what gitleaks finds there had changed (OP-1).
+				repo.historyReusedFrom
+					? h("span", { class: "hint" }, `History not read again: no commit, ref, rule or setting had changed since it was read whole ${formatWhen(repo.historyReusedFrom)}, so those findings are used again.`)
+					: null,
 			),
 			repo.errors.length > 0
 				? banner(

@@ -4,6 +4,8 @@ import { run as defaultRun, ToolMissingError, type Runner } from "./exec.ts";
 import { outsideWords, readsOutside } from "./includes.ts";
 import { OSV_LIMITS } from "./osv.ts";
 import { nameUnder } from "./report.ts";
+import { classifyLicences, LICENCE_WORDS, licenceCounts, licenceSummary, REVIEW_CLASSES, type LicenceClass } from "./licences.ts";
+import { confusionIn, ecosystemOfPurl, lookalikes, type PackageAdvice } from "./lookalike.ts";
 
 // A software bill of materials: every package the repositories' lockfiles name, as CycloneDX 1.5.
 // osv-scanner reads the lockfiles with --offline, so nothing is sent anywhere: no package name, no
@@ -29,6 +31,20 @@ interface Component {
 	version?: string;
 	purl?: string;
 	licenses?: { license: { id?: string; name?: string } }[];
+	/**
+	 * Porchlight's notes on the package, when it has any: `porchlight:licence-risk` (FT-6) and
+	 * `porchlight:advice` (FT-7). Advice beside the package, never a finding.
+	 */
+	properties?: { name: string; value: string }[];
+}
+
+/** One repository's packages, with Porchlight's licence counts and advice on its packages and settings. */
+interface RepoComponent {
+	type: "application";
+	"bom-ref": string;
+	name: string;
+	components: Component[];
+	properties?: { name: string; value: string }[];
 }
 
 export interface Sbom {
@@ -43,7 +59,7 @@ export interface Sbom {
 		properties?: { name: string; value: string }[];
 	};
 	/** One per repository, each holding its packages. */
-	components: { type: "application"; "bom-ref": string; name: string; components: Component[] }[];
+	components: RepoComponent[];
 }
 
 /**
@@ -89,7 +105,8 @@ export async function buildSbom(options: SbomOptions): Promise<Sbom> {
 			missed.push({ name: "porchlight:not-covered", value: `${name}: osv-scanner could not read its lockfiles (exit code ${code})` });
 			continue;
 		}
-		components.push({ type: "application", "bom-ref": `repository:${name}`, name, components: code === 128 ? [] : packagesOf(stdout, name) });
+		const packages = code === 128 ? [] : packagesOf(stdout, name);
+		components.push(await withAdvice({ type: "application", "bom-ref": `repository:${name}`, name, components: packages }, path));
 	}
 	return {
 		bomFormat: "CycloneDX",
@@ -103,6 +120,62 @@ export async function buildSbom(options: SbomOptions): Promise<Sbom> {
 		},
 		components,
 	};
+}
+
+/**
+ * A repository's packages with Porchlight's notes: each package's licence class when it is one to
+ * review (FT-6), a name one letter from a popular package's (FT-7), and, on the repository, its licence
+ * counts and any dependency-confusion advice from its own top-level files. Read offline; nothing is
+ * looked up. Exported for tests.
+ */
+export async function withAdvice(repo: RepoComponent, path: string): Promise<RepoComponent> {
+	const kinds: LicenceClass[] = [];
+	const known: { ecosystem: "npm" | "PyPI"; name: string }[] = [];
+	for (const component of repo.components) {
+		const kind = classifyLicences(component.licenses);
+		kinds.push(kind);
+		if (REVIEW_CLASSES.includes(kind)) note(component, "porchlight:licence-risk", `${kind}: ${LICENCE_WORDS[kind]}`);
+		const ecosystem = ecosystemOfPurl(component.purl);
+		if (ecosystem) known.push({ ecosystem, name: component.name });
+	}
+	const byName = new Map(repo.components.map((component) => [`${ecosystemOfPurl(component.purl)}\n${component.name}`, component]));
+	const confusion = await confusionIn(path);
+	const advice: PackageAdvice[] = [...lookalikes(known), ...confusion.advice];
+	const repoNotes: { name: string; value: string }[] = [{ name: "porchlight:licences", value: licenceSummary(licenceCounts(kinds)) }];
+	for (const item of advice) {
+		const target = item.name ? byName.get(`${item.ecosystem}\n${item.name}`) : undefined;
+		const value = `${item.level}: ${item.reason}`;
+		if (target) note(target, "porchlight:advice", value);
+		else repoNotes.push({ name: "porchlight:advice", value: item.name ? `${item.level}: ${item.name}: ${item.reason}` : value });
+	}
+	for (const file of confusion.unread) repoNotes.push({ name: "porchlight:advice-not-covered", value: `${file} was not read for dependency confusion` });
+	return { ...repo, properties: repoNotes };
+}
+
+function note(component: Component, name: string, value: string): void {
+	component.properties = [...(component.properties ?? []), { name, value }];
+}
+
+/** Each piece of advice in an SBOM, with its repository, most serious first: for the command line. */
+export function sbomAdvice(sbom: Sbom): { repo: string; level: string; text: string }[] {
+	const found: { repo: string; level: string; text: string }[] = [];
+	for (const repo of sbom.components) {
+		for (const property of repo.properties ?? []) if (property.name === "porchlight:advice") found.push({ repo: repo.name, level: property.value.split(":")[0]!, text: property.value.slice(property.value.indexOf(":") + 2) });
+		for (const component of repo.components) {
+			for (const property of component.properties ?? []) {
+				if (property.name === "porchlight:advice") found.push({ repo: repo.name, level: property.value.split(":")[0]!, text: `${component.name}: ${property.value.slice(property.value.indexOf(":") + 2)}` });
+			}
+		}
+	}
+	return found.sort((a, b) => (a.level === b.level ? 0 : a.level === "medium" ? -1 : 1));
+}
+
+/** How many packages of each licence class to review, over the whole SBOM. */
+export function sbomLicenceReview(sbom: Sbom): Partial<Record<LicenceClass, number>> {
+	const kinds: LicenceClass[] = [];
+	for (const repo of sbom.components) for (const component of repo.components) kinds.push(classifyLicences(component.licenses));
+	const counts = licenceCounts(kinds);
+	return Object.fromEntries(Object.entries(counts).filter(([kind]) => REVIEW_CLASSES.includes(kind as LicenceClass)));
 }
 
 /** The packages of one repository's inventory, each once, by package URL, sorted so two SBOMs compare. */

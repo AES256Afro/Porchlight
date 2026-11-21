@@ -58,10 +58,14 @@ export function trendChart(columns, caption) {
  * One severity bar (VS-14): the proportions drawn, and under them each severity as shape, colour, word and
  * number, which is what a reader relies on. `link` makes each count a link (to the filtered list).
  *
+ * Used wherever findings are counted by severity: Findings, the Overview, a domain's report and the
+ * Cloudflare audit. `order`: the severities the source has (a domain's findings are never critical).
+ *
  * @param {Record<Severity, number>} counts
  * @param {(severity: Severity) => string | null} [link]
+ * @param {readonly Severity[]} [order]
  */
-export function severityBar(counts, link) {
+export function severityBar(counts, link, order = SEVERITY_ORDER) {
 	const segments = barSegments(counts, 100);
 	const total = SEVERITY_ORDER.reduce((all, severity) => all + (counts[severity] ?? 0), 0);
 	return h(
@@ -77,7 +81,7 @@ export function severityBar(counts, link) {
 		h(
 			"ul",
 			{ class: "severity-bar-legend", "aria-label": countsWords(counts, total) },
-			...SEVERITY_ORDER.map((severity) => {
+			...order.map((severity) => {
 				const target = link?.(severity) ?? null;
 				const content = [severityBadge(severity), " ", h("strong", null, formatNumber(counts[severity] ?? 0))];
 				return h("li", null, target ? h("a", { href: target }, ...content) : h("span", null, ...content));

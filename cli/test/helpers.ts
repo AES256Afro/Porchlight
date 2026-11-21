@@ -138,3 +138,16 @@ export function photoWithGps(latitude: [number, number, number], longitude: [num
 	app1.writeUInt16BE(exif.length + 2, 2);
 	return Buffer.concat([Buffer.from([0xff, 0xd8]), app1, exif, Buffer.from([0xff, 0xd9])]);
 }
+
+/**
+ * A scripted `fetch` (R6R-8): answers each call with `answer` and keeps what was sent, so a test can
+ * assert on the requests. Tests never touch the network.
+ */
+export function fakeFetch(answer: (url: URL, init: RequestInit) => Response | Promise<Response>): typeof fetch & { calls: { url: string; init: RequestInit }[] } {
+	const calls: { url: string; init: RequestInit }[] = [];
+	const fn = (async (url: URL, init: RequestInit = {}) => {
+		calls.push({ url: url.toString(), init });
+		return answer(url, init);
+	}) as unknown as typeof fetch;
+	return Object.assign(fn, { calls });
+}

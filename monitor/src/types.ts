@@ -18,7 +18,12 @@ export type Change =
 	| { kind: "host_added"; host: string }
 	| { kind: "host_removed"; host: string }
 	| { kind: "dns_changed"; host: string; record: string; before: string[]; after: string[] }
-	| { kind: "https_changed"; host: string; before: string; after: string };
+	| { kind: "https_changed"; host: string; before: string; after: string }
+	/**
+	 * A certificate authority the log had not listed for the domain before (FT-3's follow-up), read
+	 * from rows every scan fetches anyway: no new request. `host` is the domain.
+	 */
+	| { kind: "issuer_added"; host: string; issuer: string; names: string[] };
 
 /** What one scan concluded. Stored with its snapshot and sent as the alert payload. */
 export interface ScanReport {

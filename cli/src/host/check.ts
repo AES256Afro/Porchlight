@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import type { Runner } from "../repos/exec.ts";
 import { severityRank } from "../repos/types.ts";
 import { credentialChecks } from "./credentials.ts";
+import { browserExtensionChecks, sshConfigChecks, startupChecks } from "./extras.ts";
 import { automaticLogin, automaticUpdates, fileVault, firewall, gatekeeper, guestAccount, osVersion, screenLock, softwareUpdates, systemIntegrity } from "./macos.ts";
 import { listeningServices } from "./network.ts";
 import { packageChecksFor } from "./packages.ts";
@@ -21,6 +22,8 @@ export interface HostCheckOptions {
 	home?: string;
 	platform?: NodeJS.Platform;
 	pathEnv?: string;
+	/** Where /Library is looked for on a Mac (default the system's own). Tests pass a folder of their own. */
+	systemRoot?: string;
 	now?: () => Date;
 	onProgress?: (progress: HostProgress) => void;
 }
@@ -65,6 +68,9 @@ export async function checkHost(options: HostCheckOptions): Promise<HostReport> 
 	const steps: Step[] = [
 		...(mac ? macSteps : []),
 		{ label: "Credentials in files", area: "credentials", run: () => credentialChecks(home, mac) },
+		{ label: "SSH settings", area: "credentials", run: () => sshConfigChecks(home) },
+		...(mac || platform === "linux" ? [{ label: "Programs that start by themselves", area: "startup" as const, run: () => startupChecks(run, home, mac, options.systemRoot) }] : []),
+		{ label: "Browser extensions", area: "startup", run: () => browserExtensionChecks(home, mac) },
 		{ label: "Installed packages", area: "packages", run: () => packageChecksFor({ run, lookUp, pathEnv: options.pathEnv ?? process.env.PATH, mac }) },
 	];
 

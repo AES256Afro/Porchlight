@@ -16,8 +16,10 @@ import {
 	saveModel,
 	sendTargets,
 	type ModelRequest,
+	type ModelTask,
 	type SavedModel,
 } from "../assist/settings.ts";
+import { EgressLog, loggedFetch } from "../egress.ts";
 import { judgedHighlights, muralFacts, MuralError, parseMural, type Mural } from "../assist/mural.ts";
 import {
 	askPrompt,
@@ -108,8 +110,16 @@ import { createAccess } from "./routes/access.ts";
 import { createCloudflare } from "./routes/cloudflare.ts";
 import { createDownload } from "./routes/download.ts";
 import { createHostCheck } from "./routes/host.ts";
+import { claimsHosts, hostsRoute } from "./routes/hosts.ts";
+import { claimsOsvDatabase, osvDatabaseRoute } from "./routes/osv-database.ts";
+import { claimsOrphanExport, orphanExportRoute } from "./routes/orphan-notes.ts";
 import { createInvestigate } from "./routes/investigate.ts";
 import { createMonitor } from "./routes/monitor.ts";
+import { createDigest } from "./routes/digest.ts";
+import { claimsEgress, egressRoute } from "./routes/egress.ts";
+import { claimsMenuStatus, menuStatusRoute } from "./routes/menu-status.ts";
+import { claimsModelTasks, createModelTasks } from "./routes/model-tasks.ts";
+import { claimsSeen, seenRoute } from "./routes/seen.ts";
 import { previewScan, scanCounts, scanRequest } from "./scans.ts";
 import type { AccessStatus, ActivityLine, AnalysisStatus, FetchStatus, ModelInUse, ScanStatus, ScheduleState } from "./types.ts";
 
@@ -170,6 +180,8 @@ export interface UiOptions {
 	 * which format. Counts, titles, repositories and files only. Absent: nobody is told.
 	 */
 	notify?: { url: URL; format: NotifyFormat };
+	/** Also send a weekly digest after a scheduled scan, once a week (PORCHLIGHT_NOTIFY_DIGEST=weekly; FT-13). Needs `notify`. */
+	digest?: boolean;
 	/** Compare packages against OSV's databases kept beside the report (`osv-db/`), not by asking api.osv.dev (PORCHLIGHT_OSV_OFFLINE). */
 	osvOffline?: boolean;
 	/** Used for the monitor and the local model alike. Tests pass a fake. */
@@ -216,7 +228,7 @@ export function porchlightVersion(): Promise<string> {
 
 /** The page's own modules. Nothing else in the folder is served. */
 /** Every script the page loads. A test checks it names each file in ui/, so none is left unserved. */
-export const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "finding-parts", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths", "investigate", "discussions", "discussion", "discussion-links", "panel", "projects", "cloudflare", "cloudflare-settings", "monitor-settings", "activity", "model-download", "scan-choices", "scan-options", "poller", "glance", "charts", "chart-layout"];
+export const SCRIPTS = ["app", "api", "dom", "filter", "list", "hints", "generated", "store", "export", "assist", "analysis", "github", "overview", "findings", "finding-parts", "roadmap", "repos", "domains", "looks", "appearance", "settings", "models", "model-settings", "access-settings", "send", "send-text", "tracking", "finding-notes", "host", "host-areas", "paths", "investigate", "discussions", "discussion", "discussion-links", "panel", "projects", "cloudflare", "cloudflare-settings", "monitor-settings", "activity", "model-download", "scan-choices", "scan-options", "poller", "glance", "charts", "chart-layout", "domain-hosts", "due", "seen", "model-tasks", "egress"];
 /**
  * The page's stylesheets, by layer, in the order index.html loads them (RD-6): the tokens (colours, type,
  * corners), the base frame, components, page rules, then the looks, which only override. A test checks
@@ -261,6 +273,17 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		throw new Error(`Listening on ${listenHost} needs PORCHLIGHT_UI_KEY: a key of at least ${MIN_KEY_LENGTH} characters`);
 	}
 	const sessionKey = options.sessionKey ?? randomBytes(24).toString("base64url");
+	// Every request the server sends out is recorded, by host and purpose only (R6F-3). Hosts the server
+	// knows are named by what they are: looked up when a request is made, never before.
+	const egress = new EgressLog();
+	options = {
+		...options,
+		fetchFn: loggedFetch(options.fetchFn ?? fetch, egress, {
+			monitor: () => monitorArea.monitor()?.url.host,
+			models: () => [model.config?.url.host, ...targets().map((target) => target.config.url.host)].filter((host): host is string => typeof host === "string"),
+			notify: () => options.notify?.url.host,
+		}),
+	};
 	const scan = options.scan ?? scanRepos;
 	const rescan = options.rescan ?? rescanRepo;
 	const defaultDepth = options.scanDepth ?? DEFAULT_DEPTH;
@@ -309,6 +332,12 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		startup.config && startup.config.provider !== undefined && startup.config.provider in HOSTED && startup.config.apiKey ? { [startup.config.provider as HostedProvider]: startup.config.apiKey } : {};
 	let savedModel = await readSavedModel(modelPath);
 	let model: ModelInUse = savedModel ? inUse(savedModel) : startup;
+	// A model per task (R6F-10): chosen in Settings from the models set up, never from a request.
+	const modelTasks = await createModelTasks(dataDir, () => targets());
+	/** The model a task uses: its own when one is chosen, else the one in use. */
+	function modelFor(task: ModelTask): ModelInUse {
+		return modelTasks.modelFor(task) ?? model;
+	}
 
 	function inUse(saved: SavedModel): ModelInUse {
 		try {
@@ -862,15 +891,16 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		};
 	}
 
-	function assistantSummary() {
-		const config = model.config;
+	function assistantSummary(task?: ModelTask) {
+		const using = task ? modelFor(task) : model;
+		const config = using.config;
 		return config
 			? { configured: true, model: config.model, host: config.url.host, hosted: isHosted(config) }
 			: {
 					configured: false,
-					error: model.error ?? "No model is connected",
+					error: using.error ?? "No model is connected",
 					// No model asked for: the features are off, the usual state rather than a value to correct.
-					unset: model.unset,
+					unset: using.unset,
 				};
 	}
 
@@ -949,6 +979,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		confirmModel,
 		modelWords,
 		model: () => model,
+		modelFor,
 		modelBusy: () => modelBusy,
 		setModelBusy: (busy) => {
 			modelBusy = busy;
@@ -961,6 +992,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 	const monitorArea = await createMonitor(ctx);
 	const investigateArea = createInvestigate(ctx);
 	const cloudflareArea = createCloudflare(ctx, investigateArea.domainsPath);
+	const digestArea = createDigest(ctx);
 
 	/** The mural for this scan and these filters: its state, or a request to write it. */
 	async function muralRoute(res: ServerResponse, route: string, report: ScanReport, filter: ReturnType<typeof parseFilter>, key: string, body: unknown): Promise<void> {
@@ -972,7 +1004,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 					: { state: muralJob.state, current: muralJob.state === "running" && muralJob.key === key };
 		if (route === "GET /api/repos/mural") return sendJson(res, 200, describe());
 		if (route !== "POST /api/repos/mural") throw new HttpError(404, "Not found");
-		const config = model.config;
+		const config = modelFor("mural").config;
 		if (!config) throw new HttpError(503, "Choose a model in Settings → Model to write a mural");
 		confirmModel(bodyObject(body ?? {}), config);
 		if (muralJob.state === "running") throw new HttpError(409, "A mural is already being written");
@@ -1188,6 +1220,13 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				},
 			],
 			[(call) => DOMAIN_EXPORT.test(call.url.pathname), domainExportRoute],
+			[claimsHosts, (call) => hostsRoute(ctx, call)],
+			[claimsOsvDatabase, (call) => osvDatabaseRoute(ctx, call)],
+			[claimsOrphanExport, (call) => orphanExportRoute(ctx, call)],
+			[claimsSeen, (call) => seenRoute(ctx, call), "owner"],
+			[claimsEgress, (call) => egressRoute(egress, call)],
+			[claimsModelTasks, (call) => modelTasks.route(ctx, call), "owner"],
+			[claimsMenuStatus, (call) => menuStatusRoute(ctx, call, () => status.state === "running")],
 			[
 				under("/api/domains"),
 				async ({ req, res, url, body }) => {
@@ -1464,7 +1503,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 		if (!Array.isArray(severities) || severities.length === 0 || !severities.every((severity) => SEVERITIES.includes(severity as Severity))) {
 			throw new HttpError(400, "Severities must be some of: critical, high, medium, low");
 		}
-		const assistant = model.config;
+		const assistant = modelFor("analysis").config;
 		if (assistant) confirmModel(fields, assistant);
 		return sendJson(res, 202, { status: await startAnalysis(limit, severities as Severity[]) });
 	}
@@ -1481,7 +1520,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 			analysisNotStarted = { at: new Date().toISOString(), why };
 			log(`Deeper analysis did not start: ${why}`, project);
 		};
-		const assistant = model.config;
+		const assistant = modelFor("analysis").config;
 		if (!assistant) return notStarted("no model is set up (Settings → Model)");
 		// The model may have been switched while the scan ran: the analysis uses only the one the page showed (S22).
 		if (shown && (shown.model !== assistant.model || shown.host !== assistant.url.host)) return notStarted(`the model is now ${modelWords(assistant)}, not the one the page showed when the scan started`);
@@ -1491,8 +1530,8 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 
 	/** Starts the model's judgement of the findings waiting at these severities, up to `limit`, and returns at once. */
 	async function startAnalysis(limit: number, severities: Severity[]): Promise<typeof analysing> {
-		const assistant = model.config;
-		if (!assistant) throw new HttpError(503, model.error ?? "No model is connected. Choose one in Settings → Model");
+		const assistant = modelFor("analysis").config;
+		if (!assistant) throw new HttpError(503, modelFor("analysis").error ?? "No model is connected. Choose one in Settings → Model");
 		if (analysing.state === "running") throw new HttpError(409, "The analysis is already running");
 		// Running before the first await, so a second request in the meantime is refused (B24).
 		const earlier = analysing;
@@ -1788,6 +1827,7 @@ export async function startUiServer(options: UiOptions): Promise<UiServer> {
 				if (scheduled) {
 					scheduleRecord.lastRun = { at: new Date().toISOString(), ok: true, summary: scanCounts(report) };
 					await tell(scanNotice(report, latest.state === "compared" ? latest.change : null, latest.state === "unreadable" ? latest.reason : undefined), project);
+					await digestArea.afterScheduledScan(project);
 				}
 				if (choices.analyse) analyseAfterScan(how.sendsToHosted === true, project, how.shown);
 			})

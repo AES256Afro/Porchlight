@@ -131,15 +131,51 @@ test("no progress slot is a live region: progress is said with announce() at a c
 	assert.doesNotMatch(activity, /replace\(\s*list\b/);
 });
 
+/**
+ * Whether the right side of an assignment is only Porchlight's own words: string literals with nothing
+ * put into them, chosen between by conditions (`running ? "Scanning…" : "Scan"`). A condition may read
+ * anything, since it is never shown; every value that is shown must be a literal.
+ */
+function fixedWords(value: string): boolean {
+	const literals = value.replace(/"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`[^`$]*`/g, "L").replace(/\s+/g, " ").trim();
+	const parts = literals.split(/([?:])/);
+	for (let index = 0; index < parts.length; index += 2) {
+		if (parts[index + 1] === "?") continue; // a condition
+		if (parts[index]!.trim() !== "L") return false;
+	}
+	return true;
+}
+
+test("fixedWords tells Porchlight's own words from data", () => {
+	assert.ok(fixedWords('"Export"'));
+	assert.ok(fixedWords('running ? "Auditing…" : state.report ? "Audit again" : "Audit your account"'));
+	assert.ok(fixedWords("`Plain words`"));
+	assert.ok(!fixedWords("hostName()"));
+	assert.ok(!fixedWords("`${count} waiting`"));
+	assert.ok(!fixedWords('ready ? label : "Busy"'));
+	assert.ok(!fixedWords('"Fetch " + name'));
+});
+
 test("text put on the page outside h() is fixed words, or passes through shownText (S38)", () => {
-	// Elements whose text is set directly hold Porchlight's own words or a count.
-	const fixed = new Set(["hostLabel", "findingCount", "waitingCount", "sendButton", "button", "submit", "scanButton", "scanHeading", "scanIntro", "intro", "optionsSummary", "fetchButton", "lastChild", "region"]);
-	const found = find(/\.(textContent|innerText|nodeValue)\s*=(?!=)/, (_, line) => {
-		if (comment(line) || /shownText\(/.test(line)) return true;
-		const target = /(\w+)\.(textContent|innerText|nodeValue)\s*=/.exec(line)?.[1] ?? "";
-		return fixed.has(target) && /=\s*(""|"[^"$]*"|[^;]*\?[^;]*:|`[^`]*`|label;|busyLabel;|hostName\(\)|store\.report \?|hasReport$)/.test(line);
-	});
+	// Text, a title or a label set on an element directly, rather than through h(), which passes it through shownText itself.
+	const found: string[] = [];
+	for (const { name, text } of files) {
+		const assignments = [
+			...text.matchAll(/([\w.]+)\.(textContent|innerText|nodeValue|title)\s*=(?!=)([^;]*);/g),
+			...text.matchAll(/([\w.]+)\.setAttribute\(\s*"(title|aria-label|aria-description|placeholder|alt)",([^;]*)\);/g),
+		];
+		for (const match of assignments) {
+			const line = text.slice(text.lastIndexOf("\n", match.index) + 1, text.indexOf("\n", match.index));
+			if (comment(line)) continue;
+			const value = match[3]!.trim();
+			if (/^shownText\(/.test(value) || fixedWords(value)) continue;
+			found.push(`${name}: ${match[0].replace(/\s+/g, " ")}`);
+		}
+	}
 	assert.deepEqual(found, []);
+	// And h() puts every text attribute it is given through shownText, as it does text.
+	const dom = files.find((file) => file.name === "dom.js")?.text ?? "";
+	assert.match(dom, /TEXT_ATTRIBUTES\.includes\(key\)[^\n]*shownText\(/);
 });
 
 test("dates and numbers are written in the page's language, whatever the browser's (R6U-8)", () => {

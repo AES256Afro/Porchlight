@@ -1,6 +1,6 @@
 // @ts-check
 import { api } from "./api.js";
-import { announce, banner, formatNumber, h, icon, isOff, pager, pageVisibility, plural, replace, setOff, stepNodes, toast } from "./dom.js";
+import { announce, banner, formatNumber, h, icon, isOff, pager, pageVisibility, plural, replace, setOff, shownText, stepNodes, toast } from "./dom.js";
 import { fetchByDefault, githubTokenSteps } from "./hints.js";
 import { paginate } from "./list.js";
 import { poller } from "./poller.js";
@@ -216,7 +216,7 @@ export function githubPanel(onChange) {
 		const fetchButton = /** @type {HTMLButtonElement} */ (h("button", { type: "button", class: "button primary", onclick: () => void start({ repos: [...chosen] }) }));
 		const label = () => {
 			setOff(fetchButton, running || chosen.size === 0);
-			fetchButton.textContent = chosen.size === 0 ? "Choose repositories to fetch" : `Fetch ${plural(chosen.size, "repository", "repositories")}`;
+			fetchButton.textContent = shownText(chosen.size === 0 ? "Choose repositories to fetch" : `Fetch ${plural(chosen.size, "repository", "repositories")}`);
 		};
 		// A long list is paged (UI-B13); what is ticked is kept across pages.
 		const page = paginate(listed, pickPage, PICK_PAGE);

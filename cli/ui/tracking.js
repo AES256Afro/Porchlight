@@ -128,6 +128,28 @@ export function rescanWords(change) {
 }
 
 /**
+ * What "Check it now" found (FT-11): whether the findings a repair was for are still there after their
+ * repository was scanned again. Gone is fixed, since a scanner that did not look keeps what it found
+ * before; still listed after a scan that could not look at everything is said as that, never as found
+ * again or fixed (invariant 5).
+ *
+ * @param {string[]} keys the findings checked, by `findingKey`
+ * @param {ReadonlySet<string>} later the keys the report holds after the scan
+ * @param {{ repo: string, uncheckedCount: number }} rescan what scanning the repository again said
+ * @returns {{ fixed: boolean, words: string }}
+ */
+export function checkWords(keys, later, rescan) {
+	const still = keys.filter((key) => later.has(key)).length;
+	const total = keys.length;
+	const where = rescan.repo;
+	if (still === 0) return { fixed: true, words: total === 1 ? `Fixed: scanning ${where} again no longer finds it.` : `Fixed: scanning ${where} again finds none of these ${total.toLocaleString("en-GB")} findings.` };
+	const unsure = rescan.uncheckedCount > 0;
+	const head = total === 1 ? `Still ${unsure ? "listed" : "found"} in ${where}` : `${still.toLocaleString("en-GB")} of these ${total.toLocaleString("en-GB")} findings still ${unsure ? "listed" : "found"} in ${where}`;
+	const tail = unsure ? `: ${rescan.uncheckedCount.toLocaleString("en-GB")} could not be checked again, so ${rescan.uncheckedCount === 1 ? "it stays" : "they stay"} as before.` : ": the repair has not cleared it yet.";
+	return { fixed: false, words: `${head}${total > 1 && !unsure ? ": the repair has not cleared them yet." : tail}` };
+}
+
+/**
  * Note text, status and date being typed, by `findingKey`, so a redraw of the page (a poll, a save of
  * another note) builds the editor again with what was typed rather than what was saved (B44). Save
  * clears a finding's draft.

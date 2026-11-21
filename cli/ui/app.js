@@ -1,7 +1,7 @@
 // @ts-check
 import { renderActivity } from "./activity.js";
 import { adoptSessionKey, api, ApiError, hasSessionKey, setOfflineMessage, setSessionKey } from "./api.js";
-import { announce, emptyState, formatNumber, formatWhen, h, icon, isOff, pageVisibility, plural, replace, scrollMotion, severityBadge, stepNodes, toast } from "./dom.js";
+import { announce, emptyState, formatNumber, formatWhen, h, icon, isOff, pageVisibility, plural, replace, scrollMotion, severityBadge, shownText, stepNodes, toast } from "./dom.js";
 import { poller } from "./poller.js";
 import { keyRejectedWords, offlineWords } from "./hints.js";
 import { renderCloudflare } from "./cloudflare.js";
@@ -78,7 +78,7 @@ scanStatus.before(severityStrip);
 subscribe((change) => {
 	if (change === "settings" && store.settings) {
 		applyLook(store.settings.appearance);
-		hostLabel.textContent = hostName();
+		hostLabel.textContent = shownText(hostName());
 		replace(
 			aboutLine,
 			h("a", { href: HELP_URL, target: "_blank", rel: "noopener noreferrer", title: "Opens the documentation on github.com" }, "Help"),
@@ -176,10 +176,10 @@ function followAttention() {
 			}
 			const { approval } = answer;
 			const waiting = approval ? Number(approval.waiting) || 0 : 0;
-			waitingCount.textContent = waiting > 0 ? `${waiting} waiting` : "";
+			waitingCount.textContent = shownText(waiting > 0 ? `${waiting} waiting` : "");
 			const marked = document.title.startsWith(WAITING_MARK);
-			if (waiting > 0 && !marked) document.title = `${WAITING_MARK}${document.title}`;
-			if (waiting === 0 && marked) document.title = document.title.slice(WAITING_MARK.length);
+			if (waiting > 0 && !marked) document.title = shownText(`${WAITING_MARK}${document.title}`);
+			if (waiting === 0 && marked) document.title = shownText(document.title.slice(WAITING_MARK.length));
 			if (approval && waiting > 0 && lastTitle !== approval.domain) announce(`An investigation of ${approval.domain} is waiting for your approval`);
 			lastTitle = approval && waiting > 0 ? approval.domain : "";
 			return true;
@@ -209,7 +209,7 @@ async function route() {
 		const currentLink = /** @type {HTMLElement | null} */ (nav.querySelector('[aria-current="page"]'));
 		if (currentLink) nav.scrollTo({ left: currentLink.offsetLeft - (nav.clientWidth - currentLink.offsetWidth) / 2, behavior: scrollMotion() });
 	}
-	document.title = `${waitingCount.textContent ? WAITING_MARK : ""}${section === "host" ? hostName() : SECTIONS.find(([key]) => key === section)?.[1]} · Porchlight`;
+	document.title = shownText(`${waitingCount.textContent ? WAITING_MARK : ""}${section === "host" ? hostName() : SECTIONS.find(([key]) => key === section)?.[1]} · Porchlight`);
 
 	leave();
 	leave = () => {};
@@ -294,7 +294,7 @@ function page(section, context, view) {
 function drawScanStatus() {
 	const scan = store.scan;
 	const rows = store.report ? findingRows() : [];
-	findingCount.textContent = store.report ? formatNumber(rows.length) : "";
+	findingCount.textContent = shownText(store.report ? formatNumber(rows.length) : "");
 	replace(
 		severityStrip,
 		...(store.report

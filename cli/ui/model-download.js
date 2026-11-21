@@ -25,6 +25,8 @@ export async function modelDownloadSection() {
 	let searching = false;
 	/** @type {string} */
 	let problem = "";
+	/** Whether the owner opened the search, kept across redraws. */
+	let searchOpen = false;
 	/** The download last said to a screen reader. */
 	let said = "";
 	const query = /** @type {HTMLInputElement} */ (h("input", { type: "search", name: "model-search", autocomplete: "off", spellcheck: false, placeholder: "qwen, llama, security…", "aria-label": "Search for a model" }));
@@ -201,10 +203,18 @@ export async function modelDownloadSection() {
 			!state.canChange ? h("p", { class: "hint" }, "Models are downloaded from the page on the computer that runs Porchlight.") : null,
 			progress(),
 			problem ? h("p", { class: "model-result error", role: "alert" }, icon("warning"), " ", problem) : null,
+			// Folded until wanted, so Settings stays short (I-D2); open while a search has something to show.
 			state.canChange
 				? h(
-						"div",
-						null,
+						"details",
+						{
+							class: "options settings-fold",
+							open: searchOpen || searching || found !== null,
+							ontoggle: (/** @type {Event} */ event) => {
+								searchOpen = /** @type {HTMLDetailsElement} */ (event.currentTarget).open;
+							},
+						},
+						h("summary", null, "Search for a model, or name one"),
 						h("h3", null, "Search Hugging Face"),
 						h("p", { class: "hint" }, `Sends only what you type and choose here to ${state.hub}. Anyone can publish a model there, so prefer publishers you recognise.`),
 						h("p", null, machineLine(state.machine)),

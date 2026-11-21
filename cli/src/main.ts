@@ -14,7 +14,9 @@ import { hookCommand } from "./repos/hook.ts";
 import { domainsHosts } from "./monitor/hosts.ts";
 import { statusCommand } from "./status.ts";
 import { scheduleCommand } from "./schedule.ts";
-import { buildSbom } from "./repos/sbom.ts";
+import { settingsCommand } from "./settings-transfer.ts";
+import { buildSbom, sbomAdvice, sbomLicenceReview } from "./repos/sbom.ts";
+import { licenceSummary } from "./repos/licences.ts";
 import { scanRepos, type RepoDone } from "./repos/scan.ts";
 import { SEVERITIES, type ScanChoices, type Severity } from "./repos/types.ts";
 import { ChoiceError, isPreset, parseChoices, presetOf, PRESETS } from "../ui/scan-choices.js";
@@ -31,6 +33,7 @@ import { renderDoctor, runDoctor, runSelfCheck, type DoctorOptions } from "./doc
 import { asksForHelp, helpFor, usage } from "./help.ts";
 import { fitWidth, terminalWidth } from "./columns.ts";
 import { startUiServer } from "./ui/server.ts";
+import { digestWanted } from "./ui/routes/digest.ts";
 import { auditCloudflare } from "./cloudflare/audit.ts";
 import { tokenShapeProblem } from "./cloudflare/client.ts";
 import { renderCloudflareText } from "./cloudflare/export.ts";
@@ -88,6 +91,7 @@ export async function main(argv: string[]): Promise<number> {
 		}
 		if (group === "hook") return await hookCommand(command, { print, warn }, { run });
 		if (group === "status") return await statusCommand(argv.slice(1), print, { dataDir: join(homedir(), ".porchlight") });
+		if (group === "settings") return await settingsCommand(command, rest, { say, warn }, { dataDir: await dataFolder(homedir()) });
 		if (group === "schedule") return scheduleCommand(command, rest, { print, warn }, { dataDir: join(homedir(), ".porchlight") });
 		if (group === "domains" && command) return await domains(command, rest);
 		if (group === "host" && command === "check") return await hostCheck(rest);
@@ -161,6 +165,10 @@ export async function reposSbom(args: string[], deps: { run?: Runner; write?: (t
 		await writePrivate(values.out, text);
 		say(`${packages} packages in ${sbom.components.length} repositories, written to ${values.out}`);
 	} else (deps.write ?? print)(text);
+	// Advice beside the packages (FT-6, FT-7), on the error stream so the SBOM itself can be piped. It never changes the exit code.
+	const review = sbomLicenceReview(sbom);
+	if (Object.keys(review).length > 0) warn(`Licences to review: ${licenceSummary(review)} (each is marked porchlight:licence-risk in the SBOM)`);
+	for (const item of sbomAdvice(sbom)) warn(`Advice (${item.level}) ${item.repo}: ${item.text}`);
 	if (missed > 0) warn(`porchlight: ${missed === 1 ? "1 repository" : `${missed} repositories`} could not be read, and the SBOM names ${missed === 1 ? "it" : "them"} as not covered`);
 	return missed > 0 ? 1 : 0;
 }
@@ -490,6 +498,8 @@ async function ui(args: string[]): Promise<number> {
 			...(scanDepth !== undefined ? { scanDepth } : {}),
 			...(scanEveryHours !== undefined ? { scanEveryHours } : {}),
 			...(notify ? { notify } : {}),
+			// The weekly digest is the owner's choice, and goes where notices go (FT-13).
+			...(notify && digestWanted(process.env.PORCHLIGHT_NOTIFY_DIGEST) ? { digest: true } : {}),
 			...(osvOffline ? { osvOffline } : {}),
 			monitor,
 			monitorError,
@@ -521,6 +531,8 @@ async function ui(args: string[]): Promise<number> {
 	// The address can carry a token (a Slack or Discord webhook is one), so only its host is printed.
 	if (notify) say(`Notices: the outcome of each scheduled scan goes to ${notify.url.host} (${notify.format})${scanEveryHours === undefined ? ", but no schedule is set (PORCHLIGHT_SCAN_EVERY_HOURS)" : ""}`);
 	else if (notifyRead && "problem" in notifyRead) say(`Notices: off (${notifyRead.problem})`);
+	if (notify && digestWanted(process.env.PORCHLIGHT_NOTIFY_DIGEST)) say(`Notices: a weekly digest goes to ${notify.url.host} too, after a scheduled scan`);
+	else if (!notify && digestWanted(process.env.PORCHLIGHT_NOTIFY_DIGEST)) say("Notices: no weekly digest, since PORCHLIGHT_NOTIFY_URL is not set");
 	say("Press Ctrl+C to stop.");
 	return 0;
 }

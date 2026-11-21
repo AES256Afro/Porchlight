@@ -1,3 +1,4 @@
+import { ISSUERS_KEPT } from "./caa.ts";
 import { APEX_TYPES } from "./collect/dns.ts";
 import type { HostState, Snapshot } from "./snapshot.ts";
 import type { Change } from "./types.ts";
@@ -32,7 +33,27 @@ export function diffSnapshots(prev: Snapshot | null, curr: Snapshot): Change[] {
 			changes.push({ kind: "dns_changed", host: curr.domain, record: type, before, after });
 		}
 	}
+	changes.push(...newIssuers(prev, curr));
 	return changes;
+}
+
+/**
+ * Certificate authorities the log lists now and did not before. Only when both scans read the log for
+ * the bare domain (`issuers` set), and only when the earlier list was whole: one cut at ISSUERS_KEPT may
+ * have left an authority out, which is then not new. An authority whose certificates expired is not a
+ * change worth telling.
+ */
+function newIssuers(prev: Snapshot, curr: Snapshot): Change[] {
+	if (!prev.issuers || !curr.issuers || prev.issuers.length >= ISSUERS_KEPT) return [];
+	const before = new Set(prev.issuers.map((seen) => seen.issuer));
+	return curr.issuers
+		.filter((seen) => !before.has(seen.issuer))
+		.map((seen): Change => ({
+			kind: "issuer_added",
+			host: curr.domain,
+			issuer: seen.issuer,
+			names: seen.names,
+		}));
 }
 
 function diffHost(host: string, before: HostState, after: HostState): Change[] {

@@ -3,6 +3,7 @@
 // so each area sees them as they are at the time of the request.
 import type { ServerResponse } from "node:http";
 import { HOSTED, type AssistantConfig, type HostedProvider } from "../assist/ollama.ts";
+import type { ModelTask } from "../assist/settings.ts";
 import type { MonitorConfig } from "../monitor/client.ts";
 import type { FileTitle, Project, ProjectStore } from "../projects/projects.ts";
 import type { UiOptions } from "./server.ts";
@@ -19,11 +20,14 @@ export interface ServerContext {
 	/** A line for the Activity view alone. */
 	note(text: string, kind?: ActivityLine["kind"]): void;
 	saveExport(res: ServerResponse, file: { body: string; filename: string }, title: FileTitle): Promise<void>;
-	assistantSummary(): unknown;
+	/** The model in use, or the one chosen for `task` (R6F-10), as the page shows it. */
+	assistantSummary(task?: ModelTask): unknown;
 	confirmModel(fields: Record<string, unknown>, config: AssistantConfig): void;
 	modelWords(config: AssistantConfig): string;
 	/** The model in use now. */
 	model(): ModelInUse;
+	/** The model a task uses now: its own when one is chosen in Settings (R6F-10), else the one in use. */
+	modelFor(task: ModelTask): ModelInUse;
 	/** Whether the owner's own model is answering a request now: it answers one at a time. */
 	modelBusy(): boolean;
 	setModelBusy(busy: boolean): void;

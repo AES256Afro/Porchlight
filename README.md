@@ -140,7 +140,7 @@ Porchlight is one Node.js process. The browser page and the Mac app are clients 
 | Destination | What is sent | When |
 | --- | --- | --- |
 | OSV.dev | Names and versions of the packages in the repositories' lockfiles. With the host check, names and versions of installed npm and Python packages | Every repository scan, unless OSV's databases are kept locally (`--osv-db`, `PORCHLIGHT_OSV_OFFLINE`): then each ecosystem's whole database is downloaded and nothing about your packages is sent. The host check's lookup can be turned off |
-| Where the operator asks (Slack, Discord, ntfy or a JSON webhook) | After a scheduled repository scan: counts, and what is new and fixed by title, repository and file. The monitor's alerts | Only with `PORCHLIGHT_NOTIFY_URL` or the monitor's `ALERT_WEBHOOK_URL` set |
+| Where the operator asks (Slack, Discord, ntfy or a JSON webhook) | After a scheduled repository scan: counts, and what is new and fixed by title, repository and file. With `PORCHLIGHT_NOTIFY_DIGEST=weekly`, once a week a digest: counts, new and fixed over the week, overdue findings and accepted risks ending, by title, repository and file. The monitor's alerts | Only with `PORCHLIGHT_NOTIFY_URL` or the monitor's `ALERT_WEBHOOK_URL` set |
 | Apple | macOS's own software update query | Host check on macOS, unless turned off |
 | Cloudflare API (`api.cloudflare.com`) | Read requests with the operator's token as a header; a change only after the operator approves that exact request | Cloudflare audit |
 | Cloudflare DNS over HTTPS | `_porchlight-challenge` lookups; an investigation's DNS lookups; the targets of a proven zone's CNAME records | Investigation; Cloudflare audit |
@@ -154,6 +154,8 @@ Porchlight is one Node.js process. The browser page and the Mac app are clients 
 | Devices on the operator's tailnet | The web interface | Only while Access from other devices is on |
 
 Never sent anywhere: secret values (reports do not hold them), commit author names and emails, the monitor's admin token, a domain's challenge value, and Set-Cookie values from investigated sites.
+
+The Activity page's **What left this computer** lists every request the interface's server has sent since it started: the host, why (Porchlight's own words, such as "Your monitor" or "Hosted model: Claude"), the method, the time and the answer's status. It never records a path, a query, a header or a body, since an address can carry a token. It is kept in memory only, the last 500. Programs Porchlight runs make their own requests, which it cannot see: git fetching from GitHub, osv-scanner asking OSV.dev and `softwareupdate` asking Apple. An investigation lists each of its requests in its own steps.
 
 ## 6. Design constraints and their verification
 
@@ -275,6 +277,7 @@ The figures show made-up repositories checked by the real gitleaks and osv-scann
 | `porchlight status` | What Porchlight last found, from the files it keeps; contacts nothing |
 | `porchlight hook` | Check the staged files for secrets and private data before a commit |
 | `porchlight schedule print` | Print a launchd or systemd unit that scans a folder on a schedule |
+| `porchlight settings export`, `porchlight settings import` | Move your settings to another computer; keys only in a passphrase-encrypted file |
 
 Exit codes: an error (an unknown option, a file that cannot be read, a service that refused) exits 1. A scan, check or audit that ran exits 0 whatever it found, unless `--fail-on <severity>` is given (`repos scan`, `host check`, `cloudflare audit`): then it exits 2 when a finding is at or above that severity, otherwise 1 when something could not be scanned or checked, otherwise 0. `doctor` exits 1 when something Porchlight cannot work without is missing.
 
@@ -295,6 +298,8 @@ Read when Porchlight starts. A choice saved in the interface's Settings comes fi
 | `PORCHLIGHT_SCAN_EVERY_HOURS` | Scan `--root` again this often while the server runs, 1 to 720 | `ui` |
 | `PORCHLIGHT_OSV_OFFLINE` | `true`: keep OSV's databases in the data folder and compare against them | `ui` |
 | `PORCHLIGHT_NOTIFY_URL`, `PORCHLIGHT_NOTIFY_FORMAT` | Where a scheduled scan's outcome is sent, and as `json`, `slack`, `discord` or `ntfy` | `ui` |
+| `PORCHLIGHT_NOTIFY_DIGEST` | `weekly`: also send a weekly digest where notices go, after a scheduled scan | `ui` |
+| `PORCHLIGHT_SETTINGS_PASSPHRASE` | The passphrase for `settings export --include-keys` and `settings import`, instead of typing it | `settings` |
 | `PORCHLIGHT_GIT_SAFE_DIRECTORY` | Folders git may read though another user owns them, separated as in PATH (the container sets `/repos` and `/repos/*`) | every scan |
 | `PORCHLIGHT_REQUIRE_SCANNERS` | `1`: a test that needs gitleaks fails instead of skipping (CI) | `npm test` |
 | `PORCHLIGHT_ROOT` | The folder the Mac app offers, in `~/.porchlight/app.env` | Mac app |
@@ -424,6 +429,15 @@ This puts `Porchlight.app` in `~/Applications`, running `porchlight ui` from thi
 
 Settings are read from `~/.porchlight/app.env` each time it starts (copy `mac/app.env.example`): the folder to offer, the monitor's address and admin token, a model, a GitHub token. An app built from a checkout reads the admin token from `monitor/.secrets.production` when only the monitor's address is set. The model and the look are chosen in the app, under Settings. The interface's own log is in `~/.porchlight/app.log` (Porchlight → Show Log).
 
+### Menu bar, notifications and login
+
+While the app runs, a lightbulb in the menu bar shows how many critical and high findings the latest scan has, and its menu shows the counts by severity, how long ago the last scan was, whether it covered everything, and the problems of the last check of the computer. It asks the app's own server once a minute, with this run's key, and gets counts and times only, never a finding's title, place or value.
+
+Two switches in that menu and in the Porchlight menu, both off until you turn them on:
+
+- **Notify When a Scan Finishes**: a macOS notification with the counts, in Porchlight's own words, when a scan finishes. macOS asks once whether Porchlight may notify you.
+- **Open at Login**: the app opens when you log in (macOS's Login Items). Porchlight never turns this on by itself.
+
 ## Open it from other devices
 
 Porchlight can also be opened from your other devices, such as a Windows PC or a phone, over [Tailscale](https://tailscale.com). They use the same running copy: the same scans, settings and model.
@@ -452,7 +466,7 @@ Porchlight is in the [BoxPilot](https://github.com/AES256Afro/BoxPilot) catalog:
 - **Folder levels to look through**: `PORCHLIGHT_SCAN_DEPTH`, 0 to 6 (default 3).
 - **Scan again by itself**: `PORCHLIGHT_SCAN_EVERY_HOURS`. Empty scans only when you ask; 24 scans once the last scan is a day old. The page then shows what is new and what was fixed.
 - **Keep the vulnerability databases on this server**: `PORCHLIGHT_OSV_OFFLINE`. On, OSV's databases are kept on the data volume (`/data/osv-db`) and package names are not sent to api.osv.dev.
-- **Send each scheduled scan's outcome to**: optional, `PORCHLIGHT_NOTIFY_URL`, a Slack or Discord webhook, an ntfy topic, or any address that takes JSON (`PORCHLIGHT_NOTIFY_FORMAT` picks the format when the address does not show it). After a scan the schedule ran, it gets the counts, what is new and what was fixed, by title, repository and file, or that the scan failed. Never a secret's value or a commit's author. A scan you start from the page sends nothing.
+- **Send each scheduled scan's outcome to**: optional, `PORCHLIGHT_NOTIFY_URL`, a Slack or Discord webhook, an ntfy topic, or any address that takes JSON (`PORCHLIGHT_NOTIFY_FORMAT` picks the format when the address does not show it). After a scan the schedule ran, it gets the counts, what is new and what was fixed, by title, repository and file, or that the scan failed. Never a secret's value or a commit's author. A scan you start from the page sends nothing. With `PORCHLIGHT_NOTIFY_DIGEST=weekly` set too, the first scheduled scan of each week also sends a weekly digest: scans, new and fixed over the last 7 days, the latest counts and whether the scan covered everything, findings overdue by your due dates, accepted risks ending within 7 days or already ended, the most severe titles, and the last check of the computer. It is formatted like every notice, so its text stays text in Slack, Discord and ntfy, and one that is not delivered is tried again after the next scheduled scan. The BoxPilot manifest does not offer it yet; set it in the container's environment.
 - It starts on the tailnet only, because a report names the files and commits where secrets were found.
 - Each line of the Activity page is also printed to the container's output, with its time, so `docker logs porchlight` shows when scans ran, how they ended and whether a notice was delivered. Like the Activity page, these lines never hold a key, a token, a secret's value or a model's text.
 
@@ -505,6 +519,8 @@ Open **Settings → Model** and pick where it runs:
 - A ChatGPT or Claude subscription is not an API key. These need a key from the provider's developer console, billed per request.
 - Before you choose a hosted provider, the page says what would be sent there. Saving the choice sends nothing.
 
+**A model for each task.** Explain, Summarise and Ask use the model chosen here. Under it, **A model for each task** lets Deeper analysis, murals and investigations each use another model you have set up, such as a small local model for quick answers and a larger one for analysis. The list offers only the models already set up (the same ones Send to a model offers), by Porchlight's own name for each: no address or key is typed there. The choices are kept in `model-tasks.json` (0600) and hold no key. Each page names the model it sends to, a hosted one with what goes outside your machines, before anything is sent, and the server refuses a request that names another model than the task's own, so a choice changed in another tab never sends to a model the page did not show.
+
 ### Download a local model
 
 Under the model form, **Download a model** finds a model that runs on your own computer and has [Ollama](https://ollama.com/download) download it. Porchlight runs no model itself, so Ollama has to be installed and open; the section says so, with a link, when it is not.
@@ -548,7 +564,7 @@ This is the one description of what any model receives, local or hosted; the oth
 
 - Only what the page already shows: for a finding, its scanner, type, severity, rule or advisory ID, title, location, commit or package, ranking note and suggested fix; repository names; the roadmap's actions; a domain report's hosts, DNS changes, findings and notes.
 - Never a secret value (reports have none), an author name or email, the monitor's admin token, or a domain's verification record.
-- Scan data can be written by an attacker (a file name, a package name, a DNS TXT record), so it is sent as one marked block, and the model is told that everything in it is data, not instructions.
+- Scan data can be written by an attacker (a file name, a package name, a DNS TXT record), so it is sent as one marked block, and the model is told that everything in it is data, not instructions. A corpus of hostile titles, file names, DNS values, tool outputs and model answers (`cli/test/fixtures/injection-corpus.json`) is checked on every test run: each reaches a prompt only inside its block or its fenced tool output, and none changes a severity, a verdict, an action or a finding.
 - A large scan is cut to fit what the model can read, most severe first, and the answer says so.
 - To the model chosen in Settings → Model, or given at start-up: Ollama, a server of yours that speaks OpenAI's format, or a hosted provider at an address fixed in the code. Plain http is allowed only for a model server of your own, since nothing secret is sent to it. Before anything goes to a hosted provider, the page names it and says that what is sent leaves your machines. A model on a small server is asked one question at a time.
 - Deeper analysis also sends, for a vulnerable package, how it is declared and the lines of your code that import it; for a secret or private data, no file content at all.
@@ -663,6 +679,14 @@ porchlight repos sbom ~/Projects --out sbom.cdx.json
 ```
 
 Lists every package the repositories' lockfiles name, not only the vulnerable ones, as one CycloneDX 1.5 file with a component per repository. osv-scanner reads the lockfiles offline, so nothing is sent anywhere. The file holds names, versions, package URLs and licences where the lockfile gives them; never a path from your computer. A repository that could not be read is named under `metadata.properties` as not covered, and the command exits 1. On the page, **SBOM** under Findings → By repository downloads the same for the latest scan's repositories.
+
+Beside the packages it notes, as advice and never as a finding (nothing is looked up, and none of it changes a count or the exit code):
+
+- **Licences to review** (`porchlight:licence-risk` on the package, counts in `porchlight:licences` on the repository): copyleft, network copyleft (AGPL, SSPL), weak copyleft, source-available (BUSL, Elastic), non-commercial, or a licence Porchlight does not recognise. A package whose lockfile names no licence is "not stated", never taken for permissive. Whether a copyleft licence matters depends on how you ship, which Porchlight cannot know.
+- **Typosquats** (`porchlight:advice`, medium): an npm or PyPI name one letter from a popular package's, from a short list shipped in the code. A name like that can be a real package, so check it rather than remove it. Known malicious packages arrive as OSV `MAL-` advisories in the scan.
+- **Dependency confusion** (`porchlight:advice` on the repository), from the repository's own top-level files: an `.npmrc` that sends a scope to a private registry while `package-lock.json` installed it from the public one (medium); a scope that reads as internal (`@acme-internal`, `@corp`) installed from the public registry (low: make sure you own it on npmjs.com); a requirements file with `--extra-index-url` (medium). No registry's address is kept. A file that is a link or too large is not read, and said to be unread.
+
+`porchlight repos sbom` prints the same advice on the error stream.
 
 ## Deeper analysis with a model
 
@@ -819,6 +843,18 @@ From the command line: `porchlight repos history` lists the kept scans with new 
 
 To move to a new computer, copy the data folder (`~/.porchlight`): notes, history, keys and tokens, and `investigate-domains.json`, without which every domain must prove its ownership again. `access.json`, `app.log`, `host-check.json` and `projects.json` describe this computer and can be left behind. Notes are kept by each repository's name under the scanned folder, so scan the same folder on the new computer; the scan form warns when another folder would leave your notes unmatched.
 
+Or move only the settings:
+
+```bash
+porchlight settings export ~/porchlight-settings.json                  # no key or token in it
+porchlight settings export ~/porchlight-keys.json --include-keys       # everything, encrypted
+porchlight settings import ~/porchlight-keys.json                      # on the new computer
+```
+
+An export holds the look, projects, your statuses and notes, due dates, the model chosen and the model for each task. With `--include-keys` it also holds the model keys, the monitor's admin token, the Cloudflare token and the ownership tokens, and then the whole file is encrypted with a passphrase you type (at least 12 characters; scrypt and AES-256-GCM from Node's own crypto). No key is ever written in plain text, and the access key for other devices never moves. The file is readable only by you, and an export never writes over a file. An import reads every file it would change first, and stops before writing anything if one cannot be read. Notes and projects are merged, and yours win; each project's folder is checked again on the new computer; any other setting already there is kept unless you add `--replace`.
+
+**First seen and due dates.** Open a finding to see when a scan first found it, from the kept history (`first-seen.json` beside the report). A finding already in the earliest scan kept says "on or before" that day, since it may be older. A finding a failed scanner missed keeps its first date when it comes back. Under Settings → Due dates you set how many days a finding of each severity may stay open (by default 7 for critical, 30 for high, 90 for medium, none for low), and the finding shows when it is due or how long it is overdue. Due dates only show: they never change a severity, a count, the roadmap, an export or an exit code.
+
 `porchlight status` (add `--json` for a script or a status bar) prints counts, times and what was not covered for the latest scan, host check and Cloudflare audit, from the files Porchlight keeps, and whether a monitor is set. It contacts nothing, and prints no finding's place, value, key or token. It exits 1 when a kept file is there but cannot be read.
 
 ## Investigate with a model
@@ -869,7 +905,7 @@ Investigations are run from the page on the computer that runs Porchlight. Opene
 
 ## Check the computer
 
-**This Mac** on macOS, **This computer** on Linux (under "Your computer" in the sidebar), checks the computer Porchlight runs on. On Linux it checks credentials in files and installed packages; the other areas use macOS's own tools. From a terminal:
+**This Mac** on macOS, **This computer** on Linux (under "Your computer" in the sidebar), checks the computer Porchlight runs on. On Linux it checks credentials in files, SSH settings, startup items, browser extensions and installed packages; the other areas use macOS's own tools. From a terminal:
 
 ```bash
 porchlight host check              # add --json for JSON, --offline to skip asking Apple and OSV.dev
@@ -884,7 +920,8 @@ What it looks at:
 | Updates | Updates waiting to be installed (`softwareupdate --list`), and whether macOS installs Security Responses by itself |
 | Built-in protection | FileVault, System Integrity Protection, Gatekeeper, the firewall and its stealth mode, automatic login, the guest account, how soon the screen locks |
 | Reachable from the network | Every program listening on an address other than localhost (`netstat`), named: Remote Login, Screen Sharing, File Sharing and the other Sharing services, AirPlay Receiver, and installed apps. Listening on your tailnet only passes |
-| Credentials kept in files | Private keys in `~/.ssh` without a passphrase or readable by others, and credentials in plain text in `~/.aws/credentials`, `~/.git-credentials`, `~/.netrc`, `~/.npmrc`, `~/.docker/config.json`, `~/.pypirc`, `~/.config/gh/hosts.yml` and `~/.kube/config` |
+| Credentials kept in files | Private keys in `~/.ssh` without a passphrase or readable by others, and credentials in plain text in `~/.aws/credentials`, `~/.git-credentials`, `~/.netrc`, `~/.npmrc`, `~/.docker/config.json`, `~/.pypirc`, `~/.config/gh/hosts.yml` and `~/.kube/config`. In `~/.ssh/config` and the files it includes: `ForwardAgent yes` for every host, and `StrictHostKeyChecking no` |
+| Startup items and browser extensions | LaunchAgents and LaunchDaemons (on Linux, systemd user units and autostart entries) whose program is in a temporary, shared or writable folder, or that start for every user from one account's folder. Extensions in Chrome, Brave, Edge, Chromium, Vivaldi, Arc and Firefox that can read and change every site, by name and permission only |
 | Installed packages | npm's global packages and the Python packages of the `python3` on your PATH, looked up on OSV.dev; Homebrew packages with a newer version |
 
 Each problem comes with its severity and the steps to repair it. At the bottom, **Commands to fix these** gathers every repair command that needs no decision first into one block to paste into Terminal (**Copy all**): npm packages in one `npm install -g`, Python packages in one `pip install`, and each other command once. Steps that need a decision, such as turning off a Sharing service you may use or adding a passphrase to an SSH key a script uses, stay with their checks. `porchlight host check` prints the same block last. On Linux it checks credentials and packages only.

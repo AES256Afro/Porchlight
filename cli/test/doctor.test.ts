@@ -36,7 +36,7 @@ test("doctor passes a working setup and contacts nothing when offline", async ()
 
 		assert.deepEqual(
 			Object.values(checks).map((check) => `${check.status} ${check.name}`),
-			["ok Node.js", "ok git", "ok gitleaks", "ok osv-scanner", "ok Porchlight's folder", "note Last scan", "note Monitor", "note Model", "note GitHub", "note Cloudflare"],
+			["ok Node.js", "ok git", "ok gitleaks", "ok osv-scanner", "ok Porchlight's folder", "note Last scan", "note Moving computers", "note Monitor", "note Model", "note GitHub", "note Cloudflare"],
 		);
 		assert.equal(checks.gitleaks!.detail, "Version 1.2.3.");
 	});

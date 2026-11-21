@@ -96,6 +96,13 @@ offline: nothing is sent anywhere. It holds names, versions and package URLs, ne
 this computer. A repository that could not be read is named in metadata.properties, and the
 command then exits 1.
 
+Beside each package it notes, as advice and never as a finding: a licence to review
+(porchlight:licence-risk: copyleft, network copyleft, source-available, non-commercial or not
+recognised), a name one letter from a popular package's (porchlight:advice), and, on the repository,
+its licence counts and dependency confusion read from its own .npmrc, package-lock.json and
+requirements files. Nothing is looked up. The advice is also printed on the error stream; it never
+changes the exit code.
+
   --depth <n>            Folder levels to search for repositories (default: 3)
   --out <file>           Write it to a file (readable only by you) instead of printing it`,
 	},
@@ -204,7 +211,10 @@ Settings it reads when it starts (each can also be chosen in the interface's Set
   PORCHLIGHT_OSV_OFFLINE=true                       keep OSV's databases beside the report and compare
                                                     against them, instead of sending package names
   PORCHLIGHT_NOTIFY_URL, PORCHLIGHT_NOTIFY_FORMAT   where a scheduled scan's outcome is sent, and as
-                                                    json, slack, discord or ntfy (default: by the address)`,
+                                                    json, slack, discord or ntfy (default: by the address)
+  PORCHLIGHT_NOTIFY_DIGEST=weekly                   also send a weekly digest there, after a
+                                                    scheduled scan: counts, new and fixed, what is
+                                                    overdue and accepted risks ending soon`,
 	},
 	{
 		command: "doctor",
@@ -266,6 +276,35 @@ Exits 1 when a kept file is there but cannot be read.`,
                          Porchlight never writes into a repository itself
 
 Needs gitleaks. To commit without the check once: git commit --no-verify`,
+	},
+	{
+		command: "settings export",
+		summary: "Write your settings to a file, to move them to another computer",
+		detail: `Usage: porchlight settings export <file>
+
+Writes the look, projects, your finding notes, due dates, the model chosen and the model for each
+task to a new file, readable only by you. It never writes over a file that is there.
+
+  --include-keys         Also the keys and tokens (model keys, the monitor's admin token, the
+                         Cloudflare token, ownership tokens). The whole file is then encrypted with a
+                         passphrase you type, or PORCHLIGHT_SETTINGS_PASSPHRASE: at least 12 characters
+  --data <dir>           The data folder, when not ~/.porchlight
+  --report <file>        The scan report whose notes to take, when not repo-scan.json there
+
+Without --include-keys no key or token is in the file. The access key for other devices never moves.`,
+	},
+	{
+		command: "settings import",
+		summary: "Bring in settings written by settings export",
+		detail: `Usage: porchlight settings import <file>
+
+Reads the file (asking for its passphrase when it holds keys) and brings its settings in. Every file
+it would change is read first: one that is there but cannot be read stops it before anything is
+written. Notes and projects are merged, and yours win; each project's folder is checked again here.
+
+  --replace              Replace a setting already here (the look, a model, a token) with the file's
+  --data <dir>           The data folder, when not ~/.porchlight
+  --report <file>        The scan report beside which notes are kept`,
 	},
 	{
 		command: "schedule print",

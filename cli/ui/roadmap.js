@@ -4,7 +4,7 @@ import { assistAction } from "./assist.js";
 import { banner, emptyState, h, pager, PHASE_TITLES, plural, replace, select, severityBadge, stepNodes } from "./dom.js";
 import { exportButton, openExportDialog } from "./export.js";
 import { openSendDialog, sendButton } from "./send.js";
-import { clearFiltersButton, newChip, noScanYet, repoChoices, scanAgainButton, severityChips, viewLink } from "./finding-parts.js";
+import { actionKeys, clearFiltersButton, newChip, noScanYet, repoChoices, scanAgainButton, severityChips, viewLink } from "./finding-parts.js";
 import { matchesFilter } from "./filter.js";
 import { phaseChart } from "./charts.js";
 import { debounce, filterFromParams, paginate, paramsFromFilter } from "./list.js";
@@ -285,8 +285,8 @@ function actionCard(action, place, filter) {
 			"p",
 			{ class: "hint action-foot" },
 			action.match ? viewLink(["findings"], { ...filter, query: action.match, repo: place }, {}, `See ${total === 1 ? "this finding" : `these ${total.toLocaleString("en-GB")} findings`}`) : null,
-			// Repaired? Scan the repository again and see what that fixed (US-4).
-			scanAgainButton(place),
+			// Repaired? Scan the repository again and see whether that cleared these findings (US-4, FT-11).
+			scanAgainButton(place, actionKeys(action.match, place)),
 		),
 	);
 }

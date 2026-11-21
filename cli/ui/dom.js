@@ -7,6 +7,8 @@ import { linkAllowed, splitPaths } from "./paths.js";
  * so it throws rather than being dropped in silence.
  */
 export const REFUSED_PROPS = ["innerHTML", "outerHTML", "srcdoc", "insertAdjacentHTML", "style", "srcObject"];
+/** Attributes whose words are shown or read out, put through `shownText` like text (S38). */
+const TEXT_ATTRIBUTES = ["title", "aria-label", "aria-description", "aria-valuetext", "aria-roledescription", "placeholder", "alt"];
 /** Properties and attributes that hold an address, checked with `linkAllowed`. */
 const ADDRESS_PROPS = ["href", "src", "action", "formaction", "xlink:href"];
 
@@ -29,7 +31,8 @@ export function h(tag, props, ...children) {
 		if (key.startsWith("on") && typeof value !== "function" && value !== null && value !== undefined && value !== false) throw new Error(`h() sets ${key} only to a function`);
 		if (ADDRESS_PROPS.includes(key.toLowerCase()) && typeof value === "string" && !linkAllowed(value)) throw new Error(`h() does not link to ${value.slice(0, 40)}`);
 		if (value === null || value === undefined || value === false) continue;
-		if (key === "class") element.className = String(value);
+		if (TEXT_ATTRIBUTES.includes(key) && typeof value === "string") element.setAttribute(key, shownText(value));
+		else if (key === "class") element.className = String(value);
 		else if (key === "dataset") Object.assign(element.dataset, value);
 		else if (key.startsWith("on") && typeof value === "function") {
 			element.addEventListener(key.slice(2), /** @type {EventListener} */ (value));
@@ -638,6 +641,23 @@ export function statTile(label, value, mark = null, href = "") {
 		h("div", { class: "tile-label" }, mark, label),
 		h("div", { class: "tile-value" }, typeof value === "number" ? value.toLocaleString("en-GB") : value),
 	);
+}
+
+/**
+ * The three tiles of a check (the host check, the Cloudflare audit), the same everywhere (VS-8): a mark
+ * beside a label only where it marks a state, and only when there is something in that state. Tiles
+ * that count things (domains, hosts, repositories) carry no mark.
+ *
+ * @param {number} failed
+ * @param {number} unknown
+ * @param {number} passed
+ */
+export function checkTiles(failed, unknown, passed) {
+	return [
+		statTile("Findings", failed, failed > 0 ? icon("warning") : null),
+		statTile("Could not check", unknown, unknown > 0 ? icon("pending") : null),
+		statTile("Passed", passed, passed > 0 ? icon("good") : null),
+	];
 }
 
 /**

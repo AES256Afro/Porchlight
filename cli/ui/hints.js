@@ -101,6 +101,26 @@ export function toolAdvice(preview) {
 }
 
 /**
+ * How old OSV's databases are, where they are kept beside the data (PORCHLIGHT_OSV_OFFLINE): packages are
+ * compared against them, so an old copy misses newer advisories. Null where osv-scanner asks OSV at each
+ * scan. A scan brings a copy a day old or more up to date first (OP-4).
+ *
+ * @param {{ offline: boolean, refreshedAt: string | null }} database
+ * @param {(iso: string) => string} when how the page writes a time
+ * @param {Date} [now]
+ * @returns {{ old: boolean, words: string } | null}
+ */
+export function osvAgeWords(database, when, now = new Date()) {
+	if (!database.offline) return null;
+	if (!database.refreshedAt) return { old: true, words: "OSV's databases have not been downloaded yet: the next scan downloads them before it compares packages." };
+	const age = now.getTime() - new Date(database.refreshedAt).getTime();
+	const days = Math.floor(age / 86_400_000);
+	if (Number.isNaN(age) || age < 0) return { old: true, words: "OSV's databases carry a date in the future, so they are downloaded again at the next scan." };
+	if (days < 1) return { old: false, words: `OSV's databases were brought up to date ${when(database.refreshedAt)}.` };
+	return { old: true, words: `OSV's databases are ${days === 1 ? "a day" : `${days.toLocaleString("en-GB")} days`} old (${when(database.refreshedAt)}): the next scan brings them up to date first.` };
+}
+
+/**
  * How to let Porchlight fetch private repositories: make a token that can only read, and give it
  * to Porchlight where its settings are kept.
  *

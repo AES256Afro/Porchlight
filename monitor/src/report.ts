@@ -73,6 +73,8 @@ function describeChange(change: Change): string {
 			return `~ ${change.record} for ${change.host}: ${list(change.before)} -> ${list(change.after)}`;
 		case "https_changed":
 			return `~ HTTPS on ${change.host}: ${change.before} -> ${change.after}`;
+		case "issuer_added":
+			return `+ new certificate authority for ${change.host}: ${change.issuer}${change.names.length > 0 ? ` (${change.names.join(", ")})` : ""}`;
 	}
 }
 

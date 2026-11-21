@@ -2,7 +2,7 @@
 // "This Mac": what Porchlight can see of the computer it runs on. The check only reads; this page
 // starts it, follows it, and shows what it found. Every element is built with h(): program names,
 // paths and update titles come from the system and are never treated as HTML.
-import { announce, formatWhen, h, icon, plural, replace, setOff, severityBadge, shownText, statTile, stepNodes, tileRow, toast } from "./dom.js";
+import { announce, checkTiles, formatWhen, h, icon, plural, replace, setOff, severityBadge, shownText, stepNodes, tileRow, toast } from "./dom.js";
 import { AREA_TITLES, combinedCommands, hostName as nameFor, splitChecks } from "./host-areas.js";
 import { load, loadHost, startHostCheck, store, subscribe } from "./store.js";
 import { checkChangeWords } from "./hints.js";
@@ -129,7 +129,7 @@ export async function renderHost(view) {
 		const { status, report } = store.host;
 		const running = status.state === "running";
 		setOff(button, running);
-		button.textContent = running ? "Checking…" : report ? "Check again" : label;
+		button.textContent = shownText(running ? "Checking…" : report ? "Check again" : label);
 		if (status.state === "running") {
 			const known = status.total > 0;
 			replace(
@@ -197,11 +197,7 @@ function drawReport(report) {
 		h("p", { class: "sub scan-line" }, `Last checked ${formatWhen(report.checkedAt)}${os ? ` · ${os}` : ""}.`),
 		// What the check after a fix fixed (G-Q1).
 		changeCard(store.host.change, "check"),
-		tileRow(
-			statTile("Findings", failed.length),
-			statTile("Could not check", unknown.length, unknown.length > 0 ? icon("pending") : null),
-			statTile("Passed", passed.length, icon("good")),
-		),
+		tileRow(...checkTiles(failed.length, unknown.length, passed.length)),
 		// The one card to act on comes first, under the tiles, not after every area (G-D1).
 		commandsCard(commands),
 		...AREA_TITLES.map(([area, title]) => {

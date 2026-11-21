@@ -4,7 +4,7 @@
 // own. Settings → Projects adds and removes them, on the computer that runs Porchlight or a
 // service's own page; the switcher at the top of the sidebar moves between them from any page.
 import { api } from "./api.js";
-import { banner, h, icon, isOff, replace, setOff, toast } from "./dom.js";
+import { banner, h, icon, isOff, replace, setOff, shownText, toast } from "./dom.js";
 import { readyToAdd } from "./hints.js";
 import { currentProject, setProjects, store, subscribe } from "./store.js";
 
@@ -99,7 +99,7 @@ export function projectSwitcher() {
 			canChange ? h("option", { value: "new" }, "New project…") : null,
 		);
 		const project = currentProject();
-		select.title = project ? `Saved exports, discussions and the log go to ${ownFolder(project)}` : "Exports are downloaded. Choose a project to keep them in one folder.";
+		select.title = shownText(project ? `Saved exports, discussions and the log go to ${ownFolder(project)}` : "Exports are downloaded. Choose a project to keep them in one folder.");
 	}
 
 	async function change() {
@@ -314,7 +314,8 @@ export function projectsSection() {
 			h(
 				"p",
 				{ class: "sub" },
-				`Choose a folder for an audit or a scan. Exports you save, your discussions with a model and a daily log of what Porchlight did go into a ${OWN} folder inside it, under names that say what each file is, such as "2026-11-19 15.30 Repair roadmap.md". Porchlight writes nowhere else in the folder, and its files there are readable only by you.`,
+				// Short sentences, one fact each (RD-12).
+				`Choose a folder for an audit or a scan. Porchlight keeps three things in a ${OWN} folder inside it: exports you save, your discussions with a model, and a daily log of what it did. Each file is named for what it is, such as "2026-11-19 15.30 Repair roadmap.md". Porchlight writes nowhere else in the folder, and only you can read its files.`,
 			),
 			projects.length > 0
 				? h(

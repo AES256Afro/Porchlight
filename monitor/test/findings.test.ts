@@ -394,6 +394,39 @@ describe("diffSnapshots", () => {
 		expect(diffSnapshots(base, next)).toEqual([]);
 	});
 
+	it("reports a certificate authority the log had not listed before, and nothing it could not compare", () => {
+		const seen = (issuer: string, names = ["example.com"]) => ({
+			issuer,
+			plain: true,
+			wildcard: false,
+			names,
+		});
+		const before = { ...snapshot({}), issuers: [seen("Let's Encrypt")] };
+		const after = {
+			...snapshot({}),
+			issuers: [seen("Let's Encrypt"), seen("Other CA", ["shop.example.com"])],
+		};
+		expect(diffSnapshots(before, after)).toEqual([
+			{
+				kind: "issuer_added",
+				host: "example.com",
+				issuer: "Other CA",
+				names: ["shop.example.com"],
+			},
+		]);
+		// An authority whose certificates expired is not a change worth telling.
+		expect(diffSnapshots(after, before)).toEqual([]);
+		// The log not read for the bare domain either time (invariant 5), or an older snapshot.
+		expect(diffSnapshots(snapshot({}), after)).toEqual([]);
+		expect(diffSnapshots(before, snapshot({}))).toEqual([]);
+		// An earlier list cut at its limit may have left the authority out.
+		const full = {
+			...snapshot({}),
+			issuers: Array.from({ length: 20 }, (_, index) => seen(`CA ${index}`)),
+		};
+		expect(diffSnapshots(full, after)).toEqual([]);
+	});
+
 	it("reports HTTPS becoming unreachable", () => {
 		const before = snapshot({ "example.com": host({ http: page() }) });
 		const after = snapshot({ "example.com": host({ http: { ok: false, error: "timeout" } }) });

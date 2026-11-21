@@ -7,6 +7,7 @@ import { announceSaved } from "./projects.js";
 import { openSendDialog, sendTargets } from "./send.js";
 import { currentProject, store } from "./store.js";
 import { modelFields } from "./generated.js";
+import { taskAssistant } from "./model-tasks.js";
 import { isStopped, waitUntil } from "./poller.js";
 
 /** @typedef {import("./filter.js").FindingFilter} FindingFilter */
@@ -50,7 +51,7 @@ export function openExportDialog(target, initialContent = "roadmap") {
 		);
 
 	// A mural needs a model, and is made for the repository scan, not for one domain.
-	const assistant = store.settings?.assistant;
+	const assistant = taskAssistant("mural");
 	const muralOffered = !forDomain && assistant?.configured === true;
 	const muralBox = /** @type {HTMLInputElement} */ (h("input", { type: "checkbox", name: "mural" }));
 	// A mural already written for this scan and these filters is used again, unless asked for anew (C-Q1).

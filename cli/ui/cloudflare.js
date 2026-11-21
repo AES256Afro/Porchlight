@@ -7,7 +7,8 @@
 import { activityList } from "./activity.js";
 import { api, ApiError, download } from "./api.js";
 import { assistAction } from "./assist.js";
-import { announce, banner, formatNumber, formatWhen, h, icon, pager, plural, replace, scrollMotion, select, setOff, severityBadge, shownText, statTile, stepNodes, tileRow, toast } from "./dom.js";
+import { announce, banner, checkTiles, formatNumber, formatWhen, h, icon, pager, plural, replace, scrollMotion, select, setOff, severityBadge, shownText, statTile, stepNodes, tileRow, toast } from "./dom.js";
+import { severityBar } from "./charts.js";
 import { fixBrief, fixGroups, OUTSIDE, tokenFixSteps } from "./hints.js";
 import { changeCard } from "./host.js";
 import { debounce, paginate } from "./list.js";
@@ -201,28 +202,6 @@ export async function renderCloudflare(view, route) {
 		}
 	}
 
-	/**
-	 * What to do about permissions Cloudflare refused this token: the steps, with where to go.
-	 *
-	 * @param {string} title
-	 */
-	function permissionHelp(title) {
-		const lacking = store.cloudflare.lacking;
-		if (lacking.length === 0) return null;
-		return h(
-			"div",
-			{ class: "banner banner-warning cf-next", role: "note" },
-			icon("warning"),
-			h(
-				"div",
-				null,
-				h("strong", null, title),
-				h("p", null, "Your token is read-only for this, which is how Porchlight asks you to start. To let it make these changes:"),
-				h("ol", { class: "host-fix" }, ...tokenFixSteps(lacking.map((name) => ({ name, scope: "Zone" })), "change").map((step) => h("li", null, ...stepNodes(step)))),
-			),
-		);
-	}
-
 	/** The card for a set of changes: the requests to approve, then their progress, then what happened. */
 	function drawBatch() {
 		const status = store.cloudflare.batch;
@@ -298,7 +277,7 @@ export async function renderCloudflare(view, route) {
 					batchList(waiting, () => {
 						// A tick changes the count on the button and nothing else: the list keeps its scroll (F-Q1).
 						const now = waiting.changes.length - waiting.left.size;
-						sendButton.textContent = `Approve and send ${now}`;
+						sendButton.textContent = shownText(`Approve and send ${now}`);
 						setOff(sendButton, now === 0 || batchBusy);
 					}),
 					h("p", { class: "hint" }, "Every request carries the header Authorization: Bearer (your saved token, not shown)."),
@@ -485,21 +464,11 @@ export async function renderCloudflare(view, route) {
 				{ class: "sub scan-line" },
 				`Last audited ${formatWhen(report.checkedAt)} · ${plural(report.zones.length, "domain", "domains")} · ${token.kind === "account" ? "account token" : "user token"}${token.expiresOn ? `, expiring ${formatWhen(token.expiresOn)}` : ""}.`,
 			),
-			tileRow(
-				statTile("Findings", failed.length),
-				statTile("Could not check", unknown.length, unknown.length > 0 ? icon("pending") : null),
-				statTile("Passed", passed.length, icon("good")),
-				statTile("Domains", report.zones.length, icon("cloudflare")),
-			),
+			tileRow(...checkTiles(failed.length, unknown.length, passed.length), statTile("Domains", report.zones.length)),
 			// What this audit fixed and found new against the one before (F-Q3).
 			changeCard(store.cloudflare.change, "audit"),
-			failed.length > 0
-				? h(
-						"div",
-						{ class: "cf-severities", "aria-label": "Findings by severity" },
-						...SEVERITIES.map((severity) => h("span", { class: "cf-severity-count" }, severityBadge(severity), h("strong", null, failed.filter((item) => item.severity === severity).length.toLocaleString("en-GB")))),
-					)
-				: null,
+			// The same severity bar as Findings (VS-14).
+			failed.length > 0 ? severityBar(severityCounts(failed), undefined, SEVERITIES) : null,
 			denied.length > 0
 				? h(
 						"div",
@@ -554,59 +523,6 @@ export async function renderCloudflare(view, route) {
 			report.userChecks.length > 0 ? groupCard("Your user", null, report.userChecks, null) : null,
 			zonesSection(report),
 		].filter((node) => node !== null);
-	}
-
-	/**
-	 * What is left, by fix: each kind of problem once, with the domains it affects, so the same repair
-	 * is read once and not twenty times. The whole list can be copied as a brief for a model.
-	 *
-	 * @param {CfReport} report
-	 */
-	function remainingCard(report) {
-		const groups = fixGroups(report.zones);
-		if (groups.length === 0) return null;
-		const mine = groups.reduce((count, group) => count + group.fixable, 0);
-		const applied = store.cloudflare.changes.filter((change) => change.ok).length;
-		const copy = async () => {
-			try {
-				await navigator.clipboard.writeText(shownText(fixBrief(groups, formatWhen(report.checkedAt))));
-				toast("Copied. Paste it into Claude, or any model that can act on your Cloudflare account.");
-			} catch {
-				toast("Could not copy. Use Export below instead.", "error");
-			}
-		};
-		return h(
-			"div",
-			{ class: "card full" },
-			h("h2", null, "What is left, by fix"),
-			h(
-				"p",
-				{ class: "sub" },
-				mine > 0
-					? `${plural(groups.length, "kind of finding", "kinds of finding")}. Porchlight can make ${plural(mine, "of these changes", "of these changes")} itself: use Fix these above. The rest need a decision from you or work on your server.`
-					: `${plural(groups.length, "kind of finding", "kinds of finding")}.${applied > 0 ? ` Porchlight has made every change it can make itself (${applied} so far), so there is no Fix these button now.` : ""} What is left needs a decision from you or work on your server, so Porchlight does not do it for you.`,
-			),
-			h(
-				"div",
-				{ class: "actions" },
-				h("button", { type: "button", class: "button", onclick: () => void copy() }, icon("copy"), "Copy all as a brief for a model"),
-				h("span", { class: "hint" }, "Plain text: each problem, its domains and its fix. No token, member or record value. Paste it where your model can reach Cloudflare."),
-			),
-			h(
-				"div",
-				{ class: "host-list" },
-				...groups.map((group) =>
-					h(
-						"div",
-						{ class: "host-check host-failed" },
-						h("div", { class: "host-check-head" }, severityBadge(/** @type {any} */ (group.severity)), h("strong", null, group.title), h("span", { class: "hint" }, plural(group.zones.length, "domain", "domains"))),
-						h("p", { class: "hint" }, group.why),
-						h("details", { class: "fix-details" }, h("summary", null, "Which domains"), h("ul", null, ...group.zones.map((name) => h("li", null, h("code", null, name))))),
-						group.fix.length > 0 ? h("ol", { class: "host-fix" }, ...group.fix.map((step) => h("li", null, ...stepNodes(step)))) : null,
-					),
-				),
-			),
-		);
 	}
 
 	/** @param {CfZoneReport} zone */
@@ -877,23 +793,99 @@ export async function renderCloudflare(view, route) {
 		return card;
 	}
 
-	/** @param {AppliedChange[]} log */
-	function changeList(log) {
-		return h(
-				"ul",
-				{ class: "plain-list" },
-				...log.map((entry) =>
-					h(
-						"li",
-						null,
-						h("span", { class: `severity ${entry.ok ? "status-good" : "status-warning"}` }, icon(entry.ok ? "good" : "warning"), entry.ok ? "Applied" : /** @type {{ notSent?: boolean }} */ (entry).notSent ? "Not sent" : "Refused"),
-						" ",
-						h("strong", null, entry.title),
-						h("span", { class: "hint block" }, `${formatWhen(entry.at)} · ${entry.request.method} ${entry.request.url} · ${entry.result}`),
-					),
+}
+
+/**
+ * What to do about permissions Cloudflare refused this token: the steps, with where to go.
+ *
+ * @param {string} title
+ */
+function permissionHelp(title) {
+	const lacking = store.cloudflare.lacking;
+	if (lacking.length === 0) return null;
+	return h(
+		"div",
+		{ class: "banner banner-warning cf-next", role: "note" },
+		icon("warning"),
+		h(
+			"div",
+			null,
+			h("strong", null, title),
+			h("p", null, "Your token is read-only for this, which is how Porchlight asks you to start. To let it make these changes:"),
+			h("ol", { class: "host-fix" }, ...tokenFixSteps(lacking.map((name) => ({ name, scope: "Zone" })), "change").map((step) => h("li", null, ...stepNodes(step)))),
+		),
+	);
+}
+
+/**
+ * What is left, by fix: each kind of problem once, with the domains it affects, so the same repair
+ * is read once and not twenty times. The whole list can be copied as a brief for a model.
+ *
+ * @param {CfReport} report
+ */
+function remainingCard(report) {
+	const groups = fixGroups(report.zones);
+	if (groups.length === 0) return null;
+	const mine = groups.reduce((count, group) => count + group.fixable, 0);
+	const applied = store.cloudflare.changes.filter((change) => change.ok).length;
+	const copy = async () => {
+		try {
+			await navigator.clipboard.writeText(shownText(fixBrief(groups, formatWhen(report.checkedAt))));
+			toast("Copied. Paste it into Claude, or any model that can act on your Cloudflare account.");
+		} catch {
+			toast("Could not copy. Use Export below instead.", "error");
+		}
+	};
+	return h(
+		"div",
+		{ class: "card full" },
+		h("h2", null, "What is left, by fix"),
+		h(
+			"p",
+			{ class: "sub" },
+			mine > 0
+				? `${plural(groups.length, "kind of finding", "kinds of finding")}. Porchlight can make ${plural(mine, "of these changes", "of these changes")} itself: use Fix these above. The rest need a decision from you or work on your server.`
+				: `${plural(groups.length, "kind of finding", "kinds of finding")}.${applied > 0 ? ` Porchlight has made every change it can make itself (${applied} so far), so there is no Fix these button now.` : ""} What is left needs a decision from you or work on your server, so Porchlight does not do it for you.`,
+		),
+		h(
+			"div",
+			{ class: "actions" },
+			h("button", { type: "button", class: "button", onclick: () => void copy() }, icon("copy"), "Copy all as a brief for a model"),
+			h("span", { class: "hint" }, "Plain text: each problem, its domains and its fix. No token, member or record value. Paste it where your model can reach Cloudflare."),
+		),
+		h(
+			"div",
+			{ class: "host-list" },
+			...groups.map((group) =>
+				h(
+					"div",
+					{ class: "host-check host-failed" },
+					h("div", { class: "host-check-head" }, severityBadge(/** @type {any} */ (group.severity)), h("strong", null, group.title), h("span", { class: "hint" }, plural(group.zones.length, "domain", "domains"))),
+					h("p", { class: "hint" }, group.why),
+					h("details", { class: "fix-details" }, h("summary", null, "Which domains"), h("ul", null, ...group.zones.map((name) => h("li", null, h("code", null, name))))),
+					group.fix.length > 0 ? h("ol", { class: "host-fix" }, ...group.fix.map((step) => h("li", null, ...stepNodes(step)))) : null,
 				),
-		);
-	}
+			),
+		),
+	);
+}
+
+/** @param {AppliedChange[]} log */
+function changeList(log) {
+	return h(
+			"ul",
+			{ class: "plain-list" },
+			...log.map((entry) =>
+				h(
+					"li",
+					null,
+					h("span", { class: `severity ${entry.ok ? "status-good" : "status-warning"}` }, icon(entry.ok ? "good" : "warning"), entry.ok ? "Applied" : /** @type {{ notSent?: boolean }} */ (entry).notSent ? "Not sent" : "Refused"),
+					" ",
+					h("strong", null, entry.title),
+					h("span", { class: "hint block" }, `${formatWhen(entry.at)} · ${entry.request.method} ${entry.request.url} · ${entry.result}`),
+				),
+			),
+	);
 }
 
 /**
@@ -1029,4 +1021,16 @@ function connectCard(service) {
 		service ? null : h("p", null, h("a", { class: "button primary", href: "#/settings/cloudflare" }, "Connect in Settings")),
 		h("p", { class: "hint" }, "The token stays on this computer and goes only to Cloudflare's API. No model ever sees it."),
 	);
+}
+
+/**
+ * Failed checks by severity, for the severity bar.
+ *
+ * @param {{ severity: string }[]} failed
+ * @returns {Record<"critical" | "high" | "medium" | "low", number>}
+ */
+function severityCounts(failed) {
+	const counts = { critical: 0, high: 0, medium: 0, low: 0 };
+	for (const item of failed) if (Object.hasOwn(counts, item.severity)) counts[/** @type {keyof typeof counts} */ (item.severity)]++;
+	return counts;
 }

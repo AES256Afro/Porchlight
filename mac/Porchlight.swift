@@ -10,6 +10,8 @@
 // a project, and showing one of Porchlight's own files in Finder.
 
 import AppKit
+import ServiceManagement
+import UserNotifications
 import WebKit
 
 /// The server's output, kept in ~/.porchlight/app.log for Show Log. The folder is 0700 and the log
@@ -85,6 +87,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
 	private var signalSources: [DispatchSourceSignal] = []
 
+	/// The menu-bar item and what it last showed (FT-15): see "Menu-bar status" below.
+	private var statusItem: NSStatusItem?
+	private var statusTimer: Timer?
+	private var lastStatus: MenuStatus?
+
 	/// The data folder had an earlier name. It moves once, before anything writes to it, and the old
 	/// path stays as a link to the new one for anything built before the rename.
 	private func moveOldDataFolder() {
@@ -117,6 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 			signalSources.append(source)
 		}
 		buildMenu()
+		setUpMenuBar()
 		buildWindow()
 		startServer()
 		NSApp.activate(ignoringOtherApps: true)
@@ -165,6 +173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
 	func applicationWillTerminate(_ notification: Notification) {
 		quitting = true
+		statusTimer?.invalidate()
 		if let server, server.isRunning { server.terminate() }
 	}
 
@@ -233,6 +242,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 			item("About Porchlight", #selector(NSApplication.orderFrontStandardAboutPanel(_:)), ""),
 			.separator(),
 			item("Show Log", #selector(showLog), "l", [.command, .shift]),
+			loginMenuItem(),
+			notifyMenuItem(),
 			.separator(),
 			item("Hide Porchlight", #selector(NSApplication.hide(_:)), "h"),
 			item("Quit Porchlight", #selector(NSApplication.terminate(_:)), "q"),
@@ -322,9 +333,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 		do {
 			try process.run()
 			server = process
+			// A server that neither prints its link nor stops leaves the window blank: after a while, say so (M15).
+			DispatchQueue.main.asyncAfter(deadline: .now() + AppDelegate.startupLimit) { [weak self] in self?.startupTimedOut() }
 		} catch {
 			fail("Porchlight could not start: \(error.localizedDescription)")
 		}
+	}
+
+	/// How long the server may take to print its link before the window says what it printed meanwhile.
+	private static let startupLimit: TimeInterval = 30
+
+	/// Still no link: the last lines the server printed, with any key masked as in the log. The server is
+	/// left running, and the page still opens if the link comes later.
+	private func startupTimedOut() {
+		guard origin == nil, !quitting, server?.isRunning == true else { return }
+		let tail = AppLog.masked(output.split(separator: "\n").suffix(8).joined(separator: "\n"))
+		let printed = tail.isEmpty ? "It has printed nothing yet." : "The last it printed:\n\n\(tail)"
+		fail("Porchlight has not started after \(Int(AppDelegate.startupLimit)) seconds. It is still trying, and the page opens here if it does.\n\n\(printed)\n\nThe full log is in ~/.porchlight/app.log (Porchlight → Show Log). To try again, quit and open Porchlight.")
 	}
 
 	private func received(_ text: String) {
@@ -334,6 +359,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 		      let url = URL(string: String(output[range])) else { return }
 		origin = URL(string: "http://127.0.0.1:\(url.port ?? 0)")
 		pageLink = url
+		startStatusPolling()
 		status.isHidden = true
 		webView.isHidden = false
 		webView.load(URLRequest(url: url))
@@ -495,6 +521,201 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 	func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
 		let alert = NSAlert(error: error)
 		alert.beginSheetModal(for: window)
+	}
+}
+
+// MARK: Menu-bar status, notifications and launch at login (FT-15)
+
+/// What the local server's /api/menu-status says: counts and times only, never a finding's title, place
+/// or value. The menu and the notifications are built from these numbers in the app's own words.
+struct MenuStatus: Decodable, Equatable {
+	struct Counts: Decodable, Equatable {
+		let critical: Int
+		let high: Int
+		let medium: Int
+		let low: Int
+	}
+	struct Repos: Decodable, Equatable {
+		let state: String
+		let scannedAt: String?
+		let findings: Int?
+		let bySeverity: Counts?
+		let complete: Bool?
+	}
+	struct Host: Decodable, Equatable {
+		let state: String
+		let checkedAt: String?
+		let failed: Int?
+		let couldNotCheck: Int?
+	}
+	let repos: Repos
+	let host: Host
+	let scanning: Bool
+}
+
+extension AppDelegate {
+	/// How often the menu-bar item asks the server: once a minute is enough for counts and the age of a scan.
+	private static let statusEvery: TimeInterval = 60
+	/// The owner's switch for notifications, kept in the app's own preferences. Off until they turn it on.
+	private static let notifyKey = "NotifyWhenScanFinishes"
+
+	fileprivate func setUpMenuBar() {
+		let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+		item.button?.image = NSImage(systemSymbolName: "lightbulb", accessibilityDescription: "Porchlight")
+		item.button?.imagePosition = .imageLeading
+		item.button?.toolTip = "Porchlight"
+		statusItem = item
+		drawStatus(nil)
+	}
+
+	fileprivate func startStatusPolling() {
+		statusTimer?.invalidate()
+		askStatus()
+		let timer = Timer(timeInterval: AppDelegate.statusEvery, repeats: true) { [weak self] _ in self?.askStatus() }
+		RunLoop.main.add(timer, forMode: .common)
+		statusTimer = timer
+	}
+
+	/// Asks the server on this computer, with this run's key, exactly as the page does. Nothing else is contacted.
+	private func askStatus() {
+		guard let pageLink, let port = pageLink.port, let fragment = pageLink.fragment, fragment.hasPrefix("k="),
+		      let url = URL(string: "http://127.0.0.1:\(port)/api/menu-status") else { return }
+		var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 10)
+		request.setValue(String(fragment.dropFirst(2)), forHTTPHeaderField: "x-porchlight-session")
+		let session = URLSession(configuration: .ephemeral)
+		session.dataTask(with: request) { [weak self] data, response, _ in
+			let ok = (response as? HTTPURLResponse)?.statusCode == 200
+			let decoded = ok ? data.flatMap { try? JSONDecoder().decode(MenuStatus.self, from: $0) } : nil
+			DispatchQueue.main.async { self?.received(status: decoded) }
+		}.resume()
+		session.finishTasksAndInvalidate()
+	}
+
+	private func received(status: MenuStatus?) {
+		let before = lastStatus
+		if let status { lastStatus = status }
+		drawStatus(status)
+		// A scan that finished since the last look: said once, from the counts alone.
+		if let status, let before, let finished = status.repos.scannedAt, finished != before.repos.scannedAt, !status.scanning {
+			notify(title: "Porchlight: scan finished", body: AppDelegate.findingsWords(status.repos) + (status.repos.complete == false ? " Not everything was covered." : ""))
+		}
+	}
+
+	private func drawStatus(_ status: MenuStatus?) {
+		guard let statusItem else { return }
+		let counts = status?.repos.bySeverity
+		let urgent = (counts?.critical ?? 0) + (counts?.high ?? 0)
+		statusItem.button?.title = urgent > 0 ? " \(urgent)" : ""
+		statusItem.button?.image = NSImage(systemSymbolName: urgent > 0 ? "lightbulb.fill" : "lightbulb", accessibilityDescription: urgent > 0 ? "Porchlight: \(urgent) critical or high" : "Porchlight")
+		let menu = NSMenu()
+		func line(_ text: String) {
+			let entry = NSMenuItem(title: text, action: nil, keyEquivalent: "")
+			entry.isEnabled = false
+			menu.addItem(entry)
+		}
+		if let status {
+			if status.scanning { line("Scanning now…") }
+			switch status.repos.state {
+			case "read":
+				line(AppDelegate.findingsWords(status.repos))
+				if let at = status.repos.scannedAt { line("Last scan: \(AppDelegate.age(at))") }
+				if status.repos.complete == false { line("Not everything was covered") }
+			case "unreadable": line("The last scan could not be read")
+			default: line("No scan yet")
+			}
+			switch status.host.state {
+			case "read":
+				let failed = status.host.failed ?? 0
+				let unknown = status.host.couldNotCheck ?? 0
+				line("This computer: \(failed == 1 ? "1 problem" : "\(failed) problems")\(unknown > 0 ? ", \(unknown) not checked" : "")")
+			case "unreadable": line("This computer: the last check could not be read")
+			default: line("This computer: not checked yet")
+			}
+		} else {
+			line(pageLink == nil ? "Starting…" : "Waiting for Porchlight to answer")
+		}
+		menu.addItem(.separator())
+		menu.addItem(NSMenuItem(title: "Open Porchlight", action: #selector(showMainWindow), keyEquivalent: ""))
+		menu.addItem(loginMenuItem())
+		menu.addItem(notifyMenuItem())
+		menu.addItem(.separator())
+		menu.addItem(NSMenuItem(title: "Quit Porchlight", action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""))
+		statusItem.menu = menu
+	}
+
+	/// "3 findings: 1 critical, 2 high", in the app's own words.
+	static func findingsWords(_ repos: MenuStatus.Repos) -> String {
+		let total = repos.findings ?? 0
+		let head = total == 1 ? "1 finding" : "\(total) findings"
+		guard let counts = repos.bySeverity else { return head }
+		let parts = [("critical", counts.critical), ("high", counts.high), ("medium", counts.medium), ("low", counts.low)].filter { $0.1 > 0 }.map { "\($0.1) \($0.0)" }
+		return parts.isEmpty ? head : "\(head): \(parts.joined(separator: ", "))"
+	}
+
+	/// How long ago an ISO time was, in words.
+	static func age(_ iso: String) -> String {
+		let parser = ISO8601DateFormatter()
+		parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+		guard let date = parser.date(from: iso) ?? ISO8601DateFormatter().date(from: iso) else { return iso }
+		let formatter = RelativeDateTimeFormatter()
+		formatter.unitsStyle = .full
+		return formatter.localizedString(for: date, relativeTo: Date())
+	}
+
+	@objc fileprivate func showMainWindow() {
+		NSApp.activate(ignoringOtherApps: true)
+		window.makeKeyAndOrderFront(nil)
+	}
+
+	// Launch at login: the owner's switch, off until they turn it on. Porchlight never turns it on itself.
+
+	fileprivate func loginMenuItem() -> NSMenuItem {
+		let entry = NSMenuItem(title: "Open at Login", action: #selector(toggleLogin), keyEquivalent: "")
+		entry.target = self
+		entry.state = SMAppService.mainApp.status == .enabled ? .on : .off
+		return entry
+	}
+
+	@objc private func toggleLogin(_ sender: NSMenuItem) {
+		let service = SMAppService.mainApp
+		do {
+			if service.status == .enabled { try service.unregister() } else { try service.register() }
+		} catch {
+			let alert = NSAlert()
+			alert.messageText = "Porchlight could not change Open at Login"
+			alert.informativeText = "\(error.localizedDescription)\n\nYou can also add or remove it in System Settings, under General, Login Items."
+			alert.runModal()
+		}
+		refreshMenus()
+	}
+
+	// Notifications: the owner's switch, off until they turn it on, and only Porchlight's own words and counts.
+
+	fileprivate func notifyMenuItem() -> NSMenuItem {
+		let entry = NSMenuItem(title: "Notify When a Scan Finishes", action: #selector(toggleNotify), keyEquivalent: "")
+		entry.target = self
+		entry.state = UserDefaults.standard.bool(forKey: AppDelegate.notifyKey) ? .on : .off
+		return entry
+	}
+
+	@objc private func toggleNotify(_ sender: NSMenuItem) {
+		let on = !UserDefaults.standard.bool(forKey: AppDelegate.notifyKey)
+		UserDefaults.standard.set(on, forKey: AppDelegate.notifyKey)
+		if on { UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { _, _ in } }
+		refreshMenus()
+	}
+
+	private func notify(title: String, body: String) {
+		guard UserDefaults.standard.bool(forKey: AppDelegate.notifyKey) else { return }
+		let content = UNMutableNotificationContent()
+		content.title = title
+		content.body = body
+		UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+	}
+
+	private func refreshMenus() {
+		buildMenu()
+		drawStatus(lastStatus)
 	}
 }
 

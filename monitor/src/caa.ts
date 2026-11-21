@@ -18,7 +18,7 @@ export interface IssuerSeen {
 /** Names kept per issuer: enough to find the certificate, little room in the snapshot. */
 const NAMES_KEPT = 3;
 /** Issuers kept per scan; a domain served by more is unusual, and the rest are left out. */
-const ISSUERS_KEPT = 20;
+export const ISSUERS_KEPT = 20;
 
 /** The log's certificates by issuer, in a fixed order. Certificates whose issuer is not given are left out. */
 export function issuersSeen(certs: CtCert[]): IssuerSeen[] {

@@ -9,7 +9,7 @@
 import { readFile, rm } from "node:fs/promises";
 import { MODEL_CHOICES, modelChoice } from "../../ui/models.js";
 import { assistantConfig, HOSTED, type AssistantConfig, type HostedProvider } from "./ollama.ts";
-import { writePrivateJson } from "../private-files.ts";
+import { readPrivateJson, writePrivateJson } from "../private-files.ts";
 
 export interface SavedModel {
 	choice: string;
@@ -22,6 +22,68 @@ export interface SavedModel {
 	 * beside the one in use. Keys stay in `keys`, so a remembered choice uses the same key rules.
 	 */
 	remembered?: Record<string, { url?: string; model?: string }>;
+}
+
+/** What a model can be chosen for, apart from the one in use (R6F-10). */
+export const MODEL_TASKS = ["explain", "analysis", "mural", "investigate"] as const;
+export type ModelTask = (typeof MODEL_TASKS)[number];
+
+/** Each task in the Settings page's words. */
+export const TASK_WORDS: Record<ModelTask, string> = {
+	explain: "Explain, Summarise and Ask",
+	analysis: "Deeper analysis",
+	mural: "Murals for exports",
+	investigate: "Investigations",
+};
+
+export function isModelTask(value: unknown): value is ModelTask {
+	return typeof value === "string" && (MODEL_TASKS as readonly string[]).includes(value);
+}
+
+/**
+ * The model for each task (R6F-10), kept in model-tasks.json beside the model settings: by the id
+ * `sendTargets` gives it, Porchlight's own list, never an address from a request. Holds no key.
+ */
+export type TaskChoices = Partial<Record<ModelTask, string>>;
+
+/**
+ * The saved choices: none when there is no file, and `unreadable` with why when the file is there but
+ * cannot be read, so it is never taken for none and written over (invariant 5).
+ */
+export async function readTaskChoices(path: string): Promise<{ tasks: TaskChoices; unreadable?: string }> {
+	const read = await readPrivateJson(path);
+	if (read.state === "missing") return { tasks: {} };
+	if (read.state === "unreadable") return { tasks: {}, unreadable: read.reason };
+	const tasks: TaskChoices = {};
+	const saved = (read.value as { tasks?: unknown } | null)?.tasks;
+	if (typeof saved === "object" && saved !== null) {
+		for (const [task, id] of Object.entries(saved)) if (isModelTask(task) && typeof id === "string" && /^[\w-]{1,60}$/.test(id)) tasks[task] = id;
+	}
+	return { tasks };
+}
+
+export async function saveTaskChoices(path: string, tasks: TaskChoices): Promise<void> {
+	await writePrivateJson(path, { tasks });
+}
+
+/**
+ * The model chosen for a task: one of `targets` (built by `sendTargets` from the saved settings and
+ * the environment), or null for the one in use. A task whose chosen model is no longer offered falls
+ * back to the one in use, and the page says which model that is before anything is sent.
+ */
+export function taskTarget(tasks: TaskChoices, task: ModelTask, targets: SendTarget[]): SendTarget | null {
+	const id = tasks[task];
+	if (!id) return null;
+	return targets.find((target) => target.id === id) ?? null;
+}
+
+/** Sets or clears one task's model, checked against the targets offered now. */
+export function withTask(tasks: TaskChoices, task: ModelTask, target: string | null, targets: SendTarget[]): TaskChoices {
+	if (target !== null && !targets.some((entry) => entry.id === target)) throw new ModelSettingError("Choose one of the models listed");
+	const next = { ...tasks };
+	if (target === null) delete next[task];
+	else next[task] = target;
+	return next;
 }
 
 /** What the page sends to choose a model. `apiKey` replaces the saved key for this choice; `removeKey` deletes it. */

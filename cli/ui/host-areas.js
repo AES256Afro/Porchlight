@@ -12,6 +12,7 @@ export const AREA_TITLES = [
 	["protection", "Built-in protection"],
 	["network", "Reachable from the network"],
 	["credentials", "Credentials kept in files"],
+	["startup", "Startup items and browser extensions"],
 	["packages", "Installed packages"],
 ];
 

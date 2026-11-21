@@ -110,6 +110,12 @@ env:
       - { value: "discord", label: "Discord" }
       - { value: "ntfy", label: "ntfy" }
       - { value: "json", label: "JSON" }
+  - name: PORCHLIGHT_NOTIFY_DIGEST
+    label: Weekly digest
+    description: "Weekly sends that address one more message a week, after a scan that ran by itself: counts, overdue findings, accepted risks ending, and this computer's problems. Never a secret's value or a commit's author. Empty: no digest."
+    options:
+      - { value: "", label: "Off" }
+      - { value: "weekly", label: "Weekly" }
     default: ""
   - name: SECURITYX_LLM_PROVIDER
     label: Model provider (optional)

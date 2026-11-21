@@ -1,6 +1,7 @@
 // @ts-check
 // The scan form's Options: a preset, the switches under it, and what Deep hands to the model. The
 // controls are made once and kept in step with the choices, so a change never moves keyboard focus.
+import { taskAssistant } from "./model-tasks.js";
 import { OUTSIDE } from "./hints.js";
 import { h, replace, stepNodes } from "./dom.js";
 import { analysisNotice } from "./generated.js";
@@ -168,7 +169,7 @@ export function scanOptions(initial, depthField, onChange) {
  * @returns {(Node | string)[]}
  */
 function analyseWords(chosen) {
-	const assistant = store.settings?.assistant;
+	const assistant = taskAssistant("analysis");
 	if (!assistant?.configured) return stepNodes("No model is set up, so this would not start. Choose one in Settings → Model.");
 	const what = `${assistant.model} judges up to 25 critical and high findings once the scan has finished. ${analysisNotice(assistant)}`;
 	return chosen && assistant.hosted ? [h("strong", null, `Scanning with this ticked sends findings ${OUTSIDE}. `), what] : [what];
@@ -176,5 +177,6 @@ function analyseWords(chosen) {
 
 /** Whether a scan with these choices hands findings to a hosted model afterwards, which the request has to say yes to. @param {ScanChoices} choices */
 export function sendsToHosted(choices) {
-	return choices.analyse && store.settings?.assistant?.configured === true && store.settings.assistant.hosted === true;
+	const assistant = taskAssistant("analysis");
+	return choices.analyse && assistant?.configured === true && assistant.hosted === true;
 }

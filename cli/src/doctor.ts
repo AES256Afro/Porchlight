@@ -53,6 +53,7 @@ export async function runDoctor(options: DoctorOptions): Promise<Check[]> {
 		...scanners,
 		await dataFolderCheck(options.dataDir),
 		await reportCheck(options.dataDir),
+		await movingCheck(options.dataDir),
 		await monitorCheck(options),
 		await modelCheck(options),
 		githubCheck(options.env),
@@ -115,6 +116,34 @@ function sizeWords(bytes: number): string {
 	if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB in all`;
 	if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB in all`;
 	return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB in all (fetched repositories and kept scans: remove ones you no longer need)`;
+}
+
+/** What Porchlight keeps in its folder that a new computer would need, by the file that holds it. */
+const KEPT_FOR_MOVING: [file: string, what: string][] = [
+	["finding-notes.json", "your statuses and notes"],
+	["history", "the scan history"],
+	["model-settings.json", "the model and its keys"],
+	["monitor-settings.json", "the monitor's address and token"],
+	["cloudflare-settings.json", "the Cloudflare token"],
+	["investigate-domains.json", "the ownership tokens of investigated domains"],
+	["projects.json", "your projects"],
+];
+
+/**
+ * What to copy to another computer (US-10, M15): the folder whole, naming what in it would otherwise be
+ * lost. It only looks at which files are there; none is read.
+ */
+async function movingCheck(dir: string): Promise<Check> {
+	const name = "Moving computers";
+	const held: string[] = [];
+	for (const [file, what] of KEPT_FOR_MOVING) if (await stat(join(dir, file)).then(() => true, () => false)) held.push(what);
+	if (held.length === 0) return { name, status: "note", detail: `Nothing kept yet. Later, copying ${dir} moves everything Porchlight keeps.` };
+	return {
+		name,
+		status: "note",
+		detail: `To move to another computer, copy ${dir} whole: it holds ${held.join(", ")}. Projects kept in their own folders are copied with them. Scan the same folder there, so each repository keeps its name and its notes still match.`,
+		fix: `Copy it keeping it yours alone, then on the new computer: chmod 700 ${dir}`,
+	};
 }
 
 async function reportCheck(dir: string): Promise<Check> {

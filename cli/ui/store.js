@@ -2,6 +2,7 @@
 // What every page shares: the server's settings, the latest scan report, and
 // the state of a running scan. Pages read from here and are told when it
 // changes, so a scan started on one page updates all of them.
+import { taskAssistant } from "./model-tasks.js";
 import { api, ApiError } from "./api.js";
 import { pageVisibility } from "./dom.js";
 import { poller } from "./poller.js";
@@ -365,7 +366,7 @@ export async function saveFindingNotes(findings, status, note, until = "") {
 export async function startScan(root, depth, choices, sendsToHosted = false) {
 	try {
 		// The model the page showed goes too: a Deep scan's analysis afterwards uses no other (S22).
-		const assistant = store.settings?.assistant;
+		const assistant = taskAssistant("analysis");
 		const shown = assistant?.model && assistant.host !== undefined ? { shown: { model: assistant.model, host: assistant.host } } : {};
 		const { scan } = await api("POST", "/repos/scan", { root, depth, choices, sendsToHosted, ...shown });
 		setScan(scan);

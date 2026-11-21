@@ -43,6 +43,7 @@ export function describeHistory(domain: string, history: Entry[]): string {
 			if (change.kind === "host_added") lines.push(`    + new host ${change.host}`);
 			else if (change.kind === "host_removed") lines.push(`    - host gone ${change.host}`);
 			else if (change.kind === "dns_changed") lines.push(`    ~ ${change.record} for ${change.host} changed`);
+			else if (change.kind === "issuer_added") lines.push(`    + new certificate authority ${change.issuer}`);
 			else lines.push(`    ~ HTTPS on ${change.host}: ${change.before} -> ${change.after}`);
 		}
 		if (!entry.baseline) for (const finding of entry.newFindings) lines.push(`    ! [${finding.severity}] ${finding.host}: ${finding.title}`);

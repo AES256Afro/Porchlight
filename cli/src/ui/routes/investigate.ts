@@ -96,13 +96,13 @@ export function createInvestigate(ctx: ServerContext) {
 			return sendJson(res, 200, { stopped: investigation !== null });
 		}
 		if (route === "GET /api/investigate") {
-			const config = ctx.model().config;
+			const config = ctx.modelFor("investigate").config;
 			return sendJson(res, 200, {
 				canChange: here,
 				domains: await investigateDomains(),
 				runs: await runStore.list(),
 				active: investigation ? investigation.run : null,
-				assistant: assistantSummary(),
+				assistant: assistantSummary("investigate"),
 				...(config ? { disclosure: investigationDisclosure(config) } : {}),
 				monitor: ctx.monitor() !== null,
 				tools: INVESTIGATION_TOOLS,
@@ -198,8 +198,8 @@ export function createInvestigate(ctx: ServerContext) {
 		}
 		if (route !== "POST /api/investigate/start") throw new HttpError(404, "Not found");
 
-		const config = ctx.model().config;
-		if (!config) throw new HttpError(503, ctx.model().error ?? "No model is connected. Choose one in Settings → Model");
+		const config = ctx.modelFor("investigate").config;
+		if (!config) throw new HttpError(503, ctx.modelFor("investigate").error ?? "No model is connected. Choose one in Settings → Model");
 		if (investigation) throw new HttpError(409, `An investigation of ${investigation.run.domain} is already running. Stop it first`);
 		// A run is recorded only once ownership is proven, which takes a DNS lookup. Until then this flag
 		// refuses a second start, so no run is ever started that Stop cannot reach (S24).

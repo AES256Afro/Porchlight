@@ -1599,3 +1599,33 @@ td > .tag-new {
 	gap: 8px;
 	justify-items: start;
 }
+
+/* Settings' longer sections folded until wanted (I-D2): the fold reads as ordinary text, not a quiet option. */
+.settings-fold {
+	color: var(--ink);
+	margin-top: 12px;
+}
+
+.settings-fold > summary {
+	font-weight: 600;
+}
+
+/* A domain's names (R6F-5), folded under its report. */
+.domain-hosts {
+	margin-top: 16px;
+	color: var(--ink);
+}
+
+.domain-hosts > summary {
+	font-weight: 600;
+}
+
+/* Words and addresses break between words, never inside one; a host name breaks after a dot (VS-10). */
+.hosts-table td {
+	word-break: normal;
+	overflow-wrap: normal;
+}
+
+.hosts-table td li code {
+	white-space: nowrap;
+}

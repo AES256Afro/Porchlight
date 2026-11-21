@@ -8,9 +8,11 @@ import { banner, emptyState, formatNumber, formatWhen, h, icon, plural, replace,
 import { exportButton, openExportDialog } from "./export.js";
 import { openSendDialog, sendButton } from "./send.js";
 import { noteEditor } from "./finding-notes.js";
+import { seenFacts } from "./seen.js";
 import { ALL_SEVERITIES, isFiltering, matchesFilter, noFilter } from "./filter.js";
 import { buildHash, debounce, paramsFromFilter } from "./list.js";
-import { discussionsOnce, findingRows, rescanRepo, rescanRepos, store } from "./store.js";
+import { discussionsOnce, findingRows, rescanRepo, rescanRepos, store, subscribe } from "./store.js";
+import { checkWords, findingKey } from "./tracking.js";
 import { coverageGroups } from "./hints.js";
 import { severityBar } from "./charts.js";
 
@@ -54,33 +56,76 @@ export function viewLink(path, filter, props, ...children) {
 }
 
 /**
- * "Scan <repository> again", where the owner has just made a repair: on a roadmap action and in a
- * finding's detail (US-4). It ends with what changed, "2 fixed, 1 new in shop" (app.js). Null for a
- * place that is not a repository of the latest scan, such as a domain.
+ * "Check it now" (FT-11), where the owner has just made a repair: on a roadmap action and in a finding's
+ * detail. It scans the repository again (US-4) and then says whether the findings the repair was for
+ * are gone, still there, or could not be checked again (`checkWords`). Without findings to check it is
+ * "Scan <repository> again". Null for a place that is not a repository of the latest scan, such as a domain.
  *
  * @param {string} repo the repository's name, as the report gives it
+ * @param {string[]} [keys] the findings to check, by `findingKey`
  */
-export function scanAgainButton(repo) {
+export function scanAgainButton(repo, keys = []) {
 	if (!store.report?.repos.some((entry) => entry.name === repo)) return null;
 	const running = store.scan.state === "running";
+	const label = keys.length > 0 ? "Check it now" : `Scan ${repo} again`;
 	return h(
 		"button",
 		{
 			type: "button",
 			class: "button quiet",
 			"aria-disabled": running ? "true" : null,
-			title: running ? "A scan is running" : `Scans ${repo} again with the same options as the last scan, and says what was fixed`,
+			title: running
+				? "A scan is running"
+				: keys.length > 0
+					? `Scans ${repo} again with the same options as the last scan, and says whether ${keys.length === 1 ? "this finding is" : "these findings are"} fixed`
+					: `Scans ${repo} again with the same options as the last scan, and says what was fixed`,
 			onclick: async () => {
 				if (store.scan.state === "running") return;
 				try {
 					await rescanRepo(repo);
+					if (keys.length > 0) followCheck(repo, keys);
 				} catch (err) {
 					toast(err instanceof Error ? err.message : String(err), "error");
 				}
 			},
 		},
-		`Scan ${repo} again`,
+		label,
 	);
+}
+
+/**
+ * Waits for the scan "Check it now" started, then says what became of the findings it checks. A scan
+ * that fails or is stopped says nothing about them, so nothing is said.
+ *
+ * @param {string} repo
+ * @param {string[]} keys
+ */
+function followCheck(repo, keys) {
+	const stop = subscribe((change) => {
+		if (change === "scan" && (store.scan.state === "failed" || store.scan.state === "idle")) return void stop();
+		if (change !== "report" || store.scan.state !== "done") return;
+		stop();
+		const rescan = store.scan.rescan;
+		if (!rescan) return;
+		const later = new Set(findingRows().filter((row) => row.repo === repo).map((row) => findingKey(repo, row)));
+		// Not fixed yet is news, not a fault: both are said the same way.
+		toast(checkWords(keys, later, { repo, uncheckedCount: rescan.uncheckedCount }).words);
+	});
+}
+
+/**
+ * The findings a roadmap action clears in one repository, by `findingKey`: all of them, whatever the
+ * page's filter, since the repair is planned for them all (invariant 12).
+ *
+ * @param {string | undefined} match the action's search words
+ * @param {string} repo
+ */
+export function actionKeys(match, repo) {
+	if (!match) return [];
+	const filter = { ...noFilter(), query: match, repo };
+	return findingRows()
+		.filter((row) => matchesFilter(row, row.repo, filter))
+		.map((row) => findingKey(row.repo, row));
 }
 
 /**
@@ -119,6 +164,7 @@ export function findingDetail(finding, repo) {
 			finding.fixedIn ? h("dd", { class: "mono" }, finding.fixedIn) : null,
 			finding.note ? h("dt", null, "Ranking") : null,
 			finding.note ? h("dd", null, finding.note) : null,
+			...seenFacts(repo, finding),
 		),
 		finding.suggestion
 			? h(
@@ -127,7 +173,7 @@ export function findingDetail(finding, repo) {
 					h("h3", null, finding.suggestion.title),
 					h("ol", null, ...finding.suggestion.how.map((step) => h("li", null, ...stepNodes(step, { copy: true })))),
 					// The same repair on the Roadmap, where it is ranked among the others.
-					h("p", { class: "hint" }, viewLink(["roadmap"], { ...noFilter(), query: finding.ruleId, repo }, {}, "See this repair on the Roadmap"), " ", scanAgainButton(repo)),
+					h("p", { class: "hint" }, viewLink(["roadmap"], { ...noFilter(), query: finding.ruleId, repo }, {}, "See this repair on the Roadmap"), " ", scanAgainButton(repo, [findingKey(repo, finding)])),
 				)
 			: null,
 		judgementBlock(finding),

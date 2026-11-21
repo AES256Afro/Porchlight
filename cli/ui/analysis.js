@@ -2,6 +2,7 @@
 import { api } from "./api.js";
 import { announce, banner, formatNumber, formatWhen, h, icon, pageVisibility, replace, toast } from "./dom.js";
 import { analysisNotice, analysisProgress, generatedLabel, modelFields, VERDICT_LABELS } from "./generated.js";
+import { taskAssistant } from "./model-tasks.js";
 import { poller } from "./poller.js";
 import { loadJudgements, store } from "./store.js";
 
@@ -71,7 +72,7 @@ export function judgementBlock(finding) {
  * @returns {{ node: HTMLElement, stop: () => void } | null}
  */
 export function analysisCard() {
-	const assistant = store.settings?.assistant;
+	const assistant = taskAssistant("analysis");
 	if (!assistant?.configured || !store.report) return null;
 	/** @type {AnalysisStatus} */
 	let status = { state: "idle" };
@@ -124,7 +125,7 @@ export function analysisCard() {
 	/** @param {string} path @param {unknown} [send] */
 	async function act(path, send) {
 		try {
-			await api("POST", path, path === "/analysis" ? { .../** @type {object} */ (send ?? {}), ...modelFields(store.settings?.assistant) } : send);
+			await api("POST", path, path === "/analysis" ? { .../** @type {object} */ (send ?? {}), ...modelFields(taskAssistant("analysis")) } : send);
 			follow.now();
 		} catch (err) {
 			toast(message(err), "error");
