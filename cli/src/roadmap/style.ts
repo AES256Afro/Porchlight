@@ -1,5 +1,5 @@
-import { readFileSync } from "node:fs";
 import { PORCHLIGHT_VERSION } from "../version.ts";
+import { TOKENS_CSS } from "./tokens-css.ts";
 import { PRESETS, presetOf, standardChoices } from "../../ui/scan-choices.js";
 import type { ScanChoices } from "../repos/types.ts";
 
@@ -8,7 +8,7 @@ import type { ScanChoices } from "../repos/types.ts";
  * so a saved report and the page use the same colours and cli/test/contrast.test.ts checks both. The
  * export still loads nothing and runs no script (invariant 11): the tokens are plain CSS in its <style>.
  */
-const TOKENS = readFileSync(new URL("../../ui/tokens.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+const TOKENS = TOKENS_CSS.replace(/\/\*[\s\S]*?\*\//g, "");
 
 /** The declarations of the first rule for :root, the light set. */
 function lightDeclarations(css: string): string {
