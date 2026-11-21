@@ -2046,7 +2046,7 @@ test("a failed host check is reported as failed, and a service never checks the 
 	const refused = await send(service, "POST", "/api/host/check", { body: {}, host: "127.0.0.2" });
 	assert.equal(refused.status, 409);
 	assert.match(refused.json.error, /container/);
-	assert.deepEqual((await send(service, "GET", "/api/host", { host: "127.0.0.2" })).json, { status: { state: "idle" }, report: null, service: true });
+	assert.deepEqual((await send(service, "GET", "/api/host", { host: "127.0.0.2" })).json, { status: { state: "idle" }, report: null, service: true, change: null, kept: 0 });
 	assert.equal(called, false);
 });
 

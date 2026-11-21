@@ -56,7 +56,7 @@ test("startup items: a program in a temporary or writable folder is flagged; one
 	});
 	const [check] = await startupChecks(run, home, true, system);
 	assert.equal(check!.status, "failed");
-	assert.equal(check!.items!.length, 2);
+	assert.equal(check!.items!.length, 2, check!.items!.join("\n"));
 	assert.match(check!.items!.join("\n"), /bad runs \/tmp\/updater \(it is in a temporary or shared folder\)/);
 	assert.match(check!.items!.join("\n"), /root-job runs ~\/open\/tool \(it starts for every user from a folder one account can change\)/);
 	assert.match(check!.detail, /One item could not be read/);
