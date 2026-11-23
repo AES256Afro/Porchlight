@@ -92,12 +92,12 @@
 	"/api/connections": {
 		"status": 200,
 		"type": "application/json; charset=utf-8",
-		"body": "{\"at\":\"2026-11-21T17:21:47.692Z\",\"monitor\":{\"ok\":true,\"detail\":\"monitor.demo.invalid answers\"},\"model\":null,\"cloudflare\":null}"
+		"body": "{\"at\":\"2026-11-23T16:05:41.945Z\",\"monitor\":{\"ok\":true,\"detail\":\"monitor.demo.invalid answers\"},\"model\":null,\"cloudflare\":null}"
 	},
 	"/api/egress": {
 		"status": 200,
 		"type": "application/json; charset=utf-8",
-		"body": "{\"records\":[{\"n\":1,\"at\":\"2026-11-21T17:21:47.689Z\",\"method\":\"GET\",\"host\":\"127.0.0.1:11434\",\"purpose\":\"A server on this computer (a local model)\",\"status\":200},{\"n\":2,\"at\":\"2026-11-21T17:21:47.692Z\",\"method\":\"GET\",\"host\":\"monitor.demo.invalid\",\"purpose\":\"Your monitor\",\"status\":200}],\"byHost\":[{\"host\":\"127.0.0.1:11434\",\"purpose\":\"A server on this computer (a local model)\",\"requests\":1},{\"host\":\"monitor.demo.invalid\",\"purpose\":\"Your monitor\",\"requests\":1}]}"
+		"body": "{\"records\":[{\"n\":1,\"at\":\"2026-11-23T16:05:41.942Z\",\"method\":\"GET\",\"host\":\"127.0.0.1:11434\",\"purpose\":\"A server on this computer (a local model)\",\"status\":200},{\"n\":2,\"at\":\"2026-11-23T16:05:41.946Z\",\"method\":\"GET\",\"host\":\"monitor.demo.invalid\",\"purpose\":\"Your monitor\",\"status\":200}],\"byHost\":[{\"host\":\"127.0.0.1:11434\",\"purpose\":\"A server on this computer (a local model)\",\"requests\":1},{\"host\":\"monitor.demo.invalid\",\"purpose\":\"Your monitor\",\"requests\":1}]}"
 	},
 	"/api/findings/due-policy": {
 		"status": 200,

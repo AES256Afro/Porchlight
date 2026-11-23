@@ -106,6 +106,13 @@
 	align-items: start;
 }
 
+/* pages.css loads after components.css, so the narrow-screen rule there loses to the one above. */
+@media (max-width: 900px) {
+	.split {
+		grid-template-columns: minmax(0, 1fr);
+	}
+}
+
 /* The domain list, with "Export scope…" under it. */
 .domain-side {
 	display: grid;
