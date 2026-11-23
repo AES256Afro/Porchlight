@@ -145,6 +145,11 @@ finding of any kept scan.
                          --format text, csv, md or json
   remove <domain> --yes  Stop watching it and delete its scan history
   export <domain>        Repair roadmap for a domain; takes --content, --format and --out
+  scope                  The scope file: every verified domain and the names its latest scan holds,
+                         as JSON for another tool to take as the scope it may test. Names and
+                         dates only. Takes --out <file or folder>; a folder gets
+                         porchlight-scope-<date>.json. Fails, writing nothing, if any verified
+                         domain's names cannot be read
 
   --json                 Print the monitor's answer as JSON
 

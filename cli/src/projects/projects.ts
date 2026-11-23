@@ -41,6 +41,7 @@ export const FILE_TITLES = {
 	"discussion-send": "Sent to a model",
 	"discussion-cloudflare": "Cloudflare analysis",
 	cloudflare: "Cloudflare audit",
+	scope: "Scope of proven domains",
 } as const;
 export type FileTitle = keyof typeof FILE_TITLES;
 

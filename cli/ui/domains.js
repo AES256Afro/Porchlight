@@ -1,8 +1,10 @@
 // @ts-check
-import { api, ApiError } from "./api.js";
+import { api, ApiError, download } from "./api.js";
 import { assistAction } from "./assist.js";
 import { banner, copyButton, formatNumber, formatWhen, h, hostName, icon, isOff, pager, plural, replace, setOff, severityBadge, shownText, statTile, stepNodes, tileRow, toast } from "./dom.js";
 import { exportButton, openExportDialog } from "./export.js";
+import { announceSaved } from "./projects.js";
+import { currentProject } from "./store.js";
 import { domainFromInput, monitorSetupSteps, monitorStatusWords, overdueDomains } from "./hints.js";
 import { paginate } from "./list.js";
 import { severityBar, trendChart } from "./charts.js";
@@ -43,6 +45,8 @@ export async function renderDomains(view, route) {
 	/** Where alerts go and what last went wrong, from the monitor itself. */
 	const monitorSlot = h("div");
 	const list = h("ul", { class: "domain-list", "aria-label": "Domains" });
+	/** "Export scope…", once a domain is verified. */
+	const scopeSlot = h("div");
 	const detail = h("div", { class: "detail" });
 	const addProblem = h("p", { class: "form-error", id: "add-domain-problem", role: "alert", hidden: true });
 	const input = /** @type {HTMLInputElement} */ (
@@ -77,7 +81,7 @@ export async function renderDomains(view, route) {
 				),
 			),
 			monitorSlot,
-			h("div", { class: "split" }, list, detail),
+			h("div", { class: "split" }, h("div", { class: "domain-side" }, list, scopeSlot), detail),
 		),
 	);
 
@@ -108,6 +112,7 @@ export async function renderDomains(view, route) {
 		} catch (err) {
 			domains = [];
 			replace(list);
+			replace(scopeSlot);
 			// The monitor answered, and said no: waiting will not help, the right token will.
 			if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
 				replace(
@@ -139,6 +144,11 @@ export async function renderDomains(view, route) {
 					),
 				),
 			),
+		);
+		const verified = domains.filter((domain) => domain.verified).length;
+		replace(
+			scopeSlot,
+			verified > 0 ? h("button", { type: "button", class: "button", onclick: () => openScopeDialog(verified) }, icon("download"), "Export scope…") : null,
 		);
 		if (domains.length === 0) {
 			replace(
@@ -359,6 +369,76 @@ export async function renderDomains(view, route) {
 /** @param {unknown} err */
 function message(err) {
 	return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * The scope file (`GET /api/domains/scope`): every verified domain and the names the monitor's latest
+ * scan holds under each, names and dates only, for another tool of the owner's to take as the scope it
+ * may test. Downloaded, or saved in the project in use under a name of the server's own (invariant 23).
+ *
+ * @param {number} verified how many domains the list shows as verified
+ */
+function openScopeDialog(verified) {
+	const project = currentProject();
+	const error = h("p", { class: "form-error", role: "alert", hidden: true });
+	const submit = /** @type {HTMLButtonElement} */ (h("button", { type: "submit", class: "button primary" }, "Export"));
+	/** @param {string} value @param {string} label @param {string} hint */
+	const where = (value, label, hint) =>
+		h("label", { class: "choice" }, h("input", { type: "radio", name: "where", value, checked: value === "project" }), h("span", null, h("strong", null, label), h("span", { class: "hint" }, hint)));
+	const form = /** @type {HTMLFormElement} */ (
+		h(
+			"form",
+			{ method: "dialog", onsubmit: save },
+			h("h2", { id: "scope-title" }, "Export the scope file"),
+			h(
+				"p",
+				null,
+				`Lists ${plural(verified, "verified domain", "verified domains")} with every name the monitor's latest scan holds under ${verified === 1 ? "it" : "each"}, as JSON for another tool of yours to take as the scope it may test.`,
+			),
+			h("p", { class: "hint" }, "Names and dates only: no addresses, DNS records, certificates, findings or ownership records. If the names under any verified domain cannot be read, nothing is exported."),
+			project
+				? h(
+						"fieldset",
+						null,
+						h("legend", null, "Where"),
+						where("project", `Save in ${project.name}`, `Into ${project.folder}/Porchlight/Exports, named with the date, the time and what it is.`),
+						where("download", "Download", "Your browser saves it as porchlight-scope- and the date, usually in Downloads."),
+					)
+				: null,
+			error,
+			h("div", { class: "actions" }, h("button", { type: "button", class: "button", onclick: () => dialog.close() }, "Cancel"), submit),
+		)
+	);
+	const dialog = /** @type {HTMLDialogElement} */ (h("dialog", { class: "dialog", "aria-labelledby": "scope-title", onclose: () => dialog.remove() }, form));
+
+	/** @param {SubmitEvent} event */
+	async function save(event) {
+		event.preventDefault();
+		if (isOff(submit)) return;
+		setOff(submit, true);
+		submit.textContent = shownText("Exporting…");
+		error.hidden = true;
+		try {
+			if (project && new FormData(form).get("where") === "project") {
+				const { saved } = await api("POST", "/domains/scope");
+				dialog.close();
+				announceSaved(saved);
+				return;
+			}
+			const filename = await download("/domains/scope");
+			dialog.close();
+			toast(`Saved ${filename}`);
+		} catch (err) {
+			// Stay open, saying why, so the owner can scan the domain it names and try again.
+			replace(error, message(err));
+			error.hidden = false;
+			setOff(submit, false);
+			submit.textContent = shownText("Export");
+		}
+	}
+
+	document.body.append(dialog);
+	dialog.showModal();
 }
 
 /** @param {Domain} domain */

@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -12,6 +12,7 @@ import { renderSarif } from "./repos/sarif.ts";
 import { baselineGaps, baselineSummary, beyondBaseline } from "./repos/baseline.ts";
 import { hookCommand } from "./repos/hook.ts";
 import { domainsHosts } from "./monitor/hosts.ts";
+import { domainsScope } from "./monitor/scope.ts";
 import { statusCommand } from "./status.ts";
 import { scheduleCommand } from "./schedule.ts";
 import { settingsCommand } from "./settings-transfer.ts";
@@ -89,6 +90,16 @@ export async function main(argv: string[]): Promise<number> {
 		if (group === "domains" && command === "hosts") {
 			const config = await monitorForCli(process.env, await dataFolder(homedir()));
 			return await domainsHosts(rest, (path) => callMonitor(config, "GET", path), print);
+		}
+		if (group === "domains" && command === "scope") {
+			const config = await monitorForCli(process.env, await dataFolder(homedir()));
+			return await domainsScope(rest, (path) => callMonitor(config, "GET", path), {
+				now: () => new Date(),
+				print,
+				warn,
+				isFolder: (path) => stat(path).then((found) => found.isDirectory(), () => false),
+				write: writePrivate,
+			});
 		}
 		if (group === "hook") return await hookCommand(command, { print, warn }, { run });
 		if (group === "status") return await statusCommand(argv.slice(1), print, { dataDir: join(homedir(), ".porchlight") });

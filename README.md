@@ -58,7 +58,7 @@ Reference:
 - [Investigate with a model](#investigate-with-a-model)
 - [Check the computer](#check-the-computer)
 - [Audit your Cloudflare account](#audit-your-cloudflare-account)
-- [Monitor domains](#monitor-domains): [How it works](#how-it-works) · [Run locally](#run-locally) · [Deploy](#deploy) · [Use it](#use-it) · [Settings](#settings-1) · [Limits](#limits)
+- [Monitor domains](#monitor-domains): [How it works](#how-it-works) · [Run locally](#run-locally) · [Deploy](#deploy) · [Use it](#use-it) · [Export the scope](#export-the-scope) · [Settings](#settings-1) · [Limits](#limits)
 - [Development](#development)
 
 ## 1. Quick start
@@ -173,7 +173,7 @@ These hold for every release. They are numbered as the invariants in `CLAUDE.md`
 | 8 | No HTML is built from scanned data. The page builds every element with `h()` (`cli/ui/dom.js`), never with `innerHTML`, and its Content-Security-Policy allows no inline script or style. | `cli/test/ui-sweep.test.ts`, "no HTML is built from strings, and no inline script or style (invariant 8, S46)" and "h() refuses markup, inline style and addresses in a scheme the page never uses (S46)" |
 | 9 | The BoxPilot manifest matches the image: tailnet exposure, a read-only repositories mount, a generated key. The image is published only from a `v*` tag, after the container smoke test passes. | `npm run check:boxpilot` (`scripts/check-boxpilot-manifest.mjs`); `scripts/container-smoke.sh` |
 | 10 | Triage re-ranks secrets and private data and never drops a finding. | `cli/test/triage.test.ts`, "each signal lowers the rank one step and says why" |
-| 11 | Exports are escaped for their format: HTML entities, a leading apostrophe before spreadsheet formula characters in CSV, escaped text in Markdown. The HTML export has no script and loads nothing. | `cli/test/roadmap.test.ts`, "hostile text in a scan cannot become markup, a link or a formula in any format" and "renders a self-contained page with no script" |
+| 11 | Exports are escaped for their format: HTML entities, a leading apostrophe before spreadsheet formula characters in CSV, escaped text in Markdown. The HTML export has no script and loads nothing. The scope file holds the verified domains and their names and dates, nothing else, and is never written in part. | `cli/test/roadmap.test.ts`, "hostile text in a scan cannot become markup, a link or a formula in any format" and "renders a self-contained page with no script"; `cli/test/scope.test.ts`, "carries names and dates only: nothing else the monitor sends is anywhere in the file" and "a domain whose names cannot be read refuses the whole export" |
 | 12 | A suggested fix is the complete repair, planned from the whole repository whatever a filter shows. A partial export says so. | `cli/test/roadmap.test.ts`, "a filter never shrinks a fix: the upgrade shown clears the advisories the filter hides too" and "a filtered findings list still names the complete repair" |
 | 13 | A model sees only what the page shows, framed as data. Its answer is shown as text, labelled with the model's name, and never acted on. A key reaches only the provider it was saved for. | `cli/test/assist.test.ts`, "explains one finding from what the page shows, framed as data"; `cli/test/ui-server.test.ts`, "a key goes only to the provider or the server address it was saved for" |
 | 14 | A scanned repository is untrusted input: its `.gitleaks.toml` cannot change the rules, its `.git` cannot run a program or hide history, and no file is skipped by its name. | `cli/test/hostile-history.test.ts`, "end to end: no hostile repository runs a program, hides history or skips a file by name"; `cli/test/scan.test.ts`, "end to end: a hostile repository can neither run a program nor switch gitleaks' rules off"; step 4 of `scripts/container-smoke.sh` |
@@ -348,7 +348,7 @@ It prints a link. Open it to get both tools in the browser:
 - **Overview**: the two jobs, "Scan your code" and "Scan your domains". Before a scan it names the repositories it found in the folder, and whether git and each scanner is ready, with the command that installs one that is not; when it finds none, or the monitor is not set up, it says what to do next in numbered steps. The home folder itself is looked through only when you ask, as it holds Desktop, Documents and Downloads. After a scan, **At a glance** gives one line for your code, your domains, Cloudflare and this computer: how old each is, what is new and fixed since the time before, and the worst finding. **Check everything** scans your code with the last scan's options (without a model), audits Cloudflare and checks this computer, each only reading. Below it are where things stand, what needs doing first, and, with a schedule, when it last ran and how, when it runs next, whether the last notice was delivered and a token that ends within two weeks. A scan that is running can be stopped; nothing is saved, and the last scan stays as it was.
 - **Findings**: every finding in one list, most severe first, each with the repair that clears it, with a copy button beside each command. Switch to **By repository** to see them grouped. Filter by severity, type, repository, text, or **New since the last scan**; the filters are kept in the address, so a reload or a shared link shows the same view. After a fix, open a repository under By repository and choose **Scan this repository again** to check it alone. Where a scanner is missing or fails that time, what it found before is kept.
 - **Roadmap**: what to repair, in order. One action, such as upgrading a package, can clear many findings. A chart above the phases shows how many findings each clears.
-- **Domains**: add a domain by its name, prove it is yours with one DNS record, scan, and read what changed, with a suggested fix for each finding. Until the monitor is connected the page walks through setting it up, with each command to copy. Connect it under **Settings → Monitor**: paste the monitor's address and admin token, Porchlight asks the monitor whether they work, and the page becomes your list of domains with no restart. **Check connections**, there and in Settings, asks the monitor and a local model whether they answer now, so "connected" means working. The page says when domains are overdue: the monitor scans 144 a day. The two can also be given at start-up as `PORCHLIGHT_MONITOR_URL` and `PORCHLIGHT_ADMIN_TOKEN` (see [Monitor domains](#monitor-domains)); a connection saved in Settings comes first.
+- **Domains**: add a domain by its name, prove it is yours with one DNS record, scan, and read what changed, with a suggested fix for each finding. Until the monitor is connected the page walks through setting it up, with each command to copy. Connect it under **Settings → Monitor**: paste the monitor's address and admin token, Porchlight asks the monitor whether they work, and the page becomes your list of domains with no restart. **Check connections**, there and in Settings, asks the monitor and a local model whether they answer now, so "connected" means working. The page says when domains are overdue: the monitor scans 144 a day. **Export scope…** under the list saves the scope file of your proven domains (see [Export the scope](#export-the-scope)). The two can also be given at start-up as `PORCHLIGHT_MONITOR_URL` and `PORCHLIGHT_ADMIN_TOKEN` (see [Monitor domains](#monitor-domains)); a connection saved in Settings comes first.
 - **Cloudflare**: audit every zone in your Cloudflare account and approve fixed changes; see [Audit your Cloudflare account](#audit-your-cloudflare-account).
 - **Investigate**: a model plans an investigation of a domain you have proven is yours, one approved request at a time; see [Investigate with a model](#investigate-with-a-model).
 - **This Mac** (**This computer** on Linux): check the computer Porchlight runs on; see [Check the computer](#check-the-computer).
@@ -875,7 +875,7 @@ Porchlight writes only inside a `Porchlight` folder within the one you chose:
       2026-11-19.log
 ```
 
-- **Exports.** With a project in use, the Export dialog saves the file into `Exports/` (**Download** is still there), and the message that follows offers **Show in Finder** in the Mac app, or **Copy path** in a browser. The Cloudflare audit's export and an investigation's report can be saved there too.
+- **Exports.** With a project in use, the Export dialog saves the file into `Exports/` (**Download** is still there), and the message that follows offers **Show in Finder** in the Mac app, or **Copy path** in a browser. The Cloudflare audit's export, an investigation's report and the monitor's scope file can be saved there too.
 - **Discussions.** A discussion begun while a project is in use is saved into `Discussions/` as Markdown, and written again after every follow-up. An older one can be added with **Save in** on its page.
 - **Log.** One plain-text file a day: projects started, scans started and finished with their counts, exports saved or downloaded, models asked (which model, whether it runs outside your machines, what kind of question, how long the answer took), Deeper analysis, investigations started and ended (the domain, the model, how its requests were approved, and how many actions and findings), Cloudflare audits with their counts, and Cloudflare changes you approved. It never holds a key, a token, a secret value, an email, your questions or a model's words.
 - **Names you can read, and only Porchlight's.** Every file is named with the date, the time and a title from Porchlight's own short list, such as "Repair roadmap" or "Explain a finding". Which repository or domain it covers is written inside. Nothing from a scan or a model's answer names a file, a file already there is never written over (a second in the same minute gets " 2"), and Porchlight never writes through a symbolic link. Its folders are readable only by you (0700, files 0600).
@@ -1143,9 +1143,39 @@ porchlight domains scan example.com     # scan now; the first scan is the baseli
 porchlight domains show example.com     # latest report
 porchlight domains history example.com  # each kept scan, newest first, with what changed
 porchlight domains hosts example.com    # every name it knows under the domain; --format csv, md or json
+porchlight domains scope --out .        # the scope file for another tool; see below
 porchlight domains list
 porchlight domains remove example.com --yes  # also deletes its scan history
 ```
+
+### Export the scope
+
+The scope file lists the domains you have proved are yours and the names the monitor's latest scan holds under each, as JSON, for another tool of yours to take as the scope it may test. It holds names and dates only:
+
+```json
+{
+  "format": "porchlight-scope",
+  "version": 1,
+  "exportedAt": "2026-11-22T21:15:30.123Z",
+  "domains": [
+    {
+      "name": "example.com",
+      "verifiedAt": "2026-11-01T07:00:00.000Z",
+      "hosts": [
+        { "name": "example.com", "checkedAt": "2026-11-21T06:00:01.000Z" },
+        { "name": "api.example.com", "checkedAt": null }
+      ]
+    }
+  ]
+}
+```
+
+- **Domains.** Each domain the monitor reports as verified, sorted by name: its ownership record was found, and was still there at the last scan. A domain awaiting verification, or one whose record has since gone, is left out. `verifiedAt` is when the record was first found.
+- **Hosts.** Every name in the domain's latest scan, on every page of its inventory, sorted. Each is the domain or a subdomain of it. Names the certificate log still lists but DNS showed gone are left out. `checkedAt` is when the monitor last probed the host (its DNS lookup, and its one `GET /` when it has an address), or `null` when it has not yet had its turn (`MAX_HOSTS`) or the monitor does not know.
+- **Never in it.** Addresses, DNS values, certificates, HTTPS answers, findings, the ownership record and its value, and the admin token.
+- **All or nothing.** If the names under any verified domain cannot be read (it has not been scanned yet, the monitor fails, or the inventory changes between two pages because a scan ran), no file is written and the error names the domain. A name outside its domain, or a value of the wrong shape, is refused the same way. With no domain verified, there is no file.
+
+On the Domains page, **Export scope…** under the list downloads it as `porchlight-scope-<date>.json` (the day of `exportedAt`, in UTC), or saves it in the project in use as `<date> <time> Scope of proven domains.json`. From the command line, `porchlight domains scope` prints it; `--out <file>` writes it to that file, and `--out <folder>` writes `porchlight-scope-<date>.json` into the folder. Making it reads the monitor's database: one request for the list of domains and one for each page of 200 names, with no request about any domain.
 
 ### Settings
 

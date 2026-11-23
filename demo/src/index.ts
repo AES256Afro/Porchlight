@@ -136,6 +136,9 @@ function answer(url: URL): Response {
 		return download(file.body, file.contentType, file.filename);
 	}
 	if (recorded[path] && path !== "report") return replay(path);
+	// The scope file is made from the monitor's inventory of names, which the demo does not record.
+	if (path === "/api/domains/scope")
+		return json({ error: "This part of Porchlight is not in the demo." }, 404);
 	if (path.startsWith("/api/domains/")) return json({ error: "Domain is not registered" }, 404);
 	return json({ error: "This part of Porchlight is not in the demo." }, 404);
 }

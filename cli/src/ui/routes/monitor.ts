@@ -3,15 +3,16 @@
 import { join } from "node:path";
 import { asciiDomain } from "../../investigate/scope.ts";
 import { callMonitor, type MonitorConfig } from "../../monitor/client.ts";
+import { buildScope, scopeCounts, scopeExport, ScopeError } from "../../monitor/scope.ts";
 import { forgetMonitor, monitorProblem, MonitorSettingsError, parseMonitorSettings, readSavedMonitor, saveMonitor } from "../../monitor/settings.ts";
 import type { MonitorReport } from "../../roadmap/domains.ts";
 import type { ServerContext } from "../context.ts";
 import { onComputerPage, type Call, type Gate } from "../gate.ts";
-import { bodyObject, DOMAIN_PATTERN, HttpError, safeDecode, sendJson } from "../http.ts";
-import { notFoundUnder, type Route } from "../router.ts";
+import { bodyObject, DOMAIN_PATTERN, HttpError, safeDecode, sendDownload, sendJson } from "../http.ts";
+import { notFoundUnder, otherMethods, type Route } from "../router.ts";
 
 export async function createMonitor(ctx: ServerContext) {
-	const { options, dataDir, log } = ctx;
+	const { options, dataDir, log, saveExport } = ctx;
 	// The monitor that watches the owner's websites. A connection saved under Settings → Monitor comes
 	// before the one given at start-up, as a saved model or Cloudflare token does. The admin token is
 	// added to each call here and never sent to the page.
@@ -113,7 +114,35 @@ export async function createMonitor(ctx: ServerContext) {
 		}
 	}
 
+	/**
+	 * The scope file (`monitor/scope.ts`): every verified domain and the names its latest scan holds,
+	 * names and dates only, downloaded (GET) or saved in the project in use (POST, invariant 23). Read
+	 * from the monitor's database with the admin token added here; nothing is asked about a domain. A
+	 * domain whose names cannot be read refuses the whole export: no partial file (invariant 5).
+	 */
+	async function scopeRoute({ req, res }: Call): Promise<void> {
+		const connected = monitor;
+		if (!connected) throw new HttpError(503, options.monitorError ?? "The monitor is not configured");
+		let file: ReturnType<typeof scopeExport>;
+		let counts: string;
+		try {
+			const scope = await buildScope((path) => callMonitor(connected, "GET", path, undefined, options.fetchFn), new Date());
+			file = scopeExport(scope);
+			counts = scopeCounts(scope);
+		} catch (err) {
+			if (err instanceof ScopeError) throw new HttpError(err.status, err.message);
+			throw err;
+		}
+		if (req.method === "POST") return saveExport(res, file, "scope");
+		log(`Exported the scope file as a download: ${counts}`);
+		return sendDownload(res, file);
+	}
+
 	const routes: Route[] = [
+		// Before /api/domains/<name>, which the state area hands to the monitor: "scope" is never a domain name.
+		["GET /api/domains/scope", scopeRoute],
+		["POST /api/domains/scope", scopeRoute],
+		otherMethods(["/api/domains/scope"]),
 		["POST /api/monitor", connect, "here"],
 		["POST /api/monitor/remove", disconnect, "here"],
 		notFoundUnder("/api/monitor", "here", ({ gate }) => changedHere(gate)),
